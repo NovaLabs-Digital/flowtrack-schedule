@@ -24,6 +24,7 @@ export async function POST(req: Request) {
     const service_type = (body.service_type || "").trim();
     const scheduled_for = (body.scheduled_for || "").trim(); // ISO string
     const notes = (body.notes || "").trim();
+    const duration_minutes = typeof body.duration_minutes === "number" ? body.duration_minutes : 60;
 
     if (!name || !service_type || !scheduled_for) {
       return json({ error: "Missing required fields" }, 400);
@@ -70,18 +71,30 @@ export async function POST(req: Request) {
 
     const cancel_token = crypto.randomBytes(24).toString("hex");
 
-    const apptIns = await supabaseAdmin
+    const insertFields: Record<string, any> = {
+      client_id: clientId,
+      service_type,
+      scheduled_for,
+      notes: notes || null,
+      cancel_token,
+      status: "scheduled",
+      duration_minutes,
+    };
+
+    let apptIns = await supabaseAdmin
       .from("appointments")
-      .insert({
-        client_id: clientId,
-        service_type,
-        scheduled_for,
-        notes: notes || null,
-        cancel_token,
-        status: "scheduled",
-      })
+      .insert(insertFields)
       .select("id")
       .single();
+
+    if (apptIns.error?.message?.includes("duration_minutes")) {
+      delete insertFields.duration_minutes;
+      apptIns = await supabaseAdmin
+        .from("appointments")
+        .insert(insertFields)
+        .select("id")
+        .single();
+    }
 
     if (apptIns.error) throw apptIns.error;
 
