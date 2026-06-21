@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const { data: clients, error: clientsErr } = await supabaseAdmin
