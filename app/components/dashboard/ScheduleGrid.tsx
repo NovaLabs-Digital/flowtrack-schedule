@@ -80,6 +80,17 @@ function durationLabel(mins: number) {
   return m === 0 ? `${h}h` : `${h}h${m}m`;
 }
 
+function freqLabel(a: Appointment): string {
+  if (!a.frequency_type || a.frequency_type === "one_time") return "";
+  if (a.frequency_type === "daily") return "Daily";
+  if (a.frequency_type === "weekly") {
+    const w = a.repeat_weeks ?? 1;
+    if (w === 1) return "Weekly";
+    return `Every ${w} wks`;
+  }
+  return "";
+}
+
 const CELL_PX = 56;
 
 export default function ScheduleGrid({
@@ -116,6 +127,7 @@ export default function ScheduleGrid({
   const hours = Array.from({ length: totalHours }, (_, i) => startHour + i);
 
   const apptsInView = appointments.filter((a) => {
+    if (a.status === "cancelled") return false;
     const apptDate = new Date(a.scheduled_for);
     return days.some((d) => d.toDateString() === apptDate.toDateString());
   });
@@ -216,7 +228,13 @@ export default function ScheduleGrid({
                   const apptDate = new Date(a.scheduled_for);
                   const apptHour = apptDate.getHours();
                   const apptMin = apptDate.getMinutes();
-                  const mins = a.duration_minutes ?? durationFor(a.service_type);
+                  let mins: number;
+                  if (a.scheduled_end) {
+                    mins = Math.round((new Date(a.scheduled_end).getTime() - apptDate.getTime()) / 60_000);
+                    if (mins <= 0) mins = durationFor(a.service_type);
+                  } else {
+                    mins = a.duration_minutes ?? durationFor(a.service_type);
+                  }
 
                   const topOffset = (apptHour - startHour) * CELL_PX + (apptMin / 60) * CELL_PX;
                   const height = (mins / 60) * CELL_PX;
@@ -243,22 +261,33 @@ export default function ScheduleGrid({
                       }}
                     >
                       {isShort ? (
-                        /* Compact: single row for short appointments */
                         <div className="flex items-center justify-between gap-1 h-full">
                           <div className="truncate font-medium text-xs">{a.service_type}</div>
-                          <div className="text-[10px] text-slate-500 shrink-0">{timeRange(a.scheduled_for, mins)}</div>
+                          <div className="text-[10px] text-slate-500 shrink-0">
+                            {a.frequency_type && a.frequency_type !== "one_time" && <span className="mr-1">&#8635;</span>}
+                            {timeRange(a.scheduled_for, mins)}
+                          </div>
                         </div>
                       ) : (
-                        /* Full: multi-line for longer appointments */
-                        <div className="py-1 flex flex-col h-full">
+                        <div className="py-1 flex flex-col h-full overflow-hidden">
                           <div className="flex items-center justify-between gap-1">
                             <div className="truncate font-medium text-xs">{a.service_type}</div>
-                            <div className="text-[10px] shrink-0">{statusLabel(a.status)}</div>
+                            <div className="text-[10px] shrink-0 flex items-center gap-1">
+                              {a.frequency_type && a.frequency_type !== "one_time" && (
+                                <span className="text-blue-500" title={freqLabel(a)}>&#8635;</span>
+                              )}
+                              {statusLabel(a.status)}
+                            </div>
                           </div>
                           <div className="text-[11px] text-slate-600 mt-0.5">{clientName(a.client_id)}</div>
-                          <div className="mt-auto text-[10px] text-slate-500">
+                          <div className="text-[10px] text-slate-500 mt-0.5">
                             {timeRange(a.scheduled_for, mins)} ({durationLabel(mins)})
                           </div>
+                          {a.notes && (
+                            <div className="text-[10px] text-slate-400 italic mt-auto truncate">
+                              {a.notes}
+                            </div>
+                          )}
                         </div>
                       )}
                     </button>

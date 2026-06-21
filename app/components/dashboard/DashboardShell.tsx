@@ -175,6 +175,7 @@ export default function DashboardShell({
         <AppointmentModal
           onClose={() => setModal(null)}
           onSaved={handleModalSaved}
+          clients={clients}
           services={services}
           editing={
             modal.mode === "edit"

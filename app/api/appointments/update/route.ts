@@ -7,6 +7,14 @@ function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
 }
 
+async function hasColumn(col: string): Promise<boolean> {
+  const { error } = await supabaseAdmin
+    .from("appointments")
+    .select(col)
+    .limit(0);
+  return !error;
+}
+
 export async function PATCH(req: Request) {
   try {
     const body = await req.json();
@@ -30,7 +38,9 @@ export async function PATCH(req: Request) {
       apptUpdate.scheduled_for = body.scheduled_for.trim();
     if (body.status !== undefined) apptUpdate.status = body.status.trim();
     if (body.notes !== undefined) apptUpdate.notes = body.notes.trim() || null;
-    if (typeof body.duration_minutes === "number")
+    if (body.scheduled_end !== undefined && await hasColumn("scheduled_end"))
+      apptUpdate.scheduled_end = body.scheduled_end;
+    if (typeof body.duration_minutes === "number" && await hasColumn("duration_minutes"))
       apptUpdate.duration_minutes = body.duration_minutes;
 
     if (Object.keys(apptUpdate).length > 0) {
@@ -38,17 +48,7 @@ export async function PATCH(req: Request) {
         .from("appointments")
         .update(apptUpdate)
         .eq("id", appointment_id);
-      if (error) {
-        if (error.message?.includes("duration_minutes") && apptUpdate.duration_minutes !== undefined) {
-          delete apptUpdate.duration_minutes;
-          if (Object.keys(apptUpdate).length > 0) {
-            const retry = await supabaseAdmin.from("appointments").update(apptUpdate).eq("id", appointment_id);
-            if (retry.error) throw retry.error;
-          }
-        } else {
-          throw error;
-        }
-      }
+      if (error) throw error;
     }
 
     const clientUpdate: Record<string, any> = {};

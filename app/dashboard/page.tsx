@@ -9,10 +9,22 @@ export default async function DashboardPage() {
     .select("id, name, email, phone")
     .order("name", { ascending: true });
 
-  const { data: appointments, error: apptsErr } = await supabaseAdmin
+  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks";
+  let apptsRes = await supabaseAdmin
     .from("appointments")
-    .select("id, client_id, service_type, scheduled_for, status, notes")
+    .select(apptFields)
     .order("scheduled_for", { ascending: true });
+
+  if (apptsRes.error) {
+    apptFields = "id, client_id, service_type, scheduled_for, status, notes";
+    apptsRes = await supabaseAdmin
+      .from("appointments")
+      .select(apptFields)
+      .order("scheduled_for", { ascending: true });
+  }
+
+  const appointments = apptsRes.data as any[] | null;
+  const apptsErr = apptsRes.error;
 
   let services: any[] = [];
   try {

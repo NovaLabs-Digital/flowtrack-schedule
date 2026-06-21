@@ -13,6 +13,10 @@ export type Appointment = {
   status: "scheduled" | "cancelled";
   notes: string | null;
   duration_minutes?: number | null;
+  scheduled_end?: string | null;
+  series_id?: string | null;
+  frequency_type?: string | null;
+  repeat_weeks?: number | null;
 };
 
 export type Service = {
