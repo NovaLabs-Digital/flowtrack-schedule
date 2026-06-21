@@ -207,15 +207,10 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
     }
   }
 
-  async function handleDelete(mode: "single" | "future") {
+  const [confirmDelete, setConfirmDelete] = useState<"single" | "future" | null>(null);
+
+  async function executeDelete(mode: "single" | "future") {
     if (!editing) return;
-    const isSeries = !!editing.appointment.series_id;
-    const label = mode === "single"
-      ? "Cancel this appointment?"
-      : isSeries
-        ? "Cancel this and all future appointments in this series?"
-        : `Cancel this and all future "${editing.appointment.service_type}" appointments for this client?`;
-    if (!window.confirm(label + "\n\nRecords will be kept but marked as cancelled.")) return;
 
     setCancelling(true);
     setError("");
@@ -230,7 +225,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
       onSaved();
     } catch {
       setError("Network error. Please try again.");
-    } finally { setCancelling(false); setShowDeleteMenu(false); }
+    } finally { setCancelling(false); setShowDeleteMenu(false); setConfirmDelete(null); }
   }
 
   const inputCls = "w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900";
@@ -409,20 +404,41 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
             <button type="button" onClick={onClose} className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50">Close</button>
           </div>
 
-          {/* Delete options — shown inline below action buttons */}
-          {showDeleteMenu && isEdit && (
+          {/* Delete options — inline below action buttons */}
+          {showDeleteMenu && isEdit && !confirmDelete && (
             <div className="mt-2 rounded-xl border border-rose-100 bg-rose-50/50 p-2 space-y-1">
               <div className="text-[11px] font-medium text-slate-500 px-2 pb-1">Delete Appointment</div>
-              <button type="button" onClick={() => handleDelete("single")}
+              <button type="button" onClick={() => setConfirmDelete("single")}
                 className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-slate-200 hover:bg-slate-50">
                 <div className="font-medium text-slate-900">Only this appointment</div>
                 <div className="text-slate-500 mt-0.5">Cancel this one only</div>
               </button>
-              <button type="button" onClick={() => handleDelete("future")}
+              <button type="button" onClick={() => setConfirmDelete("future")}
                 className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-rose-200 hover:bg-rose-50">
                 <div className="font-medium text-rose-700">This and future appointments</div>
                 <div className="text-slate-500 mt-0.5">{editing!.appointment.series_id ? "All remaining in this series" : "Same client & service"}</div>
               </button>
+            </div>
+          )}
+
+          {/* Confirm delete step */}
+          {confirmDelete && isEdit && (
+            <div className="mt-2 rounded-xl border border-rose-300 bg-rose-50 p-3">
+              <div className="text-xs font-medium text-rose-800">
+                {confirmDelete === "single"
+                  ? "Cancel this appointment? It will be marked as cancelled."
+                  : "Cancel this and all future appointments? They will be marked as cancelled."}
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button type="button" onClick={() => executeDelete(confirmDelete)} disabled={cancelling}
+                  className="rounded-lg bg-rose-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-50">
+                  {cancelling ? "Deleting..." : "Yes, Delete"}
+                </button>
+                <button type="button" onClick={() => setConfirmDelete(null)}
+                  className="rounded-lg border border-slate-300 px-4 py-1.5 text-xs text-slate-700 hover:bg-white">
+                  No, Go Back
+                </button>
+              </div>
             </div>
           )}
         </form>
