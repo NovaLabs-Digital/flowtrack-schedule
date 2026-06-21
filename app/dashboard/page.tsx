@@ -5,10 +5,22 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const { data: clients, error: clientsErr } = await supabaseAdmin
+  let clientFields = "id, name, email, phone, archived_at";
+  let clientsRes = await supabaseAdmin
     .from("clients")
-    .select("id, name, email, phone")
+    .select(clientFields)
     .order("name", { ascending: true });
+
+  if (clientsRes.error) {
+    clientFields = "id, name, email, phone";
+    clientsRes = await supabaseAdmin
+      .from("clients")
+      .select(clientFields)
+      .order("name", { ascending: true });
+  }
+
+  const clients = clientsRes.data as any[] | null;
+  const clientsErr = clientsRes.error;
 
   let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks";
   let apptsRes = await supabaseAdmin

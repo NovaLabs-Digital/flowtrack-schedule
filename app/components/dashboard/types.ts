@@ -3,6 +3,7 @@ export type Client = {
   name: string;
   email: string | null;
   phone: string | null;
+  archived_at?: string | null;
 };
 
 export type Appointment = {

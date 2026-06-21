@@ -146,7 +146,7 @@ export default function DashboardShell({
 
               {/* Client workspace — 32% of available height */}
               <div className="min-h-0 overflow-auto" style={{ flex: "32 1 0%" }}>
-                <ClientPanel client={selectedClient} appointments={appointments} />
+                <ClientPanel client={selectedClient} appointments={appointments} onClientUpdated={() => router.refresh()} />
               </div>
             </>
           ) : (

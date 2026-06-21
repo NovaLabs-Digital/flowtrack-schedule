@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Client, ViewMode, CenterMode } from "@/app/components/dashboard/types";
 
 function NavButton({
@@ -50,6 +51,11 @@ export default function LeftBar({
   selectedClientId: string | null;
   onSelectClient: (id: string) => void;
 }) {
+  const [showArchived, setShowArchived] = useState(false);
+  const activeClients = clients.filter((c) => !c.archived_at);
+  const archivedClients = clients.filter((c) => !!c.archived_at);
+  const displayClients = showArchived ? clients : activeClients;
+
   return (
     <div className="flex flex-col h-full bg-[#0f172a] rounded-2xl text-white">
       {/* Logo */}
@@ -101,13 +107,25 @@ export default function LeftBar({
         <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
           Clients
         </div>
-        <button
-          onClick={onToggleClientsHidden}
-          className="rounded px-2 py-0.5 text-[11px] text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
-          title="Hide client list (privacy)"
-        >
-          {clientsHidden ? "Show" : "Hide"}
-        </button>
+        <div className="flex items-center gap-1">
+          {archivedClients.length > 0 && (
+            <button
+              onClick={() => setShowArchived((v) => !v)}
+              className={["rounded px-2 py-0.5 text-[11px] transition-colors",
+                showArchived ? "text-amber-400 hover:text-amber-300" : "text-slate-500 hover:text-slate-300",
+              ].join(" ")}
+              title={showArchived ? "Hide archived" : "Show archived"}
+            >
+              {showArchived ? "Active" : `+${archivedClients.length}`}
+            </button>
+          )}
+          <button
+            onClick={onToggleClientsHidden}
+            className="rounded px-2 py-0.5 text-[11px] text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+          >
+            {clientsHidden ? "Show" : "Hide"}
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-hidden px-3 pt-2 pb-3">
@@ -117,8 +135,9 @@ export default function LeftBar({
           </div>
         ) : (
           <div className="max-h-full overflow-auto rounded-lg">
-            {clients.map((c) => {
+            {displayClients.map((c) => {
               const active = c.id === selectedClientId;
+              const archived = !!c.archived_at;
               return (
                 <button
                   key={c.id}
@@ -127,10 +146,15 @@ export default function LeftBar({
                     "w-full px-3 py-2.5 text-left text-sm transition-colors",
                     active
                       ? "bg-blue-600 text-white font-medium rounded-lg"
-                      : "text-slate-300 hover:bg-slate-800 hover:text-white",
+                      : archived
+                        ? "text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+                        : "text-slate-300 hover:bg-slate-800 hover:text-white",
                   ].join(" ")}
                 >
-                  <div className="truncate">{c.name}</div>
+                  <div className="truncate flex items-center gap-1.5">
+                    {c.name}
+                    {archived && <span className="text-[9px] text-amber-500">archived</span>}
+                  </div>
                 </button>
               );
             })}

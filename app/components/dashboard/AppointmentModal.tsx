@@ -260,7 +260,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
               {clientMode === "existing" ? (
                 <select value={selectedClientId} onChange={(e) => setSelectedClientId(e.target.value)} className={inputCls}>
                   <option value="">— Select a client —</option>
-                  {clients.map((c) => (
+                  {clients.filter((c) => !c.archived_at).map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}{c.email ? ` (${c.email})` : c.phone ? ` (${c.phone})` : ""}
                     </option>
