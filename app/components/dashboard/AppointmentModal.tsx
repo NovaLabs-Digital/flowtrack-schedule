@@ -404,24 +404,27 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
                   className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700 hover:bg-rose-100 disabled:opacity-50">
                   {cancelling ? "Deleting..." : "Delete ▾"}
                 </button>
-                {showDeleteMenu && (
-                  <div className="absolute bottom-full mb-1 right-0 w-64 rounded-xl border border-slate-200 bg-white shadow-lg p-1 z-50">
-                    <button type="button" onClick={() => handleDelete("single")}
-                      className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-50">
-                      <div className="font-medium text-slate-900">Only this appointment</div>
-                      <div className="text-slate-500 mt-0.5">Cancel this one only</div>
-                    </button>
-                    <button type="button" onClick={() => handleDelete("future")}
-                      className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-rose-50">
-                      <div className="font-medium text-rose-700">This and future appointments</div>
-                      <div className="text-slate-500 mt-0.5">{editing.appointment.series_id ? "All remaining in this series" : "Same client & service"}</div>
-                    </button>
-                  </div>
-                )}
               </div>
             )}
             <button type="button" onClick={onClose} className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50">Close</button>
           </div>
+
+          {/* Delete options — shown inline below action buttons */}
+          {showDeleteMenu && isEdit && (
+            <div className="mt-2 rounded-xl border border-rose-100 bg-rose-50/50 p-2 space-y-1">
+              <div className="text-[11px] font-medium text-slate-500 px-2 pb-1">Delete Appointment</div>
+              <button type="button" onClick={() => handleDelete("single")}
+                className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-slate-200 hover:bg-slate-50">
+                <div className="font-medium text-slate-900">Only this appointment</div>
+                <div className="text-slate-500 mt-0.5">Cancel this one only</div>
+              </button>
+              <button type="button" onClick={() => handleDelete("future")}
+                className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-rose-200 hover:bg-rose-50">
+                <div className="font-medium text-rose-700">This and future appointments</div>
+                <div className="text-slate-500 mt-0.5">{editing!.appointment.series_id ? "All remaining in this series" : "Same client & service"}</div>
+              </button>
+            </div>
+          )}
         </form>
       </div>
     </div>
