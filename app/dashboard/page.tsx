@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  let clientFields = "id, name, email, phone, archived_at";
+  let clientFields = "id, name, email, phone, archived_at, address, client_since, referred_by, status, notes, preferred_contact_method, auto_email, auto_sms";
   let clientsRes = await supabaseAdmin
     .from("clients")
     .select(clientFields)

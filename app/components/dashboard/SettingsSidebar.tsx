@@ -6,6 +6,7 @@ const ITEMS: { key: SettingsSection; label: string }[] = [
   { key: "company", label: "Company Info" },
   { key: "services", label: "Services" },
   { key: "staff", label: "Staff / Team" },
+  { key: "archived", label: "Archived Clients" },
   { key: "preferences", label: "Preferences" },
   { key: "colors", label: "Colors" },
   { key: "darkmode", label: "Dark Mode" },

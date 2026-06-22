@@ -3,6 +3,7 @@
 import { SettingsSection } from "@/app/components/dashboard/types";
 import CompanyInfoPanel from "@/app/components/dashboard/CompanyInfoPanel";
 import ServicesPanel from "@/app/components/dashboard/ServicesPanel";
+import ArchivedClientsPanel from "@/app/components/dashboard/ArchivedClientsPanel";
 
 const PLACEHOLDERS: Partial<Record<SettingsSection, { title: string; body: string }>> = {
   staff: {
@@ -30,6 +31,7 @@ const PLACEHOLDERS: Partial<Record<SettingsSection, { title: string; body: strin
 export default function SettingsPanel({ section }: { section: SettingsSection }) {
   if (section === "company") return <CompanyInfoPanel />;
   if (section === "services") return <ServicesPanel />;
+  if (section === "archived") return <ArchivedClientsPanel />;
 
   const panel = PLACEHOLDERS[section];
   if (!panel) return null;

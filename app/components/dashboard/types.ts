@@ -4,6 +4,14 @@ export type Client = {
   email: string | null;
   phone: string | null;
   archived_at?: string | null;
+  address?: string | null;
+  client_since?: string | null;
+  referred_by?: string | null;
+  status?: string | null;
+  notes?: string | null;
+  preferred_contact_method?: string | null;
+  auto_email?: boolean | null;
+  auto_sms?: boolean | null;
 };
 
 export type Appointment = {
@@ -37,4 +45,5 @@ export type SettingsSection =
   | "preferences"
   | "colors"
   | "darkmode"
-  | "future";
+  | "future"
+  | "archived";

@@ -12,6 +12,9 @@ async function hasColumn(col: string): Promise<boolean> {
   return !error;
 }
 
+const OPTIONAL_TEXT_FIELDS = ["address", "referred_by", "status", "notes", "preferred_contact_method"];
+const OPTIONAL_BOOL_FIELDS = ["auto_email", "auto_sms"];
+
 export async function PATCH(req: Request) {
   try {
     const body = await req.json();
@@ -22,14 +25,26 @@ export async function PATCH(req: Request) {
     if (body.name !== undefined) update.name = body.name.trim();
     if (body.email !== undefined) update.email = body.email.trim() || null;
     if (body.phone !== undefined) update.phone = body.phone.trim() || null;
+    if (body.client_since !== undefined) update.client_since = body.client_since || null;
+
+    for (const f of OPTIONAL_TEXT_FIELDS) {
+      if (body[f] !== undefined && await hasColumn(f)) {
+        update[f] = typeof body[f] === "string" ? (body[f].trim() || null) : body[f];
+      }
+    }
+    for (const f of OPTIONAL_BOOL_FIELDS) {
+      if (body[f] !== undefined && await hasColumn(f)) {
+        update[f] = !!body[f];
+      }
+    }
+    if (body.client_since !== undefined && await hasColumn("client_since")) {
+      update.client_since = body.client_since || null;
+    }
 
     if (Object.keys(update).length === 0)
       return json({ error: "Nothing to update" }, 400);
 
-    const { error } = await supabaseAdmin
-      .from("clients")
-      .update(update)
-      .eq("id", id);
+    const { error } = await supabaseAdmin.from("clients").update(update).eq("id", id);
     if (error) throw error;
 
     return json({ ok: true });
@@ -46,24 +61,18 @@ export async function POST(req: Request) {
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing client id" }, 400);
 
-    const hasArchived = await hasColumn("archived_at");
-
     if (action === "archive") {
-      if (!hasArchived) return json({ error: "Archive not supported yet. Run the migration." }, 400);
-      const { error } = await supabaseAdmin
-        .from("clients")
-        .update({ archived_at: new Date().toISOString() })
-        .eq("id", id);
+      const update: Record<string, any> = { archived_at: new Date().toISOString() };
+      if (await hasColumn("status")) update.status = "inactive";
+      const { error } = await supabaseAdmin.from("clients").update(update).eq("id", id);
       if (error) throw error;
       return json({ ok: true });
     }
 
     if (action === "restore") {
-      if (!hasArchived) return json({ error: "Archive not supported yet." }, 400);
-      const { error } = await supabaseAdmin
-        .from("clients")
-        .update({ archived_at: null })
-        .eq("id", id);
+      const update: Record<string, any> = { archived_at: null };
+      if (await hasColumn("status")) update.status = "active";
+      const { error } = await supabaseAdmin.from("clients").update(update).eq("id", id);
       if (error) throw error;
       return json({ ok: true });
     }
