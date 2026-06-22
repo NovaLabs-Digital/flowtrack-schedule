@@ -64,12 +64,12 @@ export default function LandingPage() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {[
-              { icon: "&#128100;", title: "Client Management", desc: "Store client details, contact info, notes, and preferences. Never lose track of a customer again." },
-              { icon: "&#128260;", title: "Recurring Scheduling", desc: "Set up weekly, biweekly, or custom recurring appointments. They appear automatically on your calendar." },
-              { icon: "&#128197;", title: "Daily & Weekly Views", desc: "See your day or week at a glance. Navigate forward and back with one click." },
-              { icon: "&#128221;", title: "Notes & History", desc: "Keep gate codes, pet info, and preferences attached to each client. Full service history preserved." },
-              { icon: "&#9742;", title: "Communication Ready", desc: "Track SMS, email, and phone preferences per client. Automated confirmations when you are ready." },
-              { icon: "&#128736;", title: "Service Types", desc: "Define your services with names and descriptions. Regular cleaning, deep cleaning, estimates, and more." },
+              { icon: "👤", title: "Client Management", desc: "Store client details, contact info, notes, and preferences. Never lose track of a customer again." },
+              { icon: "🔄", title: "Recurring Scheduling", desc: "Set up weekly, biweekly, or custom recurring appointments. They appear automatically on your calendar." },
+              { icon: "📅", title: "Daily & Weekly Views", desc: "See your day or week at a glance. Navigate forward and back with one click." },
+              { icon: "📝", title: "Notes & History", desc: "Keep gate codes, pet info, and preferences attached to each client. Full service history preserved." },
+              { icon: "📞", title: "Communication Ready", desc: "Track SMS, email, and phone preferences per client. Automated confirmations when you are ready." },
+              { icon: "🛠️", title: "Service Types", desc: "Define your services with names and descriptions. Regular cleaning, deep cleaning, estimates, and more." },
             ].map((f) => (
               <div key={f.title} className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="text-2xl mb-3">{f.icon}</div>
@@ -97,14 +97,14 @@ export default function LandingPage() {
                 { text: "Notes, gate codes, and preferences always at your fingertips" },
               ].map((item) => (
                 <div key={item.text} className="flex items-start gap-3">
-                  <div className="mt-0.5 flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs shrink-0">&#10003;</div>
+                  <div className="mt-0.5 flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs shrink-0">✓</div>
                   <div className="text-sm text-slate-700">{item.text}</div>
                 </div>
               ))}
             </div>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center">
-            <div className="text-4xl text-slate-300 mb-3">&#128197;</div>
+            <div className="text-4xl text-slate-300 mb-3">📅</div>
             <div className="text-sm font-semibold text-slate-700">Schedule FlowTrack</div>
             <div className="mt-1 text-xs text-slate-500">Your week, organized.</div>
           </div>

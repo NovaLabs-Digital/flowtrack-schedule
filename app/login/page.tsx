@@ -21,16 +21,29 @@ export default function LoginPage() {
     }
 
     setLoading(true);
-    // Auth will be wired to Supabase Auth later.
-    // For now, allow access to the dashboard for demos.
-    setTimeout(() => {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password: password.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setError(data?.error || "Login failed.");
+        return;
+      }
+
       router.push("/dashboard");
-    }, 500);
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Nav */}
       <nav className="border-b border-slate-200 bg-white">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2.5">
@@ -39,16 +52,12 @@ export default function LoginPage() {
             </div>
             <span className="text-sm font-semibold text-slate-900">Schedule FlowTrack</span>
           </Link>
-          <Link
-            href="/"
-            className="text-xs text-slate-500 hover:text-slate-700 transition-colors"
-          >
-            &#8592; Back to Home
+          <Link href="/" className="text-xs text-slate-500 hover:text-slate-700 transition-colors">
+            ← Back to Home
           </Link>
         </div>
       </nav>
 
-      {/* Login card */}
       <div className="flex-1 flex items-center justify-center px-6 py-16">
         <div className="w-full max-w-sm">
           <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
@@ -96,15 +105,6 @@ export default function LoginPage() {
                 {loading ? "Signing in..." : "Sign In"}
               </button>
             </form>
-
-            <div className="mt-6 text-center">
-              <Link
-                href="/dashboard"
-                className="text-xs text-blue-600 hover:text-blue-700"
-              >
-                Continue to Dashboard &#8594;
-              </Link>
-            </div>
           </div>
 
           <div className="mt-6 text-center text-xs text-slate-500">
