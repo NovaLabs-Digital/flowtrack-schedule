@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Client, ViewMode, CenterMode } from "@/app/components/dashboard/types";
 
 function NavButton({
@@ -51,6 +52,7 @@ export default function LeftBar({
   selectedClientId: string | null;
   onSelectClient: (id: string) => void;
 }) {
+  const router = useRouter();
   const [showArchived, setShowArchived] = useState(false);
   const activeClients = clients.filter((c) => !c.archived_at);
   const archivedClients = clients.filter((c) => !!c.archived_at);
@@ -174,8 +176,18 @@ export default function LeftBar({
               : "text-slate-400 hover:text-white hover:bg-slate-800",
           ].join(" ")}
         >
-          <span className="text-base leading-none">&#9881;</span>
+          <span className="text-base leading-none">⚙</span>
           <span>Settings</span>
+        </button>
+        <button
+          onClick={async () => {
+            try { await fetch("/api/auth/logout", { method: "POST" }); } catch {}
+            router.push("/");
+          }}
+          className="flex items-center gap-2.5 text-sm text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition-colors px-3 py-2 rounded-lg w-full text-left mt-1"
+        >
+          <span className="text-base leading-none">↩</span>
+          <span>Sign Out</span>
         </button>
       </div>
     </div>
