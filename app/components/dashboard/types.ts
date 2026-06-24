@@ -46,6 +46,7 @@ export type Employee = {
   active: boolean;
 };
 
+export type MobileTab = "schedule" | "clients" | "settings" | "map";
 export type ViewMode = "day" | "weekdays" | "week";
 export type CenterMode = "schedule" | "settings";
 export type SettingsSection =

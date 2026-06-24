@@ -237,8 +237,8 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
   const inputCls = "w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-lg rounded-2xl border bg-white p-6 shadow-lg max-h-[90vh] overflow-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 sm:px-0">
+      <div className="w-full max-w-lg rounded-2xl border bg-white p-5 sm:p-6 shadow-lg max-h-[90vh] overflow-auto">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">{isEdit ? "Edit Appointment" : "New Appointment"}</div>
           <button onClick={onClose} className="rounded-lg border px-2 py-1 text-xs hover:bg-slate-50">Close</button>
@@ -328,22 +328,24 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
           )}
 
           {/* Date / Time In / Time Out */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Date *</label>
               <input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} className={inputCls} />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Time In *</label>
-              <select value={form.time_in} onChange={(e) => set("time_in", e.target.value)} className={inputCls}>
-                {TIME_SLOTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Time Out *</label>
-              <select value={form.time_out} onChange={(e) => set("time_out", e.target.value)} className={inputCls}>
-                {TIME_SLOTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </select>
+            <div className="grid grid-cols-2 sm:contents gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Time In *</label>
+                <select value={form.time_in} onChange={(e) => set("time_in", e.target.value)} className={inputCls}>
+                  {TIME_SLOTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Time Out *</label>
+                <select value={form.time_out} onChange={(e) => set("time_out", e.target.value)} className={inputCls}>
+                  {TIME_SLOTS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+              </div>
             </div>
           </div>
 
@@ -358,7 +360,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
           {!isEdit && (
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-2">Frequency</label>
-              <div className="flex gap-4">
+              <div className="flex flex-wrap gap-x-4 gap-y-2">
                 {(["one_time", "daily", "weekly"] as const).map((ft) => (
                   <label key={ft} className="flex items-center gap-1.5 text-sm cursor-pointer">
                     <input
@@ -431,7 +433,6 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
                 </button>
               </div>
             )}
-            <button type="button" onClick={onClose} className="rounded-xl border px-4 py-2 text-sm hover:bg-slate-50">Close</button>
           </div>
 
           {/* Delete options — inline below action buttons */}

@@ -2,17 +2,24 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ViewMode } from "@/app/components/dashboard/types";
 
 export default function TopBar({
   onGoToday,
   onAdd,
   weekOffset,
   onWeekChange,
+  isMobile,
+  viewMode,
+  onChangeView,
 }: {
   onGoToday: () => void;
   onAdd: () => void;
   weekOffset: number;
   onWeekChange: (offset: number) => void;
+  isMobile?: boolean;
+  viewMode?: ViewMode;
+  onChangeView?: (m: ViewMode) => void;
 }) {
   const router = useRouter();
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -26,6 +33,77 @@ export default function TopBar({
     router.push("/");
   }
 
+  if (isMobile) {
+    return (
+      <div className="shrink-0 bg-white border-b border-slate-200 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          {/* Navigation */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => onWeekChange(weekOffset - 1)}
+              className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm font-medium text-slate-700 active:bg-slate-100"
+            >
+              ←
+            </button>
+            <button
+              onClick={onGoToday}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 active:bg-slate-100"
+            >
+              Today
+            </button>
+            <button
+              onClick={() => onWeekChange(weekOffset + 1)}
+              className="rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-sm font-medium text-slate-700 active:bg-slate-100"
+            >
+              →
+            </button>
+          </div>
+
+          {/* View mode toggle */}
+          {onChangeView && (
+            <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
+              {(["day", "weekdays", "week"] as ViewMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => onChangeView(m)}
+                  className={[
+                    "rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                    viewMode === m ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+                  ].join(" ")}
+                >
+                  {m === "day" ? "Day" : m === "weekdays" ? "M-F" : "Wk"}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* User */}
+          <div className="relative">
+            <button
+              onClick={() => setShowUserMenu((v) => !v)}
+              className="flex items-center justify-center w-8 h-8 rounded-full bg-slate-900 text-white text-xs font-semibold"
+            >
+              A
+            </button>
+            {showUserMenu && (
+              <div className="absolute top-full mt-1 right-0 w-40 rounded-xl border border-slate-200 bg-white shadow-lg p-1 z-50">
+                <div className="px-3 py-2 text-xs text-slate-500 border-b border-slate-100">Signed in</div>
+                <button
+                  onClick={handleLogout}
+                  disabled={loggingOut}
+                  className="w-full rounded-lg px-3 py-2 text-left text-xs text-rose-700 hover:bg-rose-50 mt-1"
+                >
+                  {loggingOut ? "Signing out..." : "Sign Out"}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- DESKTOP TOP BAR (unchanged) ---
   return (
     <div className="shrink-0 bg-gradient-to-b from-slate-50 to-slate-100/80 border-b border-slate-200 px-4 py-3">
       <div className="flex items-center justify-between gap-4">
