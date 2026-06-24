@@ -26,6 +26,7 @@ export type Appointment = {
   series_id?: string | null;
   frequency_type?: string | null;
   repeat_weeks?: number | null;
+  employee_id?: string | null;
 };
 
 export type Service = {
@@ -33,6 +34,14 @@ export type Service = {
   name: string;
   description: string | null;
   duration_minutes: number;
+  active: boolean;
+};
+
+export type Employee = {
+  id: string;
+  name: string;
+  phone: string | null;
+  color: string;
   active: boolean;
 };
 

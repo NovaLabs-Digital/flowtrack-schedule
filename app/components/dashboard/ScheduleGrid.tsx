@@ -1,6 +1,6 @@
 "use client";
 
-import { Client, Appointment, Service, ViewMode } from "@/app/components/dashboard/types";
+import { Client, Appointment, Service, Employee, ViewMode } from "@/app/components/dashboard/types";
 
 function formatDay(d: Date) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -93,11 +93,60 @@ function freqLabel(a: Appointment): string {
 
 const CELL_PX = 56;
 
+type LayoutInfo = { column: number; totalColumns: number };
+
+function computeOverlapLayout(appts: Appointment[], startHour: number, durationFor: (s: string) => number): Map<string, LayoutInfo> {
+  const layout = new Map<string, LayoutInfo>();
+  if (appts.length === 0) return layout;
+
+  const items = appts.map((a) => {
+    const d = new Date(a.scheduled_for);
+    const startMin = d.getHours() * 60 + d.getMinutes();
+    let dur: number;
+    if (a.scheduled_end) {
+      dur = Math.round((new Date(a.scheduled_end).getTime() - d.getTime()) / 60_000);
+      if (dur <= 0) dur = durationFor(a.service_type);
+    } else {
+      dur = a.duration_minutes ?? durationFor(a.service_type);
+    }
+    return { id: a.id, start: startMin, end: startMin + dur };
+  });
+
+  items.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+
+  const columns: { id: string; end: number }[][] = [];
+
+  for (const item of items) {
+    let placed = false;
+    for (let c = 0; c < columns.length; c++) {
+      const col = columns[c];
+      if (col[col.length - 1].end <= item.start) {
+        col.push(item);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      columns.push([item]);
+    }
+  }
+
+  const totalColumns = columns.length;
+  for (let c = 0; c < columns.length; c++) {
+    for (const item of columns[c]) {
+      layout.set(item.id, { column: c, totalColumns });
+    }
+  }
+
+  return layout;
+}
+
 export default function ScheduleGrid({
   viewMode,
   clients,
   appointments,
   services,
+  employees,
   selectedClientId,
   selectedAppointmentId,
   onSelectAppointment,
@@ -108,6 +157,7 @@ export default function ScheduleGrid({
   clients: Client[];
   appointments: Appointment[];
   services: Service[];
+  employees: Employee[];
   selectedClientId: string | null;
   selectedAppointmentId: string | null;
   onSelectAppointment: (id: string) => void;
@@ -132,8 +182,21 @@ export default function ScheduleGrid({
     return days.some((d) => d.toDateString() === apptDate.toDateString());
   });
 
+  const employeeMap: Record<string, Employee> = {};
+  for (const e of employees) employeeMap[e.id] = e;
+
   function clientName(id: string) {
     return clients.find((c) => c.id === id)?.name ?? "Client";
+  }
+
+  function employeeName(id?: string | null) {
+    if (!id) return null;
+    return employeeMap[id]?.name ?? null;
+  }
+
+  function employeeColor(id?: string | null) {
+    if (!id) return null;
+    return employeeMap[id]?.color ?? null;
   }
 
   function apptsForDay(d: Date) {
@@ -223,76 +286,97 @@ export default function ScheduleGrid({
                   />
                 ))}
 
-                {/* Appointment cards positioned by time and spanning by duration */}
-                {apptsForDay(d).map((a) => {
-                  const apptDate = new Date(a.scheduled_for);
-                  const apptHour = apptDate.getHours();
-                  const apptMin = apptDate.getMinutes();
-                  let mins: number;
-                  if (a.scheduled_end) {
-                    mins = Math.round((new Date(a.scheduled_end).getTime() - apptDate.getTime()) / 60_000);
-                    if (mins <= 0) mins = durationFor(a.service_type);
-                  } else {
-                    mins = a.duration_minutes ?? durationFor(a.service_type);
-                  }
+                {/* Appointment cards positioned by time with overlap columns */}
+                {(() => {
+                  const dayAppts = apptsForDay(d);
+                  const overlapLayout = computeOverlapLayout(dayAppts, startHour, durationFor);
 
-                  const topOffset = (apptHour - startHour) * CELL_PX + (apptMin / 60) * CELL_PX;
-                  const height = (mins / 60) * CELL_PX;
+                  return dayAppts.map((a) => {
+                    const apptDate = new Date(a.scheduled_for);
+                    const apptHour = apptDate.getHours();
+                    const apptMin = apptDate.getMinutes();
+                    let mins: number;
+                    if (a.scheduled_end) {
+                      mins = Math.round((new Date(a.scheduled_end).getTime() - apptDate.getTime()) / 60_000);
+                      if (mins <= 0) mins = durationFor(a.service_type);
+                    } else {
+                      mins = a.duration_minutes ?? durationFor(a.service_type);
+                    }
 
-                  if (apptHour < startHour || apptHour > endHour) return null;
+                    const topOffset = (apptHour - startHour) * CELL_PX + (apptMin / 60) * CELL_PX;
+                    const height = (mins / 60) * CELL_PX;
 
-                  const selected = a.id === selectedAppointmentId;
-                  const sameClient = selectedClientId && a.client_id === selectedClientId;
-                  const isShort = mins <= 60;
+                    if (apptHour < startHour || apptHour > endHour) return null;
 
-                  return (
-                    <button
-                      key={a.id}
-                      onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}
-                      className={[
-                        "absolute left-1 right-1 rounded-lg border text-left shadow-sm overflow-hidden px-2 z-[5]",
-                        statusPill(a.status),
-                        selected ? "ring-2 ring-blue-600 z-[6]" : "",
-                        sameClient ? "outline outline-2 outline-blue-600/30" : "",
-                      ].join(" ")}
-                      style={{
-                        top: topOffset + 2,
-                        height: Math.max(height - 4, 24),
-                      }}
-                    >
-                      {isShort ? (
-                        <div className="flex items-center justify-between gap-1 h-full">
-                          <div className="truncate font-medium text-xs">{a.service_type}</div>
-                          <div className="text-[10px] text-slate-500 shrink-0">
-                            {a.frequency_type && a.frequency_type !== "one_time" && <span className="mr-1">&#8635;</span>}
-                            {timeRange(a.scheduled_for, mins)}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="py-1 flex flex-col h-full overflow-hidden">
-                          <div className="flex items-center justify-between gap-1">
+                    const selected = a.id === selectedAppointmentId;
+                    const sameClient = selectedClientId && a.client_id === selectedClientId;
+                    const isShort = mins <= 60;
+
+                    const layout = overlapLayout.get(a.id) ?? { column: 0, totalColumns: 1 };
+                    const widthPct = 100 / layout.totalColumns;
+                    const leftPct = layout.column * widthPct;
+
+                    const empColor = employeeColor(a.employee_id);
+                    const empName = employeeName(a.employee_id);
+
+                    return (
+                      <button
+                        key={a.id}
+                        onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}
+                        className={[
+                          "absolute rounded-lg border text-left shadow-sm overflow-hidden px-2 z-[5]",
+                          statusPill(a.status),
+                          selected ? "ring-2 ring-blue-600 z-[6]" : "",
+                          sameClient ? "outline outline-2 outline-blue-600/30" : "",
+                        ].join(" ")}
+                        style={{
+                          top: topOffset + 2,
+                          height: Math.max(height - 4, 24),
+                          left: `calc(${leftPct}% + 2px)`,
+                          width: `calc(${widthPct}% - 4px)`,
+                          borderLeftWidth: empColor ? 4 : undefined,
+                          borderLeftColor: empColor ?? undefined,
+                        }}
+                      >
+                        {isShort ? (
+                          <div className="flex items-center justify-between gap-1 h-full min-w-0">
                             <div className="truncate font-medium text-xs">{a.service_type}</div>
-                            <div className="text-[10px] shrink-0 flex items-center gap-1">
-                              {a.frequency_type && a.frequency_type !== "one_time" && (
-                                <span className="text-blue-500" title={freqLabel(a)}>&#8635;</span>
-                              )}
-                              {statusLabel(a.status)}
+                            <div className="text-[10px] text-slate-500 shrink-0">
+                              {a.frequency_type && a.frequency_type !== "one_time" && <span className="mr-1">&#8635;</span>}
+                              {timeRange(a.scheduled_for, mins)}
                             </div>
                           </div>
-                          <div className="text-[11px] text-slate-600 mt-0.5">{clientName(a.client_id)}</div>
-                          <div className="text-[10px] text-slate-500 mt-0.5">
-                            {timeRange(a.scheduled_for, mins)} ({durationLabel(mins)})
-                          </div>
-                          {a.notes && (
-                            <div className="text-[10px] text-slate-400 italic mt-auto truncate">
-                              {a.notes}
+                        ) : (
+                          <div className="py-1 flex flex-col h-full overflow-hidden">
+                            <div className="flex items-center justify-between gap-1">
+                              <div className="truncate font-medium text-xs">{a.service_type}</div>
+                              <div className="text-[10px] shrink-0 flex items-center gap-1">
+                                {a.frequency_type && a.frequency_type !== "one_time" && (
+                                  <span className="text-blue-500" title={freqLabel(a)}>&#8635;</span>
+                                )}
+                                {statusLabel(a.status)}
+                              </div>
                             </div>
-                          )}
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
+                            <div className="text-[11px] text-slate-600 mt-0.5">{clientName(a.client_id)}</div>
+                            {empName && (
+                              <div className="text-[10px] mt-0.5 truncate" style={{ color: empColor ?? "#64748b" }}>
+                                {empName}
+                              </div>
+                            )}
+                            <div className="text-[10px] text-slate-500 mt-0.5">
+                              {timeRange(a.scheduled_for, mins)} ({durationLabel(mins)})
+                            </div>
+                            {a.notes && (
+                              <div className="text-[10px] text-slate-400 italic mt-auto truncate">
+                                {a.notes}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </button>
+                    );
+                  });
+                })()}
               </div>
             ))}
           </div>

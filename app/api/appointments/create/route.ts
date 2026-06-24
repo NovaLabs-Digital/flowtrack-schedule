@@ -38,6 +38,7 @@ export async function POST(req: Request) {
 
     const frequency_type: string = (body.frequency_type || "one_time").trim();
     const repeat_weeks: number = typeof body.repeat_weeks === "number" ? body.repeat_weeks : 1;
+    const employee_id: string | null = (body.employee_id || "").trim() || null;
 
     if (!service_type || !scheduled_for) {
       return json({ error: "Missing required fields" }, 400);
@@ -86,6 +87,7 @@ export async function POST(req: Request) {
     const hasEnd = await hasColumn("scheduled_end");
     const hasSeries = await hasColumn("series_id");
     const hasFrequency = await hasColumn("frequency_type");
+    const hasEmployee = await hasColumn("employee_id");
 
     // Build list of occurrence dates
     const startDate = new Date(scheduled_for);
@@ -127,6 +129,9 @@ export async function POST(req: Request) {
       if (hasFrequency) {
         row.frequency_type = frequency_type;
         row.repeat_weeks = repeat_weeks;
+      }
+      if (hasEmployee && employee_id) {
+        row.employee_id = employee_id;
       }
       return row;
     });

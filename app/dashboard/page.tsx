@@ -22,7 +22,7 @@ export default async function DashboardPage() {
   const clients = clientsRes.data as any[] | null;
   const clientsErr = clientsRes.error;
 
-  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks";
+  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id";
   let apptsRes = await supabaseAdmin
     .from("appointments")
     .select(apptFields)
@@ -51,6 +51,17 @@ export default async function DashboardPage() {
     // services table may not exist yet
   }
 
+  let employees: any[] = [];
+  try {
+    const empRes = await supabaseAdmin
+      .from("employees")
+      .select("id, name, phone, color, active")
+      .order("name", { ascending: true });
+    if (!empRes.error) employees = empRes.data ?? [];
+  } catch {
+    // employees table may not exist yet
+  }
+
   if (clientsErr || apptsErr) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -69,6 +80,7 @@ export default async function DashboardPage() {
       clients={clients ?? []}
       appointments={appointments ?? []}
       services={services ?? []}
+      employees={employees ?? []}
     />
   );
 }

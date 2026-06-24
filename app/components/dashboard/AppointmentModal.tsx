@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Appointment, Client, Service } from "@/app/components/dashboard/types";
+import { Appointment, Client, Service, Employee } from "@/app/components/dashboard/types";
 
 const FALLBACK_SERVICES = [
   "Regular Cleaning",
@@ -81,11 +81,12 @@ type Props = {
   onSaved: () => void;
   clients: Client[];
   services: Service[];
+  employees: Employee[];
   editing?: { appointment: Appointment; client: Client };
   prefill?: { date: string; time: string };
 };
 
-export default function AppointmentModal({ onClose, onSaved, clients, services, editing, prefill }: Props) {
+export default function AppointmentModal({ onClose, onSaved, clients, services, employees, editing, prefill }: Props) {
   const isEdit = !!editing;
 
   const serviceNames = services.length > 0 ? services.map((s) => s.name) : FALLBACK_SERVICES;
@@ -108,6 +109,9 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
   const [clientMode, setClientMode] = useState<"existing" | "new">("existing");
   const [selectedClientId, setSelectedClientId] = useState(editing?.appointment.client_id ?? "");
   const [newClient, setNewClient] = useState({ name: "", email: "", phone: "" });
+
+  // Employee state
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState(editing?.appointment.employee_id ?? "");
 
   // Form state
   const [form, setForm] = useState({
@@ -173,6 +177,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
             notes: form.notes.trim(),
             status: form.status,
             duration_minutes: computedDuration,
+            employee_id: selectedEmployeeId || null,
           }),
         });
       } else {
@@ -183,6 +188,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
           duration_minutes: computedDuration,
           frequency_type: form.frequency_type,
           repeat_weeks: form.repeat_weeks,
+          employee_id: selectedEmployeeId || null,
         };
         if (clientMode === "existing") payload.client_id = selectedClientId;
         else {
@@ -296,6 +302,30 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
               </div>
             )}
           </div>
+
+          {/* Assigned Employee */}
+          {employees.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Assigned To</label>
+              <select
+                value={selectedEmployeeId}
+                onChange={(e) => setSelectedEmployeeId(e.target.value)}
+                className={inputCls}
+              >
+                <option value="">— Unassigned —</option>
+                {employees.filter((emp) => emp.active).map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name}
+                  </option>
+                ))}
+                {selectedEmployeeId && !employees.find((emp) => emp.id === selectedEmployeeId)?.active && (
+                  <option value={selectedEmployeeId} disabled>
+                    {employees.find((emp) => emp.id === selectedEmployeeId)?.name ?? "Unknown"} (Inactive)
+                  </option>
+                )}
+              </select>
+            </div>
+          )}
 
           {/* Date / Time In / Time Out */}
           <div className="grid grid-cols-3 gap-3">

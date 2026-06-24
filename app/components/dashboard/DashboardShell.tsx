@@ -14,6 +14,7 @@ import {
   Client,
   Appointment,
   Service,
+  Employee,
   ViewMode,
   CenterMode,
   SettingsSection,
@@ -27,10 +28,12 @@ export default function DashboardShell({
   clients,
   appointments,
   services,
+  employees,
 }: {
   clients: Client[];
   appointments: Appointment[];
   services: Service[];
+  employees: Employee[];
 }) {
   const [viewMode, setViewMode] = useState<ViewMode>("weekdays");
   const [centerMode, setCenterMode] = useState<CenterMode>("schedule");
@@ -136,6 +139,7 @@ export default function DashboardShell({
                   clients={clients}
                   appointments={appointments}
                   services={services}
+                  employees={employees}
                   selectedClientId={selectedClientId}
                   selectedAppointmentId={selectedApptId}
                   onSelectAppointment={handleSelectAppointment}
@@ -177,6 +181,7 @@ export default function DashboardShell({
           onSaved={handleModalSaved}
           clients={clients}
           services={services}
+          employees={employees}
           editing={
             modal.mode === "edit"
               ? { appointment: modal.appointment, client: modal.client }

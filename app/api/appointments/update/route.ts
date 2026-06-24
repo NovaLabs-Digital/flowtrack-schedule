@@ -42,6 +42,8 @@ export async function PATCH(req: Request) {
       apptUpdate.scheduled_end = body.scheduled_end;
     if (typeof body.duration_minutes === "number" && await hasColumn("duration_minutes"))
       apptUpdate.duration_minutes = body.duration_minutes;
+    if (body.employee_id !== undefined && await hasColumn("employee_id"))
+      apptUpdate.employee_id = body.employee_id || null;
 
     if (Object.keys(apptUpdate).length > 0) {
       const { error } = await supabaseAdmin
