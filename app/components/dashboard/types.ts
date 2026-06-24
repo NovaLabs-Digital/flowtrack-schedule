@@ -35,6 +35,7 @@ export type Service = {
   description: string | null;
   duration_minutes: number;
   active: boolean;
+  color: string;
 };
 
 export type Employee = {

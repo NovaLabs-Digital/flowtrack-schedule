@@ -11,7 +11,7 @@ export async function GET() {
   try {
     const { data, error } = await supabaseAdmin
       .from("services")
-      .select("id, name, description, duration_minutes, active, created_at, updated_at")
+      .select("id, name, description, duration_minutes, active, color, created_at, updated_at")
       .order("name", { ascending: true });
 
     if (error) throw error;
@@ -29,14 +29,17 @@ export async function POST(req: Request) {
     const name = (body.name || "").trim();
     if (!name) return json({ error: "Service name is required" }, 400);
 
+    const row: Record<string, any> = {
+      name,
+      description: (body.description || "").trim() || null,
+      duration_minutes: typeof body.duration_minutes === "number" ? body.duration_minutes : 60,
+      active: true,
+    };
+    if (body.color) row.color = body.color.trim();
+
     const { error } = await supabaseAdmin
       .from("services")
-      .insert({
-        name,
-        description: (body.description || "").trim() || null,
-        duration_minutes: typeof body.duration_minutes === "number" ? body.duration_minutes : 60,
-        active: true,
-      });
+      .insert(row);
 
     if (error) throw error;
     return json({ ok: true });
@@ -58,6 +61,7 @@ export async function PATCH(req: Request) {
     if (body.description !== undefined) update.description = body.description.trim() || null;
     if (typeof body.duration_minutes === "number") update.duration_minutes = body.duration_minutes;
     if (typeof body.active === "boolean") update.active = body.active;
+    if (body.color !== undefined) update.color = body.color.trim();
 
     const { error } = await supabaseAdmin
       .from("services")

@@ -3,8 +3,19 @@
 import { useEffect, useState } from "react";
 import { Service } from "@/app/components/dashboard/types";
 
-type EditForm = { name: string; description: string };
-const EMPTY_FORM: EditForm = { name: "", description: "" };
+const PRESET_COLORS = [
+  { hex: "#3B82F6", label: "Blue" },
+  { hex: "#8B5CF6", label: "Purple" },
+  { hex: "#F97316", label: "Orange" },
+  { hex: "#22C55E", label: "Green" },
+  { hex: "#14B8A6", label: "Teal" },
+  { hex: "#EF4444", label: "Red" },
+  { hex: "#EC4899", label: "Pink" },
+  { hex: "#F59E0B", label: "Amber" },
+];
+
+type EditForm = { name: string; description: string; color: string };
+const EMPTY_FORM: EditForm = { name: "", description: "", color: PRESET_COLORS[0].hex };
 
 export default function ServicesPanel() {
   const [services, setServices] = useState<Service[]>([]);
@@ -32,7 +43,7 @@ export default function ServicesPanel() {
   function startEdit(s: Service) {
     setEditingId(s.id);
     setShowAdd(false);
-    setForm({ name: s.name, description: s.description ?? "" });
+    setForm({ name: s.name, description: s.description ?? "", color: s.color ?? PRESET_COLORS[0].hex });
     setMessage(null);
   }
 
@@ -156,6 +167,24 @@ export default function ServicesPanel() {
               placeholder="Optional description"
             />
           </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Color</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              {PRESET_COLORS.map((c) => (
+                <button
+                  key={c.hex}
+                  type="button"
+                  title={c.label}
+                  onClick={() => setForm((p) => ({ ...p, color: c.hex }))}
+                  className={[
+                    "w-8 h-8 rounded-full border-2 transition-all",
+                    form.color === c.hex ? "border-slate-900 scale-110" : "border-transparent hover:border-slate-300",
+                  ].join(" ")}
+                  style={{ backgroundColor: c.hex }}
+                />
+              ))}
+            </div>
+          </div>
           <div className="flex gap-2">
             <button
               type="submit"
@@ -176,7 +205,8 @@ export default function ServicesPanel() {
       )}
 
       {/* Table header */}
-      <div className="mt-5 grid grid-cols-[1fr_1fr_80px_auto] gap-4 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
+      <div className="mt-5 grid grid-cols-[auto_1fr_1fr_80px_auto] gap-4 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
+        <div>Color</div>
         <div>Service Name</div>
         <div>Description</div>
         <div>Status</div>
@@ -192,10 +222,13 @@ export default function ServicesPanel() {
             <div
               key={s.id}
               className={[
-                "grid grid-cols-[1fr_1fr_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 transition-colors",
+                "grid grid-cols-[auto_1fr_1fr_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 transition-colors",
                 s.active ? "" : "opacity-50",
               ].join(" ")}
             >
+              <div>
+                <div className="w-5 h-5 rounded-full" style={{ backgroundColor: s.color ?? "#3B82F6" }} />
+              </div>
               <div className={["text-sm font-medium", s.active ? "text-slate-900" : "text-slate-500 line-through"].join(" ")}>
                 {s.name}
               </div>

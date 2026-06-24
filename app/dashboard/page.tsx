@@ -43,7 +43,7 @@ export default async function DashboardPage() {
   try {
     const svcRes = await supabaseAdmin
       .from("services")
-      .select("id, name, description, duration_minutes, active")
+      .select("id, name, description, duration_minutes, active, color")
       .eq("active", true)
       .order("name", { ascending: true });
     if (!svcRes.error) services = svcRes.data ?? [];

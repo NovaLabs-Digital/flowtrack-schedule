@@ -165,7 +165,11 @@ export default function ScheduleGrid({
   weekOffset: number;
 }) {
   const serviceDurations: Record<string, number> = {};
-  for (const s of services) serviceDurations[s.name] = s.duration_minutes;
+  const serviceColors: Record<string, string> = {};
+  for (const s of services) {
+    serviceDurations[s.name] = s.duration_minutes;
+    if (s.color) serviceColors[s.name] = s.color;
+  }
   function durationFor(serviceType: string) {
     return serviceDurations[serviceType] ?? 60;
   }
@@ -318,6 +322,7 @@ export default function ScheduleGrid({
 
                     const empColor = employeeColor(a.employee_id);
                     const empName = employeeName(a.employee_id);
+                    const svcColor = serviceColors[a.service_type] ?? null;
 
                     return (
                       <button
@@ -340,7 +345,10 @@ export default function ScheduleGrid({
                       >
                         {isShort ? (
                           <div className="flex items-center justify-between gap-1 h-full min-w-0">
-                            <div className="truncate font-medium text-xs">{a.service_type}</div>
+                            <div className="flex items-center gap-1 truncate min-w-0">
+                              {svcColor && <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: svcColor }} />}
+                              <span className="truncate font-medium text-xs">{a.service_type}</span>
+                            </div>
                             <div className="text-[10px] text-slate-500 shrink-0">
                               {a.frequency_type && a.frequency_type !== "one_time" && <span className="mr-1">&#8635;</span>}
                               {timeRange(a.scheduled_for, mins)}
@@ -349,7 +357,10 @@ export default function ScheduleGrid({
                         ) : (
                           <div className="py-1 flex flex-col h-full overflow-hidden">
                             <div className="flex items-center justify-between gap-1">
-                              <div className="truncate font-medium text-xs">{a.service_type}</div>
+                              <div className="flex items-center gap-1 truncate min-w-0">
+                                {svcColor && <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: svcColor }} />}
+                                <span className="truncate font-medium text-xs">{a.service_type}</span>
+                              </div>
                               <div className="text-[10px] shrink-0 flex items-center gap-1">
                                 {a.frequency_type && a.frequency_type !== "one_time" && (
                                   <span className="text-blue-500" title={freqLabel(a)}>&#8635;</span>
