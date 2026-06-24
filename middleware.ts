@@ -3,9 +3,25 @@ import type { NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
   const session = request.cookies.get("sft_session");
+  const value = session?.value ?? "";
+  const isOwner = value === "authenticated";
+  const isEmployee = value.startsWith("employee:");
+  const path = request.nextUrl.pathname;
 
-  if (request.nextUrl.pathname.startsWith("/dashboard")) {
-    if (!session || session.value !== "authenticated") {
+  if (path.startsWith("/dashboard")) {
+    if (isEmployee) {
+      return NextResponse.redirect(new URL("/schedule", request.url));
+    }
+    if (!isOwner) {
+      return NextResponse.redirect(new URL("/login", request.url));
+    }
+  }
+
+  if (path === "/schedule") {
+    if (isOwner) {
+      return NextResponse.redirect(new URL("/dashboard", request.url));
+    }
+    if (!isEmployee) {
       return NextResponse.redirect(new URL("/login", request.url));
     }
   }
@@ -14,5 +30,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*"],
+  matcher: ["/dashboard/:path*", "/schedule"],
 };

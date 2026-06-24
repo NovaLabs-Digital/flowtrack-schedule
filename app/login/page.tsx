@@ -4,8 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+type LoginRole = "owner" | "employee";
+
 export default function LoginPage() {
   const router = useRouter();
+  const [role, setRole] = useState<LoginRole>("owner");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -25,7 +28,11 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim(), password: password.trim() }),
+        body: JSON.stringify({
+          email: email.trim(),
+          password: password.trim(),
+          ...(role === "employee" ? { role: "employee" } : {}),
+        }),
       });
       const data = await res.json().catch(() => ({}));
 
@@ -34,12 +41,19 @@ export default function LoginPage() {
         return;
       }
 
-      router.push("/dashboard");
+      router.push(data.redirect || (role === "employee" ? "/schedule" : "/dashboard"));
     } catch {
       setError("Network error. Please try again.");
     } finally {
       setLoading(false);
     }
+  }
+
+  function switchRole(r: LoginRole) {
+    setRole(r);
+    setEmail("");
+    setPassword("");
+    setError("");
   }
 
   return (
@@ -69,6 +83,30 @@ export default function LoginPage() {
               <p className="mt-1 text-xs text-slate-500">Sign in to Schedule FlowTrack</p>
             </div>
 
+            {/* Role toggle */}
+            <div className="flex bg-slate-100 rounded-xl p-1 mb-6">
+              <button
+                type="button"
+                onClick={() => switchRole("owner")}
+                className={[
+                  "flex-1 rounded-lg py-2 text-sm font-medium transition-colors",
+                  role === "owner" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+                ].join(" ")}
+              >
+                Owner
+              </button>
+              <button
+                type="button"
+                onClick={() => switchRole("employee")}
+                className={[
+                  "flex-1 rounded-lg py-2 text-sm font-medium transition-colors",
+                  role === "employee" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+                ].join(" ")}
+              >
+                Employee
+              </button>
+            </div>
+
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
@@ -77,7 +115,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="you@company.com"
+                  placeholder={role === "employee" ? "your@email.com" : "you@company.com"}
                 />
               </div>
               <div>
@@ -102,7 +140,7 @@ export default function LoginPage() {
                 disabled={loading}
                 className="w-full rounded-xl bg-[#0f172a] px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
               >
-                {loading ? "Signing in..." : "Sign In"}
+                {loading ? "Signing in..." : role === "employee" ? "Sign In as Employee" : "Sign In"}
               </button>
             </form>
           </div>

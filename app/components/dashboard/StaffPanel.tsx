@@ -14,8 +14,8 @@ const PRESET_COLORS = [
   { hex: "#F59E0B", label: "Amber" },
 ];
 
-type EditForm = { name: string; phone: string; color: string };
-const EMPTY_FORM: EditForm = { name: "", phone: "", color: PRESET_COLORS[0].hex };
+type EditForm = { name: string; phone: string; email: string; password: string; color: string };
+const EMPTY_FORM: EditForm = { name: "", phone: "", email: "", password: "", color: PRESET_COLORS[0].hex };
 
 export default function StaffPanel() {
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -43,7 +43,7 @@ export default function StaffPanel() {
   function startEdit(e: Employee) {
     setEditingId(e.id);
     setShowAdd(false);
-    setForm({ name: e.name, phone: e.phone ?? "", color: e.color });
+    setForm({ name: e.name, phone: e.phone ?? "", email: (e as any).email ?? "", password: "", color: e.color });
     setMessage(null);
   }
 
@@ -74,8 +74,8 @@ export default function StaffPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           isEdit
-            ? { id: editingId, name: form.name.trim(), phone: form.phone.trim(), color: form.color }
-            : { name: form.name.trim(), phone: form.phone.trim(), color: form.color }
+            ? { id: editingId, name: form.name.trim(), phone: form.phone.trim(), email: form.email.trim(), color: form.color, ...(form.password.trim() ? { password: form.password.trim() } : {}) }
+            : { name: form.name.trim(), phone: form.phone.trim(), email: form.email.trim(), color: form.color, ...(form.password.trim() ? { password: form.password.trim() } : {}) }
         ),
       });
       const data = await res.json().catch(() => ({}));
@@ -174,6 +174,28 @@ export default function StaffPanel() {
               placeholder="Optional"
             />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))}
+                className={inputCls}
+                placeholder="employee@company.com"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Password{editingId ? "" : " *"}</label>
+              <input
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))}
+                className={inputCls}
+                placeholder={editingId ? "Leave blank to keep current" : "Set password"}
+              />
+            </div>
+          </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Color</label>
             <div className="flex items-center gap-2 flex-wrap">
@@ -212,9 +234,10 @@ export default function StaffPanel() {
       )}
 
       {/* Table header */}
-      <div className="mt-5 grid grid-cols-[auto_1fr_1fr_80px_auto] gap-4 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
+      <div className="mt-5 grid grid-cols-[auto_1fr_1fr_1fr_80px_auto] gap-4 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
         <div>Color</div>
         <div>Name</div>
+        <div>Email</div>
         <div>Phone</div>
         <div>Status</div>
         <div>Actions</div>
@@ -228,12 +251,13 @@ export default function StaffPanel() {
           {activeEmployees.map((e) => (
             <div
               key={e.id}
-              className="grid grid-cols-[auto_1fr_1fr_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 transition-colors"
+              className="grid grid-cols-[auto_1fr_1fr_1fr_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 transition-colors"
             >
               <div>
                 <div className="w-5 h-5 rounded-full" style={{ backgroundColor: e.color }} />
               </div>
               <div className="text-sm font-medium text-slate-900">{e.name}</div>
+              <div className="text-xs text-slate-500 truncate">{(e as any).email || "—"}</div>
               <div className="text-xs text-slate-500">{e.phone || "—"}</div>
               <div>
                 <span className="text-[11px] font-medium px-2 py-0.5 rounded text-emerald-600 bg-emerald-50">
@@ -266,12 +290,13 @@ export default function StaffPanel() {
               {inactiveEmployees.map((e) => (
                 <div
                   key={e.id}
-                  className="grid grid-cols-[auto_1fr_1fr_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 opacity-50 transition-colors"
+                  className="grid grid-cols-[auto_1fr_1fr_1fr_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 opacity-50 transition-colors"
                 >
                   <div>
                     <div className="w-5 h-5 rounded-full" style={{ backgroundColor: e.color }} />
                   </div>
                   <div className="text-sm font-medium text-slate-500 line-through">{e.name}</div>
+                  <div className="text-xs text-slate-400 truncate">{(e as any).email || "—"}</div>
                   <div className="text-xs text-slate-400">{e.phone || "—"}</div>
                   <div>
                     <span className="text-[11px] font-medium px-2 py-0.5 rounded text-rose-600 bg-rose-50">
