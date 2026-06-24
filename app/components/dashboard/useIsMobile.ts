@@ -2,16 +2,20 @@
 
 import { useState, useEffect } from "react";
 
-export default function useIsMobile(breakpoint = 768) {
-  const [isMobile, setIsMobile] = useState(false);
+export function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(false);
 
   useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
-    setIsMobile(mq.matches);
-    function handler(e: MediaQueryListEvent) { setIsMobile(e.matches); }
+    const mq = window.matchMedia(query);
+    setMatches(mq.matches);
+    function handler(e: MediaQueryListEvent) { setMatches(e.matches); }
     mq.addEventListener("change", handler);
     return () => mq.removeEventListener("change", handler);
-  }, [breakpoint]);
+  }, [query]);
 
-  return isMobile;
+  return matches;
+}
+
+export default function useIsMobile(breakpoint = 768) {
+  return useMediaQuery(`(max-width: ${breakpoint - 1}px)`);
 }

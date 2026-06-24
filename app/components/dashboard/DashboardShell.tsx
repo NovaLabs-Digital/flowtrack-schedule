@@ -10,7 +10,7 @@ import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
 import ClientPanel from "@/app/components/dashboard/ClientPanel";
 import MapPanel from "@/app/components/dashboard/MapPanel";
 import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
-import useIsMobile from "@/app/components/dashboard/useIsMobile";
+import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import {
   Client,
   Appointment,
@@ -38,6 +38,7 @@ export default function DashboardShell({
   employees: Employee[];
 }) {
   const isMobile = useIsMobile();
+  const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
   const [viewMode, setViewMode] = useState<ViewMode>("weekdays");
   const [centerMode, setCenterMode] = useState<CenterMode>("schedule");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("company");
@@ -348,10 +349,12 @@ export default function DashboardShell({
         </div>
       </div>
 
-      {/* Right map panel — always visible, never moves */}
-      <aside className="shrink-0 w-[380px] p-2 pl-0">
-        <MapPanel />
-      </aside>
+      {/* Right map panel — hidden on phone landscape */}
+      {!isPhoneLandscape && (
+        <aside className="shrink-0 w-[380px] p-2 pl-0">
+          <MapPanel />
+        </aside>
+      )}
 
       {modalEl}
     </div>
