@@ -27,6 +27,8 @@ export type Appointment = {
   frequency_type?: string | null;
   repeat_weeks?: number | null;
   employee_id?: string | null;
+  actual_started_at?: string | null;
+  actual_completed_at?: string | null;
 };
 
 export type Service = {

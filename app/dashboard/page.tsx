@@ -22,7 +22,7 @@ export default async function DashboardPage() {
   const clients = clientsRes.data as any[] | null;
   const clientsErr = clientsRes.error;
 
-  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id";
+  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id, actual_started_at, actual_completed_at";
   let apptsRes = await supabaseAdmin
     .from("appointments")
     .select(apptFields)

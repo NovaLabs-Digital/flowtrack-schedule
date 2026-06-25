@@ -29,7 +29,7 @@ export default async function SchedulePage() {
 
   const { data: appointments } = await supabaseAdmin
     .from("appointments")
-    .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes")
+    .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at")
     .eq("employee_id", employeeId)
     .eq("status", "scheduled")
     .order("scheduled_for", { ascending: true });

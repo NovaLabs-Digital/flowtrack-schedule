@@ -409,6 +409,26 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
             </div>
           )}
 
+          {/* Job tracking info — edit mode only */}
+          {isEdit && (editing.appointment.actual_started_at || editing.appointment.actual_completed_at) && (
+            <div className="rounded-xl border bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
+              <div className="font-medium text-slate-700">Job Tracking</div>
+              {editing.appointment.actual_started_at && (
+                <div>Started: <span className="font-medium text-slate-900">{new Date(editing.appointment.actual_started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span></div>
+              )}
+              {editing.appointment.actual_completed_at && (
+                <div>Completed: <span className="font-medium text-slate-900">{new Date(editing.appointment.actual_completed_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span></div>
+              )}
+              {editing.appointment.actual_started_at && editing.appointment.actual_completed_at && (() => {
+                const mins = Math.round((new Date(editing.appointment.actual_completed_at).getTime() - new Date(editing.appointment.actual_started_at).getTime()) / 60_000);
+                const h = Math.floor(mins / 60);
+                const m = mins % 60;
+                const label = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+                return <div>Actual duration: <span className="font-medium text-slate-900">{label}</span></div>;
+              })()}
+            </div>
+          )}
+
           {/* Notes */}
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Notes</label>

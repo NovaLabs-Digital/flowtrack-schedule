@@ -12,6 +12,8 @@ type Appointment = {
   status: string;
   notes: string | null;
   duration_minutes?: number | null;
+  actual_started_at?: string | null;
+  actual_completed_at?: string | null;
 };
 
 type ClientInfo = { name: string; address: string | null; phone: string | null };
@@ -56,10 +58,27 @@ function mapsUrl(address: string) {
   return `https://maps.apple.com/?q=${encodeURIComponent(address)}`;
 }
 
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 export default function EmployeeSchedule({ employee, appointments, clients, serviceColors }: Props) {
   const router = useRouter();
   const [dayOffset, setDayOffset] = useState(0);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [loadingJob, setLoadingJob] = useState<string | null>(null);
+  const [jobTimes, setJobTimes] = useState<Record<string, { started?: string; completed?: string }>>(() => {
+    const map: Record<string, { started?: string; completed?: string }> = {};
+    for (const a of appointments) {
+      if (a.actual_started_at || a.actual_completed_at) {
+        map[a.id] = { started: a.actual_started_at ?? undefined, completed: a.actual_completed_at ?? undefined };
+      }
+    }
+    return map;
+  });
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -74,6 +93,28 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
     setLoggingOut(true);
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch {}
     router.push("/login");
+  }
+
+  async function handleJobAction(appointmentId: string, action: "start" | "complete") {
+    setLoadingJob(appointmentId);
+    try {
+      const res = await fetch("/api/appointments/job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appointment_id: appointmentId, action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+
+      setJobTimes((prev) => ({
+        ...prev,
+        [appointmentId]: {
+          started: data.actual_started_at ?? prev[appointmentId]?.started,
+          completed: data.actual_completed_at ?? prev[appointmentId]?.completed,
+        },
+      }));
+    } catch {}
+    finally { setLoadingJob(null); }
   }
 
   return (
@@ -117,12 +158,19 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
         </div>
       </div>
 
-      {/* Day header */}
+      {/* Welcome + day header */}
       <div className="px-4 py-3 bg-slate-100 border-b border-slate-200">
-        <div className="text-sm font-semibold text-slate-900">{formatDayHeader(currentDay)}</div>
         {sameDay(currentDay, today) && (
-          <div className="text-xs text-blue-600 font-medium">Today</div>
+          <div className="text-sm text-slate-700 mb-0.5">
+            {greeting()}, <span className="font-semibold">{employee.name.split(" ")[0]}</span>.
+          </div>
         )}
+        <div className="text-sm font-semibold text-slate-900">{formatDayHeader(currentDay)}</div>
+        <div className="text-xs text-slate-500 mt-0.5">
+          {dayAppts.length === 0
+            ? (sameDay(currentDay, today) ? "No appointments today" : "No appointments")
+            : `${dayAppts.length} appointment${dayAppts.length !== 1 ? "s" : ""}${sameDay(currentDay, today) ? " today" : ""}`}
+        </div>
       </div>
 
       {/* Appointment list */}
@@ -147,12 +195,26 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
             const client = clients[a.client_id];
             const svcColor = serviceColors[a.service_type] ?? null;
 
+            const times = jobTimes[a.id];
+            const startedAt = times?.started ? new Date(times.started) : null;
+            const completedAt = times?.completed ? new Date(times.completed) : null;
+            const isStarted = !!startedAt;
+            const isCompleted = !!completedAt;
+
+            let actualDuration: string | null = null;
+            if (startedAt && completedAt) {
+              const actualMins = Math.round((completedAt.getTime() - startedAt.getTime()) / 60_000);
+              if (actualMins >= 0) actualDuration = durationLabel(actualMins);
+            }
+
             return (
               <div
                 key={a.id}
-                className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden"
+                className={[
+                  "rounded-xl border bg-white shadow-sm overflow-hidden",
+                  isCompleted ? "border-emerald-200" : "border-slate-200",
+                ].join(" ")}
               >
-                {/* Color strip at top */}
                 <div className="h-1" style={{ backgroundColor: svcColor ?? employee.color }} />
 
                 <div className="p-4 space-y-2">
@@ -162,13 +224,36 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                       {svcColor && <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: svcColor }} />}
                       <span className="font-semibold text-sm text-slate-900">{a.service_type}</span>
                     </div>
-                    <div className="text-xs text-slate-500 shrink-0">{durationLabel(mins)}</div>
+                    {isCompleted && (
+                      <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 shrink-0">Done</span>
+                    )}
                   </div>
 
-                  {/* Time range */}
+                  {/* Scheduled time */}
                   <div className="text-sm text-slate-700">
-                    {formatTime(start)} – {formatTime(end)}
+                    Scheduled: {formatTime(start)} – {formatTime(end)} ({durationLabel(mins)})
                   </div>
+
+                  {/* Actual times */}
+                  {isStarted && (
+                    <div className="text-xs space-y-0.5">
+                      <div className="text-slate-600">
+                        Started: <span className="font-medium text-slate-800">{formatTime(startedAt)}</span>
+                      </div>
+                      {isCompleted && (
+                        <>
+                          <div className="text-slate-600">
+                            Completed: <span className="font-medium text-slate-800">{formatTime(completedAt)}</span>
+                          </div>
+                          {actualDuration && (
+                            <div className="text-slate-600">
+                              Actual duration: <span className="font-medium text-slate-800">{actualDuration}</span>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
 
                   {/* Client info */}
                   {client && (
@@ -192,9 +277,32 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                     </div>
                   )}
 
-                  {/* Action buttons */}
+                  {/* Job action button */}
+                  {!isCompleted && (
+                    <div className="pt-2">
+                      {!isStarted ? (
+                        <button
+                          onClick={() => handleJobAction(a.id, "start")}
+                          disabled={loadingJob === a.id}
+                          className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white active:bg-blue-700 disabled:opacity-50 transition-colors"
+                        >
+                          {loadingJob === a.id ? "Starting..." : "Start Job"}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleJobAction(a.id, "complete")}
+                          disabled={loadingJob === a.id}
+                          className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white active:bg-emerald-700 disabled:opacity-50 transition-colors"
+                        >
+                          {loadingJob === a.id ? "Completing..." : "Complete Job"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Navigate + Call buttons */}
                   {(client?.address || client?.phone) && (
-                    <div className="flex gap-2 pt-2">
+                    <div className="flex gap-2">
                       {client.address && (
                         <a
                           href={mapsUrl(client.address)}
