@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Appointment, Client, Service, Employee } from "@/app/components/dashboard/types";
+import { countFutureOccurrences } from "@/lib/recurrence";
 
 const FALLBACK_SERVICES = [
   "Regular Cleaning",
@@ -66,6 +67,7 @@ function durationLabel(mins: number) {
 function frequencyLabel(ft?: string | null, rw?: number | null): string {
   if (!ft || ft === "one_time") return "One Time";
   if (ft === "daily") return "Daily";
+  if (ft === "weekdays") return "Weekdays (Mon–Fri)";
   if (ft === "weekly") {
     if (!rw || rw === 1) return "Weekly";
     if (rw === 2) return "Every 2 Weeks";
@@ -129,6 +131,11 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const [cancelling, setCancelling] = useState(false);
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
   const [error, setError] = useState("");
+
+  const [showManageRecurrence, setShowManageRecurrence] = useState(false);
+  const [manageFreq, setManageFreq] = useState<string>(editing?.appointment.frequency_type ?? "one_time");
+  const [manageWeeks, setManageWeeks] = useState<number>(editing?.appointment.repeat_weeks ?? 1);
+  const [savingRecurrence, setSavingRecurrence] = useState(false);
 
   function set(field: string, value: string | number) {
     setForm((prev) => {
@@ -382,7 +389,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-2">Frequency</label>
               <div className="flex flex-wrap gap-x-4 gap-y-2">
-                {(["one_time", "daily", "weekly"] as const).map((ft) => (
+                {(["one_time", "daily", "weekdays", "weekly"] as const).map((ft) => (
                   <label key={ft} className="flex items-center gap-1.5 text-sm cursor-pointer">
                     <input
                       type="radio"
@@ -391,7 +398,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                       onChange={() => set("frequency_type", ft)}
                       className="accent-slate-900"
                     />
-                    {ft === "one_time" ? "One Time" : ft === "daily" ? "Daily" : "Weekly"}
+                    {ft === "one_time" ? "One Time" : ft === "daily" ? "Daily" : ft === "weekdays" ? "Weekdays" : "Weekly"}
                   </label>
                 ))}
               </div>
@@ -412,21 +419,25 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
               {form.frequency_type !== "one_time" && (
                 <div className="mt-1 text-[11px] text-slate-500">
-                  Appointments will be created for the next 26 weeks from the start date.
+                  {form.frequency_type === "weekdays"
+                    ? "Appointments will be created for weekdays (Mon–Fri) over the next 26 weeks."
+                    : "Appointments will be created for the next 26 weeks from the start date."}
                 </div>
               )}
             </div>
           )}
 
           {/* Recurrence info — edit mode */}
-          {isEdit && (() => {
+          {isEdit && !showManageRecurrence && (() => {
             const ft = editing.appointment.frequency_type;
             const isOneTime = !ft || ft === "one_time";
 
             if (isOneTime) {
               return (
-                <div className="rounded-xl border bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                  One-time appointment
+                <div className="rounded-xl border bg-slate-50 px-3 py-2 flex items-center justify-between">
+                  <span className="text-xs text-slate-500">One-time appointment</span>
+                  <button type="button" onClick={() => { setManageFreq("one_time"); setManageWeeks(1); setShowManageRecurrence(true); }}
+                    className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">Manage &gt;</button>
                 </div>
               );
             }
@@ -445,12 +456,16 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
             const intervalLabel = ft === "daily"
               ? "Daily"
-              : rw === 1 ? "Weekly" : `Weekly • Every ${rw} weeks`;
+              : ft === "weekdays"
+                ? "Weekdays (Mon–Fri)"
+                : rw === 1 ? "Weekly" : `Weekly • Every ${rw} weeks`;
 
             return (
               <div className="rounded-xl border bg-slate-50 px-3 py-2.5">
                 <div className="flex items-center justify-between">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Recurring Schedule</div>
+                  <button type="button" onClick={() => { setManageFreq(ft!); setManageWeeks(rw); setShowManageRecurrence(true); }}
+                    className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">Manage &gt;</button>
                 </div>
                 <div className="text-sm font-medium text-slate-900 mt-1">{intervalLabel}</div>
                 {remaining > 0 && (
@@ -461,6 +476,79 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               </div>
             );
           })()}
+
+          {/* Manage Recurrence panel */}
+          {isEdit && showManageRecurrence && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/30 p-4 space-y-3">
+              <div className="text-xs font-semibold text-slate-700">Manage Recurrence</div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-2">Change to:</label>
+                <div className="flex flex-wrap gap-x-4 gap-y-2">
+                  {(["one_time", "daily", "weekdays", "weekly"] as const).map((ft) => (
+                    <label key={ft} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                      <input type="radio" name="manage_freq" checked={manageFreq === ft}
+                        onChange={() => { setManageFreq(ft); if (ft !== "weekly") setManageWeeks(1); }}
+                        className="accent-slate-900" />
+                      {ft === "one_time" ? "One-time" : ft === "daily" ? "Daily" : ft === "weekdays" ? "Weekdays" : "Weekly"}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {manageFreq === "weekly" && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-600">Repeat every</span>
+                  <select value={manageWeeks} onChange={(e) => setManageWeeks(Number(e.target.value))}
+                    className="rounded-xl border px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 w-20">
+                    {[1, 2, 3, 4, 6, 8].map((w) => <option key={w} value={w}>{w}</option>)}
+                  </select>
+                  <span className="text-xs text-slate-600">week{manageWeeks > 1 ? "s" : ""}</span>
+                </div>
+              )}
+
+              {manageFreq !== "one_time" && (
+                <div className="text-xs text-slate-500">
+                  This will create approximately {countFutureOccurrences(manageFreq, manageWeeks, new Date(editing.appointment.scheduled_for))} future appointments.
+                </div>
+              )}
+              {manageFreq === "one_time" && editing.appointment.series_id && (
+                <div className="text-xs text-slate-500">
+                  Future recurring appointments will be cancelled.
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-1">
+                <button type="button" disabled={savingRecurrence}
+                  onClick={async () => {
+                    setSavingRecurrence(true);
+                    setError("");
+                    try {
+                      const res = await fetch("/api/appointments/manage-recurrence", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          appointment_id: editing.appointment.id,
+                          frequency_type: manageFreq,
+                          repeat_weeks: manageWeeks,
+                        }),
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (!res.ok) { setError(data?.error || "Failed to update recurrence."); return; }
+                      onSaved();
+                    } catch { setError("Network error."); }
+                    finally { setSavingRecurrence(false); }
+                  }}
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors">
+                  {savingRecurrence ? "Saving..." : "Save Recurrence"}
+                </button>
+                <button type="button" onClick={() => setShowManageRecurrence(false)}
+                  className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-white transition-colors">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Job tracking info — edit mode only */}
           {isEdit && (editing.appointment.actual_started_at || editing.appointment.actual_completed_at) && (

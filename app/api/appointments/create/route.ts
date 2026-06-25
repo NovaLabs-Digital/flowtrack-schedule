@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
+import { generateFutureDates } from "@/lib/recurrence";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -18,13 +19,6 @@ async function hasColumn(col: string): Promise<boolean> {
   return !error;
 }
 
-function addDays(date: Date, days: number): Date {
-  const d = new Date(date);
-  d.setDate(d.getDate() + days);
-  return d;
-}
-
-const MAX_HORIZON_DAYS = 182; // ~26 weeks
 
 export async function POST(req: Request) {
   try {
@@ -89,20 +83,8 @@ export async function POST(req: Request) {
     const hasFrequency = await hasColumn("frequency_type");
     const hasEmployee = await hasColumn("employee_id");
 
-    // Build list of occurrence dates
     const startDate = new Date(scheduled_for);
-    const dates: Date[] = [startDate];
-
-    if (frequency_type === "daily") {
-      for (let d = 1; d <= MAX_HORIZON_DAYS; d++) {
-        dates.push(addDays(startDate, d));
-      }
-    } else if (frequency_type === "weekly" && repeat_weeks >= 1) {
-      const intervalDays = repeat_weeks * 7;
-      for (let d = intervalDays; d <= MAX_HORIZON_DAYS; d += intervalDays) {
-        dates.push(addDays(startDate, d));
-      }
-    }
+    const dates: Date[] = [startDate, ...generateFutureDates(startDate, frequency_type, repeat_weeks)];
 
     const isRecurring = dates.length > 1;
     const seriesId = isRecurring ? crypto.randomUUID() : null;
