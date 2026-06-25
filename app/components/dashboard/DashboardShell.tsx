@@ -113,6 +113,7 @@ export default function DashboardShell({
       onClose={() => setModal(null)}
       onSaved={handleModalSaved}
       clients={clients}
+      appointments={appointments}
       services={services}
       employees={employees}
       editing={

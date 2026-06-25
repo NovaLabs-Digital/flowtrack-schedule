@@ -80,13 +80,14 @@ type Props = {
   onClose: () => void;
   onSaved: () => void;
   clients: Client[];
+  appointments: Appointment[];
   services: Service[];
   employees: Employee[];
   editing?: { appointment: Appointment; client: Client };
   prefill?: { date: string; time: string };
 };
 
-export default function AppointmentModal({ onClose, onSaved, clients, services, employees, editing, prefill }: Props) {
+export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, editing, prefill }: Props) {
   const isEdit = !!editing;
 
   const serviceNames = services.length > 0 ? services.map((s) => s.name) : FALLBACK_SERVICES;
@@ -417,17 +418,49 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
             </div>
           )}
 
-          {/* Frequency info — edit mode */}
-          {isEdit && editing.appointment.frequency_type && editing.appointment.frequency_type !== "one_time" && (
-            <div className="rounded-xl border bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              Frequency: <span className="font-medium text-slate-900">
-                {frequencyLabel(editing.appointment.frequency_type, editing.appointment.repeat_weeks)}
-              </span>
-              {editing.appointment.series_id && (
-                <span className="text-slate-400 ml-2">Series</span>
-              )}
-            </div>
-          )}
+          {/* Recurrence info — edit mode */}
+          {isEdit && (() => {
+            const ft = editing.appointment.frequency_type;
+            const isOneTime = !ft || ft === "one_time";
+
+            if (isOneTime) {
+              return (
+                <div className="rounded-xl border bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                  One-time appointment
+                </div>
+              );
+            }
+
+            const rw = editing.appointment.repeat_weeks ?? 1;
+            const sid = editing.appointment.series_id;
+            const currentTime = new Date(editing.appointment.scheduled_for).getTime();
+
+            const remaining = sid
+              ? appointments.filter((a) =>
+                  a.series_id === sid &&
+                  a.status === "scheduled" &&
+                  new Date(a.scheduled_for).getTime() >= currentTime
+                ).length
+              : 0;
+
+            const intervalLabel = ft === "daily"
+              ? "Daily"
+              : rw === 1 ? "Weekly" : `Weekly • Every ${rw} weeks`;
+
+            return (
+              <div className="rounded-xl border bg-slate-50 px-3 py-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Recurring Schedule</div>
+                </div>
+                <div className="text-sm font-medium text-slate-900 mt-1">{intervalLabel}</div>
+                {remaining > 0 && (
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    {remaining} appointment{remaining !== 1 ? "s" : ""} remaining
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Job tracking info — edit mode only */}
           {isEdit && (editing.appointment.actual_started_at || editing.appointment.actual_completed_at) && (
