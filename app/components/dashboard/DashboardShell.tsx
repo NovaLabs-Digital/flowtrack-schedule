@@ -8,7 +8,7 @@ import ScheduleGrid from "@/app/components/dashboard/ScheduleGrid";
 import SettingsSidebar from "@/app/components/dashboard/SettingsSidebar";
 import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
 import ClientPanel from "@/app/components/dashboard/ClientPanel";
-import MapPanel from "@/app/components/dashboard/MapPanel";
+import DispatchPanel from "@/app/components/dashboard/DispatchPanel";
 import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import {
@@ -64,15 +64,34 @@ export default function DashboardShell({
     if (isMobile) setMobileTab("schedule");
   }
 
-  function handleSelectAppointment(apptId: string) {
+  function selectAppointment(apptId: string) {
     setSelectedApptId(apptId);
     const appt = appointments.find((a) => a.id === apptId);
     if (!appt) return;
+    setSelectedClientId(appt.client_id);
+  }
+
+  function editAppointment(apptId: string) {
+    const appt = appointments.find((a) => a.id === apptId);
+    if (!appt) return;
+    setSelectedApptId(apptId);
     setSelectedClientId(appt.client_id);
     const client = clients.find((c) => c.id === appt.client_id);
     if (client) {
       setModal({ mode: "edit", appointment: appt, client });
     }
+  }
+
+  function handleSelectAppointment(apptId: string) {
+    if (isMobile) {
+      editAppointment(apptId);
+    } else {
+      selectAppointment(apptId);
+    }
+  }
+
+  function handleEditAppointment(apptId: string) {
+    editAppointment(apptId);
   }
 
   function handleGoToday() {
@@ -87,6 +106,7 @@ export default function DashboardShell({
   }
 
   function handleCellClick(date: Date, hour: number) {
+    setSelectedApptId(null);
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, "0");
     const d = String(date.getDate()).padStart(2, "0");
@@ -230,11 +250,6 @@ export default function DashboardShell({
             </div>
           )}
 
-          {mobileTab === "map" && (
-            <div className="h-full p-2">
-              <MapPanel />
-            </div>
-          )}
         </div>
 
         {/* Floating add button on schedule tab */}
@@ -249,13 +264,12 @@ export default function DashboardShell({
 
         {/* Bottom tab bar */}
         <nav className="shrink-0 bg-white border-t border-slate-200 safe-area-bottom">
-          <div className="grid grid-cols-4 h-14">
+          <div className="grid grid-cols-3 h-14">
             {(
               [
                 { key: "schedule", label: "Schedule", icon: "📅" },
                 { key: "clients", label: "Clients", icon: "👥" },
                 { key: "settings", label: "Settings", icon: "⚙" },
-                { key: "map", label: "Map", icon: "🗺" },
               ] as { key: MobileTab; label: string; icon: string }[]
             ).map(({ key, label, icon }) => (
               <button
@@ -323,6 +337,7 @@ export default function DashboardShell({
                   selectedClientId={selectedClientId}
                   selectedAppointmentId={selectedApptId}
                   onSelectAppointment={handleSelectAppointment}
+                  onEditAppointment={handleEditAppointment}
                   onCellClick={handleCellClick}
                   weekOffset={weekOffset}
                 />
@@ -350,10 +365,15 @@ export default function DashboardShell({
         </div>
       </div>
 
-      {/* Right map panel — hidden on phone landscape */}
+      {/* Right dispatch panel — hidden on phone landscape */}
       {!isPhoneLandscape && (
         <aside className="shrink-0 w-[380px] p-2 pl-0">
-          <MapPanel />
+          <DispatchPanel
+            appointments={appointments}
+            clients={clients}
+            employees={employees}
+            selectedAppointmentId={selectedApptId}
+          />
         </aside>
       )}
 

@@ -150,6 +150,7 @@ export default function ScheduleGrid({
   selectedClientId,
   selectedAppointmentId,
   onSelectAppointment,
+  onEditAppointment,
   onCellClick,
   weekOffset,
 }: {
@@ -161,6 +162,7 @@ export default function ScheduleGrid({
   selectedClientId: string | null;
   selectedAppointmentId: string | null;
   onSelectAppointment: (id: string) => void;
+  onEditAppointment?: (id: string) => void;
   onCellClick: (date: Date, hour: number) => void;
   weekOffset: number;
 }) {
@@ -328,11 +330,12 @@ export default function ScheduleGrid({
                       <button
                         key={a.id}
                         onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}
+                        onDoubleClick={(e) => { e.stopPropagation(); onEditAppointment?.(a.id); }}
                         className={[
                           "absolute rounded-lg border text-left shadow-sm overflow-hidden px-2 z-[5]",
                           statusPill(a.status),
-                          selected ? "ring-2 ring-blue-600 z-[6]" : "",
-                          sameClient ? "outline outline-2 outline-blue-600/30" : "",
+                          selected ? "ring-2 ring-blue-600 bg-blue-100/60 z-[6]" : "",
+                          sameClient && !selected ? "outline outline-2 outline-blue-600/30" : "",
                         ].join(" ")}
                         style={{
                           top: topOffset + 2,
