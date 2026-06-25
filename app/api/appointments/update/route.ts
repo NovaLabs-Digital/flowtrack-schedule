@@ -22,9 +22,11 @@ export async function PATCH(req: Request) {
     const appointment_id = (body.appointment_id || "").trim();
     if (!appointment_id) return json({ error: "Missing appointment_id" }, 400);
 
+    const mode = (body.mode || "single").trim();
+
     const existing = await supabaseAdmin
       .from("appointments")
-      .select("id, client_id")
+      .select("id, client_id, series_id, scheduled_for, scheduled_end")
       .eq("id", appointment_id)
       .maybeSingle();
 
@@ -51,6 +53,62 @@ export async function PATCH(req: Request) {
         .update(apptUpdate)
         .eq("id", appointment_id);
       if (error) throw error;
+    }
+
+    if (mode === "future" && existing.data.series_id) {
+      const { data: siblings, error: sibErr } = await supabaseAdmin
+        .from("appointments")
+        .select("id, scheduled_for, scheduled_end")
+        .eq("series_id", existing.data.series_id)
+        .eq("status", "scheduled")
+        .gt("scheduled_for", existing.data.scheduled_for)
+        .order("scheduled_for", { ascending: true });
+
+      if (sibErr) throw sibErr;
+
+      if (siblings && siblings.length > 0) {
+        const newStart = body.scheduled_for ? new Date(body.scheduled_for) : null;
+        const newEnd = body.scheduled_end ? new Date(body.scheduled_end) : null;
+        const oldStart = new Date(existing.data.scheduled_for);
+
+        const newStartHours = newStart ? newStart.getHours() : null;
+        const newStartMins = newStart ? newStart.getMinutes() : null;
+        const newEndHours = newEnd ? newEnd.getHours() : null;
+        const newEndMins = newEnd ? newEnd.getMinutes() : null;
+
+        const timeChanged = newStart && (
+          newStartHours !== oldStart.getHours() || newStartMins !== oldStart.getMinutes()
+        );
+
+        for (const sib of siblings) {
+          const sibUpdate: Record<string, any> = {};
+
+          if (apptUpdate.service_type !== undefined) sibUpdate.service_type = apptUpdate.service_type;
+          if (apptUpdate.notes !== undefined) sibUpdate.notes = apptUpdate.notes;
+          if (apptUpdate.duration_minutes !== undefined) sibUpdate.duration_minutes = apptUpdate.duration_minutes;
+          if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
+
+          if (timeChanged && newStartHours !== null && newStartMins !== null) {
+            const sibDate = new Date(sib.scheduled_for);
+            sibDate.setHours(newStartHours, newStartMins, 0, 0);
+            sibUpdate.scheduled_for = sibDate.toISOString();
+
+            if (newEndHours !== null && newEndMins !== null) {
+              const sibEnd = new Date(sib.scheduled_for);
+              sibEnd.setHours(newEndHours, newEndMins, 0, 0);
+              sibUpdate.scheduled_end = sibEnd.toISOString();
+            }
+          }
+
+          if (Object.keys(sibUpdate).length > 0) {
+            const { error } = await supabaseAdmin
+              .from("appointments")
+              .update(sibUpdate)
+              .eq("id", sib.id);
+            if (error) throw error;
+          }
+        }
+      }
     }
 
     const clientUpdate: Record<string, any> = {};

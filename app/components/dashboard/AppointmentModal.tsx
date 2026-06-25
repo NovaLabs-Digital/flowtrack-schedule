@@ -147,22 +147,41 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
   const durationDisplay = computedDuration > 0 ? durationLabel(computedDuration) : "";
   const timeOutError = computedDuration <= 0 && form.time_in && form.time_out;
 
+  const isRecurring = isEdit && !!editing.appointment.series_id && editing.appointment.frequency_type !== "one_time";
+  const [editScope, setEditScope] = useState<"single" | "future" | null>(null);
+
+  function validateForm(): boolean {
+    setError("");
+    if (clientMode === "existing" && !selectedClientId) { setError("Select a client."); return false; }
+    if (clientMode === "new") {
+      if (!newClient.name.trim()) { setError("Client name is required."); return false; }
+      if (!newClient.email.trim() && !newClient.phone.trim()) { setError("Provide at least an email or phone."); return false; }
+    }
+    if (!form.date || !form.time_in || !form.time_out) { setError("Date, Time In, and Time Out are required."); return false; }
+    if (computedDuration <= 0) { setError("Time Out must be after Time In."); return false; }
+    return true;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
+    if (!validateForm()) return;
 
-    if (clientMode === "existing" && !selectedClientId) return setError("Select a client.");
-    if (clientMode === "new") {
-      if (!newClient.name.trim()) return setError("Client name is required.");
-      if (!newClient.email.trim() && !newClient.phone.trim()) return setError("Provide at least an email or phone.");
+    if (isEdit && isRecurring && !editScope) {
+      setEditScope("single");
+      return;
     }
-    if (!form.date || !form.time_in || !form.time_out) return setError("Date, Time In, and Time Out are required.");
-    if (computedDuration <= 0) return setError("Time Out must be after Time In.");
+
+    await executeEdit(editScope ?? "single");
+  }
+
+  async function executeEdit(mode: "single" | "future") {
+    if (!validateForm()) return;
 
     const scheduled_for = new Date(`${form.date}T${form.time_in}`).toISOString();
     const scheduled_end = new Date(`${form.date}T${form.time_out}`).toISOString();
 
     setSubmitting(true);
+    setEditScope(null);
     try {
       let res: Response;
 
@@ -178,6 +197,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
             status: form.status,
             duration_minutes: computedDuration,
             employee_id: selectedEmployeeId || null,
+            mode,
           }),
         });
       } else {
@@ -439,21 +459,44 @@ export default function AppointmentModal({ onClose, onSaved, clients, services, 
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
           )}
 
+          {/* Edit scope choice for recurring appointments */}
+          {editScope && isRecurring && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-2 space-y-1">
+              <div className="text-[11px] font-medium text-slate-500 px-2 pb-1">Apply changes to:</div>
+              <button type="button" onClick={() => executeEdit("single")} disabled={submitting}
+                className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50">
+                <div className="font-medium text-slate-900">Only this appointment</div>
+                <div className="text-slate-500 mt-0.5">Change this one only</div>
+              </button>
+              <button type="button" onClick={() => executeEdit("future")} disabled={submitting}
+                className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50">
+                <div className="font-medium text-blue-700">This and all future appointments</div>
+                <div className="text-slate-500 mt-0.5">Apply to all remaining in this series</div>
+              </button>
+              <button type="button" onClick={() => setEditScope(null)}
+                className="w-full rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700">
+                Cancel
+              </button>
+            </div>
+          )}
+
           {/* Actions */}
-          <div className="flex gap-2 pt-1">
-            <button type="submit" disabled={submitting || cancelling}
-              className="flex-1 rounded-xl bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-50">
-              {submitting ? (isEdit ? "Saving..." : "Creating...") : (isEdit ? "Save Changes" : "Create Appointment")}
-            </button>
-            {isEdit && editing.appointment.status !== "cancelled" && (
-              <div className="relative">
-                <button type="button" onClick={() => setShowDeleteMenu((v) => !v)} disabled={submitting || cancelling}
-                  className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700 hover:bg-rose-100 disabled:opacity-50">
-                  {cancelling ? "Deleting..." : "Delete ▾"}
-                </button>
-              </div>
-            )}
-          </div>
+          {!editScope && (
+            <div className="flex gap-2 pt-1">
+              <button type="submit" disabled={submitting || cancelling}
+                className="flex-1 rounded-xl bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-50">
+                {submitting ? (isEdit ? "Saving..." : "Creating...") : (isEdit ? "Save Changes" : "Create Appointment")}
+              </button>
+              {isEdit && editing.appointment.status !== "cancelled" && (
+                <div className="relative">
+                  <button type="button" onClick={() => setShowDeleteMenu((v) => !v)} disabled={submitting || cancelling}
+                    className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700 hover:bg-rose-100 disabled:opacity-50">
+                    {cancelling ? "Deleting..." : "Delete ▾"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Delete options — inline below action buttons */}
           {showDeleteMenu && isEdit && !confirmDelete && (
