@@ -292,8 +292,8 @@ export default function ClientPanel({
           <div className="p-4 flex flex-col">
             <SectionHeader>Communication</SectionHeader>
             <div>
-              <CommRow icon="&#128172;" label="SMS" value={client?.auto_sms ? "&#10003; Auto" : client?.phone ? "Available" : "—"} />
-              <CommRow icon="&#9993;" label="Email" value={client?.auto_email ? "&#10003; Auto" : client?.email ? "Available" : "—"} />
+              <CommRow icon="&#128172;" label="SMS" value={client?.auto_sms ? "✓ Auto" : client?.phone ? "Available" : "—"} />
+              <CommRow icon="&#9993;" label="Email" value={client?.auto_email ? "✓ Auto" : client?.email ? "Available" : "—"} />
               <CommRow icon="&#9742;" label="Phone" value={client?.phone ?? "—"} />
               <CommRow icon="&#9733;" label="Preferred" value={client?.preferred_contact_method ? client.preferred_contact_method.charAt(0).toUpperCase() + client.preferred_contact_method.slice(1) : "—"} />
             </div>
