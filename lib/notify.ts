@@ -10,6 +10,14 @@ const twilioClient = twilio(
 
 const disabled = process.env.DISABLE_MESSAGES === "true";
 
+export type NotifyChannel = "email" | "sms" | "both" | "none";
+
+export function shouldSend(channel: NotifyChannel | undefined, medium: "email" | "sms"): boolean {
+  if (!channel || channel === "none") return false;
+  if (channel === "both") return true;
+  return channel === medium;
+}
+
 export async function sendSms(to: string, body: string) {
   if (disabled) {
     console.log("[DISABLE_MESSAGES] SMS skipped — to:", to, "| body:", body);

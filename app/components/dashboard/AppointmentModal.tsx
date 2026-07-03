@@ -78,6 +78,47 @@ function frequencyLabel(ft?: string | null, rw?: number | null): string {
 
 const WEEK_OPTIONS = [1, 2, 3, 4, 6, 8];
 
+type NotifyChannel = "email" | "sms" | "both" | "none";
+
+function NotifyChoice({
+  value, onChange, hasEmail, hasPhone, label,
+}: {
+  value: NotifyChannel;
+  onChange: (v: NotifyChannel) => void;
+  hasEmail: boolean;
+  hasPhone: boolean;
+  label: string;
+}) {
+  const options: { value: NotifyChannel; label: string; disabled: boolean }[] = [
+    { value: "both", label: "Both", disabled: !hasEmail || !hasPhone },
+    { value: "email", label: "Email", disabled: !hasEmail },
+    { value: "sms", label: "SMS", disabled: !hasPhone },
+    { value: "none", label: "No notification", disabled: false },
+  ];
+  return (
+    <div>
+      <label className="block text-xs font-medium text-slate-600 mb-2">{label}</label>
+      <div className="flex flex-wrap gap-x-4 gap-y-2">
+        {options.map((o) => (
+          <label key={o.value} className={`flex items-center gap-1.5 text-sm ${o.disabled ? "text-slate-300 cursor-not-allowed" : "cursor-pointer"}`}>
+            <input
+              type="radio"
+              checked={value === o.value}
+              disabled={o.disabled}
+              onChange={() => onChange(o.value)}
+              className="accent-slate-900"
+            />
+            {o.label}
+          </label>
+        ))}
+      </div>
+      {!hasEmail && !hasPhone && (
+        <div className="text-[11px] text-amber-600 mt-1">No email or phone on file — notification can&apos;t be sent.</div>
+      )}
+    </div>
+  );
+}
+
 type Props = {
   onClose: () => void;
   onSaved: () => void;
@@ -131,6 +172,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const [cancelling, setCancelling] = useState(false);
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
   const [error, setError] = useState("");
+
+  // Notification choice — defaults to "none" so staff must opt in before anything is sent.
+  const [notifyChannel, setNotifyChannel] = useState<NotifyChannel>("none");
+  const [cancelNotifyChannel, setCancelNotifyChannel] = useState<NotifyChannel>("none");
+
+  const contactEmail = isEdit ? (editing!.client.email ?? "") : (clientMode === "existing" ? (clients.find((c) => c.id === selectedClientId)?.email ?? "") : newClient.email);
+  const contactPhone = isEdit ? (editing!.client.phone ?? "") : (clientMode === "existing" ? (clients.find((c) => c.id === selectedClientId)?.phone ?? "") : newClient.phone);
+  const hasEmail = !!contactEmail.trim();
+  const hasPhone = !!contactPhone.trim();
 
   const [showManageRecurrence, setShowManageRecurrence] = useState(false);
   const [manageFreq, setManageFreq] = useState<string>(editing?.appointment.frequency_type ?? "one_time");
@@ -206,6 +256,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             duration_minutes: computedDuration,
             employee_id: selectedEmployeeId || null,
             mode,
+            notify_channel: notifyChannel,
           }),
         });
       } else {
@@ -217,6 +268,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           frequency_type: form.frequency_type,
           repeat_weeks: form.repeat_weeks,
           employee_id: selectedEmployeeId || null,
+          notify_channel: notifyChannel,
         };
         if (clientMode === "existing") payload.client_id = selectedClientId;
         else {
@@ -252,7 +304,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       const res = await fetch("/api/appointments/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ appointment_id: editing.appointment.id, mode }),
+        body: JSON.stringify({ appointment_id: editing.appointment.id, mode, notify_channel: cancelNotifyChannel }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data?.error || `Delete failed (${res.status})`); return; }
@@ -576,6 +628,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             <textarea value={form.notes} onChange={(e) => set("notes", e.target.value)} rows={2} className={inputCls + " resize-none"} placeholder="Optional notes..." />
           </div>
 
+          {/* Notification choice */}
+          <NotifyChoice
+            value={notifyChannel}
+            onChange={setNotifyChannel}
+            hasEmail={hasEmail}
+            hasPhone={hasPhone}
+            label={isEdit ? "Notify client about this change?" : "Send confirmation to client?"}
+          />
+
           {error && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
           )}
@@ -643,6 +704,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 {confirmDelete === "single"
                   ? "Cancel this appointment? It will be marked as cancelled."
                   : "Cancel this and all future appointments? They will be marked as cancelled."}
+              </div>
+              <div className="mt-2">
+                <NotifyChoice
+                  value={cancelNotifyChannel}
+                  onChange={setCancelNotifyChannel}
+                  hasEmail={hasEmail}
+                  hasPhone={hasPhone}
+                  label="Notify client about cancellation?"
+                />
               </div>
               <div className="flex gap-2 mt-2">
                 <button type="button" onClick={() => executeDelete(confirmDelete)} disabled={cancelling}

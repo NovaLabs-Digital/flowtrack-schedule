@@ -2,6 +2,8 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendEmail, sendSms, shouldSend, NotifyChannel } from "@/lib/notify";
+import { cancelTemplates } from "@/lib/templates";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -24,6 +26,7 @@ export async function POST(req: Request) {
     if (!appointment_id) return json({ error: "Missing appointment_id" }, 400);
     if (mode !== "single" && mode !== "future")
       return json({ error: "Invalid mode" }, 400);
+    const notify_channel: NotifyChannel = body.notify_channel || "none";
 
     const selectFields = "id, client_id, service_type, scheduled_for, status, series_id";
     let apptRes = await supabaseAdmin
@@ -44,12 +47,41 @@ export async function POST(req: Request) {
     if (!apptRes.data) return json({ error: "Appointment not found" }, 404);
     const appt = apptRes.data as any;
 
+    async function notifyCancellation() {
+      if (notify_channel === "none") return;
+      const clientRes = await supabaseAdmin
+        .from("clients")
+        .select("name, email, phone")
+        .eq("id", appt.client_id)
+        .single();
+      if (clientRes.error) return;
+
+      const { name, email, phone } = clientRes.data;
+      const t = cancelTemplates(name);
+
+      if (email && shouldSend(notify_channel, "email")) {
+        const providerId = await sendEmail(email, t.email.subject, t.email.body);
+        await supabaseAdmin.from("messages_sent").insert({
+          appointment_id, channel: "email", kind: "cancel",
+          to_value: email, body: t.email.body, provider_id: providerId,
+        });
+      }
+      if (phone && shouldSend(notify_channel, "sms")) {
+        const providerId = await sendSms(phone, t.sms);
+        await supabaseAdmin.from("messages_sent").insert({
+          appointment_id, channel: "sms", kind: "cancel",
+          to_value: phone, body: t.sms, provider_id: providerId,
+        });
+      }
+    }
+
     if (mode === "single") {
       const { error } = await supabaseAdmin
         .from("appointments")
         .update({ status: "cancelled" })
         .eq("id", appointment_id);
       if (error) throw error;
+      await notifyCancellation();
       return json({ ok: true, cancelled: 1 });
     }
 
@@ -77,6 +109,7 @@ export async function POST(req: Request) {
         .update({ status: "cancelled" })
         .in("id", ids);
       if (error) throw error;
+      await notifyCancellation();
     }
 
     return json({ ok: true, cancelled: ids.length });

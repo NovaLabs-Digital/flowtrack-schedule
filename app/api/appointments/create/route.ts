@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { sendEmail, sendSms } from "@/lib/notify";
+import { sendEmail, sendSms, shouldSend, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
 
@@ -33,6 +33,8 @@ export async function POST(req: Request) {
     const frequency_type: string = (body.frequency_type || "one_time").trim();
     const repeat_weeks: number = typeof body.repeat_weeks === "number" ? body.repeat_weeks : 1;
     const employee_id: string | null = (body.employee_id || "").trim() || null;
+    // Defaults to "both" so the public /book self-booking page (no staff choice) keeps sending a confirmation.
+    const notify_channel: NotifyChannel = body.notify_channel || "both";
 
     if (!service_type || !scheduled_for) {
       return json({ error: "Missing required fields" }, 400);
@@ -136,10 +138,10 @@ export async function POST(req: Request) {
 
     if (!clientRes.error && clientRes.data && firstId) {
       const { name: cName, email: cEmail, phone: cPhone } = clientRes.data;
-      const cancelUrl = `${process.env.APP_URL}/cancel?token=${rows[0].cancel_token}`;
+      const cancelUrl = `${process.env.NEXT_PUBLIC_APP_URL}/cancel?token=${rows[0].cancel_token}`;
       const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl);
 
-      if (cEmail) {
+      if (cEmail && shouldSend(notify_channel, "email")) {
         const providerId = await sendEmail(cEmail, t.email.subject, t.email.body);
         await supabaseAdmin.from("messages_sent").insert({
           appointment_id: firstId,
@@ -147,7 +149,7 @@ export async function POST(req: Request) {
           to_value: cEmail, body: t.email.body, provider_id: providerId,
         });
       }
-      if (cPhone) {
+      if (cPhone && shouldSend(notify_channel, "sms")) {
         const providerId = await sendSms(cPhone, t.sms);
         await supabaseAdmin.from("messages_sent").insert({
           appointment_id: firstId,

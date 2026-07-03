@@ -58,8 +58,32 @@ FlowTrack Schedule`,
   };
 }
 
+export function changeTemplates(
+  name: string,
+  service: string,
+  scheduledIso: string
+) {
+  const when = fmt(scheduledIso);
+
+  return {
+    email: {
+      subject: `Updated — ${service} (${when})`,
+      body: `Hi ${name},
+
+Your appointment has been updated.
+
+Service: ${service}
+When: ${when}
+
+Thank you,
+FlowTrack Schedule`,
+    },
+    sms: `Updated: ${service} on ${when}. — FlowTrack Schedule`,
+  };
+}
+
 export function cancelTemplates(name: string) {
-  const bookUrl = `${process.env.APP_URL}/book`;
+  const bookUrl = `${process.env.NEXT_PUBLIC_APP_URL}/book`;
   return {
     email: {
       subject: `Appointment Cancelled`,

@@ -2,6 +2,8 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendEmail, sendSms, shouldSend, NotifyChannel } from "@/lib/notify";
+import { changeTemplates } from "@/lib/templates";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -23,6 +25,7 @@ export async function PATCH(req: Request) {
     if (!appointment_id) return json({ error: "Missing appointment_id" }, 400);
 
     const mode = (body.mode || "single").trim();
+    const notify_channel: NotifyChannel = body.notify_channel || "none";
 
     const existing = await supabaseAdmin
       .from("appointments")
@@ -122,6 +125,40 @@ export async function PATCH(req: Request) {
         .update(clientUpdate)
         .eq("id", existing.data.client_id);
       if (error) throw error;
+    }
+
+    if (notify_channel !== "none") {
+      const apptRes = await supabaseAdmin
+        .from("appointments")
+        .select("service_type, scheduled_for")
+        .eq("id", appointment_id)
+        .single();
+      const clientRes = await supabaseAdmin
+        .from("clients")
+        .select("name, email, phone")
+        .eq("id", existing.data.client_id)
+        .single();
+
+      if (!apptRes.error && !clientRes.error) {
+        const { name, email, phone } = clientRes.data;
+        const { service_type, scheduled_for } = apptRes.data;
+        const t = changeTemplates(name, service_type, scheduled_for);
+
+        if (email && shouldSend(notify_channel, "email")) {
+          const providerId = await sendEmail(email, t.email.subject, t.email.body);
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id, channel: "email", kind: "update",
+            to_value: email, body: t.email.body, provider_id: providerId,
+          });
+        }
+        if (phone && shouldSend(notify_channel, "sms")) {
+          const providerId = await sendSms(phone, t.sms);
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id, channel: "sms", kind: "update",
+            to_value: phone, body: t.sms, provider_id: providerId,
+          });
+        }
+      }
     }
 
     return json({ ok: true });
