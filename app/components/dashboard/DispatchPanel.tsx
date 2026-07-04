@@ -92,10 +92,10 @@ function EmployeeHoursSection({
     <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium text-slate-800">{employee.name}</span>
-        <span className="text-slate-500">Scheduled: {formatDuration(scheduledMinutes(appointment))}</span>
+        <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(appointment))}</span>
       </div>
       <div className="flex items-center gap-2">
-        <label className="text-xs text-slate-500 shrink-0">Worked hours</label>
+        <label className="text-xs text-slate-500 shrink-0">Hours Worked</label>
         <input
           type="number"
           step="0.25"
@@ -127,7 +127,7 @@ function EmployeeHoursSection({
         disabled={saving}
         className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
       >
-        {saving ? "Saving..." : "Save Hours"}
+        {saving ? "Saving..." : "Save Worked Hours"}
       </button>
     </div>
   );
@@ -256,12 +256,12 @@ export default function DispatchPanel({
         )}
       </div>
 
-      {/* 3. Payroll Summary — always visible, independent of selection */}
+      {/* 3. Weekly Worked Hours — always visible, independent of selection */}
       <PayrollSummary appointments={appointments} employees={employees} employeeHours={employeeHours} />
 
-      {/* 4. Employee Hours — administrative task, lives at the bottom */}
+      {/* 4. Employee Worked Hours — administrative task, lives at the bottom */}
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">
-        <div className="text-sm font-semibold text-slate-900 mb-3">Employee Hours</div>
+        <div className="text-sm font-semibold text-slate-900 mb-3">Employee Worked Hours</div>
         {selectedAppt && employee ? (
           <EmployeeHoursSection
             key={selectedAppt.id}

@@ -38,7 +38,7 @@ export default function PayrollSummary({
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">
-      <div className="text-sm font-semibold text-slate-900">Payroll Summary</div>
+      <div className="text-sm font-semibold text-slate-900">Weekly Worked Hours</div>
 
       <div className="mt-3 flex items-center gap-2 text-xs">
         <span className="text-slate-500 shrink-0">Week</span>
@@ -80,7 +80,7 @@ export default function PayrollSummary({
 
       {rows.length > 0 && (
         <div className="mt-3 pt-2 border-t border-slate-200 grid grid-cols-[1fr_auto] gap-x-3">
-          <span className="text-xs font-semibold text-slate-900">Total Hours</span>
+          <span className="text-xs font-semibold text-slate-900">Total Worked Hours</span>
           <span className="text-xs font-semibold text-slate-900 text-right">{totalHours.toFixed(2)}</span>
         </div>
       )}
