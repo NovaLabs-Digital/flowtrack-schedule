@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Appointment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
+import { nowInBusinessTz } from "@/lib/timezone";
 
 function formatDateTime(iso: string) {
   const d = new Date(iso);
@@ -147,7 +148,7 @@ export default function DispatchPanel({
   selectedAppointmentId: string | null;
   onHoursSaved: () => void;
 }) {
-  const today = new Date();
+  const today = nowInBusinessTz();
   today.setHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);

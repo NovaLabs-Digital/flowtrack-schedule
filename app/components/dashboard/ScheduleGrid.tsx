@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Client, Appointment, Service, Employee, ViewMode } from "@/app/components/dashboard/types";
+import { nowInBusinessTz } from "@/lib/timezone";
 
 function formatDay(d: Date) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -12,7 +13,7 @@ function formatWeekRange(days: Date[]) {
   const first = days[0];
   const last = days[days.length - 1];
   const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
-  if (first.getFullYear() !== new Date().getFullYear()) {
+  if (first.getFullYear() !== nowInBusinessTz().getFullYear()) {
     (opts as any).year = "numeric";
   }
   return `${first.toLocaleDateString(undefined, opts)} — ${last.toLocaleDateString(undefined, opts)}`;
@@ -34,8 +35,8 @@ function addDays(d: Date, n: number) {
 }
 
 function viewDays(viewMode: ViewMode, weekOffset: number) {
-  const base = addDays(startOfWeek(new Date()), weekOffset * 7);
-  if (viewMode === "day") return [addDays(new Date(), weekOffset * 7)];
+  const base = addDays(startOfWeek(nowInBusinessTz()), weekOffset * 7);
+  if (viewMode === "day") return [addDays(nowInBusinessTz(), weekOffset * 7)];
   if (viewMode === "weekdays") return [0, 1, 2, 3, 4].map((i) => addDays(base, i));
   return [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(base, i));
 }
@@ -286,7 +287,7 @@ export default function ScheduleGrid({
           >
             <div className="border-b border-r px-3 py-2 text-xs font-medium text-slate-500">Time</div>
             {days.map((d) => {
-              const isToday = d.toDateString() === new Date().toDateString();
+              const isToday = d.toDateString() === nowInBusinessTz().toDateString();
               return (
                 <div
                   key={d.toISOString()}

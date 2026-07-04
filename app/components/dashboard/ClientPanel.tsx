@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Client, Appointment } from "@/app/components/dashboard/types";
+import { nowInBusinessTz } from "@/lib/timezone";
 
 function SectionHeader({ children, action }: { children: React.ReactNode; action?: string }) {
   return (
@@ -138,7 +139,7 @@ export default function ClientPanel({
     finally { setSaving(false); }
   }
 
-  const now = new Date();
+  const now = nowInBusinessTz();
   const clientAppts = client ? appointments.filter((a) => a.client_id === client.id) : [];
   const pastAppts = clientAppts.filter((a) => new Date(a.scheduled_for) < now)
     .sort((a, b) => new Date(b.scheduled_for).getTime() - new Date(a.scheduled_for).getTime());

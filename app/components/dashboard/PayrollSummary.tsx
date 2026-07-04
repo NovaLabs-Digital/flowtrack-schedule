@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { Appointment, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
+import { nowInBusinessTz } from "@/lib/timezone";
 
 function mondayOfCurrentWeek(): Date {
-  const d = new Date();
+  const d = nowInBusinessTz();
   d.setHours(0, 0, 0, 0);
   const dow = d.getDay(); // 0=Sun..6=Sat
   const diff = (dow + 6) % 7; // days since Monday
