@@ -2,10 +2,7 @@
 
 import { useState } from "react";
 import { Appointment, Employee, EmployeeHours } from "@/app/components/dashboard/types";
-
-function toDateInputValue(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
 
 function mondayOfCurrentWeek(): Date {
   const d = new Date();
@@ -22,25 +19,6 @@ function addDays(d: Date, n: number) {
   return x;
 }
 
-// One employee's payroll totals for the selected range. Kept as its own shape
-// so future columns (hourly rate, overtime, PTO, vacation, gross pay...) can be
-// added here without changing how rows are computed or laid out.
-type PayrollRow = {
-  employeeId: string;
-  employeeName: string;
-  hoursWorked: number;
-};
-
-// Scheduled duration in hours, mirroring DispatchPanel's scheduledMinutes but
-// as a decimal-hours value for payroll math.
-function scheduledHours(appt: Appointment): number {
-  if (appt.scheduled_end) {
-    const mins = Math.round((new Date(appt.scheduled_end).getTime() - new Date(appt.scheduled_for).getTime()) / 60_000);
-    if (mins > 0) return mins / 60;
-  }
-  return (appt.duration_minutes ?? 0) / 60;
-}
-
 export default function PayrollSummary({
   appointments,
   employees,
@@ -54,40 +32,7 @@ export default function PayrollSummary({
   const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
   const [rangeEnd, setRangeEnd] = useState(toDateInputValue(addDays(defaultMonday, 4)));
 
-  const employeeById: Record<string, Employee> = {};
-  for (const e of employees) employeeById[e.id] = e;
-
-  // Manually-saved hours are overrides, keyed by appointment+employee — not the
-  // source of totals. An appointment with no saved entry still counts, using
-  // its scheduled duration.
-  const savedHoursByKey = new Map<string, number>();
-  for (const entry of employeeHours) {
-    if (!entry.employee_id) continue;
-    savedHoursByKey.set(`${entry.appointment_id}|${entry.employee_id}`, entry.hours_worked);
-  }
-
-  const totals = new Map<string, number>();
-  for (const appt of appointments) {
-    if (appt.status === "cancelled") continue;
-    if (!appt.employee_id) continue;
-
-    const apptDate = toDateInputValue(new Date(appt.scheduled_for));
-    if (apptDate < rangeStart || apptDate > rangeEnd) continue;
-
-    const key = `${appt.id}|${appt.employee_id}`;
-    const hours = savedHoursByKey.has(key) ? savedHoursByKey.get(key)! : scheduledHours(appt);
-
-    totals.set(appt.employee_id, (totals.get(appt.employee_id) ?? 0) + hours);
-  }
-
-  const rows: PayrollRow[] = Array.from(totals.entries())
-    .map(([employeeId, hoursWorked]) => ({
-      employeeId,
-      employeeName: employeeById[employeeId]?.name ?? "Unknown",
-      hoursWorked,
-    }))
-    .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
-
+  const rows = computePayrollRows({ appointments, employees, employeeHours, rangeStart, rangeEnd });
   const totalHours = rows.reduce((sum, r) => sum + r.hoursWorked, 0);
 
   return (
