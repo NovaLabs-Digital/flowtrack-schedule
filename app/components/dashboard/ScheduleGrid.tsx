@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Client, Appointment, Service, Employee, ViewMode } from "@/app/components/dashboard/types";
+import { useMemo, useState } from "react";
+import { Client, Appointment, Service, Employee, EmployeeHours, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 
 function formatDay(d: Date) {
@@ -171,6 +171,7 @@ export default function ScheduleGrid({
   appointments,
   services,
   employees,
+  employeeHours,
   selectedClientId,
   selectedAppointmentId,
   onSelectAppointment,
@@ -184,6 +185,7 @@ export default function ScheduleGrid({
   appointments: Appointment[];
   services: Service[];
   employees: Employee[];
+  employeeHours: EmployeeHours[];
   selectedClientId: string | null;
   selectedAppointmentId: string | null;
   onSelectAppointment: (id: string) => void;
@@ -195,6 +197,11 @@ export default function ScheduleGrid({
   const dragEnabled = !!onDropAppointment;
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverCell, setDragOverCell] = useState<string | null>(null);
+  // Reuses the employeeHours array already fetched once for payroll — no extra query.
+  const apptIdsWithHours = useMemo(
+    () => new Set(employeeHours.map((h) => h.appointment_id)),
+    [employeeHours]
+  );
   const serviceDurations: Record<string, number> = {};
   const serviceColors: Record<string, string> = {};
   for (const s of services) {
@@ -412,6 +419,20 @@ export default function ScheduleGrid({
                     const empName = employeeName(a.employee_id);
                     const svcColor = serviceColors[a.service_type] ?? null;
 
+                    const needsHoursWarning =
+                      a.status !== "cancelled" &&
+                      rawStart.getTime() < Date.now() &&
+                      !apptIdsWithHours.has(a.id);
+                    const hoursWarningIcon = needsHoursWarning ? (
+                      <span
+                        title="Employee work hours not entered."
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-amber-500 cursor-help"
+                      >
+                        ⚠️
+                      </span>
+                    ) : null;
+
                     // Selected appointments always keep the plain status look underneath
                     // the blue ring, so selection is never diluted by a service tint.
                     const useServiceColor = !!svcColor && a.status !== "cancelled" && !selected;
@@ -459,8 +480,9 @@ export default function ScheduleGrid({
                             <div className="flex items-center gap-1 truncate min-w-0">
                               <span className="truncate font-medium text-xs">{a.service_type}</span>
                             </div>
-                            <div className={`text-[10px] text-slate-500 shrink-0${darkTimeCls}`}>
-                              {a.frequency_type && a.frequency_type !== "one_time" && <span className="mr-1">&#8635;</span>}
+                            <div className={`text-[10px] text-slate-500 shrink-0 flex items-center gap-1${darkTimeCls}`}>
+                              {hoursWarningIcon}
+                              {a.frequency_type && a.frequency_type !== "one_time" && <span>&#8635;</span>}
                               {timeRange(a.scheduled_for, mins)}
                             </div>
                           </div>
@@ -471,6 +493,7 @@ export default function ScheduleGrid({
                                 <span className="truncate font-medium text-xs">{a.service_type}</span>
                               </div>
                               <div className="text-[10px] shrink-0 flex items-center gap-1">
+                                {hoursWarningIcon}
                                 {a.frequency_type && a.frequency_type !== "one_time" && (
                                   <span className="text-blue-500" title={freqLabel(a)}>&#8635;</span>
                                 )}

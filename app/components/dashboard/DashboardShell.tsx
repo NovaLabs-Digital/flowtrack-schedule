@@ -195,6 +195,7 @@ export default function DashboardShell({
                 appointments={appointments}
                 services={services}
                 employees={employees}
+                employeeHours={employeeHours}
                 selectedClientId={selectedClientId}
                 selectedAppointmentId={selectedApptId}
                 onSelectAppointment={handleSelectAppointment}
@@ -355,6 +356,7 @@ export default function DashboardShell({
                   appointments={appointments}
                   services={services}
                   employees={employees}
+                  employeeHours={employeeHours}
                   selectedClientId={selectedClientId}
                   selectedAppointmentId={selectedApptId}
                   onSelectAppointment={handleSelectAppointment}
