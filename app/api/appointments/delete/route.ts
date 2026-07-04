@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { sendEmail, sendSms, shouldSend, NotifyChannel } from "@/lib/notify";
+import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
 
 function json(data: any, status = 200) {
@@ -60,18 +60,36 @@ export async function POST(req: Request) {
       const t = cancelTemplates(name);
 
       if (email && shouldSend(notify_channel, "email")) {
-        const providerId = await sendEmail(email, t.email.subject, t.email.body);
-        await supabaseAdmin.from("messages_sent").insert({
-          appointment_id, channel: "email", kind: "cancel",
-          to_value: email, body: t.email.body, provider_id: providerId,
-        });
+        try {
+          const providerId = await sendEmail(email, t.email.subject, t.email.body);
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id, channel: "email", kind: "cancel",
+            to_value: email, body: t.email.body, provider_id: providerId,
+          });
+        } catch (err) {
+          console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id, channel: "email", kind: "cancel",
+            to_value: email, body: t.email.body, provider_id: "failed",
+          });
+        }
       }
+      // Runs even if the email attempt above failed — one provider's
+      // failure must not block the other channel.
       if (phone && shouldSend(notify_channel, "sms")) {
-        const providerId = await sendSms(phone, t.sms);
-        await supabaseAdmin.from("messages_sent").insert({
-          appointment_id, channel: "sms", kind: "cancel",
-          to_value: phone, body: t.sms, provider_id: providerId,
-        });
+        try {
+          const providerId = await sendSms(phone, t.sms);
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id, channel: "sms", kind: "cancel",
+            to_value: phone, body: t.sms, provider_id: providerId,
+          });
+        } catch (err) {
+          console.error("NOTIFY_SMS_ERROR", describeProviderError(err));
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id, channel: "sms", kind: "cancel",
+            to_value: phone, body: t.sms, provider_id: "failed",
+          });
+        }
       }
     }
 

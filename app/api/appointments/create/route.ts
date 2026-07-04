@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { sendEmail, sendSms, shouldSend, NotifyChannel } from "@/lib/notify";
+import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
 
@@ -142,20 +142,40 @@ export async function POST(req: Request) {
       const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl);
 
       if (cEmail && shouldSend(notify_channel, "email")) {
-        const providerId = await sendEmail(cEmail, t.email.subject, t.email.body);
-        await supabaseAdmin.from("messages_sent").insert({
-          appointment_id: firstId,
-          channel: "email", kind: "confirmation",
-          to_value: cEmail, body: t.email.body, provider_id: providerId,
-        });
+        try {
+          const providerId = await sendEmail(cEmail, t.email.subject, t.email.body);
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id: firstId,
+            channel: "email", kind: "confirmation",
+            to_value: cEmail, body: t.email.body, provider_id: providerId,
+          });
+        } catch (err) {
+          console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id: firstId,
+            channel: "email", kind: "confirmation",
+            to_value: cEmail, body: t.email.body, provider_id: "failed",
+          });
+        }
       }
+      // Runs even if the email attempt above failed — one provider's
+      // failure must not block the other channel.
       if (cPhone && shouldSend(notify_channel, "sms")) {
-        const providerId = await sendSms(cPhone, t.sms);
-        await supabaseAdmin.from("messages_sent").insert({
-          appointment_id: firstId,
-          channel: "sms", kind: "confirmation",
-          to_value: cPhone, body: t.sms, provider_id: providerId,
-        });
+        try {
+          const providerId = await sendSms(cPhone, t.sms);
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id: firstId,
+            channel: "sms", kind: "confirmation",
+            to_value: cPhone, body: t.sms, provider_id: providerId,
+          });
+        } catch (err) {
+          console.error("NOTIFY_SMS_ERROR", describeProviderError(err));
+          await supabaseAdmin.from("messages_sent").insert({
+            appointment_id: firstId,
+            channel: "sms", kind: "confirmation",
+            to_value: cPhone, body: t.sms, provider_id: "failed",
+          });
+        }
       }
     }
 

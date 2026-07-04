@@ -18,6 +18,31 @@ export function shouldSend(channel: NotifyChannel | undefined, medium: "email" |
   return channel === medium;
 }
 
+// Node's console.error truncates nested objects (e.g. logs "response: [Object]"
+// instead of the actual SendGrid/Twilio response body that explains *why* a
+// send failed) — this serializes the full error, including any own
+// enumerable properties providers attach (SendGrid's ResponseError has
+// .code/.response; Twilio's RestException has .status/.code/.moreInfo), so
+// the real reason is visible in logs instead of a placeholder.
+export function describeProviderError(err: unknown): string {
+  if (err instanceof Error) {
+    const plain: Record<string, unknown> = {};
+    for (const key of Object.getOwnPropertyNames(err)) {
+      plain[key] = (err as unknown as Record<string, unknown>)[key];
+    }
+    try {
+      return JSON.stringify(plain, null, 2);
+    } catch {
+      return err.message;
+    }
+  }
+  try {
+    return JSON.stringify(err, null, 2);
+  } catch {
+    return String(err);
+  }
+}
+
 export async function sendSms(to: string, body: string) {
   if (disabled) {
     console.log("[DISABLE_MESSAGES] SMS skipped — to:", to, "| body:", body);
