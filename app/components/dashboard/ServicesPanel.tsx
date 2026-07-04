@@ -3,15 +3,30 @@
 import { useEffect, useState } from "react";
 import { Service } from "@/app/components/dashboard/types";
 
+// Curated, non-neon palette so service colors stay consistent and read well as
+// a soft transparent card background across every ScheduleFlowTrack install.
 const PRESET_COLORS = [
-  { hex: "#3B82F6", label: "Blue" },
-  { hex: "#8B5CF6", label: "Purple" },
-  { hex: "#F97316", label: "Orange" },
-  { hex: "#22C55E", label: "Green" },
-  { hex: "#14B8A6", label: "Teal" },
-  { hex: "#EF4444", label: "Red" },
-  { hex: "#EC4899", label: "Pink" },
-  { hex: "#F59E0B", label: "Amber" },
+  { hex: "#2563EB", label: "Blue" },
+  { hex: "#0284C7", label: "Sky Blue" },
+  { hex: "#1E3A8A", label: "Navy" },
+  { hex: "#0891B2", label: "Cyan" },
+  { hex: "#0D9488", label: "Teal" },
+  { hex: "#059669", label: "Emerald" },
+  { hex: "#16A34A", label: "Green" },
+  { hex: "#65A30D", label: "Lime" },
+  { hex: "#6E7B3A", label: "Olive" },
+  { hex: "#D97706", label: "Amber" },
+  { hex: "#B8860B", label: "Gold" },
+  { hex: "#EA580C", label: "Orange" },
+  { hex: "#C2410C", label: "Burnt Orange" },
+  { hex: "#E2604A", label: "Coral" },
+  { hex: "#DC2626", label: "Red" },
+  { hex: "#7A2331", label: "Burgundy" },
+  { hex: "#DB2777", label: "Pink" },
+  { hex: "#9333EA", label: "Purple" },
+  { hex: "#4F46E5", label: "Indigo" },
+  { hex: "#7C4A2D", label: "Brown" },
+  { hex: "#475569", label: "Slate Gray" },
 ];
 
 type EditForm = { name: string; description: string; color: string };

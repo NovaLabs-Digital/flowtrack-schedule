@@ -32,7 +32,7 @@ body {
    differs between light and dark so the tint stays soft in light mode and
    avoids a bright/neon block in dark mode. */
 .service-tint {
-  background-color: rgba(var(--svc-r), var(--svc-g), var(--svc-b), 0.4);
+  background-color: rgba(var(--svc-r), var(--svc-g), var(--svc-b), 0.28);
   border-color: rgb(var(--svc-r), var(--svc-g), var(--svc-b));
 }
 
