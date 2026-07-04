@@ -37,16 +37,16 @@ export async function GET(req: Request) {
     for (const a of appts.data || []) {
       const clientRes = await supabaseAdmin
         .from("clients")
-        .select("name, email, phone")
+        .select("name, email, phone, auto_email, auto_sms")
         .eq("id", a.client_id)
         .single();
 
       if (clientRes.error) continue;
 
-      const { name, email, phone } = clientRes.data;
+      const { name, email, phone, auto_email, auto_sms } = clientRes.data;
       const t = reminder24hTemplates(name, a.service_type, a.scheduled_for);
 
-      if (email) {
+      if (email && auto_email) {
         const providerId = await sendEmail(email, t.email.subject, t.email.body);
         await supabaseAdmin.from("messages_sent").insert({
           appointment_id: a.id,
@@ -58,7 +58,7 @@ export async function GET(req: Request) {
         });
       }
 
-      if (phone) {
+      if (phone && auto_sms) {
         const providerId = await sendSms(phone, t.sms);
         await supabaseAdmin.from("messages_sent").insert({
           appointment_id: a.id,

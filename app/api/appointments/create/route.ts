@@ -132,16 +132,16 @@ export async function POST(req: Request) {
     // Send confirmation for the first occurrence only
     const clientRes = await supabaseAdmin
       .from("clients")
-      .select("name, email, phone")
+      .select("name, email, phone, auto_email, auto_sms")
       .eq("id", clientId)
       .single();
 
     if (!clientRes.error && clientRes.data && firstId) {
-      const { name: cName, email: cEmail, phone: cPhone } = clientRes.data;
+      const { name: cName, email: cEmail, phone: cPhone, auto_email, auto_sms } = clientRes.data;
       const cancelUrl = `${process.env.NEXT_PUBLIC_APP_URL}/cancel?token=${rows[0].cancel_token}`;
       const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl);
 
-      if (cEmail && shouldSend(notify_channel, "email")) {
+      if (cEmail && auto_email && shouldSend(notify_channel, "email")) {
         try {
           const providerId = await sendEmail(cEmail, t.email.subject, t.email.body);
           await supabaseAdmin.from("messages_sent").insert({
@@ -160,7 +160,7 @@ export async function POST(req: Request) {
       }
       // Runs even if the email attempt above failed — one provider's
       // failure must not block the other channel.
-      if (cPhone && shouldSend(notify_channel, "sms")) {
+      if (cPhone && auto_sms && shouldSend(notify_channel, "sms")) {
         try {
           const providerId = await sendSms(cPhone, t.sms);
           await supabaseAdmin.from("messages_sent").insert({

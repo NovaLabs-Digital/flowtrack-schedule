@@ -135,16 +135,16 @@ export async function PATCH(req: Request) {
         .single();
       const clientRes = await supabaseAdmin
         .from("clients")
-        .select("name, email, phone")
+        .select("name, email, phone, auto_email, auto_sms")
         .eq("id", existing.data.client_id)
         .single();
 
       if (!apptRes.error && !clientRes.error) {
-        const { name, email, phone } = clientRes.data;
+        const { name, email, phone, auto_email, auto_sms } = clientRes.data;
         const { service_type, scheduled_for } = apptRes.data;
         const t = changeTemplates(name, service_type, scheduled_for);
 
-        if (email && shouldSend(notify_channel, "email")) {
+        if (email && auto_email && shouldSend(notify_channel, "email")) {
           try {
             const providerId = await sendEmail(email, t.email.subject, t.email.body);
             await supabaseAdmin.from("messages_sent").insert({
@@ -161,7 +161,7 @@ export async function PATCH(req: Request) {
         }
         // Runs even if the email attempt above failed — one provider's
         // failure must not block the other channel.
-        if (phone && shouldSend(notify_channel, "sms")) {
+        if (phone && auto_sms && shouldSend(notify_channel, "sms")) {
           try {
             const providerId = await sendSms(phone, t.sms);
             await supabaseAdmin.from("messages_sent").insert({

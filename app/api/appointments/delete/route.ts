@@ -51,15 +51,15 @@ export async function POST(req: Request) {
       if (notify_channel === "none") return;
       const clientRes = await supabaseAdmin
         .from("clients")
-        .select("name, email, phone")
+        .select("name, email, phone, auto_email, auto_sms")
         .eq("id", appt.client_id)
         .single();
       if (clientRes.error) return;
 
-      const { name, email, phone } = clientRes.data;
-      const t = cancelTemplates(name);
+      const { name, email, phone, auto_email, auto_sms } = clientRes.data;
+      const t = cancelTemplates(name, appt.service_type);
 
-      if (email && shouldSend(notify_channel, "email")) {
+      if (email && auto_email && shouldSend(notify_channel, "email")) {
         try {
           const providerId = await sendEmail(email, t.email.subject, t.email.body);
           await supabaseAdmin.from("messages_sent").insert({
@@ -76,7 +76,7 @@ export async function POST(req: Request) {
       }
       // Runs even if the email attempt above failed — one provider's
       // failure must not block the other channel.
-      if (phone && shouldSend(notify_channel, "sms")) {
+      if (phone && auto_sms && shouldSend(notify_channel, "sms")) {
         try {
           const providerId = await sendSms(phone, t.sms);
           await supabaseAdmin.from("messages_sent").insert({

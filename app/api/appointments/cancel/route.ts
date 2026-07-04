@@ -16,7 +16,7 @@ export async function POST(req: Request) {
 
     const apptRes = await supabaseAdmin
       .from("appointments")
-      .select("id, status, client_id")
+      .select("id, status, client_id, service_type")
       .eq("cancel_token", token)
       .maybeSingle();
 
@@ -34,16 +34,16 @@ export async function POST(req: Request) {
 
     const clientRes = await supabaseAdmin
       .from("clients")
-      .select("name, email, phone")
+      .select("name, email, phone, auto_email, auto_sms")
       .eq("id", apptRes.data.client_id)
       .single();
 
     if (clientRes.error) throw clientRes.error;
 
-    const { name, email, phone } = clientRes.data;
-    const t = cancelTemplates(name);
+    const { name, email, phone, auto_email, auto_sms } = clientRes.data;
+    const t = cancelTemplates(name, apptRes.data.service_type);
 
-    if (email) {
+    if (email && auto_email) {
       const providerId = await sendEmail(email, t.email.subject, t.email.body);
       await supabaseAdmin.from("messages_sent").insert({
         appointment_id: apptRes.data.id,
@@ -55,7 +55,7 @@ export async function POST(req: Request) {
       });
     }
 
-    if (phone) {
+    if (phone && auto_sms) {
       const providerId = await sendSms(phone, t.sms);
       await supabaseAdmin.from("messages_sent").insert({
         appointment_id: apptRes.data.id,
