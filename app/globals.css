@@ -26,3 +26,19 @@ body {
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+/* Schedule grid appointment cards tinted by service color. RGB channels are set
+   per-card via --svc-r/--svc-g/--svc-b inline style; only the alpha/opacity
+   differs between light and dark so the tint stays soft in light mode and
+   avoids a bright/neon block in dark mode. */
+.service-tint {
+  background-color: rgba(var(--svc-r), var(--svc-g), var(--svc-b), 0.4);
+  border-color: rgb(var(--svc-r), var(--svc-g), var(--svc-b));
+}
+
+@media (prefers-color-scheme: dark) {
+  .service-tint {
+    background-color: rgba(var(--svc-r), var(--svc-g), var(--svc-b), 0.28);
+    border-color: rgba(var(--svc-r), var(--svc-g), var(--svc-b), 0.85);
+  }
+}

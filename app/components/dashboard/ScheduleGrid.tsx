@@ -49,6 +49,22 @@ function statusPill(status: Appointment["status"]) {
   }
 }
 
+// Splits a service's hex color into RGB channels, set as CSS custom properties
+// on the card (see ".service-tint" in globals.css). Doing the light/dark tint
+// math in CSS — rather than computing a fixed rgba() string here — lets the
+// same channels resolve to a lighter or darker tint via @media
+// (prefers-color-scheme: dark), without any JS-side theme detection.
+// Accepts 3- or 6-digit hex, with or without "#".
+function parseHex(hex: string): { r: number; g: number; b: number } {
+  const clean = hex.replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+  return {
+    r: parseInt(full.slice(0, 2), 16) || 0,
+    g: parseInt(full.slice(2, 4), 16) || 0,
+    b: parseInt(full.slice(4, 6), 16) || 0,
+  };
+}
+
 function statusLabel(status: Appointment["status"]) {
   switch (status) {
     case "scheduled":
@@ -386,6 +402,17 @@ export default function ScheduleGrid({
                     const empName = employeeName(a.employee_id);
                     const svcColor = serviceColors[a.service_type] ?? null;
 
+                    // Selected appointments always keep the plain status look underneath
+                    // the blue ring, so selection is never diluted by a service tint.
+                    const useServiceColor = !!svcColor && a.status !== "cancelled" && !selected;
+                    const svcRgb = useServiceColor ? parseHex(svcColor!) : null;
+                    // Applied only to the elements whose color is hardcoded for a light
+                    // background — harmless (and unused) on cards that don't get the tint.
+                    const darkTextCls = useServiceColor ? " dark:text-slate-100" : "";
+                    const darkTimeCls = useServiceColor ? " dark:text-slate-400" : "";
+                    const darkClientCls = useServiceColor ? " dark:text-slate-300" : "";
+                    const darkNotesCls = useServiceColor ? " dark:text-slate-500" : "";
+
                     return (
                       <button
                         key={a.id}
@@ -401,7 +428,7 @@ export default function ScheduleGrid({
                         onDragEnd={dragEnabled ? () => { setDraggingId(null); setDragOverCell(null); } : undefined}
                         className={[
                           "absolute rounded-lg border text-left shadow-sm overflow-hidden px-2 z-[5]",
-                          statusPill(a.status),
+                          useServiceColor ? `service-tint text-slate-900${darkTextCls}` : statusPill(a.status),
                           selected ? "ring-2 ring-blue-600 bg-blue-100/60 z-[6]" : "",
                           sameClient && !selected ? "outline outline-2 outline-blue-600/30" : "",
                           dragEnabled ? "cursor-grab active:cursor-grabbing" : "",
@@ -412,6 +439,7 @@ export default function ScheduleGrid({
                           height: Math.max(height - 4, 24),
                           left: `calc(${leftPct}% + 2px)`,
                           width: `calc(${widthPct}% - 4px)`,
+                          ...(svcRgb ? ({ "--svc-r": svcRgb.r, "--svc-g": svcRgb.g, "--svc-b": svcRgb.b } as React.CSSProperties) : {}),
                           borderLeftWidth: empColor ? 4 : undefined,
                           borderLeftColor: empColor ?? undefined,
                         }}
@@ -419,10 +447,9 @@ export default function ScheduleGrid({
                         {isShort ? (
                           <div className="flex items-center justify-between gap-1 h-full min-w-0">
                             <div className="flex items-center gap-1 truncate min-w-0">
-                              {svcColor && <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: svcColor }} />}
                               <span className="truncate font-medium text-xs">{a.service_type}</span>
                             </div>
-                            <div className="text-[10px] text-slate-500 shrink-0">
+                            <div className={`text-[10px] text-slate-500 shrink-0${darkTimeCls}`}>
                               {a.frequency_type && a.frequency_type !== "one_time" && <span className="mr-1">&#8635;</span>}
                               {timeRange(a.scheduled_for, mins)}
                             </div>
@@ -431,7 +458,6 @@ export default function ScheduleGrid({
                           <div className="py-1 flex flex-col h-full overflow-hidden">
                             <div className="flex items-center justify-between gap-1">
                               <div className="flex items-center gap-1 truncate min-w-0">
-                                {svcColor && <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: svcColor }} />}
                                 <span className="truncate font-medium text-xs">{a.service_type}</span>
                               </div>
                               <div className="text-[10px] shrink-0 flex items-center gap-1">
@@ -441,17 +467,17 @@ export default function ScheduleGrid({
                                 {statusLabel(a.status)}
                               </div>
                             </div>
-                            <div className="text-[11px] text-slate-600 mt-0.5">{clientName(a.client_id)}</div>
+                            <div className={`text-[11px] text-slate-600 mt-0.5${darkClientCls}`}>{clientName(a.client_id)}</div>
                             {empName && (
                               <div className="text-[10px] mt-0.5 truncate" style={{ color: empColor ?? "#64748b" }}>
                                 {empName}
                               </div>
                             )}
-                            <div className="text-[10px] text-slate-500 mt-0.5">
+                            <div className={`text-[10px] text-slate-500 mt-0.5${darkTimeCls}`}>
                               {timeRange(a.scheduled_for, mins)} ({durationLabel(mins)})
                             </div>
                             {a.notes && (
-                              <div className="text-[10px] text-slate-400 italic mt-auto truncate">
+                              <div className={`text-[10px] text-slate-400 italic mt-auto truncate${darkNotesCls}`}>
                                 {a.notes}
                               </div>
                             )}
