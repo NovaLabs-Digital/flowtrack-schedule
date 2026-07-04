@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Client, Appointment, Service, Employee, ViewMode } from "@/app/components/dashboard/types";
 
 function formatDay(d: Date) {
@@ -152,6 +153,7 @@ export default function ScheduleGrid({
   onSelectAppointment,
   onEditAppointment,
   onCellClick,
+  onDropAppointment,
   weekOffset,
 }: {
   viewMode: ViewMode;
@@ -164,8 +166,12 @@ export default function ScheduleGrid({
   onSelectAppointment: (id: string) => void;
   onEditAppointment?: (id: string) => void;
   onCellClick: (date: Date, hour: number) => void;
+  onDropAppointment?: (appointmentId: string, scheduledFor: string, scheduledEnd: string | null) => void;
   weekOffset: number;
 }) {
+  const dragEnabled = !!onDropAppointment;
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverCell, setDragOverCell] = useState<string | null>(null);
   const serviceDurations: Record<string, number> = {};
   const serviceColors: Record<string, string> = {};
   for (const s of services) {
@@ -209,6 +215,30 @@ export default function ScheduleGrid({
     return apptsInView.filter(
       (a) => new Date(a.scheduled_for).toDateString() === d.toDateString()
     );
+  }
+
+  function handleDrop(day: Date, hour: number) {
+    setDragOverCell(null);
+    const id = draggingId;
+    setDraggingId(null);
+    if (!id || !onDropAppointment) return;
+
+    const appt = appointments.find((a) => a.id === id);
+    if (!appt) return;
+
+    const oldStart = new Date(appt.scheduled_for);
+    const newStart = new Date(day);
+    newStart.setHours(hour, oldStart.getMinutes(), 0, 0);
+
+    if (newStart.getTime() === oldStart.getTime()) return;
+
+    let newEndIso: string | null = null;
+    if (appt.scheduled_end) {
+      const delta = newStart.getTime() - oldStart.getTime();
+      newEndIso = new Date(new Date(appt.scheduled_end).getTime() + delta).toISOString();
+    }
+
+    onDropAppointment(id, newStart.toISOString(), newEndIso);
   }
 
   return (
@@ -275,22 +305,40 @@ export default function ScheduleGrid({
             {days.map((d, dayIdx) => (
               <div key={d.toISOString()} className="relative" style={{ height: totalHours * CELL_PX }}>
                 {/* Empty cell click targets */}
-                {hours.map((h, rowIdx) => (
-                  <div
-                    key={h}
-                    className="absolute border-b border-l cursor-pointer hover:bg-blue-50/40 transition-colors"
-                    style={{
-                      top: rowIdx * CELL_PX,
-                      left: 0,
-                      right: 0,
-                      height: CELL_PX,
-                    }}
-                    onClick={() => {
-                      console.log("[CELL_CLICK]", formatDay(d), `${h}:00`);
-                      onCellClick(d, h);
-                    }}
-                  />
-                ))}
+                {hours.map((h, rowIdx) => {
+                  const cellKey = `${d.toDateString()}|${h}`;
+                  return (
+                    <div
+                      key={h}
+                      className={[
+                        "absolute border-b border-l cursor-pointer transition-colors",
+                        dragOverCell === cellKey ? "bg-blue-100/60" : "hover:bg-blue-50/40",
+                      ].join(" ")}
+                      style={{
+                        top: rowIdx * CELL_PX,
+                        left: 0,
+                        right: 0,
+                        height: CELL_PX,
+                      }}
+                      onClick={() => {
+                        console.log("[CELL_CLICK]", formatDay(d), `${h}:00`);
+                        onCellClick(d, h);
+                      }}
+                      onDragOver={dragEnabled ? (e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        setDragOverCell(cellKey);
+                      } : undefined}
+                      onDragLeave={dragEnabled ? () => {
+                        setDragOverCell((cur) => (cur === cellKey ? null : cur));
+                      } : undefined}
+                      onDrop={dragEnabled ? (e) => {
+                        e.preventDefault();
+                        handleDrop(d, h);
+                      } : undefined}
+                    />
+                  );
+                })}
 
                 {/* Appointment cards positioned by time with overlap columns */}
                 {(() => {
@@ -329,13 +377,23 @@ export default function ScheduleGrid({
                     return (
                       <button
                         key={a.id}
+                        draggable={dragEnabled}
                         onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}
                         onDoubleClick={(e) => { e.stopPropagation(); onEditAppointment?.(a.id); }}
+                        onDragStart={dragEnabled ? (e) => {
+                          e.stopPropagation();
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("text/plain", a.id);
+                          setDraggingId(a.id);
+                        } : undefined}
+                        onDragEnd={dragEnabled ? () => { setDraggingId(null); setDragOverCell(null); } : undefined}
                         className={[
                           "absolute rounded-lg border text-left shadow-sm overflow-hidden px-2 z-[5]",
                           statusPill(a.status),
                           selected ? "ring-2 ring-blue-600 bg-blue-100/60 z-[6]" : "",
                           sameClient && !selected ? "outline outline-2 outline-blue-600/30" : "",
+                          dragEnabled ? "cursor-grab active:cursor-grabbing" : "",
+                          draggingId === a.id ? "opacity-40" : "",
                         ].join(" ")}
                         style={{
                           top: topOffset + 2,

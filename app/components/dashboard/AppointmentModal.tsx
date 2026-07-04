@@ -78,9 +78,9 @@ function frequencyLabel(ft?: string | null, rw?: number | null): string {
 
 const WEEK_OPTIONS = [1, 2, 3, 4, 6, 8];
 
-type NotifyChannel = "email" | "sms" | "both" | "none";
+export type NotifyChannel = "email" | "sms" | "both" | "none";
 
-function NotifyChoice({
+export function NotifyChoice({
   value, onChange, hasEmail, hasPhone, label,
 }: {
   value: NotifyChannel;

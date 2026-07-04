@@ -10,6 +10,7 @@ import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
 import ClientPanel from "@/app/components/dashboard/ClientPanel";
 import DispatchPanel from "@/app/components/dashboard/DispatchPanel";
 import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
+import MoveConfirmDialog from "@/app/components/dashboard/MoveConfirmDialog";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import {
   Client,
@@ -50,6 +51,9 @@ export default function DashboardShell({
   const [clientsHidden, setClientsHidden] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
+  const [pendingMove, setPendingMove] = useState<
+    { appointment: Appointment; client: Client; scheduledFor: string; scheduledEnd: string | null } | null
+  >(null);
 
   const effectiveViewMode = isMobile && viewMode !== "day" ? "day" : viewMode;
 
@@ -116,6 +120,19 @@ export default function DashboardShell({
 
   function handleModalSaved() {
     setModal(null);
+    router.refresh();
+  }
+
+  function handleDropAppointment(appointmentId: string, scheduledFor: string, scheduledEnd: string | null) {
+    const appointment = appointments.find((a) => a.id === appointmentId);
+    if (!appointment) return;
+    const client = clients.find((c) => c.id === appointment.client_id);
+    if (!client) return;
+    setPendingMove({ appointment, client, scheduledFor, scheduledEnd });
+  }
+
+  function handleMoved() {
+    setPendingMove(null);
     router.refresh();
   }
 
@@ -339,6 +356,7 @@ export default function DashboardShell({
                   onSelectAppointment={handleSelectAppointment}
                   onEditAppointment={handleEditAppointment}
                   onCellClick={handleCellClick}
+                  onDropAppointment={handleDropAppointment}
                   weekOffset={weekOffset}
                 />
               </div>
@@ -378,6 +396,16 @@ export default function DashboardShell({
       )}
 
       {modalEl}
+      {pendingMove && (
+        <MoveConfirmDialog
+          appointment={pendingMove.appointment}
+          client={pendingMove.client}
+          scheduledFor={pendingMove.scheduledFor}
+          scheduledEnd={pendingMove.scheduledEnd}
+          onClose={() => setPendingMove(null)}
+          onMoved={handleMoved}
+        />
+      )}
     </div>
   );
 }
