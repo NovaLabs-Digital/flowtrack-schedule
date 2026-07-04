@@ -4,14 +4,14 @@ export function toDateInputValue(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-// "manual_hours" is the active mode for now — payroll totals come only from
-// saved appointment_employee_hours entries, never from scheduled duration.
-// "scheduled_duration" is kept for reference/future use (e.g. once a
-// payroll_mode company setting exists) but is not used by default today.
-// Future modes (e.g. "job_tracking", "fixed_weekly") extend this union and get
-// their own resolver below — computePayrollRows's loop and PayrollSummary's
-// rendering never change.
-export type PayrollMode = "manual_hours" | "scheduled_duration";
+// "job_tracking" is the active mode for now — payroll totals come only from
+// actual Start/Complete timestamps, never from scheduled duration.
+// "scheduled_duration" and "manual_hours" are kept for future use (e.g. once a
+// payroll_mode company setting exists) but are not used by default today.
+// Future modes (e.g. "fixed_weekly") extend this union and get their own
+// resolver below — computePayrollRows's loop and PayrollSummary's rendering
+// never change.
+export type PayrollMode = "job_tracking" | "manual_hours" | "scheduled_duration";
 
 // One employee's payroll totals for a date range. Kept as its own shape so future
 // columns (hourly rate, overtime, PTO, vacation, gross pay...) can be added here
@@ -24,9 +24,10 @@ export type PayrollRow = {
 
 export type PayrollComputation = {
   rows: PayrollRow[];
-  // Count of in-range, non-cancelled, assigned appointments with no saved hours
-  // entry for their mode. Always 0 for "scheduled_duration" (it always has a
-  // fallback value); meaningful for "manual_hours".
+  // Count of in-range, non-cancelled, assigned appointments with no usable
+  // hours source for the active mode. Always 0 for "scheduled_duration" (it
+  // always has a fallback value); meaningful for "manual_hours" and
+  // "job_tracking".
   missingHoursCount: number;
 };
 
@@ -64,13 +65,25 @@ function resolveManualHoursOnly(
   return savedHoursByKey.has(key) ? savedHoursByKey.get(key)! : null;
 }
 
+// Resolves hours for one appointment under "job_tracking" mode: actual
+// Start/Complete timestamps only, converted to decimal hours (e.g. 3h32m ->
+// 3.5333... -> displayed as 3.53 hrs). Returns null — counted as missing —
+// when either timestamp is absent or the duration isn't positive. Never
+// falls back to scheduled duration.
+function resolveJobTrackingHours(appt: Appointment): number | null {
+  if (!appt.actual_started_at || !appt.actual_completed_at) return null;
+  const mins = (new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()) / 60_000;
+  if (mins <= 0) return null;
+  return mins / 60;
+}
+
 export function computePayrollRows({
   appointments,
   employees,
   employeeHours,
   rangeStart,
   rangeEnd,
-  mode = "manual_hours",
+  mode = "job_tracking",
 }: {
   appointments: Appointment[];
   employees: Employee[];
@@ -104,8 +117,11 @@ export function computePayrollRows({
         hours = resolveScheduledDurationHours(appt, appt.employee_id, savedHoursByKey);
         break;
       case "manual_hours":
-      default:
         hours = resolveManualHoursOnly(appt, appt.employee_id, savedHoursByKey);
+        break;
+      case "job_tracking":
+      default:
+        hours = resolveJobTrackingHours(appt);
         break;
     }
 
