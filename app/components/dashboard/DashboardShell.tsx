@@ -17,6 +17,7 @@ import {
   Appointment,
   Service,
   Employee,
+  EmployeeHours,
   MobileTab,
   ViewMode,
   CenterMode,
@@ -32,11 +33,13 @@ export default function DashboardShell({
   appointments,
   services,
   employees,
+  employeeHours,
 }: {
   clients: Client[];
   appointments: Appointment[];
   services: Service[];
   employees: Employee[];
+  employeeHours: EmployeeHours[];
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
@@ -391,7 +394,9 @@ export default function DashboardShell({
             appointments={appointments}
             clients={clients}
             employees={employees}
+            employeeHours={employeeHours}
             selectedAppointmentId={selectedApptId}
+            onHoursSaved={() => router.refresh()}
           />
         </aside>
       )}

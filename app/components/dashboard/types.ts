@@ -48,6 +48,16 @@ export type Employee = {
   active: boolean;
 };
 
+export type EmployeeHours = {
+  id: string;
+  appointment_id: string;
+  employee_id: string | null;
+  hours_worked: number;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type MobileTab = "schedule" | "clients" | "settings" | "map";
 export type ViewMode = "day" | "weekdays" | "week";
 export type CenterMode = "schedule" | "settings";

@@ -62,6 +62,16 @@ export default async function DashboardPage() {
     // employees table may not exist yet
   }
 
+  let employeeHours: any[] = [];
+  try {
+    const hoursRes = await supabaseAdmin
+      .from("appointment_employee_hours")
+      .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at");
+    if (!hoursRes.error) employeeHours = hoursRes.data ?? [];
+  } catch {
+    // appointment_employee_hours table may not exist yet
+  }
+
   if (clientsErr || apptsErr) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -81,6 +91,7 @@ export default async function DashboardPage() {
       appointments={appointments ?? []}
       services={services ?? []}
       employees={employees ?? []}
+      employeeHours={employeeHours}
     />
   );
 }
