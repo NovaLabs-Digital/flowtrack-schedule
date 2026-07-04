@@ -93,6 +93,8 @@ function freqLabel(a: Appointment): string {
 }
 
 const CELL_PX = 56;
+const QUARTER_PX = CELL_PX / 4;
+const QUARTER_MINUTES = [0, 15, 30, 45];
 
 type LayoutInfo = { column: number; totalColumns: number };
 
@@ -165,7 +167,7 @@ export default function ScheduleGrid({
   selectedAppointmentId: string | null;
   onSelectAppointment: (id: string) => void;
   onEditAppointment?: (id: string) => void;
-  onCellClick: (date: Date, hour: number) => void;
+  onCellClick: (date: Date, hour: number, minute: number) => void;
   onDropAppointment?: (appointmentId: string, scheduledFor: string, scheduledEnd: string | null) => void;
   weekOffset: number;
 }) {
@@ -217,7 +219,7 @@ export default function ScheduleGrid({
     );
   }
 
-  function handleDrop(day: Date, hour: number) {
+  function handleDrop(day: Date, hour: number, minute: number) {
     setDragOverCell(null);
     const id = draggingId;
     setDraggingId(null);
@@ -228,7 +230,7 @@ export default function ScheduleGrid({
 
     const oldStart = new Date(appt.scheduled_for);
     const newStart = new Date(day);
-    newStart.setHours(hour, oldStart.getMinutes(), 0, 0);
+    newStart.setHours(hour, minute, 0, 0);
 
     if (newStart.getTime() === oldStart.getTime()) return;
 
@@ -304,41 +306,51 @@ export default function ScheduleGrid({
             {/* Day columns — each is a relative container for positioned cards */}
             {days.map((d, dayIdx) => (
               <div key={d.toISOString()} className="relative" style={{ height: totalHours * CELL_PX }}>
-                {/* Empty cell click targets */}
-                {hours.map((h, rowIdx) => {
-                  const cellKey = `${d.toDateString()}|${h}`;
-                  return (
-                    <div
-                      key={h}
-                      className={[
-                        "absolute border-b border-l cursor-pointer transition-colors",
-                        dragOverCell === cellKey ? "bg-blue-100/60" : "hover:bg-blue-50/40",
-                      ].join(" ")}
-                      style={{
-                        top: rowIdx * CELL_PX,
-                        left: 0,
-                        right: 0,
-                        height: CELL_PX,
-                      }}
-                      onClick={() => {
-                        console.log("[CELL_CLICK]", formatDay(d), `${h}:00`);
-                        onCellClick(d, h);
-                      }}
-                      onDragOver={dragEnabled ? (e) => {
-                        e.preventDefault();
-                        e.dataTransfer.dropEffect = "move";
-                        setDragOverCell(cellKey);
-                      } : undefined}
-                      onDragLeave={dragEnabled ? () => {
-                        setDragOverCell((cur) => (cur === cellKey ? null : cur));
-                      } : undefined}
-                      onDrop={dragEnabled ? (e) => {
-                        e.preventDefault();
-                        handleDrop(d, h);
-                      } : undefined}
-                    />
-                  );
-                })}
+                {/* Continuous day-column divider — kept separate from the quarter-hour cells so it renders as one unbroken line */}
+                <div className="absolute top-0 bottom-0 left-0 border-l" style={{ width: 0 }} />
+
+                {/* Empty cell click/drop targets — 4 quarter-hour zones per hour */}
+                {hours.flatMap((h, rowIdx) =>
+                  QUARTER_MINUTES.map((min, qIdx) => {
+                    const isHourBoundary = qIdx === QUARTER_MINUTES.length - 1;
+                    // This cell's bottom edge sits at (min + 15) — qIdx 1 (min=15) is the one whose
+                    // bottom border renders the :30 guide line.
+                    const isHalfHourLine = qIdx === 1;
+                    const cellKey = `${d.toDateString()}|${h}|${min}`;
+                    return (
+                      <div
+                        key={cellKey}
+                        className={[
+                          "absolute cursor-pointer transition-colors",
+                          isHourBoundary ? "border-b" : isHalfHourLine ? "border-b border-slate-300" : "border-b border-slate-200",
+                          dragOverCell === cellKey ? "bg-blue-100/60" : "hover:bg-blue-50/40",
+                        ].join(" ")}
+                        style={{
+                          top: rowIdx * CELL_PX + qIdx * QUARTER_PX,
+                          left: 0,
+                          right: 0,
+                          height: QUARTER_PX,
+                        }}
+                        onClick={() => {
+                          console.log("[CELL_CLICK]", formatDay(d), `${h}:${String(min).padStart(2, "0")}`);
+                          onCellClick(d, h, min);
+                        }}
+                        onDragOver={dragEnabled ? (e) => {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = "move";
+                          setDragOverCell(cellKey);
+                        } : undefined}
+                        onDragLeave={dragEnabled ? () => {
+                          setDragOverCell((cur) => (cur === cellKey ? null : cur));
+                        } : undefined}
+                        onDrop={dragEnabled ? (e) => {
+                          e.preventDefault();
+                          handleDrop(d, h, min);
+                        } : undefined}
+                      />
+                    );
+                  })
+                )}
 
                 {/* Appointment cards positioned by time with overlap columns */}
                 {(() => {

@@ -109,13 +109,14 @@ export default function DashboardShell({
     setModal({ mode: "create" });
   }
 
-  function handleCellClick(date: Date, hour: number) {
+  function handleCellClick(date: Date, hour: number, minute: number) {
     setSelectedApptId(null);
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, "0");
     const d = String(date.getDate()).padStart(2, "0");
     const h = String(hour).padStart(2, "0");
-    setModal({ mode: "create", prefillDate: `${y}-${m}-${d}`, prefillTime: `${h}:00` });
+    const min = String(minute).padStart(2, "0");
+    setModal({ mode: "create", prefillDate: `${y}-${m}-${d}`, prefillTime: `${h}:${min}` });
   }
 
   function handleModalSaved() {
