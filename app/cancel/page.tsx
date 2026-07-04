@@ -1,8 +1,10 @@
 "use client";
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
-export default function CancelPage({ searchParams }: { searchParams: { token?: string } }) {
-  const token = searchParams?.token || "";
+function CancelPageInner() {
+  const searchParams = useSearchParams();
+  const token = searchParams.get("token") || "";
   const [status, setStatus] = useState("");
 
   async function doCancel() {
@@ -32,5 +34,13 @@ export default function CancelPage({ searchParams }: { searchParams: { token?: s
         </>
       )}
     </main>
+  );
+}
+
+export default function CancelPage() {
+  return (
+    <Suspense fallback={null}>
+      <CancelPageInner />
+    </Suspense>
   );
 }
