@@ -1,7 +1,13 @@
 import twilio from "twilio";
-import sgMail from "@sendgrid/mail";
+import { Resend } from "resend";
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
+let resendClient: Resend | null = null;
+function getResend(): Resend {
+  if (!resendClient) {
+    resendClient = new Resend(process.env.RESEND_API_KEY!);
+  }
+  return resendClient;
+}
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID!,
@@ -61,14 +67,19 @@ export async function sendEmail(to: string, subject: string, text: string) {
     console.log("[DISABLE_MESSAGES] Email skipped — to:", to, "| subject:", subject, "| body:", text);
     return "disabled";
   }
-  const res = await sgMail.send({
+  const fromName = process.env.RESEND_FROM_NAME || "FlowTrack Schedule";
+  const { data, error } = await getResend().emails.send({
+    from: `${fromName} <${process.env.RESEND_FROM_EMAIL}>`,
     to,
-    from: {
-      email: process.env.SENDGRID_FROM_EMAIL!,
-      name: process.env.SENDGRID_FROM_NAME || "FlowTrack Schedule",
-    },
     subject,
     text,
   });
-  return res?.[0]?.headers?.["x-message-id"]?.toString() || "sendgrid";
+  // Resend's SDK returns { data, error } instead of throwing on API-level
+  // rejections — throw here so the existing try/catch + describeProviderError
+  // handling in the route files (unchanged) still catches this the same way
+  // it caught SendGrid failures.
+  if (error) {
+    throw Object.assign(new Error(error.message), error);
+  }
+  return data?.id || "resend";
 }
