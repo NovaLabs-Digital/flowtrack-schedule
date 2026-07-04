@@ -31,6 +31,16 @@ type PayrollRow = {
   hoursWorked: number;
 };
 
+// Scheduled duration in hours, mirroring DispatchPanel's scheduledMinutes but
+// as a decimal-hours value for payroll math.
+function scheduledHours(appt: Appointment): number {
+  if (appt.scheduled_end) {
+    const mins = Math.round((new Date(appt.scheduled_end).getTime() - new Date(appt.scheduled_for).getTime()) / 60_000);
+    if (mins > 0) return mins / 60;
+  }
+  return (appt.duration_minutes ?? 0) / 60;
+}
+
 export default function PayrollSummary({
   appointments,
   employees,
@@ -44,20 +54,30 @@ export default function PayrollSummary({
   const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
   const [rangeEnd, setRangeEnd] = useState(toDateInputValue(addDays(defaultMonday, 4)));
 
-  const appointmentById: Record<string, Appointment> = {};
-  for (const a of appointments) appointmentById[a.id] = a;
-
   const employeeById: Record<string, Employee> = {};
   for (const e of employees) employeeById[e.id] = e;
 
-  const totals = new Map<string, number>();
+  // Manually-saved hours are overrides, keyed by appointment+employee — not the
+  // source of totals. An appointment with no saved entry still counts, using
+  // its scheduled duration.
+  const savedHoursByKey = new Map<string, number>();
   for (const entry of employeeHours) {
     if (!entry.employee_id) continue;
-    const appt = appointmentById[entry.appointment_id];
-    if (!appt || appt.status === "cancelled") continue;
+    savedHoursByKey.set(`${entry.appointment_id}|${entry.employee_id}`, entry.hours_worked);
+  }
+
+  const totals = new Map<string, number>();
+  for (const appt of appointments) {
+    if (appt.status === "cancelled") continue;
+    if (!appt.employee_id) continue;
+
     const apptDate = toDateInputValue(new Date(appt.scheduled_for));
     if (apptDate < rangeStart || apptDate > rangeEnd) continue;
-    totals.set(entry.employee_id, (totals.get(entry.employee_id) ?? 0) + entry.hours_worked);
+
+    const key = `${appt.id}|${appt.employee_id}`;
+    const hours = savedHoursByKey.has(key) ? savedHoursByKey.get(key)! : scheduledHours(appt);
+
+    totals.set(appt.employee_id, (totals.get(appt.employee_id) ?? 0) + hours);
   }
 
   const rows: PayrollRow[] = Array.from(totals.entries())
@@ -93,7 +113,7 @@ export default function PayrollSummary({
 
       <div className="mt-3">
         {rows.length === 0 ? (
-          <div className="text-xs text-slate-400">No hours entered for this range.</div>
+          <div className="text-xs text-slate-400">No assigned appointments in this range.</div>
         ) : (
           <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1.5">
             {rows.map((r) => (
