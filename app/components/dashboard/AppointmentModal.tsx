@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Appointment, Client, Service, Employee } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
 
@@ -119,6 +119,42 @@ export function NotifyChoice({
   );
 }
 
+// Picks a sensible default channel for a "smart" preselect: the client's own
+// preferred method if it's actually reachable, otherwise both if both are
+// available, otherwise whichever single channel exists, otherwise none.
+export function preferredNotifyChannel(
+  preferredContactMethod: string | null | undefined,
+  hasEmail: boolean,
+  hasPhone: boolean
+): NotifyChannel {
+  if (preferredContactMethod === "email" && hasEmail) return "email";
+  if (preferredContactMethod === "sms" && hasPhone) return "sms";
+  if (hasEmail && hasPhone) return "both";
+  if (hasEmail) return "email";
+  if (hasPhone) return "sms";
+  return "none";
+}
+
+// Wraps NotifyChoice with a visible outcome summary, so staff always sees
+// plainly whether — and how — the client will be notified before saving.
+export function NotifyChoicePanel(props: Parameters<typeof NotifyChoice>[0]) {
+  const { value } = props;
+  const willNotify = value !== "none";
+  return (
+    <div className={[
+      "rounded-xl border p-3",
+      willNotify ? "border-blue-200 bg-blue-50/50" : "border-slate-200 bg-slate-50",
+    ].join(" ")}>
+      <NotifyChoice {...props} />
+      <div className={["mt-2 text-[11px] font-medium", willNotify ? "text-blue-700" : "text-slate-500"].join(" ")}>
+        {willNotify
+          ? `Client will be notified by ${value === "both" ? "email and SMS" : value === "email" ? "email" : "SMS"}.`
+          : "Client will not be notified of this change."}
+      </div>
+    </div>
+  );
+}
+
 type Props = {
   onClose: () => void;
   onSaved: () => void;
@@ -174,7 +210,10 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const [error, setError] = useState("");
 
   // Notification choice — defaults to "none" so staff must opt in before anything is sent.
+  // For edits, a smart default kicks in below once a meaningful field changes (see effect),
+  // but only until the staff member touches the control themselves.
   const [notifyChannel, setNotifyChannel] = useState<NotifyChannel>("none");
+  const [notifyTouched, setNotifyTouched] = useState(false);
   const [cancelNotifyChannel, setCancelNotifyChannel] = useState<NotifyChannel>("none");
 
   const contactEmail = isEdit ? (editing!.client.email ?? "") : (clientMode === "existing" ? (clients.find((c) => c.id === selectedClientId)?.email ?? "") : newClient.email);
@@ -204,6 +243,26 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const computedDuration = diffMins(form.time_in, form.time_out);
   const durationDisplay = computedDuration > 0 ? durationLabel(computedDuration) : "";
   const timeOutError = computedDuration <= 0 && form.time_in && form.time_out;
+
+  // Detect whether an edit changed something the client would actually care about
+  // (date/time, employee, or service) versus only internal fields (notes, status).
+  // originalDurationMins reuses initTimeIn/initTimeOut, which are pure functions of
+  // `editing` — they reflect the appointment's original values, unaffected by `form`.
+  const originalStartMs = isEdit ? new Date(editing!.appointment.scheduled_for).getTime() : null;
+  const currentStartMs = form.date && form.time_in ? new Date(`${form.date}T${form.time_in}`).getTime() : null;
+  const originalDurationMins = isEdit ? diffMins(initTimeIn(), initTimeOut()) : 0;
+  const dateTimeChanged = isEdit && (currentStartMs !== originalStartMs || computedDuration !== originalDurationMins);
+  const employeeChanged = isEdit && selectedEmployeeId !== (editing!.appointment.employee_id ?? "");
+  const serviceChanged = isEdit && form.service_type !== editing!.appointment.service_type;
+  const importantFieldsChanged = dateTimeChanged || employeeChanged || serviceChanged;
+
+  // Smart default: preselect a notify channel once a meaningful field changes, but
+  // never override a choice the staff member already made themselves.
+  useEffect(() => {
+    if (!isEdit || notifyTouched) return;
+    setNotifyChannel(importantFieldsChanged ? preferredNotifyChannel(editing!.client.preferred_contact_method, hasEmail, hasPhone) : "none");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importantFieldsChanged]);
 
   const isRecurring = isEdit && !!editing.appointment.series_id && editing.appointment.frequency_type !== "one_time";
   const [editScope, setEditScope] = useState<"single" | "future" | null>(null);
@@ -629,9 +688,9 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           </div>
 
           {/* Notification choice */}
-          <NotifyChoice
+          <NotifyChoicePanel
             value={notifyChannel}
-            onChange={setNotifyChannel}
+            onChange={(v) => { setNotifyChannel(v); setNotifyTouched(true); }}
             hasEmail={hasEmail}
             hasPhone={hasPhone}
             label={isEdit ? "Notify client about this change?" : "Send confirmation to client?"}
@@ -706,7 +765,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                   : "Cancel this and all future appointments? They will be marked as cancelled."}
               </div>
               <div className="mt-2">
-                <NotifyChoice
+                <NotifyChoicePanel
                   value={cancelNotifyChannel}
                   onChange={setCancelNotifyChannel}
                   hasEmail={hasEmail}

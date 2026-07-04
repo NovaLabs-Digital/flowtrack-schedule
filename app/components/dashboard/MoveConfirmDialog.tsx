@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Appointment, Client } from "@/app/components/dashboard/types";
-import { NotifyChoice, NotifyChannel } from "@/app/components/dashboard/AppointmentModal";
+import { NotifyChoicePanel, NotifyChannel, preferredNotifyChannel } from "@/app/components/dashboard/AppointmentModal";
 
 function formatDateTime(iso: string) {
   const d = new Date(iso);
@@ -21,7 +21,11 @@ type Props = {
 };
 
 export default function MoveConfirmDialog({ appointment, client, scheduledFor, scheduledEnd, onClose, onMoved }: Props) {
-  const [notifyChannel, setNotifyChannel] = useState<NotifyChannel>("none");
+  // Dragging always changes date/time, so smart-default to the client's preferred
+  // method (or "both") right away — the picker below still lets staff change it.
+  const [notifyChannel, setNotifyChannel] = useState<NotifyChannel>(
+    () => preferredNotifyChannel(client.preferred_contact_method, !!client.email, !!client.phone)
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -77,7 +81,7 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
         </div>
 
         <div className="mt-4">
-          <NotifyChoice
+          <NotifyChoicePanel
             value={notifyChannel}
             onChange={setNotifyChannel}
             hasEmail={!!client.email}
