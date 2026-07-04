@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Client, Appointment, Service, Employee, ViewMode } from "@/app/components/dashboard/types";
-import { nowInBusinessTz } from "@/lib/timezone";
+import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 
 function formatDay(d: Date) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -86,7 +86,7 @@ function formatTime(d: Date) {
 }
 
 function timeRange(iso: string, mins: number) {
-  const start = new Date(iso);
+  const start = toBusinessLocal(iso);
   const end = new Date(start.getTime() + mins * 60_000);
   return `${formatTime(start)} – ${formatTime(end)}`;
 }
@@ -120,11 +120,15 @@ function computeOverlapLayout(appts: Appointment[], startHour: number, durationF
   if (appts.length === 0) return layout;
 
   const items = appts.map((a) => {
-    const d = new Date(a.scheduled_for);
-    const startMin = d.getHours() * 60 + d.getMinutes();
+    // Business-tz-anchored for the field extraction (startMin); the real instant
+    // (rawStart) is used separately for the duration delta, since mixing the two
+    // would shift the computed duration by the runtime's ambient UTC offset.
+    const rawStart = new Date(a.scheduled_for);
+    const localStart = toBusinessLocal(a.scheduled_for);
+    const startMin = localStart.getHours() * 60 + localStart.getMinutes();
     let dur: number;
     if (a.scheduled_end) {
-      dur = Math.round((new Date(a.scheduled_end).getTime() - d.getTime()) / 60_000);
+      dur = Math.round((new Date(a.scheduled_end).getTime() - rawStart.getTime()) / 60_000);
       if (dur <= 0) dur = durationFor(a.service_type);
     } else {
       dur = a.duration_minutes ?? durationFor(a.service_type);
@@ -209,7 +213,7 @@ export default function ScheduleGrid({
 
   const apptsInView = appointments.filter((a) => {
     if (a.status === "cancelled") return false;
-    const apptDate = new Date(a.scheduled_for);
+    const apptDate = toBusinessLocal(a.scheduled_for);
     return days.some((d) => d.toDateString() === apptDate.toDateString());
   });
 
@@ -232,7 +236,7 @@ export default function ScheduleGrid({
 
   function apptsForDay(d: Date) {
     return apptsInView.filter(
-      (a) => new Date(a.scheduled_for).toDateString() === d.toDateString()
+      (a) => toBusinessLocal(a.scheduled_for).toDateString() === d.toDateString()
     );
   }
 
@@ -375,12 +379,17 @@ export default function ScheduleGrid({
                   const overlapLayout = computeOverlapLayout(dayAppts, startHour, durationFor);
 
                   return dayAppts.map((a) => {
-                    const apptDate = new Date(a.scheduled_for);
+                    // rawStart is the real instant, used only for the duration delta;
+                    // apptDate is business-tz-anchored, used only for hour/minute
+                    // field extraction (card vertical position) — mixing the two
+                    // would shift either the computed duration or the position.
+                    const rawStart = new Date(a.scheduled_for);
+                    const apptDate = toBusinessLocal(a.scheduled_for);
                     const apptHour = apptDate.getHours();
                     const apptMin = apptDate.getMinutes();
                     let mins: number;
                     if (a.scheduled_end) {
-                      mins = Math.round((new Date(a.scheduled_end).getTime() - apptDate.getTime()) / 60_000);
+                      mins = Math.round((new Date(a.scheduled_end).getTime() - rawStart.getTime()) / 60_000);
                       if (mins <= 0) mins = durationFor(a.service_type);
                     } else {
                       mins = a.duration_minutes ?? durationFor(a.service_type);

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Client, Appointment } from "@/app/components/dashboard/types";
-import { nowInBusinessTz } from "@/lib/timezone";
+import { toBusinessLocal } from "@/lib/timezone";
 
 function SectionHeader({ children, action }: { children: React.ReactNode; action?: string }) {
   return (
@@ -59,14 +59,24 @@ function EmptyCol({ icon, line1, line2 }: { icon: string; line1: string; line2: 
   );
 }
 
+// For real timestamps (appointment scheduled_for) — anchored to business tz so
+// server/client agree on which calendar day and time-of-day it displays as.
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return toBusinessLocal(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 function fmtTime(iso: string) {
-  const d = new Date(iso);
+  const d = toBusinessLocal(iso);
   const h = d.getHours(); const m = d.getMinutes();
   const ampm = h >= 12 ? "PM" : "AM"; const h12 = h % 12 || 12;
   return m === 0 ? `${h12}:00 ${ampm}` : `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+// For plain "YYYY-MM-DD" calendar fields (e.g. client_since) with no time-of-day
+// meaning — parses the components directly instead of going through any
+// timezone conversion, which would otherwise shift the date backward a day in
+// negative-UTC-offset zones (a date-only ISO string parses as UTC midnight).
+function fmtCalendarDate(dateOnly: string) {
+  const [y, m, d] = dateOnly.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 type EditForm = {
@@ -139,7 +149,10 @@ export default function ClientPanel({
     finally { setSaving(false); }
   }
 
-  const now = nowInBusinessTz();
+  // Plain new Date() is correct here: this is a pure instant comparison
+  // (Date < Date), which is timezone-agnostic — unlike field extraction
+  // (getHours/getDate/toDateString), it doesn't need business-tz anchoring.
+  const now = new Date();
   const clientAppts = client ? appointments.filter((a) => a.client_id === client.id) : [];
   const pastAppts = clientAppts.filter((a) => new Date(a.scheduled_for) < now)
     .sort((a, b) => new Date(b.scheduled_for).getTime() - new Date(a.scheduled_for).getTime());
@@ -254,7 +267,7 @@ export default function ClientPanel({
               <InfoRow icon="&#9742;" label="Phone" value={client?.phone ?? "—"} />
               <InfoRow icon="&#9993;" label="Email" value={client?.email ?? "—"} />
               <InfoRow icon="&#9906;" label="Address" value={client?.address ?? "—"} />
-              <InfoRow icon="&#128197;" label="Client since" value={client?.client_since ? fmtDate(client.client_since) : "—"} />
+              <InfoRow icon="&#128197;" label="Client since" value={client?.client_since ? fmtCalendarDate(client.client_since) : "—"} />
               <InfoRow icon="&#128196;" label="Referred by" value={client?.referred_by ?? "—"} />
             </div>
           </div>

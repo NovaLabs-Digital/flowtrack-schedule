@@ -1,4 +1,5 @@
 import { Appointment, Employee, EmployeeHours } from "@/app/components/dashboard/types";
+import { toBusinessLocal } from "@/lib/timezone";
 
 export function toDateInputValue(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -108,7 +109,7 @@ export function computePayrollRows({
     if (appt.status === "cancelled") continue;
     if (!appt.employee_id) continue;
 
-    const apptDate = toDateInputValue(new Date(appt.scheduled_for));
+    const apptDate = toDateInputValue(toBusinessLocal(appt.scheduled_for));
     if (apptDate < rangeStart || apptDate > rangeEnd) continue;
 
     let hours: number | null;

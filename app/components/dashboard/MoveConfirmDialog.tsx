@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { Appointment, Client } from "@/app/components/dashboard/types";
 import { NotifyChoicePanel, NotifyChannel, preferredNotifyChannel } from "@/app/components/dashboard/AppointmentModal";
+import { toBusinessLocal } from "@/lib/timezone";
 
 function formatDateTime(iso: string) {
-  const d = new Date(iso);
+  const d = toBusinessLocal(iso);
   const date = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return `${date} at ${time}`;

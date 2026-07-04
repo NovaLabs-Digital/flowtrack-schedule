@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { Appointment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
-import { nowInBusinessTz } from "@/lib/timezone";
+import { startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
 
 function formatDateTime(iso: string) {
-  const d = new Date(iso);
+  const d = toBusinessLocal(iso);
   const date = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   const h = d.getHours();
   const m = d.getMinutes();
@@ -148,10 +148,8 @@ export default function DispatchPanel({
   selectedAppointmentId: string | null;
   onHoursSaved: () => void;
 }) {
-  const today = nowInBusinessTz();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const today = startOfBusinessDay(0);
+  const tomorrow = startOfBusinessDay(1);
 
   const todayAppts = appointments.filter((a) => {
     const d = new Date(a.scheduled_for);
