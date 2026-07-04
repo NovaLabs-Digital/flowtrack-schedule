@@ -32,7 +32,7 @@ export default function PayrollSummary({
   const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
   const [rangeEnd, setRangeEnd] = useState(toDateInputValue(addDays(defaultMonday, 4)));
 
-  const rows = computePayrollRows({ appointments, employees, employeeHours, rangeStart, rangeEnd });
+  const { rows, missingHoursCount } = computePayrollRows({ appointments, employees, employeeHours, rangeStart, rangeEnd });
   const totalHours = rows.reduce((sum, r) => sum + r.hoursWorked, 0);
 
   return (
@@ -57,9 +57,9 @@ export default function PayrollSummary({
       </div>
 
       <div className="mt-3">
-        {rows.length === 0 ? (
+        {rows.length === 0 && missingHoursCount === 0 ? (
           <div className="text-xs text-slate-400">No assigned appointments in this range.</div>
-        ) : (
+        ) : rows.length > 0 ? (
           <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1.5">
             {rows.map((r) => (
               <div key={r.employeeId} className="contents">
@@ -68,8 +68,14 @@ export default function PayrollSummary({
               </div>
             ))}
           </div>
-        )}
+        ) : null}
       </div>
+
+      {missingHoursCount > 0 && (
+        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+          {missingHoursCount} appointment{missingHoursCount !== 1 ? "s" : ""} missing worked hours
+        </div>
+      )}
 
       {rows.length > 0 && (
         <div className="mt-3 pt-2 border-t border-slate-200 grid grid-cols-[1fr_auto] gap-x-3">
