@@ -6,6 +6,14 @@ function fmt(iso: string) {
     .toFormat("ccc, LLL d 'at' h:mm a");
 }
 
+function fmtDate(iso: string) {
+  return DateTime.fromISO(iso).setZone("America/New_York").toFormat("cccc, LLLL d");
+}
+
+function fmtTime(iso: string) {
+  return DateTime.fromISO(iso).setZone("America/New_York").toFormat("h:mm a");
+}
+
 export function confirmationTemplates(
   name: string,
   service: string,
@@ -13,24 +21,37 @@ export function confirmationTemplates(
   cancelUrl: string
 ) {
   const when = fmt(scheduledIso);
+  const date = fmtDate(scheduledIso);
+  const time = fmtTime(scheduledIso);
 
   return {
     email: {
-      subject: `Confirmed — ${service} (${when})`,
+      subject: `Appointment Confirmed — ${service} (${when})`,
       body: `Hi ${name},
 
-Your appointment is confirmed.
+✅ Appointment Confirmed
 
 Service: ${service}
-When: ${when}
+Date: ${date}
+Time: ${time}
 
-Need to cancel? Click here:
+Need to cancel?
 ${cancelUrl}
 
 Thank you,
-FlowTrack Schedule`,
+ScheduleFlowTrack`,
     },
-    sms: `Confirmed: ${service} on ${when}. Cancel: ${cancelUrl}`,
+    sms: `✅ Appointment Confirmed
+
+Service: ${service}
+Date: ${date}
+Time: ${time}
+
+Need to cancel?
+${cancelUrl}
+
+Thank you,
+ScheduleFlowTrack`,
   };
 }
 
@@ -40,21 +61,31 @@ export function reminder24hTemplates(
   scheduledIso: string
 ) {
   const when = fmt(scheduledIso);
+  const date = fmtDate(scheduledIso);
+  const time = fmtTime(scheduledIso);
 
   return {
     email: {
       subject: `Reminder — ${service} (${when})`,
       body: `Hi ${name},
 
-Friendly reminder for your appointment:
+This is a friendly reminder for your upcoming appointment.
 
 Service: ${service}
-When: ${when}
+Date: ${date}
+Time: ${time}
 
 Thank you,
-FlowTrack Schedule`,
+ScheduleFlowTrack`,
     },
-    sms: `Reminder: ${service} on ${when}. — FlowTrack Schedule`,
+    sms: `Reminder
+
+Service: ${service}
+Date: ${date}
+Time: ${time}
+
+Thank you,
+ScheduleFlowTrack`,
   };
 }
 
@@ -64,25 +95,35 @@ export function changeTemplates(
   scheduledIso: string
 ) {
   const when = fmt(scheduledIso);
+  const date = fmtDate(scheduledIso);
+  const time = fmtTime(scheduledIso);
 
   return {
     email: {
-      subject: `Updated — ${service} (${when})`,
+      subject: `Appointment Updated — ${service} (${when})`,
       body: `Hi ${name},
 
 Your appointment has been updated.
 
 Service: ${service}
-When: ${when}
+Date: ${date}
+Time: ${time}
 
 Thank you,
-FlowTrack Schedule`,
+ScheduleFlowTrack`,
     },
-    sms: `Updated: ${service} on ${when}. — FlowTrack Schedule`,
+    sms: `Appointment Updated
+
+Service: ${service}
+Date: ${date}
+Time: ${time}
+
+Thank you,
+ScheduleFlowTrack`,
   };
 }
 
-export function cancelTemplates(name: string) {
+export function cancelTemplates(name: string, service: string) {
   const bookUrl = `${process.env.NEXT_PUBLIC_APP_URL}/book`;
   return {
     email: {
@@ -90,12 +131,23 @@ export function cancelTemplates(name: string) {
       body: `Hi ${name},
 
 Your appointment has been cancelled.
-To reschedule anytime:
+
+Service: ${service}
+
+Need another appointment?
 ${bookUrl}
 
 Thank you,
-FlowTrack Schedule`,
+ScheduleFlowTrack`,
     },
-    sms: `Cancelled. Reschedule: ${bookUrl}`,
+    sms: `Your appointment has been cancelled.
+
+Service: ${service}
+
+Need another appointment?
+${bookUrl}
+
+Thank you,
+ScheduleFlowTrack`,
   };
 }
