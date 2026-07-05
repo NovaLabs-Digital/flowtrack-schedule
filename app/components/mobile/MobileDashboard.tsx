@@ -4,6 +4,8 @@ import { useState } from "react";
 import { Client, Appointment, Service, Employee } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
+import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
+import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 
 type Props = {
   clients: Client[];
@@ -35,15 +37,17 @@ function scheduledMinutes(appt: Appointment, services: Service[]): number {
   return svc?.duration_minutes ?? 60;
 }
 
-// Milestone 1-2 of Mobile Admin v1 — Today screen (Screen 1 of the approved
-// mockup). Bottom navigation, Add Appointment, and Appointment Detail land in
-// following milestones.
+// Mobile Admin v1 — Today screen (Screen 1) + persistent bottom navigation
+// (Screen 4) from the approved mockup. Add Appointment and Appointment
+// Detail land in following milestones; Schedule/Clients/Settings tabs are
+// stubs, fleshed out in their own milestones.
 export default function MobileDashboard({
   clients,
   appointments,
   services,
   employees,
 }: Props) {
+  const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
 
   const today = nowInBusinessTz();
@@ -65,109 +69,131 @@ export default function MobileDashboard({
 
   return (
     <div className="h-[100dvh] flex flex-col bg-slate-100 text-slate-900 overflow-hidden safe-area-top">
-      {/* Top bar */}
-      <div className="shrink-0 bg-white border-b border-slate-200 px-4 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center bg-blue-600 text-white text-xs font-bold">
-              FTS
-            </div>
-            <div className="min-w-0">
-              <div className="text-base font-semibold text-slate-900 truncate">
-                {isToday ? "Today" : selectedDate.toLocaleDateString(undefined, { weekday: "long" })}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {activeTab === "today" && (
+          <>
+            {/* Top bar */}
+            <div className="shrink-0 bg-white border-b border-slate-200 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center bg-blue-600 text-white text-xs font-bold">
+                    FTS
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-base font-semibold text-slate-900 truncate">
+                      {isToday ? "Today" : selectedDate.toLocaleDateString(undefined, { weekday: "long" })}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">
+                      {selectedDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0 text-slate-400">
+                  <button type="button" className="w-8 h-8 flex items-center justify-center" title="Search (coming soon)">
+                    🔍
+                  </button>
+                  <button type="button" className="w-8 h-8 flex items-center justify-center" title="Notifications (coming soon)">
+                    🔔
+                  </button>
+                </div>
               </div>
-              <div className="text-xs text-slate-500 truncate">
-                {selectedDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-1 shrink-0 text-slate-400">
-            <button type="button" className="w-8 h-8 flex items-center justify-center" title="Search (coming soon)">
-              🔍
-            </button>
-            <button type="button" className="w-8 h-8 flex items-center justify-center" title="Notifications (coming soon)">
-              🔔
-            </button>
-          </div>
-        </div>
-      </div>
 
-      {/* Day strip */}
-      <div className="shrink-0 bg-white border-b border-slate-200 px-2 py-2 flex items-center gap-1">
-        <button
-          type="button"
-          onClick={() => setDayOffset((o) => o - 1)}
-          className="w-8 h-8 shrink-0 flex items-center justify-center text-slate-400 active:bg-slate-100 rounded-lg"
-          aria-label="Previous day"
-        >
-          ‹
-        </button>
-        <div className="flex-1 grid grid-cols-5 gap-1">
-          {strip.map((d, i) => {
-            const selected = sameDay(d, selectedDate);
-            return (
+            {/* Day strip */}
+            <div className="shrink-0 bg-white border-b border-slate-200 px-2 py-2 flex items-center gap-1">
               <button
-                key={i}
                 type="button"
-                onClick={() => setDayOffset(dayOffset + (i - 2))}
-                className="flex flex-col items-center gap-0.5 py-1 rounded-lg"
+                onClick={() => setDayOffset((o) => o - 1)}
+                className="w-8 h-8 shrink-0 flex items-center justify-center text-slate-400 active:bg-slate-100 rounded-lg"
+                aria-label="Previous day"
               >
-                <span className="text-[10px] font-medium text-slate-400 uppercase">
-                  {d.toLocaleDateString(undefined, { weekday: "short" })}
-                </span>
-                <span
-                  className={[
-                    "w-7 h-7 flex items-center justify-center rounded-full text-sm font-medium",
-                    selected ? "bg-slate-900 text-white" : "text-slate-700",
-                  ].join(" ")}
-                >
-                  {d.getDate()}
-                </span>
+                ‹
               </button>
-            );
-          })}
-        </div>
-        <button
-          type="button"
-          onClick={() => setDayOffset((o) => o + 1)}
-          className="w-8 h-8 shrink-0 flex items-center justify-center text-slate-400 active:bg-slate-100 rounded-lg"
-          aria-label="Next day"
-        >
-          ›
-        </button>
-      </div>
+              <div className="flex-1 grid grid-cols-5 gap-1">
+                {strip.map((d, i) => {
+                  const selected = sameDay(d, selectedDate);
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setDayOffset(dayOffset + (i - 2))}
+                      className="flex flex-col items-center gap-0.5 py-1 rounded-lg"
+                    >
+                      <span className="text-[10px] font-medium text-slate-400 uppercase">
+                        {d.toLocaleDateString(undefined, { weekday: "short" })}
+                      </span>
+                      <span
+                        className={[
+                          "w-7 h-7 flex items-center justify-center rounded-full text-sm font-medium",
+                          selected ? "bg-slate-900 text-white" : "text-slate-700",
+                        ].join(" ")}
+                      >
+                        {d.getDate()}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => setDayOffset((o) => o + 1)}
+                className="w-8 h-8 shrink-0 flex items-center justify-center text-slate-400 active:bg-slate-100 rounded-lg"
+                aria-label="Next day"
+              >
+                ›
+              </button>
+            </div>
 
-      {/* Count header */}
-      <div className="shrink-0 px-4 py-2.5 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-          {selectedDate.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
-        </span>
-        <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-600">
-          {dayAppts.length} appointment{dayAppts.length !== 1 ? "s" : ""}
-        </span>
-      </div>
+            {/* Count header */}
+            <div className="shrink-0 px-4 py-2.5 flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                {selectedDate.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })}
+              </span>
+              <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-600">
+                {dayAppts.length} appointment{dayAppts.length !== 1 ? "s" : ""}
+              </span>
+            </div>
 
-      {/* Appointment list */}
-      <div className="flex-1 min-h-0 overflow-auto px-4 pb-4 space-y-2">
-        {dayAppts.length === 0 ? (
-          <div className="text-center py-16">
-            <div className="text-3xl text-slate-300 mb-3">📅</div>
-            <div className="text-sm text-slate-500">No appointments {isToday ? "today" : "on this day"}</div>
+            {/* Appointment list */}
+            <div className="flex-1 min-h-0 overflow-auto px-4 pb-4 space-y-2">
+              {dayAppts.length === 0 ? (
+                <div className="text-center py-16">
+                  <div className="text-3xl text-slate-300 mb-3">📅</div>
+                  <div className="text-sm text-slate-500">No appointments {isToday ? "today" : "on this day"}</div>
+                </div>
+              ) : (
+                dayAppts.map((a) => (
+                  <MobileAppointmentCard
+                    key={a.id}
+                    appointment={a}
+                    client={clientById[a.client_id] ?? null}
+                    employee={a.employee_id ? employeeById[a.employee_id] ?? null : null}
+                    serviceColor={serviceColorByName[a.service_type] ?? null}
+                    durationMinutes={scheduledMinutes(a, services)}
+                    onTap={() => {}}
+                  />
+                ))
+              )}
+            </div>
+          </>
+        )}
+
+        {activeTab === "schedule" && <MobileSchedule />}
+
+        {activeTab === "clients" && (
+          <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-slate-400 px-6 text-center">
+            Clients — coming in a later milestone.
           </div>
-        ) : (
-          dayAppts.map((a) => (
-            <MobileAppointmentCard
-              key={a.id}
-              appointment={a}
-              client={clientById[a.client_id] ?? null}
-              employee={a.employee_id ? employeeById[a.employee_id] ?? null : null}
-              serviceColor={serviceColorByName[a.service_type] ?? null}
-              durationMinutes={scheduledMinutes(a, services)}
-              onTap={() => {}}
-            />
-          ))
+        )}
+
+        {activeTab === "settings" && (
+          <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-slate-400 px-6 text-center">
+            Settings — coming in a later milestone.
+          </div>
         )}
       </div>
+
+      <MobileBottomNav active={activeTab} onChange={setActiveTab} />
     </div>
   );
 }
