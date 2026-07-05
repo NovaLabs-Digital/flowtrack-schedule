@@ -48,10 +48,18 @@ export async function POST(req: Request) {
       return res;
     }
 
-    const validEmail = process.env.ADMIN_EMAIL || "admin@novalabsdigital.com";
-    const validPassword = process.env.ADMIN_PASSWORD || "schedule2026";
+    const testerEmail = process.env.TESTER_EMAIL;
+    const testerPassword = process.env.TESTER_PASSWORD;
+    if (testerEmail && testerPassword && email === testerEmail && password === testerPassword) {
+      const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
+      setCookie(res, "tester");
+      return res;
+    }
 
-    if (email !== validEmail || password !== validPassword) {
+    const validEmail = process.env.ADMIN_EMAIL;
+    const validPassword = process.env.ADMIN_PASSWORD;
+
+    if (!validEmail || !validPassword || email !== validEmail || password !== validPassword) {
       return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
     }
 

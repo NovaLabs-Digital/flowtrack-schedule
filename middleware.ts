@@ -5,6 +5,7 @@ export function middleware(request: NextRequest) {
   const session = request.cookies.get("sft_session");
   const value = session?.value ?? "";
   const isOwner = value === "authenticated";
+  const isTester = value === "tester";
   const isEmployee = value.startsWith("employee:");
   const path = request.nextUrl.pathname;
 
@@ -12,7 +13,7 @@ export function middleware(request: NextRequest) {
     if (isEmployee) {
       return NextResponse.redirect(new URL("/schedule", request.url));
     }
-    if (!isOwner) {
+    if (!isOwner && !isTester) {
       return NextResponse.redirect(new URL("/login", request.url));
     }
   }
