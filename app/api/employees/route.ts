@@ -12,7 +12,7 @@ export async function GET() {
   try {
     const { data, error } = await supabaseAdmin
       .from("employees")
-      .select("id, name, phone, color, active, email")
+      .select("id, name, phone, color, active, email, position")
       .order("name", { ascending: true });
 
     if (error) throw error;
@@ -38,13 +38,15 @@ export async function POST(req: Request) {
     };
     const email = (body.email || "").trim();
     if (email) row.email = email;
+    const position = (body.position || "").trim();
+    if (position) row.position = position;
     const pw = (body.password || "").trim();
     if (pw) row.password_hash = await bcrypt.hash(pw, 10);
 
     const { data, error } = await supabaseAdmin
       .from("employees")
       .insert(row)
-      .select("id, name, phone, color, active, email")
+      .select("id, name, phone, color, active, email, position")
       .single();
 
     if (error) throw error;
@@ -68,6 +70,7 @@ export async function PATCH(req: Request) {
     if (body.color !== undefined) update.color = body.color.trim();
     if (body.active !== undefined) update.active = body.active;
     if (body.email !== undefined) update.email = body.email.trim() || null;
+    if (body.position !== undefined) update.position = body.position.trim() || null;
     const pw = (body.password || "").trim();
     if (pw) update.password_hash = await bcrypt.hash(pw, 10);
 

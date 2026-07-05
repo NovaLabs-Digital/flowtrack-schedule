@@ -46,6 +46,7 @@ export type Employee = {
   phone: string | null;
   color: string;
   active: boolean;
+  position?: string | null;
 };
 
 export type EmployeeHours = {
