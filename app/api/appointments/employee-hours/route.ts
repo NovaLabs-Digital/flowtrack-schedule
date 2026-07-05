@@ -29,6 +29,24 @@ export async function POST(req: Request) {
       return json({ error: "Hours worked must be a positive number" }, 400);
     }
 
+    // Job Tracking is the authoritative source of worked time — a manual entry
+    // must never override or reduce it, even via a direct API call. This
+    // mirrors the DispatchPanel UI, which hides the manual form entirely once
+    // an appointment has a completed tracked duration.
+    const apptRes = await supabaseAdmin
+      .from("appointments")
+      .select("actual_started_at, actual_completed_at")
+      .eq("id", appointment_id)
+      .maybeSingle();
+    if (apptRes.error) throw apptRes.error;
+    const appt = apptRes.data;
+    const trackedMs = appt?.actual_started_at && appt?.actual_completed_at
+      ? new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()
+      : 0;
+    if (trackedMs > 0) {
+      return json({ error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." }, 409);
+    }
+
     const { data, error } = await supabaseAdmin
       .from("appointment_employee_hours")
       .upsert(

@@ -434,7 +434,7 @@ export default function ScheduleGrid({
                       !hasJobTrackingHours;
                     const hoursWarningIcon = needsHoursWarning ? (
                       <span
-                        title="Employee work hours not entered."
+                        title="Employee work hours require attention because Job Tracking was not completed."
                         onClick={(e) => e.stopPropagation()}
                         className="text-amber-500 cursor-help"
                       >

@@ -54,9 +54,18 @@ function EmployeeHoursSection({
   onSaved: () => void;
 }) {
   const [hours, setHours] = useState(existing ? String(existing.hours_worked) : "");
-  const [note, setNote] = useState(existing?.note ?? "");
+  const [reason, setReason] = useState(existing?.note ?? "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Job Tracking (Start Job / Complete Job) is the official source of worked
+  // time — an employee's tracked duration is never editable or overridable
+  // here. The manual Hours Worked / Reason form below only ever appears when
+  // no tracked duration exists for this appointment.
+  const trackedMinutes = appointment.actual_started_at && appointment.actual_completed_at
+    ? Math.round((new Date(appointment.actual_completed_at).getTime() - new Date(appointment.actual_started_at).getTime()) / 60_000)
+    : null;
+  const hasTrackedTime = trackedMinutes !== null && trackedMinutes > 0;
 
   async function save() {
     const hoursNum = Number(hours);
@@ -74,7 +83,7 @@ function EmployeeHoursSection({
           appointment_id: appointment.id,
           employee_id: employee.id,
           hours_worked: hoursNum,
-          note: note.trim(),
+          note: reason.trim(),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -94,41 +103,60 @@ function EmployeeHoursSection({
         <span className="font-medium text-slate-800">{employee.name}</span>
         <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(appointment))}</span>
       </div>
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-slate-500 shrink-0">Hours Worked</label>
-        <input
-          type="number"
-          step="0.25"
-          min="0"
-          value={hours}
-          onChange={(e) => setHours(e.target.value)}
-          placeholder="2.5"
-          className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-      </div>
-      <input
-        type="text"
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="Optional note"
-        className="w-full rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-      />
-      {message && (
-        <div className={[
-          "text-[11px] px-2 py-1 rounded",
-          message.type === "success" ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50",
-        ].join(" ")}>
-          {message.text}
+
+      {hasTrackedTime ? (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">Tracked Time</div>
+          <div className="text-sm font-semibold text-emerald-900 mt-0.5">
+            {formatDuration(trackedMinutes!)} <span className="text-emerald-600">&#10003;</span>
+          </div>
+          <div className="text-[10px] text-emerald-700 mt-1">No action needed — hours are tracked automatically.</div>
         </div>
+      ) : (
+        <>
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+            &#9888; Employee did not complete Job Tracking.
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 shrink-0">Hours Worked</label>
+            <input
+              type="number"
+              step="0.25"
+              min="0"
+              value={hours}
+              onChange={(e) => setHours(e.target.value)}
+              placeholder="2.5"
+              className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500 shrink-0">Reason</label>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. forgot to clock in/out"
+              className="flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          {message && (
+            <div className={[
+              "text-[11px] px-2 py-1 rounded",
+              message.type === "success" ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50",
+            ].join(" ")}>
+              {message.text}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
+          >
+            {saving ? "Saving..." : "Save Worked Hours"}
+          </button>
+        </>
       )}
-      <button
-        type="button"
-        onClick={save}
-        disabled={saving}
-        className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
-      >
-        {saving ? "Saving..." : "Save Worked Hours"}
-      </button>
     </div>
   );
 }
