@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
+import { getSession } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
       return json({ error: "Invalid mode" }, 400);
     const notify_channel: NotifyChannel = body.notify_channel || "none";
 
-    const selectFields = "id, client_id, service_type, scheduled_for, status, series_id";
+    const selectFields = "id, client_id, service_type, scheduled_for, status, series_id, is_demo";
     let apptRes = await supabaseAdmin
       .from("appointments")
       .select(selectFields)
@@ -38,7 +39,7 @@ export async function POST(req: Request) {
     if (apptRes.error) {
       apptRes = await supabaseAdmin
         .from("appointments")
-        .select("id, client_id, service_type, scheduled_for, status")
+        .select("id, client_id, service_type, scheduled_for, status, is_demo")
         .eq("id", appointment_id)
         .maybeSingle();
     }
@@ -47,8 +48,14 @@ export async function POST(req: Request) {
     if (!apptRes.data) return json({ error: "Appointment not found" }, 404);
     const appt = apptRes.data as any;
 
+    const session = await getSession();
+    const isTester = session.role === "tester";
+    if (isTester && !appt.is_demo) {
+      return json({ error: "Appointment not found" }, 404);
+    }
+
     async function notifyCancellation() {
-      if (notify_channel === "none") return;
+      if (notify_channel === "none" || appt.is_demo) return;
       const clientRes = await supabaseAdmin
         .from("clients")
         .select("name, email, phone, auto_email, auto_sms")
@@ -109,6 +116,7 @@ export async function POST(req: Request) {
       .from("appointments")
       .select("id")
       .eq("status", "scheduled")
+      .eq("is_demo", appt.is_demo)
       .gte("scheduled_for", appt.scheduled_for);
 
     if (appt.series_id && await hasColumn("series_id")) {

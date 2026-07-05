@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
 import { changeTemplates } from "@/lib/templates";
+import { getSession } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -29,12 +30,18 @@ export async function PATCH(req: Request) {
 
     const existing = await supabaseAdmin
       .from("appointments")
-      .select("id, client_id, series_id, scheduled_for, scheduled_end")
+      .select("id, client_id, series_id, scheduled_for, scheduled_end, is_demo")
       .eq("id", appointment_id)
       .maybeSingle();
 
     if (existing.error) throw existing.error;
     if (!existing.data) return json({ error: "Appointment not found" }, 404);
+
+    const session = await getSession();
+    const isTester = session.role === "tester";
+    if (isTester && !existing.data.is_demo) {
+      return json({ error: "Appointment not found" }, 404);
+    }
 
     const apptUpdate: Record<string, any> = {};
     if (body.service_type !== undefined)
@@ -127,7 +134,7 @@ export async function PATCH(req: Request) {
       if (error) throw error;
     }
 
-    if (notify_channel !== "none") {
+    if (notify_channel !== "none" && !existing.data.is_demo) {
       const apptRes = await supabaseAdmin
         .from("appointments")
         .select("service_type, scheduled_for")

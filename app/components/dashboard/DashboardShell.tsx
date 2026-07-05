@@ -34,12 +34,14 @@ export default function DashboardShell({
   services,
   employees,
   employeeHours,
+  isTester,
 }: {
   clients: Client[];
   appointments: Appointment[];
   services: Service[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
+  isTester: boolean;
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
@@ -177,15 +179,22 @@ export default function DashboardShell({
           onAdd={handleAdd}
           onEditAppointment={handleEditAppointment}
           onClientUpdated={() => router.refresh()}
+          isTester={isTester}
         />
         {modalEl}
       </>
     );
   }
 
-  // --- DESKTOP LAYOUT (unchanged) ---
+  // --- DESKTOP LAYOUT (unchanged, except the Demo Mode banner/settings restriction for tester sessions) ---
   return (
-    <div className="h-screen flex bg-slate-100 text-slate-900 overflow-hidden">
+    <div className="h-screen flex flex-col bg-slate-100 text-slate-900 overflow-hidden">
+      {isTester && (
+        <div className="shrink-0 bg-amber-400 text-amber-950 text-center text-xs font-semibold py-1.5 px-4">
+          Demo Mode — All information shown in Demo Mode is fictional and for testing only.
+        </div>
+      )}
+      <div className="flex-1 min-h-0 flex">
       {/* Left bar — full height, never moves */}
       <aside className="shrink-0 w-[230px] p-2 pr-0">
         <LeftBar
@@ -241,6 +250,24 @@ export default function DashboardShell({
                 <ClientPanel client={selectedClient} appointments={appointments} onClientUpdated={() => router.refresh()} />
               </div>
             </>
+          ) : isTester ? (
+            <div className="flex-1 min-h-0 pt-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm max-w-xl">
+                <div className="text-sm font-semibold text-slate-900">Demo Mode</div>
+                <div className="mt-2 text-sm text-slate-600">
+                  All information shown in Demo Mode is fictional and for testing only. Settings
+                  are not available in demo sessions — sign out using the button in the sidebar
+                  when you&rsquo;re done exploring.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCenterMode("schedule")}
+                  className="mt-4 rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 transition-colors"
+                >
+                  Back to Schedule
+                </button>
+              </div>
+            </div>
           ) : (
             <div className="flex gap-3 flex-1 min-h-0 pt-2">
               <aside className="shrink-0 w-[200px]">
@@ -271,6 +298,7 @@ export default function DashboardShell({
           />
         </aside>
       )}
+      </div>
 
       {modalEl}
       {pendingMove && (

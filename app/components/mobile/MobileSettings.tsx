@@ -24,7 +24,7 @@ function SettingsCard({ icon, title, subtitle }: { icon: string; title: string; 
 // EmployeeSchedule.tsx — this app's auth is a custom session cookie, not the
 // Supabase Auth SDK, so there's no separate "Supabase signOut()" to call;
 // this is the actual existing sign-out logic, just reused here.
-export default function MobileSettings() {
+export default function MobileSettings({ isTester = false }: { isTester?: boolean }) {
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
 
@@ -43,10 +43,24 @@ export default function MobileSettings() {
       </div>
 
       <div className="flex-1 min-h-0 overflow-auto p-4 space-y-3">
-        <SettingsCard icon="🏢" title="Company" subtitle="Business info, address, contact" />
-        <SettingsCard icon="🧹" title="Services" subtitle="Service types, durations, colors" />
-        <SettingsCard icon="👥" title="Staff" subtitle="Employees, positions, colors" />
-        <SettingsCard icon="⚙️" title="Preferences" subtitle="App preferences" />
+        {isTester && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
+            <div className="text-sm font-semibold text-amber-900">Demo Mode</div>
+            <div className="mt-1 text-xs text-amber-800">
+              All information shown in Demo Mode is fictional and for testing only. Settings
+              are not available in demo sessions.
+            </div>
+          </div>
+        )}
+
+        {!isTester && (
+          <>
+            <SettingsCard icon="🏢" title="Company" subtitle="Business info, address, contact" />
+            <SettingsCard icon="🧹" title="Services" subtitle="Service types, durations, colors" />
+            <SettingsCard icon="👥" title="Staff" subtitle="Employees, positions, colors" />
+            <SettingsCard icon="⚙️" title="Preferences" subtitle="App preferences" />
+          </>
+        )}
 
         <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
           <div className="flex items-center gap-3">
@@ -68,9 +82,11 @@ export default function MobileSettings() {
           </button>
         </div>
 
-        <div className="text-center text-xs text-slate-400 pt-2">
-          Full settings management is available on desktop.
-        </div>
+        {!isTester && (
+          <div className="text-center text-xs text-slate-400 pt-2">
+            Full settings management is available on desktop.
+          </div>
+        )}
       </div>
     </div>
   );

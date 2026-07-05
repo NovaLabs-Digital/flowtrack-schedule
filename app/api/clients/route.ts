@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSession } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -20,6 +21,13 @@ export async function PATCH(req: Request) {
     const body = await req.json();
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing client id" }, 400);
+
+    const session = await getSession();
+    const isTester = session.role === "tester";
+    if (isTester) {
+      const { data } = await supabaseAdmin.from("clients").select("is_demo").eq("id", id).maybeSingle();
+      if (!data?.is_demo) return json({ error: "Client not found" }, 404);
+    }
 
     const update: Record<string, any> = {};
     if (body.name !== undefined) update.name = body.name.trim();
@@ -60,6 +68,13 @@ export async function POST(req: Request) {
     const action = (body.action || "").trim();
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing client id" }, 400);
+
+    const session = await getSession();
+    const isTester = session.role === "tester";
+    if (isTester) {
+      const { data } = await supabaseAdmin.from("clients").select("is_demo").eq("id", id).maybeSingle();
+      if (!data?.is_demo) return json({ error: "Client not found" }, 404);
+    }
 
     if (action === "archive") {
       const update: Record<string, any> = { archived_at: new Date().toISOString() };

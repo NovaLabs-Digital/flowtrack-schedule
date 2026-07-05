@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { generateFutureDates } from "@/lib/recurrence";
+import { getSession } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -24,12 +25,18 @@ export async function POST(req: Request) {
 
     const { data: appt, error: fetchErr } = await supabaseAdmin
       .from("appointments")
-      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status")
+      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status, is_demo")
       .eq("id", appointmentId)
       .maybeSingle();
 
     if (fetchErr) throw fetchErr;
     if (!appt) return json({ error: "Appointment not found" }, 404);
+
+    const session = await getSession();
+    const isTester = session.role === "tester";
+    if (isTester && !appt.is_demo) {
+      return json({ error: "Appointment not found" }, 404);
+    }
 
     let cancelled = 0;
 
@@ -39,6 +46,7 @@ export async function POST(req: Request) {
         .select("id")
         .eq("series_id", appt.series_id)
         .eq("status", "scheduled")
+        .eq("is_demo", appt.is_demo)
         .gt("scheduled_for", appt.scheduled_for);
 
       if (sibErr) throw sibErr;
@@ -92,6 +100,7 @@ export async function POST(req: Request) {
         series_id: newSeriesId,
         frequency_type: newFrequency,
         repeat_weeks: newRepeatWeeks,
+        is_demo: appt.is_demo,
       }));
 
       if (rows.length > 0) {

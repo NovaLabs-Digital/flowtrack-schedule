@@ -1,14 +1,19 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSession } from "@/lib/session";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
+  const session = await getSession();
+  const isTester = session.role === "tester";
+
   let clientFields = "id, name, email, phone, archived_at, address, client_since, referred_by, status, notes, preferred_contact_method, auto_email, auto_sms";
   let clientsRes = await supabaseAdmin
     .from("clients")
     .select(clientFields)
+    .eq("is_demo", isTester)
     .order("name", { ascending: true });
 
   if (clientsRes.error) {
@@ -16,6 +21,7 @@ export default async function DashboardPage() {
     clientsRes = await supabaseAdmin
       .from("clients")
       .select(clientFields)
+      .eq("is_demo", isTester)
       .order("name", { ascending: true });
   }
 
@@ -26,6 +32,7 @@ export default async function DashboardPage() {
   let apptsRes = await supabaseAdmin
     .from("appointments")
     .select(apptFields)
+    .eq("is_demo", isTester)
     .order("scheduled_for", { ascending: true });
 
   if (apptsRes.error) {
@@ -33,6 +40,7 @@ export default async function DashboardPage() {
     apptsRes = await supabaseAdmin
       .from("appointments")
       .select(apptFields)
+      .eq("is_demo", isTester)
       .order("scheduled_for", { ascending: true });
   }
 
@@ -45,6 +53,7 @@ export default async function DashboardPage() {
       .from("services")
       .select("id, name, description, duration_minutes, active, color")
       .eq("active", true)
+      .eq("is_demo", isTester)
       .order("name", { ascending: true });
     if (!svcRes.error) services = svcRes.data ?? [];
   } catch {
@@ -56,6 +65,7 @@ export default async function DashboardPage() {
     const empRes = await supabaseAdmin
       .from("employees")
       .select("id, name, phone, color, active")
+      .eq("is_demo", isTester)
       .order("name", { ascending: true });
     if (!empRes.error) employees = empRes.data ?? [];
   } catch {
@@ -64,10 +74,14 @@ export default async function DashboardPage() {
 
   let employeeHours: any[] = [];
   try {
-    const hoursRes = await supabaseAdmin
-      .from("appointment_employee_hours")
-      .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at");
-    if (!hoursRes.error) employeeHours = hoursRes.data ?? [];
+    const apptIds = (appointments ?? []).map((a) => a.id);
+    if (apptIds.length > 0) {
+      const hoursRes = await supabaseAdmin
+        .from("appointment_employee_hours")
+        .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
+        .in("appointment_id", apptIds);
+      if (!hoursRes.error) employeeHours = hoursRes.data ?? [];
+    }
   } catch {
     // appointment_employee_hours table may not exist yet
   }
@@ -92,6 +106,7 @@ export default async function DashboardPage() {
       services={services ?? []}
       employees={employees ?? []}
       employeeHours={employeeHours}
+      isTester={isTester}
     />
   );
 }

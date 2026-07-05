@@ -19,6 +19,7 @@ type Props = {
   onAdd: () => void;
   onEditAppointment: (apptId: string) => void;
   onClientUpdated: () => void;
+  isTester: boolean;
 };
 
 function addDays(d: Date, n: number) {
@@ -54,6 +55,7 @@ export default function MobileDashboard({
   onAdd,
   onEditAppointment,
   onClientUpdated,
+  isTester,
 }: Props) {
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
@@ -82,6 +84,11 @@ export default function MobileDashboard({
 
   return (
     <div className="h-[100dvh] flex flex-col bg-slate-100 text-slate-900 overflow-hidden safe-area-top">
+      {isTester && (
+        <div className="shrink-0 bg-amber-400 text-amber-950 text-center text-[11px] font-semibold py-1 px-3">
+          Demo Mode — fictional data, for testing only.
+        </div>
+      )}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {selectedAppt ? (
           <MobileAppointmentDetail
@@ -233,7 +240,7 @@ export default function MobileDashboard({
               <MobileClientsList clients={clients} onSelectClient={setClientDrawerId} />
             )}
 
-            {activeTab === "settings" && <MobileSettings />}
+            {activeTab === "settings" && <MobileSettings isTester={isTester} />}
           </>
         )}
       </div>

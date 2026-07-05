@@ -1,9 +1,9 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSession } from "@/lib/session";
 import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
@@ -23,10 +23,11 @@ async function hasColumn(col: string): Promise<boolean> {
 
 export async function POST(req: Request) {
   try {
-    const cookieStore = await cookies();
-    const isOwner = cookieStore.get("sft_session")?.value === "authenticated";
+    const session = await getSession();
+    const isOwner = session.role === "owner";
+    const isTester = session.role === "tester";
 
-    if (!isOwner) {
+    if (!isOwner && !isTester) {
       const { data: settings } = await supabaseAdmin
         .from("company_settings")
         .select("booking_enabled")
@@ -55,7 +56,8 @@ export async function POST(req: Request) {
       return json({ error: "Missing required fields" }, 400);
     }
 
-    // Resolve client
+    // Resolve client — tester sessions are scoped to is_demo rows only, so a
+    // tester can never reference or attach a new appointment to a real client.
     let clientId: string | null = (body.client_id || "").trim() || null;
 
     if (clientId) {
@@ -63,6 +65,7 @@ export async function POST(req: Request) {
         .from("clients")
         .select("id")
         .eq("id", clientId)
+        .eq("is_demo", isTester)
         .maybeSingle();
       if (!data) return json({ error: "Client not found" }, 404);
     } else {
@@ -75,18 +78,18 @@ export async function POST(req: Request) {
 
       if (email) {
         const { data } = await supabaseAdmin
-          .from("clients").select("id").eq("email", email).maybeSingle();
+          .from("clients").select("id").eq("email", email).eq("is_demo", isTester).maybeSingle();
         clientId = data?.id ?? null;
       }
       if (!clientId && phone) {
         const { data } = await supabaseAdmin
-          .from("clients").select("id").eq("phone", phone).maybeSingle();
+          .from("clients").select("id").eq("phone", phone).eq("is_demo", isTester).maybeSingle();
         clientId = data?.id ?? null;
       }
       if (!clientId) {
         const ins = await supabaseAdmin
           .from("clients")
-          .insert({ name, email: email || null, phone: phone || null })
+          .insert({ name, email: email || null, phone: phone || null, is_demo: isTester })
           .select("id").single();
         if (ins.error) throw ins.error;
         clientId = ins.data.id;
@@ -121,6 +124,7 @@ export async function POST(req: Request) {
         notes: notes || null,
         cancel_token: crypto.randomBytes(24).toString("hex"),
         status: "scheduled",
+        is_demo: isTester,
       };
       if (hasDuration) row.duration_minutes = duration_minutes;
       if (hasEnd && endOffsetMs) row.scheduled_end = new Date(d.getTime() + endOffsetMs).toISOString();
@@ -144,14 +148,15 @@ export async function POST(req: Request) {
 
     const firstId = inserted?.[0]?.id;
 
-    // Send confirmation for the first occurrence only
+    // Send confirmation for the first occurrence only — never for demo
+    // bookings, regardless of DISABLE_MESSAGES or the client's auto_email/sms.
     const clientRes = await supabaseAdmin
       .from("clients")
       .select("name, email, phone, auto_email, auto_sms")
       .eq("id", clientId)
       .single();
 
-    if (!clientRes.error && clientRes.data && firstId) {
+    if (!isTester && !clientRes.error && clientRes.data && firstId) {
       const { name: cName, email: cEmail, phone: cPhone, auto_email, auto_sms } = clientRes.data;
       const cancelUrl = `${process.env.NEXT_PUBLIC_APP_URL}/cancel?token=${rows[0].cancel_token}`;
       const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl);

@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSession } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -9,6 +10,11 @@ function json(data: any, status = 200) {
 
 export async function GET() {
   try {
+    const session = await getSession();
+    if (session.role === "tester") {
+      return json({ error: "Unauthorized" }, 403);
+    }
+
     const { data, error } = await supabaseAdmin
       .from("company_settings")
       .select("*")
@@ -26,18 +32,22 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const session = await getSession();
+    if (session.role !== "owner") {
+      return json({ error: "Unauthorized" }, 403);
+    }
+
     const body = await req.json();
 
-    const fields: Record<string, any> = {
-      company_name: (body.company_name || "").trim() || null,
-      phone: (body.phone || "").trim() || null,
-      email: (body.email || "").trim() || null,
-      address: (body.address || "").trim() || null,
-      city: (body.city || "").trim() || null,
-      state: (body.state || "").trim() || null,
-      zip: (body.zip || "").trim() || null,
-      updated_at: new Date().toISOString(),
-    };
+    // Partial update — only touch fields actually present in the request body.
+    // (Previously this always wrote every field, defaulting anything missing
+    // to null; a request that only sent booking_enabled — e.g. the Public
+    // Booking toggle — silently wiped company_name/phone/email/address/etc.)
+    const fields: Record<string, any> = { updated_at: new Date().toISOString() };
+    const TEXT_FIELDS = ["company_name", "phone", "email", "address", "city", "state", "zip"];
+    for (const f of TEXT_FIELDS) {
+      if (body[f] !== undefined) fields[f] = (body[f] || "").trim() || null;
+    }
     if (typeof body.booking_enabled === "boolean") {
       fields.booking_enabled = body.booking_enabled;
     }

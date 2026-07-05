@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { getSession } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -9,9 +10,13 @@ function json(data: any, status = 200) {
 
 export async function GET() {
   try {
+    const session = await getSession();
+    const isTester = session.role === "tester";
+
     const { data, error } = await supabaseAdmin
       .from("services")
       .select("id, name, description, duration_minutes, active, color, created_at, updated_at")
+      .eq("is_demo", isTester)
       .order("name", { ascending: true });
 
     if (error) throw error;
@@ -24,6 +29,11 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const session = await getSession();
+    if (session.role !== "owner") {
+      return json({ error: "Unauthorized" }, 403);
+    }
+
     const body = await req.json();
 
     const name = (body.name || "").trim();
@@ -51,6 +61,11 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
+    const session = await getSession();
+    if (session.role !== "owner") {
+      return json({ error: "Unauthorized" }, 403);
+    }
+
     const body = await req.json();
 
     const id = (body.id || "").trim();

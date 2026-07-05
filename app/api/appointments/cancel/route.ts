@@ -16,7 +16,7 @@ export async function POST(req: Request) {
 
     const apptRes = await supabaseAdmin
       .from("appointments")
-      .select("id, status, client_id, service_type")
+      .select("id, status, client_id, service_type, is_demo")
       .eq("cancel_token", token)
       .maybeSingle();
 
@@ -31,6 +31,10 @@ export async function POST(req: Request) {
       .from("appointments")
       .update({ status: "cancelled" })
       .eq("id", apptRes.data.id);
+
+    if (apptRes.data.is_demo) {
+      return json({ ok: true });
+    }
 
     const clientRes = await supabaseAdmin
       .from("clients")
