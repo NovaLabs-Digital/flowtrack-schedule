@@ -457,6 +457,11 @@ export default function ScheduleGrid({
                           sameClient && !selected ? "outline outline-2 outline-blue-600/30" : "",
                           dragEnabled ? "cursor-grab active:cursor-grabbing" : "",
                           draggingId === a.id ? "opacity-40" : "",
+                          // While any card is being dragged, cards must not intercept drag/drop
+                          // events — otherwise dropping onto an occupied time slot hits the
+                          // other appointment's card (which has no onDrop handler) instead of
+                          // the quarter-hour dropzone underneath it, silently blocking the drop.
+                          draggingId ? "pointer-events-none" : "",
                         ].join(" ")}
                         style={{
                           top: topOffset + 2,
