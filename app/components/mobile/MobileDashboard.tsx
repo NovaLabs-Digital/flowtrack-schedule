@@ -6,6 +6,7 @@ import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
 import MobileAppointmentDetail from "@/app/components/mobile/MobileAppointmentDetail";
 import MobileClientDrawer from "@/app/components/mobile/MobileClientDrawer";
+import MobileClientsList from "@/app/components/mobile/MobileClientsList";
 import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 
@@ -41,8 +42,8 @@ function scheduledMinutes(appt: Appointment, services: Service[]): number {
 
 // Mobile Admin v1 — Today screen (Screen 1), Appointment Detail (Screen 2),
 // Client Quick Look drawer (Screen 3), persistent bottom navigation
-// (Screen 4), and the Schedule tab's Agenda List View from the approved
-// mockup. Clients/Settings tab content land in following milestones.
+// (Screen 4), the Schedule tab's Agenda List View, and the Clients tab from
+// the approved mockup. Settings tab content lands in a following milestone.
 export default function MobileDashboard({
   clients,
   appointments,
@@ -227,9 +228,7 @@ export default function MobileDashboard({
             )}
 
             {activeTab === "clients" && (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-slate-400 px-6 text-center">
-                Clients — coming in a later milestone.
-              </div>
+              <MobileClientsList clients={clients} onSelectClient={setClientDrawerId} />
             )}
 
             {activeTab === "settings" && (
