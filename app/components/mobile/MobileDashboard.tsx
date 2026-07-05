@@ -5,6 +5,7 @@ import { Client, Appointment, Service, Employee } from "@/app/components/dashboa
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
 import MobileAppointmentDetail from "@/app/components/mobile/MobileAppointmentDetail";
+import MobileClientDrawer from "@/app/components/mobile/MobileClientDrawer";
 import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 
@@ -39,9 +40,9 @@ function scheduledMinutes(appt: Appointment, services: Service[]): number {
 }
 
 // Mobile Admin v1 — Today screen (Screen 1), Appointment Detail (Screen 2),
-// and persistent bottom navigation (Screen 4) from the approved mockup.
-// Client Quick Look drawer and the Schedule/Clients/Settings tab content land
-// in following milestones.
+// Client Quick Look drawer (Screen 3), and persistent bottom navigation
+// (Screen 4) from the approved mockup. Schedule/Clients/Settings tab content
+// land in following milestones.
 export default function MobileDashboard({
   clients,
   appointments,
@@ -54,6 +55,7 @@ export default function MobileDashboard({
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
+  const [clientDrawerId, setClientDrawerId] = useState<string | null>(null);
 
   const today = nowInBusinessTz();
   const selectedDate = addDays(today, dayOffset);
@@ -73,6 +75,7 @@ export default function MobileDashboard({
   const strip = [-2, -1, 0, 1, 2].map((i) => addDays(selectedDate, i));
 
   const selectedAppt = selectedApptId ? appointments.find((a) => a.id === selectedApptId) ?? null : null;
+  const drawerClient = clientDrawerId ? clientById[clientDrawerId] ?? null : null;
 
   return (
     <div className="h-[100dvh] flex flex-col bg-slate-100 text-slate-900 overflow-hidden safe-area-top">
@@ -89,6 +92,7 @@ export default function MobileDashboard({
               setSelectedApptId(null);
               onClientUpdated();
             }}
+            onViewClient={() => setClientDrawerId(selectedAppt.client_id)}
           />
         ) : (
           <>
@@ -229,6 +233,14 @@ export default function MobileDashboard({
       </div>
 
       <MobileBottomNav active={activeTab} onChange={setActiveTab} />
+
+      {drawerClient && (
+        <MobileClientDrawer
+          client={drawerClient}
+          appointments={appointments}
+          onClose={() => setClientDrawerId(null)}
+        />
+      )}
     </div>
   );
 }

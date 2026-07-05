@@ -27,6 +27,7 @@ type Props = {
   onBack: () => void;
   onEdit: () => void;
   onCancelled: () => void;
+  onViewClient?: () => void;
 };
 
 // Screen 2 of the approved mockup. "Edit" reuses the existing AppointmentModal
@@ -41,6 +42,7 @@ export default function MobileAppointmentDetail({
   onBack,
   onEdit,
   onCancelled,
+  onViewClient,
 }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
@@ -114,7 +116,13 @@ export default function MobileAppointmentDetail({
         {client && (
           <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
             <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Client</div>
-            <div className="text-sm font-semibold text-slate-900">{client.name}</div>
+            {onViewClient ? (
+              <button type="button" onClick={onViewClient} className="text-sm font-semibold text-blue-600 text-left">
+                {client.name} ›
+              </button>
+            ) : (
+              <div className="text-sm font-semibold text-slate-900">{client.name}</div>
+            )}
             <div className="flex items-center justify-between gap-2">
               {client.phone ? (
                 <a href={`tel:${client.phone}`} className="text-sm text-blue-600">{client.phone}</a>
