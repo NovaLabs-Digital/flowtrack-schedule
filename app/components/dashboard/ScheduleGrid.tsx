@@ -139,27 +139,50 @@ function computeOverlapLayout(appts: Appointment[], startHour: number, durationF
 
   items.sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
 
-  const columns: { id: string; end: number }[][] = [];
+  // Partition the sorted items into independent overlap clusters — a maximal
+  // run of appointments transitively connected by time overlap. Column count
+  // (and therefore card width) is then computed per cluster instead of per
+  // day, so a busy stretch elsewhere doesn't reserve empty columns for a
+  // stretch that only has one or two overlapping appointments.
+  type Item = { id: string; start: number; end: number };
+  const clusters: Item[][] = [];
+  let currentCluster: Item[] = [];
+  let clusterEnd = -Infinity;
 
   for (const item of items) {
-    let placed = false;
-    for (let c = 0; c < columns.length; c++) {
-      const col = columns[c];
-      if (col[col.length - 1].end <= item.start) {
-        col.push(item);
-        placed = true;
-        break;
+    if (currentCluster.length > 0 && item.start >= clusterEnd) {
+      clusters.push(currentCluster);
+      currentCluster = [];
+      clusterEnd = -Infinity;
+    }
+    currentCluster.push(item);
+    clusterEnd = Math.max(clusterEnd, item.end);
+  }
+  if (currentCluster.length > 0) clusters.push(currentCluster);
+
+  for (const cluster of clusters) {
+    const columns: Item[][] = [];
+
+    for (const item of cluster) {
+      let placed = false;
+      for (let c = 0; c < columns.length; c++) {
+        const col = columns[c];
+        if (col[col.length - 1].end <= item.start) {
+          col.push(item);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        columns.push([item]);
       }
     }
-    if (!placed) {
-      columns.push([item]);
-    }
-  }
 
-  const totalColumns = columns.length;
-  for (let c = 0; c < columns.length; c++) {
-    for (const item of columns[c]) {
-      layout.set(item.id, { column: c, totalColumns });
+    const totalColumns = columns.length;
+    for (let c = 0; c < columns.length; c++) {
+      for (const item of columns[c]) {
+        layout.set(item.id, { column: c, totalColumns });
+      }
     }
   }
 
