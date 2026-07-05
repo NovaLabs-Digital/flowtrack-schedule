@@ -40,9 +40,9 @@ function scheduledMinutes(appt: Appointment, services: Service[]): number {
 }
 
 // Mobile Admin v1 — Today screen (Screen 1), Appointment Detail (Screen 2),
-// Client Quick Look drawer (Screen 3), and persistent bottom navigation
-// (Screen 4) from the approved mockup. Schedule/Clients/Settings tab content
-// land in following milestones.
+// Client Quick Look drawer (Screen 3), persistent bottom navigation
+// (Screen 4), and the Schedule tab's Agenda List View from the approved
+// mockup. Clients/Settings tab content land in following milestones.
 export default function MobileDashboard({
   clients,
   appointments,
@@ -215,7 +215,16 @@ export default function MobileDashboard({
               </>
             )}
 
-            {activeTab === "schedule" && <MobileSchedule />}
+            {activeTab === "schedule" && (
+              <MobileSchedule
+                appointments={appointments}
+                clientById={clientById}
+                employeeById={employeeById}
+                serviceColorByName={serviceColorByName}
+                getDurationMinutes={(a) => scheduledMinutes(a, services)}
+                onSelectAppointment={setSelectedApptId}
+              />
+            )}
 
             {activeTab === "clients" && (
               <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-slate-400 px-6 text-center">
