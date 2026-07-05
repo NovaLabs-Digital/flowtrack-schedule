@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Appointment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
 import { startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
+import { hasWorkedHours, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
 
 function formatDateTime(iso: string) {
   const d = toBusinessLocal(iso);
@@ -45,27 +46,31 @@ function formatDuration(mins: number) {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
+// Used only for the read-only "Worked Time" value — always shows minutes
+// (zero-padded) once there's at least one hour, e.g. "3h 00m", "1h 05m",
+// so the value reads consistently instead of dropping ":00".
+function formatWorkedDuration(mins: number) {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${String(m).padStart(2, "0")}m`;
+}
+
+// Only ever rendered by DispatchPanel when needsWorkedHoursAttention() is
+// true for this appointment (past, not cancelled, no Job Tracking, no saved
+// manual entry yet) — so this form is always the missing-hours exception,
+// never a way to edit an appointment's tracked duration.
 function EmployeeHoursSection({
-  appointment, employee, existing, onSaved,
+  appointment, employee, onSaved,
 }: {
   appointment: Appointment;
   employee: Employee;
-  existing: EmployeeHours | null;
   onSaved: () => void;
 }) {
-  const [hours, setHours] = useState(existing ? String(existing.hours_worked) : "");
-  const [reason, setReason] = useState(existing?.note ?? "");
+  const [hours, setHours] = useState("");
+  const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-
-  // Job Tracking (Start Job / Complete Job) is the official source of worked
-  // time — an employee's tracked duration is never editable or overridable
-  // here. The manual Hours Worked / Reason form below only ever appears when
-  // no tracked duration exists for this appointment.
-  const trackedMinutes = appointment.actual_started_at && appointment.actual_completed_at
-    ? Math.round((new Date(appointment.actual_completed_at).getTime() - new Date(appointment.actual_started_at).getTime()) / 60_000)
-    : null;
-  const hasTrackedTime = trackedMinutes !== null && trackedMinutes > 0;
 
   async function save() {
     const hoursNum = Number(hours);
@@ -104,59 +109,47 @@ function EmployeeHoursSection({
         <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(appointment))}</span>
       </div>
 
-      {hasTrackedTime ? (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">Tracked Time</div>
-          <div className="text-sm font-semibold text-emerald-900 mt-0.5">
-            {formatDuration(trackedMinutes!)} <span className="text-emerald-600">&#10003;</span>
-          </div>
-          <div className="text-[10px] text-emerald-700 mt-1">No action needed — hours are tracked automatically.</div>
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+        &#9888; Employee did not complete Job Tracking.
+      </div>
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-slate-500 shrink-0">Hours Worked</label>
+        <input
+          type="number"
+          step="0.25"
+          min="0"
+          value={hours}
+          onChange={(e) => setHours(e.target.value)}
+          placeholder="2.5"
+          className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-slate-500 shrink-0">Reason</label>
+        <input
+          type="text"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. forgot to clock in/out"
+          className="flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+      {message && (
+        <div className={[
+          "text-[11px] px-2 py-1 rounded",
+          message.type === "success" ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50",
+        ].join(" ")}>
+          {message.text}
         </div>
-      ) : (
-        <>
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
-            &#9888; Employee did not complete Job Tracking.
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-slate-500 shrink-0">Hours Worked</label>
-            <input
-              type="number"
-              step="0.25"
-              min="0"
-              value={hours}
-              onChange={(e) => setHours(e.target.value)}
-              placeholder="2.5"
-              className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-slate-500 shrink-0">Reason</label>
-            <input
-              type="text"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="e.g. forgot to clock in/out"
-              className="flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          {message && (
-            <div className={[
-              "text-[11px] px-2 py-1 rounded",
-              message.type === "success" ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50",
-            ].join(" ")}>
-              {message.text}
-            </div>
-          )}
-          <button
-            type="button"
-            onClick={save}
-            disabled={saving}
-            className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
-          >
-            {saving ? "Saving..." : "Save Worked Hours"}
-          </button>
-        </>
       )}
+      <button
+        type="button"
+        onClick={save}
+        disabled={saving}
+        className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
+      >
+        {saving ? "Saving..." : "Save Worked Hours"}
+      </button>
     </div>
   );
 }
@@ -290,21 +283,32 @@ export default function DispatchPanel({
       {/* 4. Employee Worked Hours — administrative task, lives at the bottom */}
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">
         <div className="text-sm font-semibold text-slate-900 mb-3">Employee Worked Hours</div>
-        {selectedAppt && employee ? (
+        {selectedAppt && employee && hasWorkedHours(selectedAppt, employeeHours) ? (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-medium text-slate-800">{employee.name}</span>
+              <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(selectedAppt))}</span>
+            </div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">
+                Worked Time <span className="text-emerald-600">&#10003;</span>
+              </div>
+              <div className="text-sm font-semibold text-emerald-900 mt-0.5">
+                {formatWorkedDuration(resolveWorkedMinutes(selectedAppt, employeeHours, employee.id))}
+              </div>
+              <div className="text-[10px] text-emerald-700 mt-1">No action needed — hours are tracked automatically.</div>
+            </div>
+          </div>
+        ) : selectedAppt && employee && needsWorkedHoursAttention(selectedAppt, employeeHours) ? (
           <EmployeeHoursSection
             key={selectedAppt.id}
             appointment={selectedAppt}
             employee={employee}
-            existing={
-              employeeHours.find(
-                (h) => h.appointment_id === selectedAppt.id && h.employee_id === employee.id
-              ) ?? null
-            }
             onSaved={onHoursSaved}
           />
         ) : (
           <div className="text-xs text-slate-400">
-            Select an appointment with an assigned employee to log hours.
+            Select an appointment to view/review worked hours.
           </div>
         )}
       </div>

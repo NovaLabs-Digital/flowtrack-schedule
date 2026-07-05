@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Client, Appointment, Service, Employee, EmployeeHours, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
+import { needsWorkedHoursAttention } from "@/lib/payroll";
 
 function formatDay(d: Date) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -197,11 +198,6 @@ export default function ScheduleGrid({
   const dragEnabled = !!onDropAppointment;
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverCell, setDragOverCell] = useState<string | null>(null);
-  // Reuses the employeeHours array already fetched once for payroll — no extra query.
-  const apptIdsWithHours = useMemo(
-    () => new Set(employeeHours.map((h) => h.appointment_id)),
-    [employeeHours]
-  );
   const serviceDurations: Record<string, number> = {};
   const serviceColors: Record<string, string> = {};
   for (const s of services) {
@@ -419,19 +415,7 @@ export default function ScheduleGrid({
                     const empName = employeeName(a.employee_id);
                     const svcColor = serviceColors[a.service_type] ?? null;
 
-                    // "Has worked hours" mirrors lib/payroll.ts's resolveJobTrackingHours:
-                    // either a completed job-tracking duration or a manually-saved
-                    // appointment_employee_hours entry counts — so the warning and the
-                    // Weekly Worked Hours summary never disagree about the same appointment.
-                    const hasJobTrackingHours =
-                      !!a.actual_started_at &&
-                      !!a.actual_completed_at &&
-                      new Date(a.actual_completed_at).getTime() > new Date(a.actual_started_at).getTime();
-                    const needsHoursWarning =
-                      a.status !== "cancelled" &&
-                      rawStart.getTime() < Date.now() &&
-                      !apptIdsWithHours.has(a.id) &&
-                      !hasJobTrackingHours;
+                    const needsHoursWarning = needsWorkedHoursAttention(a, employeeHours);
                     const hoursWarningIcon = needsHoursWarning ? (
                       <span
                         title="Employee work hours require attention because Job Tracking was not completed."

@@ -5,6 +5,44 @@ export function toDateInputValue(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// True when an appointment has a usable worked-hours source: a completed
+// Job Tracking duration (preferred) or a manually-saved
+// appointment_employee_hours entry (fallback only). Single source of truth
+// for "has worked hours been entered?" — used by both the schedule grid's
+// warning triangle and the Employee Worked Hours card, so they never disagree
+// about the same appointment.
+export function hasWorkedHours(appt: Appointment, employeeHours: EmployeeHours[]): boolean {
+  const hasJobTracking =
+    !!appt.actual_started_at &&
+    !!appt.actual_completed_at &&
+    new Date(appt.actual_completed_at).getTime() > new Date(appt.actual_started_at).getTime();
+  if (hasJobTracking) return true;
+  return employeeHours.some((h) => h.appointment_id === appt.id);
+}
+
+// True when an appointment needs attention: in the past, not cancelled, and
+// has no worked-hours source yet (see hasWorkedHours above).
+export function needsWorkedHoursAttention(appt: Appointment, employeeHours: EmployeeHours[]): boolean {
+  return (
+    appt.status !== "cancelled" &&
+    new Date(appt.scheduled_for).getTime() < Date.now() &&
+    !hasWorkedHours(appt, employeeHours)
+  );
+}
+
+// Resolves the actual worked minutes for one appointment/employee, with the
+// same Job-Tracking-preferred, manual-entry-fallback precedence as
+// hasWorkedHours above. Display-only (e.g. the Employee Worked Hours card's
+// read-only "Worked Time" value) — does not affect computePayrollRows.
+export function resolveWorkedMinutes(appt: Appointment, employeeHours: EmployeeHours[], employeeId: string): number {
+  if (appt.actual_started_at && appt.actual_completed_at) {
+    const mins = Math.round((new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()) / 60_000);
+    if (mins > 0) return mins;
+  }
+  const manual = employeeHours.find((h) => h.appointment_id === appt.id && h.employee_id === employeeId);
+  return manual ? Math.round(manual.hours_worked * 60) : 0;
+}
+
 // "job_tracking" is the active mode for now — payroll totals come only from
 // actual Start/Complete timestamps, never from scheduled duration.
 // "scheduled_duration" and "manual_hours" are kept for future use (e.g. once a
