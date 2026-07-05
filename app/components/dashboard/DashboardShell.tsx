@@ -11,6 +11,7 @@ import ClientPanel from "@/app/components/dashboard/ClientPanel";
 import DispatchPanel from "@/app/components/dashboard/DispatchPanel";
 import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
 import MoveConfirmDialog from "@/app/components/dashboard/MoveConfirmDialog";
+import MobileDashboard from "@/app/components/mobile/MobileDashboard";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import {
   Client,
@@ -18,7 +19,6 @@ import {
   Service,
   Employee,
   EmployeeHours,
-  MobileTab,
   ViewMode,
   CenterMode,
   SettingsSection,
@@ -46,7 +46,6 @@ export default function DashboardShell({
   const [viewMode, setViewMode] = useState<ViewMode>("weekdays");
   const [centerMode, setCenterMode] = useState<CenterMode>("schedule");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("company");
-  const [mobileTab, setMobileTab] = useState<MobileTab>("schedule");
 
   const router = useRouter();
   const [modal, setModal] = useState<ModalState | null>(null);
@@ -58,8 +57,6 @@ export default function DashboardShell({
     { appointment: Appointment; client: Client; scheduledFor: string; scheduledEnd: string | null } | null
   >(null);
 
-  const effectiveViewMode = isMobile && viewMode !== "day" ? "day" : viewMode;
-
   const selectedClient = useMemo(() => {
     if (!selectedClientId) return null;
     return clients.find((c) => c.id === selectedClientId) ?? null;
@@ -68,7 +65,6 @@ export default function DashboardShell({
   function handleSelectClient(clientId: string) {
     setSelectedClientId(clientId);
     setSelectedApptId(null);
-    if (isMobile) setMobileTab("schedule");
   }
 
   function selectAppointment(apptId: string) {
@@ -103,7 +99,6 @@ export default function DashboardShell({
 
   function handleGoToday() {
     setCenterMode("schedule");
-    if (isMobile) setMobileTab("schedule");
     setSelectedApptId(null);
     setWeekOffset(0);
   }
@@ -170,147 +165,21 @@ export default function DashboardShell({
     />
   );
 
-  // --- MOBILE LAYOUT ---
+  // --- MOBILE LAYOUT (Mobile Admin v1 — see app/components/mobile/) ---
   if (isMobile) {
     return (
-      <div className="h-[100dvh] flex flex-col bg-slate-100 text-slate-900 overflow-hidden">
-        {/* Mobile top bar */}
-        <TopBar
-          onGoToday={handleGoToday}
+      <>
+        <MobileDashboard
+          clients={clients}
+          appointments={appointments}
+          services={services}
+          employees={employees}
           onAdd={handleAdd}
-          weekOffset={weekOffset}
-          onWeekChange={setWeekOffset}
-          isMobile
-          viewMode={effectiveViewMode}
-          onChangeView={setViewMode}
+          onEditAppointment={handleEditAppointment}
+          onClientUpdated={() => router.refresh()}
         />
-
-        {/* Mobile content area */}
-        <div className="flex-1 min-h-0 overflow-auto">
-          {mobileTab === "schedule" && (
-            <div className="h-full p-2">
-              <ScheduleGrid
-                viewMode={effectiveViewMode}
-                clients={clients}
-                appointments={appointments}
-                services={services}
-                employees={employees}
-                employeeHours={employeeHours}
-                selectedClientId={selectedClientId}
-                selectedAppointmentId={selectedApptId}
-                onSelectAppointment={handleSelectAppointment}
-                onCellClick={handleCellClick}
-                weekOffset={weekOffset}
-              />
-            </div>
-          )}
-
-          {mobileTab === "clients" && (
-            <div className="h-full flex flex-col">
-              {/* Client list */}
-              <div className="border-b bg-white">
-                <div className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Clients ({clients.filter((c) => !c.archived_at).length})
-                </div>
-                <div className="max-h-[35vh] overflow-auto">
-                  {clients.filter((c) => !c.archived_at).map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => { setSelectedClientId(c.id); setSelectedApptId(null); }}
-                      className={[
-                        "w-full px-4 py-3 text-left text-sm border-b border-slate-100 transition-colors",
-                        c.id === selectedClientId ? "bg-blue-50 text-blue-900 font-medium" : "text-slate-700",
-                      ].join(" ")}
-                    >
-                      <div className="font-medium">{c.name}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">
-                        {c.phone || c.email || "No contact info"}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {/* Selected client details */}
-              <div className="flex-1 min-h-0 overflow-auto">
-                <ClientPanel client={selectedClient} appointments={appointments} onClientUpdated={() => router.refresh()} />
-              </div>
-            </div>
-          )}
-
-          {mobileTab === "settings" && (
-            <div className="h-full flex flex-col">
-              {/* Settings nav as horizontal scroll */}
-              <div className="bg-white border-b overflow-x-auto shrink-0">
-                <div className="flex px-2 py-2 gap-1 min-w-max">
-                  {(
-                    [
-                      { key: "company", label: "Company" },
-                      { key: "services", label: "Services" },
-                      { key: "staff", label: "Staff" },
-                      { key: "archived", label: "Archived" },
-                      { key: "preferences", label: "Prefs" },
-                    ] as { key: SettingsSection; label: string }[]
-                  ).map(({ key, label }) => (
-                    <button
-                      key={key}
-                      onClick={() => setSettingsSection(key)}
-                      className={[
-                        "rounded-lg px-3 py-2 text-sm whitespace-nowrap transition-colors",
-                        settingsSection === key
-                          ? "bg-slate-900 text-white font-medium"
-                          : "text-slate-600 hover:bg-slate-100",
-                      ].join(" ")}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="flex-1 min-h-0 overflow-auto p-2">
-                <SettingsPanel section={settingsSection} />
-              </div>
-            </div>
-          )}
-
-        </div>
-
-        {/* Floating add button on schedule tab */}
-        {mobileTab === "schedule" && (
-          <button
-            onClick={handleAdd}
-            className="fixed bottom-20 right-4 w-14 h-14 rounded-full bg-slate-900 text-white text-2xl shadow-lg flex items-center justify-center z-40 active:bg-slate-700"
-          >
-            +
-          </button>
-        )}
-
-        {/* Bottom tab bar */}
-        <nav className="shrink-0 bg-white border-t border-slate-200 safe-area-bottom">
-          <div className="grid grid-cols-3 h-14">
-            {(
-              [
-                { key: "schedule", label: "Schedule", icon: "📅" },
-                { key: "clients", label: "Clients", icon: "👥" },
-                { key: "settings", label: "Settings", icon: "⚙" },
-              ] as { key: MobileTab; label: string; icon: string }[]
-            ).map(({ key, label, icon }) => (
-              <button
-                key={key}
-                onClick={() => setMobileTab(key)}
-                className={[
-                  "flex flex-col items-center justify-center gap-0.5 text-xs transition-colors",
-                  mobileTab === key ? "text-blue-600 font-medium" : "text-slate-400",
-                ].join(" ")}
-              >
-                <span className="text-lg leading-none">{icon}</span>
-                {label}
-              </button>
-            ))}
-          </div>
-        </nav>
-
         {modalEl}
-      </div>
+      </>
     );
   }
 
