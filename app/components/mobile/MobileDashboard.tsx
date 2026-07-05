@@ -46,6 +46,7 @@ export default function MobileDashboard({
   appointments,
   services,
   employees,
+  onAdd,
 }: Props) {
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
@@ -174,6 +175,17 @@ export default function MobileDashboard({
                   />
                 ))
               )}
+            </div>
+
+            {/* Add Appointment */}
+            <div className="shrink-0 px-4 pb-3 pt-1">
+              <button
+                type="button"
+                onClick={onAdd}
+                className="w-full rounded-xl bg-slate-900 px-4 py-3.5 text-sm font-semibold text-white active:bg-slate-800 transition-colors"
+              >
+                + Add Appointment
+              </button>
             </div>
           </>
         )}
