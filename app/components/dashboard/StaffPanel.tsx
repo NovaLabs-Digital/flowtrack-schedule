@@ -15,6 +15,7 @@ const PRESET_COLORS = [
 ];
 
 const POSITION_OPTIONS = ["Owner", "Manager", "Cleaner", "Technician", "Helper"];
+const CUSTOM_POSITION = "__custom__";
 
 type EditForm = { name: string; phone: string; email: string; password: string; color: string; position: string };
 const EMPTY_FORM: EditForm = { name: "", phone: "", email: "", password: "", color: PRESET_COLORS[0].hex, position: "" };
@@ -28,6 +29,10 @@ export default function StaffPanel() {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState<EditForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
+  // Tracked separately from form.position because a not-yet-typed custom
+  // position is an empty string — indistinguishable from "no position" —
+  // so the select's own mode can't be inferred from the text alone.
+  const [showCustomPosition, setShowCustomPosition] = useState(false);
 
   function loadEmployees() {
     fetch("/api/employees")
@@ -45,7 +50,9 @@ export default function StaffPanel() {
   function startEdit(e: Employee) {
     setEditingId(e.id);
     setShowAdd(false);
-    setForm({ name: e.name, phone: e.phone ?? "", email: (e as any).email ?? "", password: "", color: e.color, position: e.position ?? "" });
+    const position = e.position ?? "";
+    setForm({ name: e.name, phone: e.phone ?? "", email: (e as any).email ?? "", password: "", color: e.color, position });
+    setShowCustomPosition(position !== "" && !POSITION_OPTIONS.includes(position));
     setMessage(null);
   }
 
@@ -53,6 +60,7 @@ export default function StaffPanel() {
     setEditingId(null);
     setShowAdd(true);
     setForm(EMPTY_FORM);
+    setShowCustomPosition(false);
     setMessage(null);
   }
 
@@ -60,6 +68,7 @@ export default function StaffPanel() {
     setEditingId(null);
     setShowAdd(false);
     setForm(EMPTY_FORM);
+    setShowCustomPosition(false);
   }
 
   async function handleSave(ev: React.FormEvent) {
@@ -179,15 +188,34 @@ export default function StaffPanel() {
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Position</label>
             <select
-              value={form.position}
-              onChange={(e) => setForm((p) => ({ ...p, position: e.target.value }))}
+              value={showCustomPosition ? CUSTOM_POSITION : form.position}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === CUSTOM_POSITION) {
+                  setShowCustomPosition(true);
+                  setForm((p) => ({ ...p, position: POSITION_OPTIONS.includes(p.position) ? "" : p.position }));
+                } else {
+                  setShowCustomPosition(false);
+                  setForm((p) => ({ ...p, position: val }));
+                }
+              }}
               className={inputCls}
             >
               <option value="">—</option>
               {POSITION_OPTIONS.map((p) => (
                 <option key={p} value={p}>{p}</option>
               ))}
+              <option value={CUSTOM_POSITION}>+ Custom Position...</option>
             </select>
+            {showCustomPosition && (
+              <input
+                type="text"
+                value={form.position}
+                onChange={(e) => setForm((p) => ({ ...p, position: e.target.value }))}
+                className={inputCls + " mt-2"}
+                placeholder="Enter custom position"
+              />
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

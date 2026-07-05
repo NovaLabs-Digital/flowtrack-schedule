@@ -20,7 +20,7 @@ type Appointment = {
 type ClientInfo = { name: string; address: string | null };
 
 type Props = {
-  employee: { id: string; name: string; color: string };
+  employee: { id: string; name: string; color: string; position?: string | null };
   appointments: Appointment[];
   clients: Record<string, ClientInfo>;
   serviceColors: Record<string, string>;
@@ -130,7 +130,12 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
             <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-white text-xs font-bold" style={{ backgroundColor: employee.color }}>
               {employee.name.charAt(0).toUpperCase()}
             </div>
-            <div className="text-sm font-semibold text-slate-900 truncate">{employee.name}</div>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-slate-900 truncate">{employee.name}</div>
+              {employee.position && (
+                <div className="text-xs font-normal text-slate-400 truncate">{employee.position}</div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <button

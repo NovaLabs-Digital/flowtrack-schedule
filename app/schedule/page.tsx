@@ -38,7 +38,7 @@ export default async function SchedulePage() {
 
   const { data: employee, error: empErr } = await supabaseAdmin
     .from("employees")
-    .select("id, name, color, active, phone")
+    .select("id, name, color, active, phone, position")
     .eq("id", employeeId)
     .maybeSingle();
 
@@ -124,7 +124,7 @@ export default async function SchedulePage() {
 
   return (
     <EmployeeSchedule
-      employee={{ id: employee.id, name: employee.name, color: employee.color }}
+      employee={{ id: employee.id, name: employee.name, color: employee.color, position: employee.position ?? null }}
       appointments={appts}
       clients={clients}
       serviceColors={services}
