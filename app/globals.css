@@ -27,6 +27,10 @@ body {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
 /* Schedule grid appointment cards tinted by service color. RGB channels are set
    per-card via --svc-r/--svc-g/--svc-b inline style; only the alpha/opacity
    differs between light and dark so the tint stays soft in light mode and

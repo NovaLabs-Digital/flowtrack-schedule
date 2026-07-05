@@ -35,7 +35,7 @@ export default function TopBar({
 
   if (isMobile) {
     return (
-      <div className="shrink-0 bg-white border-b border-slate-200 px-3 py-2 space-y-2">
+      <div className="shrink-0 bg-white border-b border-slate-200 px-3 py-2 space-y-2 safe-area-top">
         <div className="flex items-center justify-between gap-2">
           {/* Navigation */}
           <div className="flex items-center gap-1">
