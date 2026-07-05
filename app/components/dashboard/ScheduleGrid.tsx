@@ -457,11 +457,14 @@ export default function ScheduleGrid({
                           sameClient && !selected ? "outline outline-2 outline-blue-600/30" : "",
                           dragEnabled ? "cursor-grab active:cursor-grabbing" : "",
                           draggingId === a.id ? "opacity-40" : "",
-                          // While any card is being dragged, cards must not intercept drag/drop
-                          // events — otherwise dropping onto an occupied time slot hits the
-                          // other appointment's card (which has no onDrop handler) instead of
-                          // the quarter-hour dropzone underneath it, silently blocking the drop.
-                          draggingId ? "pointer-events-none" : "",
+                          // While dragging, OTHER cards must not intercept drag/drop events —
+                          // otherwise dropping onto an occupied time slot hits that appointment's
+                          // card (which has no onDrop handler) instead of the quarter-hour
+                          // dropzone underneath it, silently blocking the drop. The dragged card
+                          // itself must keep pointer-events on: disabling it mid-drag (it's still
+                          // under the cursor right after dragstart) causes the browser to lose
+                          // track of the active native drag operation and cancel it outright.
+                          draggingId && draggingId !== a.id ? "pointer-events-none" : "",
                         ].join(" ")}
                         style={{
                           top: topOffset + 2,
