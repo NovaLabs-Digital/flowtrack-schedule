@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { formatHoursAsDuration } from "@/lib/payroll";
 
 type Appointment = {
   id: string;
@@ -16,13 +17,16 @@ type Appointment = {
   actual_completed_at?: string | null;
 };
 
-type ClientInfo = { name: string; address: string | null; phone: string | null };
+type ClientInfo = { name: string; address: string | null };
 
 type Props = {
   employee: { id: string; name: string; color: string };
   appointments: Appointment[];
   clients: Record<string, ClientInfo>;
   serviceColors: Record<string, string>;
+  officePhone: string | null;
+  thisWeekHours: number;
+  lastWeekHours: number;
 };
 
 function addDays(d: Date, n: number) {
@@ -65,7 +69,7 @@ function greeting(): string {
   return "Good evening";
 }
 
-export default function EmployeeSchedule({ employee, appointments, clients, serviceColors }: Props) {
+export default function EmployeeSchedule({ employee, appointments, clients, serviceColors, officePhone, thisWeekHours, lastWeekHours }: Props) {
   const router = useRouter();
   const [dayOffset, setDayOffset] = useState(0);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -173,6 +177,21 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
         </div>
       </div>
 
+      {/* My Worked Hours — read-only, this employee's own hours only */}
+      <div className="px-4 py-3 bg-white border-b border-slate-200">
+        <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">My Worked Hours</div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="rounded-xl bg-slate-50 px-3 py-2 text-center">
+            <div className="text-sm font-semibold text-slate-900">{formatHoursAsDuration(thisWeekHours)}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">This Week</div>
+          </div>
+          <div className="rounded-xl bg-slate-50 px-3 py-2 text-center">
+            <div className="text-sm font-semibold text-slate-900">{formatHoursAsDuration(lastWeekHours)}</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">Last Week</div>
+          </div>
+        </div>
+      </div>
+
       {/* Appointment list */}
       <div className="flex-1 overflow-auto px-4 py-4 space-y-3">
         {dayAppts.length === 0 ? (
@@ -262,11 +281,6 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                       {client.address && (
                         <div className="text-xs text-slate-500">{client.address}</div>
                       )}
-                      {client.phone && (
-                        <a href={`tel:${client.phone}`} className="text-xs text-blue-600 hover:text-blue-700">
-                          {client.phone}
-                        </a>
-                      )}
                     </div>
                   )}
 
@@ -300,31 +314,29 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                     </div>
                   )}
 
-                  {/* Navigate + Call buttons */}
-                  {(client?.address || client?.phone) && (
-                    <div className="flex gap-2">
-                      {client.address && (
-                        <a
-                          href={mapsUrl(client.address)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white active:bg-slate-700 transition-colors"
-                        >
-                          <span className="text-base leading-none">📍</span>
-                          Navigate
-                        </a>
-                      )}
-                      {client.phone && (
-                        <a
-                          href={`tel:${client.phone}`}
-                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 active:bg-slate-100 transition-colors"
-                        >
-                          <span className="text-base leading-none">📞</span>
-                          Call
-                        </a>
-                      )}
-                    </div>
-                  )}
+                  {/* Navigate + Call Office buttons */}
+                  <div className="flex gap-2">
+                    {client?.address && (
+                      <a
+                        href={mapsUrl(client.address)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white active:bg-slate-700 transition-colors"
+                      >
+                        <span className="text-base leading-none">📍</span>
+                        Navigate
+                      </a>
+                    )}
+                    {officePhone && (
+                      <a
+                        href={`tel:${officePhone}`}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 active:bg-slate-100 transition-colors"
+                      >
+                        <span className="text-base leading-none">📞</span>
+                        Call Office
+                      </a>
+                    )}
+                  </div>
                 </div>
               </div>
             );

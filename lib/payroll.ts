@@ -43,6 +43,18 @@ export function resolveWorkedMinutes(appt: Appointment, employeeHours: EmployeeH
   return manual ? Math.round(manual.hours_worked * 60) : 0;
 }
 
+// Formats a decimal hours value (e.g. a PayrollRow's hoursWorked) as "45m",
+// "1h 00m", "2h 30m" — same style as the dispatch panel's worked-time
+// display. Used by the employee PWA's own "My Worked Hours" summary so its
+// formatting matches the manager dashboard without importing dashboard UI.
+export function formatHoursAsDuration(hours: number): string {
+  const totalMins = Math.round(hours * 60);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${String(m).padStart(2, "0")}m`;
+}
+
 // "job_tracking" is the active mode for now — payroll totals come only from
 // actual Start/Complete timestamps, never from scheduled duration.
 // "scheduled_duration" and "manual_hours" are kept for future use (e.g. once a

@@ -2,9 +2,28 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import EmployeeSchedule from "@/app/components/schedule/EmployeeSchedule";
+import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
+import { nowInBusinessTz } from "@/lib/timezone";
+import type { Appointment, EmployeeHours } from "@/app/components/dashboard/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function addDays(d: Date, n: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+// Monday of the week `offsetWeeks` from this week (0 = this week, -1 = last week).
+function mondayOfWeek(offsetWeeks: number): Date {
+  const d = nowInBusinessTz();
+  d.setHours(0, 0, 0, 0);
+  const dow = d.getDay(); // 0=Sun..6=Sat
+  const diff = (dow + 6) % 7; // days since Monday
+  d.setDate(d.getDate() - diff + offsetWeeks * 7);
+  return d;
+}
 
 export default async function SchedulePage() {
   const cookieStore = await cookies();
@@ -19,7 +38,7 @@ export default async function SchedulePage() {
 
   const { data: employee, error: empErr } = await supabaseAdmin
     .from("employees")
-    .select("id, name, color, active")
+    .select("id, name, color, active, phone")
     .eq("id", employeeId)
     .maybeSingle();
 
@@ -29,26 +48,30 @@ export default async function SchedulePage() {
 
   const { data: appointments } = await supabaseAdmin
     .from("appointments")
-    .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at")
+    .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at, employee_id")
     .eq("employee_id", employeeId)
     .eq("status", "scheduled")
-    .order("scheduled_for", { ascending: true });
+    .order("scheduled_for", { ascending: true })
+    .returns<Appointment[]>();
 
-  const clientIds = [...new Set((appointments ?? []).map((a: any) => a.client_id))];
-  let clients: Record<string, { name: string; address: string | null; phone: string | null }> = {};
+  const appts = appointments ?? [];
+  const clientIds = [...new Set(appts.map((a) => a.client_id))];
+  // Client phone is intentionally not selected here — employees call the
+  // office (see officePhone below), not the client, by default.
+  const clients: Record<string, { name: string; address: string | null }> = {};
 
   if (clientIds.length > 0) {
     const { data: clientRows } = await supabaseAdmin
       .from("clients")
-      .select("id, name, address, phone")
+      .select("id, name, address")
       .in("id", clientIds);
 
     for (const c of clientRows ?? []) {
-      clients[c.id] = { name: c.name, address: c.address, phone: c.phone };
+      clients[c.id] = { name: c.name, address: c.address };
     }
   }
 
-  let services: Record<string, string> = {};
+  const services: Record<string, string> = {};
   try {
     const { data: svcRows } = await supabaseAdmin
       .from("services")
@@ -58,12 +81,56 @@ export default async function SchedulePage() {
     }
   } catch {}
 
+  let officePhone: string | null = null;
+  try {
+    const { data: companyRow } = await supabaseAdmin
+      .from("company_settings")
+      .select("phone")
+      .limit(1)
+      .maybeSingle();
+    officePhone = companyRow?.phone ?? null;
+  } catch {}
+
+  let employeeHours: EmployeeHours[] = [];
+  try {
+    const { data: hoursRows } = await supabaseAdmin
+      .from("appointment_employee_hours")
+      .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
+      .eq("employee_id", employeeId);
+    employeeHours = hoursRows ?? [];
+  } catch {}
+
+  const thisWeekStart = mondayOfWeek(0);
+  const thisWeekEnd = addDays(thisWeekStart, 6);
+  const lastWeekStart = mondayOfWeek(-1);
+  const lastWeekEnd = addDays(lastWeekStart, 6);
+
+  const employeesForCalc = [{ id: employee.id, name: employee.name, phone: employee.phone ?? null, color: employee.color, active: employee.active }];
+
+  const thisWeek = computePayrollRows({
+    appointments: appts,
+    employees: employeesForCalc,
+    employeeHours,
+    rangeStart: toDateInputValue(thisWeekStart),
+    rangeEnd: toDateInputValue(thisWeekEnd),
+  });
+  const lastWeek = computePayrollRows({
+    appointments: appts,
+    employees: employeesForCalc,
+    employeeHours,
+    rangeStart: toDateInputValue(lastWeekStart),
+    rangeEnd: toDateInputValue(lastWeekEnd),
+  });
+
   return (
     <EmployeeSchedule
       employee={{ id: employee.id, name: employee.name, color: employee.color }}
-      appointments={appointments ?? []}
+      appointments={appts}
       clients={clients}
       serviceColors={services}
+      officePhone={officePhone}
+      thisWeekHours={thisWeek.rows[0]?.hoursWorked ?? 0}
+      lastWeekHours={lastWeek.rows[0]?.hoursWorked ?? 0}
     />
   );
 }
