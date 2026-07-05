@@ -419,10 +419,19 @@ export default function ScheduleGrid({
                     const empName = employeeName(a.employee_id);
                     const svcColor = serviceColors[a.service_type] ?? null;
 
+                    // "Has worked hours" mirrors lib/payroll.ts's resolveJobTrackingHours:
+                    // either a completed job-tracking duration or a manually-saved
+                    // appointment_employee_hours entry counts — so the warning and the
+                    // Weekly Worked Hours summary never disagree about the same appointment.
+                    const hasJobTrackingHours =
+                      !!a.actual_started_at &&
+                      !!a.actual_completed_at &&
+                      new Date(a.actual_completed_at).getTime() > new Date(a.actual_started_at).getTime();
                     const needsHoursWarning =
                       a.status !== "cancelled" &&
                       rawStart.getTime() < Date.now() &&
-                      !apptIdsWithHours.has(a.id);
+                      !apptIdsWithHours.has(a.id) &&
+                      !hasJobTrackingHours;
                     const hoursWarningIcon = needsHoursWarning ? (
                       <span
                         title="Employee work hours not entered."

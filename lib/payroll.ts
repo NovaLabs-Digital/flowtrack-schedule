@@ -67,15 +67,24 @@ function resolveManualHoursOnly(
 }
 
 // Resolves hours for one appointment under "job_tracking" mode: actual
-// Start/Complete timestamps only, converted to decimal hours (e.g. 3h32m ->
-// 3.5333... -> displayed as 3.53 hrs). Returns null — counted as missing —
-// when either timestamp is absent or the duration isn't positive. Never
-// falls back to scheduled duration.
-function resolveJobTrackingHours(appt: Appointment): number | null {
-  if (!appt.actual_started_at || !appt.actual_completed_at) return null;
-  const mins = (new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()) / 60_000;
-  if (mins <= 0) return null;
-  return mins / 60;
+// Start/Complete timestamps first, converted to decimal hours (e.g. 3h32m ->
+// 3.5333... -> displayed as 3.53 hrs); falls back to a manually-saved
+// appointment_employee_hours entry when job tracking wasn't used for this
+// appointment. Returns null — counted as missing — only when neither source
+// is available. This mirrors the schedule grid's hours-warning definition
+// (see ScheduleGrid.tsx) so the two features never disagree about whether an
+// appointment's worked hours have been entered.
+function resolveJobTrackingHours(
+  appt: Appointment,
+  employeeId: string,
+  savedHoursByKey: Map<string, number>
+): number | null {
+  if (appt.actual_started_at && appt.actual_completed_at) {
+    const mins = (new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()) / 60_000;
+    if (mins > 0) return mins / 60;
+  }
+  const key = `${appt.id}|${employeeId}`;
+  return savedHoursByKey.has(key) ? savedHoursByKey.get(key)! : null;
 }
 
 export function computePayrollRows({
@@ -122,7 +131,7 @@ export function computePayrollRows({
         break;
       case "job_tracking":
       default:
-        hours = resolveJobTrackingHours(appt);
+        hours = resolveJobTrackingHours(appt, appt.employee_id, savedHoursByKey);
         break;
     }
 
