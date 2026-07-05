@@ -28,7 +28,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
 
-    const fields = {
+    const fields: Record<string, any> = {
       company_name: (body.company_name || "").trim() || null,
       phone: (body.phone || "").trim() || null,
       email: (body.email || "").trim() || null,
@@ -38,6 +38,9 @@ export async function POST(req: Request) {
       zip: (body.zip || "").trim() || null,
       updated_at: new Date().toISOString(),
     };
+    if (typeof body.booking_enabled === "boolean") {
+      fields.booking_enabled = body.booking_enabled;
+    }
 
     const { data: existing } = await supabaseAdmin
       .from("company_settings")

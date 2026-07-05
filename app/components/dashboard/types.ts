@@ -66,6 +66,7 @@ export type SettingsSection =
   | "company"
   | "services"
   | "staff"
+  | "booking"
   | "preferences"
   | "colors"
   | "darkmode"

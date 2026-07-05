@@ -1,6 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
@@ -22,6 +23,20 @@ async function hasColumn(col: string): Promise<boolean> {
 
 export async function POST(req: Request) {
   try {
+    const cookieStore = await cookies();
+    const isOwner = cookieStore.get("sft_session")?.value === "authenticated";
+
+    if (!isOwner) {
+      const { data: settings } = await supabaseAdmin
+        .from("company_settings")
+        .select("booking_enabled")
+        .limit(1)
+        .maybeSingle();
+      if (!settings?.booking_enabled) {
+        return json({ error: "Online booking is currently unavailable." }, 403);
+      }
+    }
+
     const body = await req.json();
 
     const service_type = (body.service_type || "").trim();
