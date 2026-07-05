@@ -35,7 +35,7 @@ export default function TopBar({
 
   if (isMobile) {
     return (
-      <div className="shrink-0 bg-white border-b border-slate-200 px-3 py-2">
+      <div className="shrink-0 bg-white border-b border-slate-200 px-3 py-2 space-y-2">
         <div className="flex items-center justify-between gap-2">
           {/* Navigation */}
           <div className="flex items-center gap-1">
@@ -59,24 +59,6 @@ export default function TopBar({
             </button>
           </div>
 
-          {/* View mode toggle */}
-          {onChangeView && (
-            <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
-              {(["day", "weekdays", "week"] as ViewMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => onChangeView(m)}
-                  className={[
-                    "rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                    viewMode === m ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
-                  ].join(" ")}
-                >
-                  {m === "day" ? "Day" : m === "weekdays" ? "M-F" : "Wk"}
-                </button>
-              ))}
-            </div>
-          )}
-
           {/* User */}
           <div className="relative">
             <button
@@ -99,6 +81,26 @@ export default function TopBar({
             )}
           </div>
         </div>
+
+        {/* View mode toggle — its own row so it has room to breathe next to
+            the nav controls and avatar above, instead of all three clusters
+            crowding into a single row. */}
+        {onChangeView && (
+          <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5 w-full">
+            {(["day", "weekdays", "week"] as ViewMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => onChangeView(m)}
+                className={[
+                  "flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                  viewMode === m ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+                ].join(" ")}
+              >
+                {m === "day" ? "Day" : m === "weekdays" ? "M-F" : "Wk"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
