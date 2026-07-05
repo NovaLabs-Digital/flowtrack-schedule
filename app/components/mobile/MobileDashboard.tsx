@@ -7,6 +7,7 @@ import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard
 import MobileAppointmentDetail from "@/app/components/mobile/MobileAppointmentDetail";
 import MobileClientDrawer from "@/app/components/mobile/MobileClientDrawer";
 import MobileClientsList from "@/app/components/mobile/MobileClientsList";
+import MobileSettings from "@/app/components/mobile/MobileSettings";
 import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 
@@ -40,10 +41,11 @@ function scheduledMinutes(appt: Appointment, services: Service[]): number {
   return svc?.duration_minutes ?? 60;
 }
 
-// Mobile Admin v1 — Today screen (Screen 1), Appointment Detail (Screen 2),
-// Client Quick Look drawer (Screen 3), persistent bottom navigation
-// (Screen 4), the Schedule tab's Agenda List View, and the Clients tab from
-// the approved mockup. Settings tab content lands in a following milestone.
+// Mobile Admin v1 — full approved mockup: Today screen (Screen 1),
+// Appointment Detail (Screen 2), Client Quick Look drawer (Screen 3),
+// persistent bottom navigation (Screen 4) with Schedule (Agenda List),
+// Clients, and Settings tabs. Settings is a minimal placeholder for v1
+// (see MobileSettings.tsx).
 export default function MobileDashboard({
   clients,
   appointments,
@@ -231,11 +233,7 @@ export default function MobileDashboard({
               <MobileClientsList clients={clients} onSelectClient={setClientDrawerId} />
             )}
 
-            {activeTab === "settings" && (
-              <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-slate-400 px-6 text-center">
-                Settings — coming in a later milestone.
-              </div>
-            )}
+            {activeTab === "settings" && <MobileSettings />}
           </>
         )}
       </div>
