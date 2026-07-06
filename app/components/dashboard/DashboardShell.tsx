@@ -8,6 +8,7 @@ import ScheduleGrid from "@/app/components/dashboard/ScheduleGrid";
 import SettingsSidebar from "@/app/components/dashboard/SettingsSidebar";
 import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
 import ClientPanel from "@/app/components/dashboard/ClientPanel";
+import AppointmentDetailPanel from "@/app/components/dashboard/AppointmentDetailPanel";
 import DispatchPanel from "@/app/components/dashboard/DispatchPanel";
 import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
 import MoveConfirmDialog from "@/app/components/dashboard/MoveConfirmDialog";
@@ -15,6 +16,7 @@ import MobileDashboard from "@/app/components/mobile/MobileDashboard";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
+import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import {
   Client,
   Appointment,
@@ -67,9 +69,20 @@ export default function DashboardShell({
     return clients.find((c) => c.id === selectedClientId) ?? null;
   }, [selectedClientId, clients]);
 
+  const selectedAppt = useMemo(() => {
+    if (!selectedApptId) return null;
+    return appointments.find((a) => a.id === selectedApptId) ?? null;
+  }, [selectedApptId, appointments]);
+
+  const selectedApptEmployee = useMemo(() => {
+    if (!selectedAppt?.employee_id) return null;
+    return employees.find((e) => e.id === selectedAppt.employee_id) ?? null;
+  }, [selectedAppt, employees]);
+
   function handleSelectClient(clientId: string) {
     setSelectedClientId(clientId);
     setSelectedApptId(null);
+    notifyDemoAction("open-client");
   }
 
   function selectAppointment(apptId: string) {
@@ -77,6 +90,12 @@ export default function DashboardShell({
     const appt = appointments.find((a) => a.id === apptId);
     if (!appt) return;
     setSelectedClientId(appt.client_id);
+    notifyDemoAction("select-appointment");
+  }
+
+  function handleAppointmentCancelled() {
+    setSelectedApptId(null);
+    router.refresh();
   }
 
   function editAppointment(apptId: string) {
@@ -239,7 +258,7 @@ export default function DashboardShell({
           {centerMode === "schedule" ? (
             <>
               {/* Schedule grid — 68% of available height */}
-              <div className="min-h-0 pb-2" style={{ flex: "68 1 0%" }}>
+              <div data-tour="schedule-grid" className="min-h-0 pb-2" style={{ flex: "68 1 0%" }}>
                 <ScheduleGrid
                   viewMode={viewMode}
                   clients={clients}
@@ -259,7 +278,18 @@ export default function DashboardShell({
 
               {/* Client workspace — 32% of available height */}
               <div className="min-h-0 overflow-auto" style={{ flex: "32 1 0%" }}>
-                <ClientPanel client={selectedClient} appointments={appointments} onClientUpdated={() => router.refresh()} />
+                {selectedAppt ? (
+                  <AppointmentDetailPanel
+                    appointment={selectedAppt}
+                    client={clients.find((c) => c.id === selectedAppt.client_id) ?? null}
+                    employee={selectedApptEmployee}
+                    services={services}
+                    onEdit={() => handleEditAppointment(selectedAppt.id)}
+                    onCancelled={handleAppointmentCancelled}
+                  />
+                ) : (
+                  <ClientPanel client={selectedClient} appointments={appointments} onClientUpdated={() => router.refresh()} />
+                )}
               </div>
             </>
           ) : isTester ? (

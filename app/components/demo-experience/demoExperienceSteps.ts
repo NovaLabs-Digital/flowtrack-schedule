@@ -11,17 +11,52 @@ export type DemoExperienceStep = {
   // steps that have no required action).
   actionRequired: boolean;
   actionId?: string;
+  // Overrides the default "Next" label for non-action steps.
+  nextLabel?: string;
 };
 
-// Milestone 1 scaffold only — a single placeholder step to prove the
-// spotlight/overlay mechanism. Steps 1-10 from the approved storyboard are
-// built in later milestones and will replace this array.
+// Steps 0-4 (Welcome, Schedule, Appointment Details, Edit Service, Clients)
+// per the approved storyboard. Steps 5-10 (Employees, Services, Add
+// Appointment, Mobile, Explore, Completion) are added in later milestones.
 export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
-    id: "placeholder",
-    title: "Spotlight Preview",
-    body: "This is a placeholder step proving the spotlight/overlay mechanism works end to end. The real guided steps (Schedule, Appointment Details, Clients, Employees, Services, and more) replace this in later milestones.",
-    targetSelector: '[data-tour="add-appointment"]',
+    id: "welcome",
+    title: "Welcome to the Experience",
+    body: "Experience. Interact. Simulate. This is not a tutorial — it's an interactive business simulation built around a complete fictional service company. Feel free to create, edit, move, delete, and experiment. Nothing you do affects a real business.",
+    targetSelector: null,
     actionRequired: false,
+    nextLabel: "Start the Experience",
+  },
+  {
+    id: "schedule",
+    title: "Your Schedule",
+    body: "This is today's work schedule. Every appointment contains the client, employee, service, and important information.",
+    targetSelector: '[data-tour="schedule-grid"]',
+    actionRequired: true,
+    actionId: "select-appointment",
+  },
+  {
+    id: "appointment-details",
+    title: "Appointment Details",
+    body: "Every appointment is your control center. Call, message, edit, cancel, and view notes — all from one place.",
+    targetSelector: '[data-tour="appointment-detail"]',
+    actionRequired: true,
+    actionId: "click-edit-appointment",
+  },
+  {
+    id: "edit-service",
+    title: "Edit the Service",
+    body: "Change the service, then save. Every service has its own duration and color, and the schedule updates immediately.",
+    targetSelector: '[data-tour="service-selector"]',
+    actionRequired: true,
+    actionId: "save-service",
+  },
+  {
+    id: "clients",
+    title: "Clients",
+    body: "Your customer database contains everything you need before arriving — phone, address, notes, gate codes, and communication preferences.",
+    targetSelector: '[data-tour="clients-list"]',
+    actionRequired: true,
+    actionId: "open-client",
   },
 ];

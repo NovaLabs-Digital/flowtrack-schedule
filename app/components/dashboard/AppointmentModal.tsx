@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Appointment, Client, Service, Employee } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
+import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 
 const FALLBACK_SERVICES = [
   "Regular Cleaning",
@@ -344,6 +345,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data?.error || `Request failed (${res.status})`); return; }
+      if (isEdit && serviceChanged) notifyDemoAction("save-service");
       onSaved();
     } catch {
       setError("Network error. Please try again.");
@@ -427,7 +429,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           <div className={isEdit ? "grid grid-cols-2 gap-3" : ""}>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Service Type</label>
-              <select value={form.service_type} onChange={(e) => set("service_type", e.target.value)} className={inputCls}>
+              <select data-tour="service-selector" value={form.service_type} onChange={(e) => set("service_type", e.target.value)} className={inputCls}>
                 {serviceNames.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>

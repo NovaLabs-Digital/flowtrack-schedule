@@ -100,7 +100,7 @@ export default function DemoExperienceOverlay() {
                 onClick={next}
                 className="rounded-lg bg-[#0f172a] px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-colors"
               >
-                Next
+                {currentStep.nextLabel ?? "Next"}
               </button>
             )}
           </div>

@@ -130,7 +130,7 @@ export default function LeftBar({
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden px-3 pt-2 pb-3">
+      <div data-tour="clients-list" className="flex-1 overflow-hidden px-3 pt-2 pb-3">
         {clientsHidden ? (
           <div className="rounded-lg bg-slate-800 p-3 text-sm text-slate-400">
             Client list hidden

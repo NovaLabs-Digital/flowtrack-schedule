@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { DEMO_EXPERIENCE_STEPS } from "./demoExperienceSteps";
+import { subscribeDemoAction } from "./demoExperienceBus";
 
 const STORAGE_KEY = "sft_demo_experience_step";
 // Set once the tour has been auto-started, skipped, or completed, so a
@@ -88,6 +89,10 @@ export function useDemoExperience(autoStartEnabled: boolean = false) {
     },
     [stepIndex, next]
   );
+
+  // Any component can call notifyDemoAction(id) (from demoExperienceBus)
+  // without being a context consumer — this is what actually listens.
+  useEffect(() => subscribeDemoAction(markAction), [markAction]);
 
   const currentStep = active ? DEMO_EXPERIENCE_STEPS[stepIndex] ?? null : null;
 
