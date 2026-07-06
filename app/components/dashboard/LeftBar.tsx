@@ -136,7 +136,7 @@ export default function LeftBar({
             Client list hidden
           </div>
         ) : (
-          <div className="max-h-full overflow-auto rounded-lg">
+          <div className="max-h-full overflow-auto rounded-lg scrollbar-dark">
             {displayClients.map((c) => {
               const active = c.id === selectedClientId;
               const archived = !!c.archived_at;

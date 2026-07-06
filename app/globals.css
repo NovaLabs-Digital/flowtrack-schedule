@@ -31,6 +31,25 @@ body {
   padding-top: env(safe-area-inset-top, 0px);
 }
 
+/* Scrollbar theming for dark navy panels (e.g. LeftBar's client list) — the
+   browser's default light scrollbar track reads as a stray white/gray bar
+   against a dark background. Recolors the thumb/track to match rather than
+   hiding the scrollbar. */
+.scrollbar-dark {
+  scrollbar-width: thin;
+  scrollbar-color: var(--navy-muted) var(--navy);
+}
+.scrollbar-dark::-webkit-scrollbar {
+  width: 8px;
+}
+.scrollbar-dark::-webkit-scrollbar-track {
+  background: var(--navy);
+}
+.scrollbar-dark::-webkit-scrollbar-thumb {
+  background-color: var(--navy-muted);
+  border-radius: 9999px;
+}
+
 /* Schedule grid appointment cards tinted by service color. RGB channels are set
    per-card via --svc-r/--svc-g/--svc-b inline style; only the alpha/opacity
    differs between light and dark so the tint stays soft in light mode and
