@@ -168,7 +168,7 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
 
       {/* Add / Edit form */}
       {(showAdd || editingId) && (
-        <form onSubmit={handleSave} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3 max-w-xl">
+        <form data-tour="employee-edit-form" onSubmit={handleSave} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3 max-w-xl">
           <div className="text-xs font-semibold text-slate-700">
             {editingId ? "Edit Employee" : "New Employee"}
           </div>

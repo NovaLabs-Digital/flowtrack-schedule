@@ -10,10 +10,14 @@ const APPOINTMENT_MODAL_SELECTOR = '[data-tour="appointment-modal"]';
 export default function DemoExperienceOverlay() {
   const { active, currentStep, stepIndex, totalSteps, next, skip, restart } = useDemoExperienceContext();
   const [rect, setRect] = useState<DOMRect | null>(null);
-  // True when the AppointmentModal is open and today's target lives outside
-  // it (e.g. the "+ Add Appointment" button, now hidden behind the modal).
-  // In that case we back off entirely rather than layering our own dark
-  // overlay on top of the modal's own backdrop.
+  // True whenever we should back off entirely (no backdrop, just a corner
+  // card) rather than blocking the whole screen: either the AppointmentModal
+  // is open and today's target lives outside it (e.g. the "+ Add
+  // Appointment" button, now hidden behind the modal), or the step has a
+  // real target that simply hasn't been navigated to yet (e.g. Employees/
+  // Services expect the tester to open Settings first). A full blocking
+  // backdrop in that second case would trap the user — they'd have no way
+  // to click through to the view that reveals the real target.
   const [floating, setFloating] = useState(false);
 
   // Measures the target element's position from the DOM (an external
@@ -34,7 +38,9 @@ export default function DemoExperienceOverlay() {
       const el = document.querySelector(selector);
       const modalEl = document.querySelector(APPOINTMENT_MODAL_SELECTOR);
       setRect(el ? el.getBoundingClientRect() : null);
-      setFloating(!!modalEl && !(el && modalEl.contains(el)));
+      const modalHidesTarget = !!modalEl && !(el && modalEl.contains(el));
+      const targetNotYetReachable = !el;
+      setFloating(modalHidesTarget || targetNotYetReachable);
     }
 
     measure();
@@ -55,6 +61,7 @@ export default function DemoExperienceOverlay() {
 
   if (!active || !currentStep) return null;
 
+  const isCompletion = currentStep.id === "completion";
   const hasTarget = !!rect && !floating;
   const top = hasTarget ? rect!.top - SPOTLIGHT_PADDING : 0;
   const left = hasTarget ? rect!.left - SPOTLIGHT_PADDING : 0;
@@ -111,36 +118,84 @@ export default function DemoExperienceOverlay() {
         <div className="fixed inset-0 bg-black/60 pointer-events-auto" />
       ))}
 
-      <div className="fixed w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl pointer-events-auto" style={cardStyle}>
-        <div className="text-xs font-semibold uppercase tracking-wider text-blue-600">
-          Step {stepIndex + 1} of {totalSteps}
-        </div>
-        <div className="mt-1 text-base font-semibold text-slate-900">{currentStep.title}</div>
-        <div className="mt-2 text-sm text-slate-600">{currentStep.body}</div>
-
-        <div className="mt-4 flex items-center justify-between">
-          <button type="button" onClick={restart} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
-            Restart
-          </button>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={skip}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
-            >
-              Skip Experience
-            </button>
-            {!currentStep.actionRequired && (
+      <div
+        className={[
+          "fixed w-full rounded-2xl bg-white p-5 shadow-2xl pointer-events-auto",
+          isCompletion ? "max-w-md" : "max-w-sm",
+        ].join(" ")}
+        style={cardStyle}
+      >
+        {isCompletion ? (
+          <>
+            <div className="text-lg font-semibold text-slate-900">Congratulations!</div>
+            <div className="mt-1 text-sm text-slate-600">
+              You have successfully experienced ScheduleFlowTrack.
+            </div>
+            <div className="mt-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Today you</div>
+            <ul className="mt-1.5 space-y-1 text-sm text-slate-700">
+              <li>✓ Managed appointments</li>
+              <li>✓ Edited services</li>
+              <li>✓ Worked with employees</li>
+              <li>✓ Managed clients</li>
+              <li>✓ Created appointments</li>
+              <li>✓ Experienced Mobile Admin</li>
+            </ul>
+            <div className="mt-4 pt-4 border-t border-slate-200 text-center text-base font-semibold text-slate-900">
+              Now imagine running <span className="text-blue-600">YOUR</span> business this way.
+            </div>
+            <div className="mt-4 flex flex-col gap-2">
               <button
                 type="button"
                 onClick={next}
-                className="rounded-lg bg-[#0f172a] px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-colors"
+                className="rounded-lg bg-[#0f172a] px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 transition-colors"
               >
-                {currentStep.nextLabel ?? "Next"}
+                Start My Business
               </button>
-            )}
-          </div>
-        </div>
+              <button
+                type="button"
+                onClick={next}
+                className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                Continue Exploring
+              </button>
+            </div>
+            <div className="mt-3 text-center text-xs text-slate-400">
+              You can restart this Experience anytime from Demo Settings.
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="text-xs font-semibold uppercase tracking-wider text-blue-600">
+              Step {stepIndex + 1} of {totalSteps}
+            </div>
+            <div className="mt-1 text-base font-semibold text-slate-900">{currentStep.title}</div>
+            <div className="mt-2 text-sm text-slate-600">{currentStep.body}</div>
+
+            <div className="mt-4 flex items-center justify-between">
+              <button type="button" onClick={restart} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
+                Restart
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={skip}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                >
+                  Skip Experience
+                </button>
+                {!currentStep.actionRequired && (
+                  <button
+                    type="button"
+                    onClick={next}
+                    className="rounded-lg bg-[#0f172a] px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 transition-colors"
+                  >
+                    {currentStep.nextLabel ?? "Next"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

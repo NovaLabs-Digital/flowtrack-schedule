@@ -31,7 +31,7 @@ export default function DashboardSettingsArea({
   onSignOut,
   signingOut,
 }: Props) {
-  const { active, currentStep } = useDemoExperienceContext();
+  const { active, currentStep, restart } = useDemoExperienceContext();
 
   if (!isTester) {
     return (
@@ -138,6 +138,17 @@ export default function DashboardSettingsArea({
             </div>
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            restart();
+            onBack();
+          }}
+          className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+        >
+          Restart Experience
+        </button>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-center text-sm text-slate-500">
           Full settings management is available in owner accounts.

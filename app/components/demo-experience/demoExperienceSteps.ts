@@ -47,7 +47,10 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     id: "edit-service",
     title: "Edit the Service",
     body: "Change the service, then save. Every service has its own duration and color, and the schedule updates immediately.",
-    targetSelector: '[data-tour="service-selector"]',
+    // Spotlights the whole modal, not just the <select> — the required
+    // action also needs the Save button clickable, which sits outside the
+    // selector's own small rect and would otherwise be dimmed-and-blocked.
+    targetSelector: '[data-tour="appointment-modal"]',
     actionRequired: true,
     actionId: "save-service",
   },
@@ -63,7 +66,11 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     id: "employees",
     title: "Employees",
     body: "Assign colors to employees so they're instantly recognizable throughout the schedule. Open Settings, then Staff / Team — edit an employee, choose a new color, and save to continue.",
-    targetSelector: '[data-tour="employee-color-swatch"]',
+    // Spotlights the whole edit form, not just the color swatch — the
+    // required action also needs the Save Changes button clickable, which
+    // sits outside the swatch's own small rect and would otherwise be
+    // dimmed-and-blocked.
+    targetSelector: '[data-tour="employee-edit-form"]',
     actionRequired: true,
     actionId: "change-employee-color",
   },
@@ -90,5 +97,16 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     targetSelector: '[data-tour="mobile-preview"]',
     actionRequired: true,
     actionId: "open-mobile-tab",
+  },
+  {
+    id: "completion",
+    // Rendered with a fully custom layout in DemoExperienceOverlay (checklist,
+    // transition headline, two CTA buttons) rather than the standard
+    // title/body/Next footer — title/body kept here only as a plain-text
+    // fallback description of this step's purpose.
+    title: "Congratulations!",
+    body: "You have successfully experienced ScheduleFlowTrack.",
+    targetSelector: null,
+    actionRequired: false,
   },
 ];
