@@ -7,8 +7,14 @@ type DemoExperienceContextValue = ReturnType<typeof useDemoExperience>;
 
 const DemoExperienceContext = createContext<DemoExperienceContextValue | null>(null);
 
-export function DemoExperienceProvider({ children }: { children: React.ReactNode }) {
-  const value = useDemoExperience();
+export function DemoExperienceProvider({
+  children,
+  autoStart = false,
+}: {
+  children: React.ReactNode;
+  autoStart?: boolean;
+}) {
+  const value = useDemoExperience(autoStart);
   return (
     <DemoExperienceContext.Provider value={value}>
       {children}

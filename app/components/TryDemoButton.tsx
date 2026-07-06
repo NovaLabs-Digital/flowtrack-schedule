@@ -52,15 +52,30 @@ export default function TryDemoButton({
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
             <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-slate-900">Try Live Demo</h2>
+              <h2 className="text-base font-semibold text-slate-900">
+                Welcome to the ScheduleFlowTrack Experience
+              </h2>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="text-slate-400 hover:text-slate-600"
+                className="shrink-0 ml-3 text-slate-400 hover:text-slate-600"
                 aria-label="Close"
               >
                 ✕
               </button>
+            </div>
+
+            <div className="mt-2 text-xs font-semibold uppercase tracking-wider text-blue-600">
+              Experience. Interact. Simulate.
+            </div>
+
+            <div className="mt-3 space-y-2 text-sm text-slate-600">
+              <p>This is not a tutorial.</p>
+              <p>
+                This is an interactive business simulation built around a fictional service
+                company.
+              </p>
+              <p>Nothing you do affects a real business.</p>
             </div>
 
             <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -90,7 +105,7 @@ export default function TryDemoButton({
               disabled={loading}
               className="mt-4 w-full rounded-xl bg-[#0f172a] px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
             >
-              {loading ? "Signing in..." : "Log In to Demo"}
+              {loading ? "Signing in..." : "Enter the Experience"}
             </button>
           </div>
         </div>
