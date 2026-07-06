@@ -51,6 +51,7 @@ export default function DashboardShell({
 
   const router = useRouter();
   const [modal, setModal] = useState<ModalState | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
   const [clientsHidden, setClientsHidden] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -135,6 +136,14 @@ export default function DashboardShell({
   function handleMoved() {
     setPendingMove(null);
     router.refresh();
+  }
+
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {}
+    router.push("/");
   }
 
   function handleToggleSettings() {
@@ -251,20 +260,59 @@ export default function DashboardShell({
               </div>
             </>
           ) : isTester ? (
-            <div className="flex-1 min-h-0 pt-2">
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm max-w-xl">
-                <div className="text-sm font-semibold text-slate-900">Demo Mode</div>
-                <div className="mt-2 text-sm text-slate-600">
-                  All information shown in Demo Mode is fictional and for testing only. Settings
-                  are not available in demo sessions — sign out using the button in the sidebar
-                  when you&rsquo;re done exploring.
+            <div className="flex-1 min-h-0 overflow-auto pt-2">
+              <div className="max-w-xl mx-auto space-y-4 pb-4">
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="text-base font-semibold text-slate-900">Demo Mode</div>
+                  <div className="mt-2 text-sm text-slate-600">
+                    All information shown in Demo Mode is fictional and for testing only.
+                  </div>
                 </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    Demo Company
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-slate-900">
+                    Sunshine Property Services
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
+                    Demo Data
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="text-2xl font-bold text-slate-900">20</div>
+                      <div className="text-xs text-slate-500">Fictional Clients</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold text-slate-900">3</div>
+                      <div className="text-xs text-slate-500">Fictional Employees</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold text-slate-900">6</div>
+                      <div className="text-xs text-slate-500">Fictional Services</div>
+                    </div>
+                    <div>
+                      <div className="text-2xl font-bold text-slate-900">38</div>
+                      <div className="text-xs text-slate-500">Fictional Appointments</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-center text-sm text-slate-500">
+                  Full settings management is available in owner accounts.
+                </div>
+
                 <button
                   type="button"
-                  onClick={() => setCenterMode("schedule")}
-                  className="mt-4 rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 transition-colors"
+                  onClick={handleSignOut}
+                  disabled={signingOut}
+                  className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50 transition-colors"
                 >
-                  Back to Schedule
+                  {signingOut ? "Signing out..." : "Sign Out"}
                 </button>
               </div>
             </div>
