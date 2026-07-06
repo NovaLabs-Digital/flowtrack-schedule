@@ -1,4 +1,5 @@
 import Link from "next/link";
+import TryDemoButton from "@/app/components/TryDemoButton";
 
 export default function LandingPage() {
   return (
@@ -47,11 +48,9 @@ export default function LandingPage() {
           >
             Login
           </Link>
-          <button
-            className="rounded-lg border border-slate-300 px-6 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            Request Demo
-          </button>
+          <TryDemoButton className="rounded-lg border border-slate-300 px-6 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+            Try Live Demo
+          </TryDemoButton>
         </div>
       </section>
 
@@ -123,9 +122,9 @@ export default function LandingPage() {
             >
               Login
             </Link>
-            <button className="rounded-lg border border-slate-600 px-6 py-3 text-sm font-medium text-slate-300 hover:bg-slate-800 transition-colors">
-              Request Demo
-            </button>
+            <TryDemoButton className="rounded-lg border border-slate-600 px-6 py-3 text-sm font-medium text-slate-300 hover:bg-slate-800 transition-colors">
+              Try Live Demo
+            </TryDemoButton>
           </div>
         </div>
       </section>
