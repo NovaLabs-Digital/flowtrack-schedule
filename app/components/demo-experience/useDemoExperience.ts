@@ -1,0 +1,87 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import { DEMO_EXPERIENCE_STEPS } from "./demoExperienceSteps";
+
+const STORAGE_KEY = "sft_demo_experience_step";
+
+export function useDemoExperience() {
+  const [active, setActive] = useState(false);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [hydrated, setHydrated] = useState(false);
+
+  // Resume from localStorage on mount. This must run in an effect (not a lazy
+  // useState initializer) so the first client render matches the server
+  // render (both start inactive) before syncing from the external
+  // localStorage value — a lazy initializer would read localStorage during
+  // the initial client render and cause a hydration mismatch.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved !== null) {
+      const parsed = Number(saved);
+      if (!Number.isNaN(parsed) && parsed >= 0 && parsed < DEMO_EXPERIENCE_STEPS.length) {
+        setStepIndex(parsed);
+        setActive(true);
+      }
+    }
+    setHydrated(true);
+  }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (active) {
+      window.localStorage.setItem(STORAGE_KEY, String(stepIndex));
+    } else {
+      window.localStorage.removeItem(STORAGE_KEY);
+    }
+  }, [active, stepIndex, hydrated]);
+
+  const start = useCallback(() => {
+    setStepIndex(0);
+    setActive(true);
+  }, []);
+
+  const skip = useCallback(() => {
+    setActive(false);
+  }, []);
+
+  const restart = useCallback(() => {
+    setStepIndex(0);
+    setActive(true);
+  }, []);
+
+  const next = useCallback(() => {
+    setStepIndex((i) => {
+      const nextIndex = i + 1;
+      if (nextIndex >= DEMO_EXPERIENCE_STEPS.length) {
+        setActive(false);
+        return i;
+      }
+      return nextIndex;
+    });
+  }, []);
+
+  const markAction = useCallback(
+    (actionId: string) => {
+      const current = DEMO_EXPERIENCE_STEPS[stepIndex];
+      if (current?.actionId === actionId) next();
+    },
+    [stepIndex, next]
+  );
+
+  const currentStep = active ? DEMO_EXPERIENCE_STEPS[stepIndex] ?? null : null;
+
+  return {
+    active,
+    stepIndex,
+    currentStep,
+    totalSteps: DEMO_EXPERIENCE_STEPS.length,
+    start,
+    skip,
+    restart,
+    next,
+    markAction,
+  };
+}

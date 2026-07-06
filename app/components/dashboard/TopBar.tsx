@@ -151,6 +151,7 @@ export default function TopBar({
         <div className="flex items-center gap-2">
           <button
             onClick={onAdd}
+            data-tour="add-appointment"
             className="flex items-center gap-1.5 rounded-lg bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 transition-colors"
           >
             <span className="text-base leading-none">+</span>

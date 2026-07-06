@@ -13,6 +13,8 @@ import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
 import MoveConfirmDialog from "@/app/components/dashboard/MoveConfirmDialog";
 import MobileDashboard from "@/app/components/mobile/MobileDashboard";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
+import { DemoExperienceProvider, useDemoExperienceContext } from "@/app/components/demo-experience/DemoExperienceProvider";
+import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
 import {
   Client,
   Appointment,
@@ -27,6 +29,22 @@ import {
 type ModalState =
   | { mode: "create"; prefillDate?: string; prefillTime?: string }
   | { mode: "edit"; appointment: Appointment; client: Client };
+
+// Milestone 1 scaffold only — a manual trigger to prove the spotlight
+// overlay works end to end. Replaced by the real auto-start entry flow in
+// a later milestone.
+function DemoExperienceTestTrigger() {
+  const { start } = useDemoExperienceContext();
+  return (
+    <button
+      type="button"
+      onClick={start}
+      className="w-full rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-semibold text-blue-700 hover:bg-blue-100 transition-colors"
+    >
+      Preview Experience Overlay (Milestone 1 test)
+    </button>
+  );
+}
 
 export default function DashboardShell({
   clients,
@@ -197,6 +215,7 @@ export default function DashboardShell({
 
   // --- DESKTOP LAYOUT (unchanged, except the Demo Mode banner/settings restriction for tester sessions) ---
   return (
+    <DemoExperienceProvider>
     <div className="h-screen flex flex-col bg-slate-100 text-slate-900 overflow-hidden">
       {isTester && (
         <div className="shrink-0 bg-amber-400 text-amber-950 text-center text-xs font-semibold py-1.5 px-4">
@@ -306,6 +325,8 @@ export default function DashboardShell({
                   Full settings management is available in owner accounts.
                 </div>
 
+                <DemoExperienceTestTrigger />
+
                 <button
                   type="button"
                   onClick={handleSignOut}
@@ -360,5 +381,7 @@ export default function DashboardShell({
         />
       )}
     </div>
+    {isTester && <DemoExperienceOverlay />}
+    </DemoExperienceProvider>
   );
 }
