@@ -346,6 +346,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data?.error || `Request failed (${res.status})`); return; }
       if (isEdit && serviceChanged) notifyDemoAction("save-service");
+      if (!isEdit) notifyDemoAction("create-appointment");
       onSaved();
     } catch {
       setError("Network error. Please try again.");
@@ -378,7 +379,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const inputCls = "w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 sm:px-0">
+    <div data-tour="appointment-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 sm:px-0">
       <div className="w-full max-w-lg rounded-2xl border bg-white p-5 sm:p-6 shadow-lg max-h-[90vh] overflow-auto">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">{isEdit ? "Edit Appointment" : "New Appointment"}</div>

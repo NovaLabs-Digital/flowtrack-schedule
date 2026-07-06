@@ -75,4 +75,12 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     actionRequired: true,
     actionId: "delete-service",
   },
+  {
+    id: "add-appointment",
+    title: "Create an Appointment",
+    body: "Let's create your first appointment. Click “Add Appointment” to schedule a new customer.",
+    targetSelector: '[data-tour="add-appointment"]',
+    actionRequired: true,
+    actionId: "create-appointment",
+  },
 ];
