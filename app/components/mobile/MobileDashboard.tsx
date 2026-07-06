@@ -62,6 +62,17 @@ export default function MobileDashboard({
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
   const [clientDrawerId, setClientDrawerId] = useState<string | null>(null);
 
+  // When this runs inside the Interactive Business Experience's live mobile
+  // preview (an iframe), let the parent window know a tab was opened — the
+  // demo-experience bus lives in a separate JS realm per frame, so a plain
+  // module-level subscription can't cross the boundary; postMessage can.
+  function handleTabChange(tab: MobileTabKey) {
+    setActiveTab(tab);
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: "sft-mobile-tab-changed", tab }, window.location.origin);
+    }
+  }
+
   const today = nowInBusinessTz();
   const selectedDate = addDays(today, dayOffset);
   const isToday = sameDay(selectedDate, today);
@@ -245,7 +256,7 @@ export default function MobileDashboard({
         )}
       </div>
 
-      <MobileBottomNav active={activeTab} onChange={setActiveTab} />
+      <MobileBottomNav active={activeTab} onChange={handleTabChange} />
 
       {drawerClient && (
         <MobileClientDrawer

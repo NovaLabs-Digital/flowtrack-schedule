@@ -15,6 +15,7 @@ import MobileDashboard from "@/app/components/mobile/MobileDashboard";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
+import MobileExperiencePreview from "@/app/components/demo-experience/MobileExperiencePreview";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import {
   Client,
@@ -331,6 +332,7 @@ export default function DashboardShell({
         />
       )}
     </div>
+    {isTester && <MobileExperiencePreview />}
     {isTester && <DemoExperienceOverlay />}
     </DemoExperienceProvider>
   );

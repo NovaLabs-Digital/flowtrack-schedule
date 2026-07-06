@@ -61,14 +61,35 @@ export default function DemoExperienceOverlay() {
   const width = hasTarget ? rect!.width + SPOTLIGHT_PADDING * 2 : 0;
   const height = hasTarget ? rect!.height + SPOTLIGHT_PADDING * 2 : 0;
 
-  const cardStyle: React.CSSProperties = floating
-    ? { top: 16, right: 16 }
-    : hasTarget
-    ? {
-        top: Math.min(top + height + 16, window.innerHeight - 200),
-        left: Math.min(Math.max(left, 16), window.innerWidth - 384),
-      }
-    : { top: "50%", left: "50%", transform: "translate(-50%, -50%)" };
+  const CARD_WIDTH = 384; // matches max-w-sm
+  const CARD_HEIGHT_ESTIMATE = 220;
+  const GAP = 16;
+
+  let cardStyle: React.CSSProperties;
+  if (floating) {
+    cardStyle = { top: 16, right: 16 };
+  } else if (hasTarget) {
+    const fitsBelow = top + height + GAP + CARD_HEIGHT_ESTIMATE <= window.innerHeight;
+    if (fitsBelow) {
+      cardStyle = {
+        top: top + height + GAP,
+        left: Math.min(Math.max(left, 16), window.innerWidth - CARD_WIDTH - 16),
+      };
+    } else {
+      // Target is too tall for the card to fit below it on this viewport
+      // (e.g. a full schedule grid or a phone-sized preview) — placing it
+      // below would clamp upward and overlap the target itself (blocking
+      // exactly the control the step needs clicked). Place it beside the
+      // spotlight instead.
+      const cardTop = Math.min(Math.max(top, 16), window.innerHeight - CARD_HEIGHT_ESTIMATE - 16);
+      const spaceRight = window.innerWidth - (left + width) - GAP;
+      cardStyle = spaceRight >= CARD_WIDTH + GAP
+        ? { top: cardTop, left: left + width + GAP }
+        : { top: cardTop, left: Math.max(left - CARD_WIDTH - GAP, 16) };
+    }
+  } else {
+    cardStyle = { top: "50%", left: "50%", transform: "translate(-50%, -50%)" };
+  }
 
   return (
     // pointer-events-none on the wrapper so the untouched page (the

@@ -83,4 +83,12 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     actionRequired: true,
     actionId: "create-appointment",
   },
+  {
+    id: "mobile-experience",
+    title: "Mobile Admin",
+    body: "Everything you've done today is also available from your phone. Manage appointments. View clients. Create new jobs. Update schedules. Anywhere. Spend a moment interacting with the mobile preview, then open any tab to continue.",
+    targetSelector: '[data-tour="mobile-preview"]',
+    actionRequired: true,
+    actionId: "open-mobile-tab",
+  },
 ];
