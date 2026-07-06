@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Service } from "@/app/components/dashboard/types";
+import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 
 // Curated, non-neon palette so service colors stay consistent and read well as
 // a soft transparent card background across every ScheduleFlowTrack install.
@@ -32,7 +33,7 @@ const PRESET_COLORS = [
 type EditForm = { name: string; description: string; color: string };
 const EMPTY_FORM: EditForm = { name: "", description: "", color: PRESET_COLORS[0].hex };
 
-export default function ServicesPanel() {
+export default function ServicesPanel({ isTester = false }: { isTester?: boolean }) {
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -102,6 +103,25 @@ export default function ServicesPanel() {
     }
   }
 
+  async function handleDelete(s: Service) {
+    if (!confirm(`Delete "${s.name}"? This cannot be undone.`)) return;
+    setMessage(null);
+    try {
+      const res = await fetch("/api/services", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: s.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setMessage({ type: "error", text: data?.error || "Delete failed." }); return; }
+      notifyDemoAction("delete-service");
+      setMessage({ type: "success", text: "Service deleted." });
+      loadServices();
+    } catch {
+      setMessage({ type: "error", text: "Network error." });
+    }
+  }
+
   async function toggleActive(s: Service) {
     setMessage(null);
     try {
@@ -130,7 +150,7 @@ export default function ServicesPanel() {
   }
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div data-tour="services-area" className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-semibold text-slate-900">Services</div>
@@ -277,6 +297,14 @@ export default function ServicesPanel() {
                   <span className="text-[10px]">{s.active ? "✘" : "✔"}</span>
                   {s.active ? "Disable" : "Enable"}
                 </button>
+                {isTester && (
+                  <button
+                    onClick={() => handleDelete(s)}
+                    className="rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1 text-xs text-rose-700 hover:bg-rose-100 transition-colors flex items-center gap-1"
+                  >
+                    <span className="text-[10px]">🗑</span> Delete
+                  </button>
+                )}
               </div>
             </div>
           ))

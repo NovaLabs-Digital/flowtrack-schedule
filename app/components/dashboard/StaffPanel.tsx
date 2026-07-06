@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Employee } from "@/app/components/dashboard/types";
+import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 
 const PRESET_COLORS = [
   { hex: "#3B82F6", label: "Blue" },
@@ -20,7 +21,7 @@ const CUSTOM_POSITION = "__custom__";
 type EditForm = { name: string; phone: string; email: string; password: string; color: string; position: string };
 const EMPTY_FORM: EditForm = { name: "", phone: "", email: "", password: "", color: PRESET_COLORS[0].hex, position: "" };
 
-export default function StaffPanel() {
+export default function StaffPanel({ isTester = false }: { isTester?: boolean }) {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -28,6 +29,7 @@ export default function StaffPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState<EditForm>(EMPTY_FORM);
+  const [originalColor, setOriginalColor] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // Tracked separately from form.position because a not-yet-typed custom
   // position is an empty string — indistinguishable from "no position" —
@@ -52,6 +54,7 @@ export default function StaffPanel() {
     setShowAdd(false);
     const position = e.position ?? "";
     setForm({ name: e.name, phone: e.phone ?? "", email: (e as any).email ?? "", password: "", color: e.color, position });
+    setOriginalColor(e.color);
     setShowCustomPosition(position !== "" && !POSITION_OPTIONS.includes(position));
     setMessage(null);
   }
@@ -68,6 +71,7 @@ export default function StaffPanel() {
     setEditingId(null);
     setShowAdd(false);
     setForm(EMPTY_FORM);
+    setOriginalColor(null);
     setShowCustomPosition(false);
   }
 
@@ -92,6 +96,9 @@ export default function StaffPanel() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setMessage({ type: "error", text: data?.error || "Save failed." }); return; }
 
+      if (isEdit && originalColor !== null && form.color !== originalColor) {
+        notifyDemoAction("change-employee-color");
+      }
       setMessage({ type: "success", text: isEdit ? "Employee updated." : "Employee added." });
       cancelForm();
       loadEmployees();
@@ -139,7 +146,7 @@ export default function StaffPanel() {
           <div className="text-sm font-semibold text-slate-900">Staff / Team</div>
           <div className="mt-1 text-xs text-slate-500">Manage employees and assign them to appointments.</div>
         </div>
-        {!showAdd && !editingId && (
+        {!isTester && !showAdd && !editingId && (
           <button
             onClick={startAdd}
             className="rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 transition-colors"
@@ -241,7 +248,7 @@ export default function StaffPanel() {
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Color</label>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div data-tour="employee-color-swatch" className="flex items-center gap-2 flex-wrap">
               {PRESET_COLORS.map((c) => (
                 <button
                   key={c.hex}

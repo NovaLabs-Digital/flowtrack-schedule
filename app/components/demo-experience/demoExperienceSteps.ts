@@ -15,8 +15,8 @@ export type DemoExperienceStep = {
   nextLabel?: string;
 };
 
-// Steps 0-4 (Welcome, Schedule, Appointment Details, Edit Service, Clients)
-// per the approved storyboard. Steps 5-10 (Employees, Services, Add
+// Steps 0-6 (Welcome, Schedule, Appointment Details, Edit Service, Clients,
+// Employees, Services) per the approved storyboard. Steps 7-10 (Add
 // Appointment, Mobile, Explore, Completion) are added in later milestones.
 export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
@@ -58,5 +58,21 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     targetSelector: '[data-tour="clients-list"]',
     actionRequired: true,
     actionId: "open-client",
+  },
+  {
+    id: "employees",
+    title: "Employees",
+    body: "Assign colors to employees so they're instantly recognizable throughout the schedule. Open Settings, then Staff / Team — edit an employee, choose a new color, and save to continue.",
+    targetSelector: '[data-tour="employee-color-swatch"]',
+    actionRequired: true,
+    actionId: "change-employee-color",
+  },
+  {
+    id: "services",
+    title: "Services",
+    body: "Services determine duration, default color, and description. In Settings → Services, create a new service, then delete it, to continue.",
+    targetSelector: '[data-tour="services-area"]',
+    actionRequired: true,
+    actionId: "delete-service",
   },
 ];

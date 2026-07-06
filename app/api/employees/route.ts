@@ -70,7 +70,8 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const session = await getSession();
-    if (session.role !== "owner") {
+    const isTester = session.role === "tester";
+    if (session.role !== "owner" && !isTester) {
       return json({ error: "Unauthorized" }, 403);
     }
 
@@ -78,6 +79,11 @@ export async function PATCH(req: Request) {
 
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing employee id" }, 400);
+
+    if (isTester) {
+      const { data } = await supabaseAdmin.from("employees").select("is_demo").eq("id", id).maybeSingle();
+      if (!data?.is_demo) return json({ error: "Employee not found" }, 404);
+    }
 
     const update: Record<string, any> = {};
     if (body.name !== undefined) update.name = body.name.trim();

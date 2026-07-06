@@ -5,8 +5,7 @@ import { useRouter } from "next/navigation";
 import TopBar from "@/app/components/dashboard/TopBar";
 import LeftBar from "@/app/components/dashboard/LeftBar";
 import ScheduleGrid from "@/app/components/dashboard/ScheduleGrid";
-import SettingsSidebar from "@/app/components/dashboard/SettingsSidebar";
-import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
+import DashboardSettingsArea from "@/app/components/dashboard/DashboardSettingsArea";
 import ClientPanel from "@/app/components/dashboard/ClientPanel";
 import AppointmentDetailPanel from "@/app/components/dashboard/AppointmentDetailPanel";
 import DispatchPanel from "@/app/components/dashboard/DispatchPanel";
@@ -292,76 +291,15 @@ export default function DashboardShell({
                 )}
               </div>
             </>
-          ) : isTester ? (
-            <div className="flex-1 min-h-0 overflow-auto pt-2">
-              <div className="max-w-xl mx-auto space-y-4 pb-4">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="text-base font-semibold text-slate-900">Demo Mode</div>
-                  <div className="mt-2 text-sm text-slate-600">
-                    All information shown in Demo Mode is fictional and for testing only.
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                    Demo Company
-                  </div>
-                  <div className="mt-1 text-lg font-semibold text-slate-900">
-                    Sunshine Property Services
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">
-                    Demo Data
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <div className="text-2xl font-bold text-slate-900">20</div>
-                      <div className="text-xs text-slate-500">Fictional Clients</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-slate-900">3</div>
-                      <div className="text-xs text-slate-500">Fictional Employees</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-slate-900">6</div>
-                      <div className="text-xs text-slate-500">Fictional Services</div>
-                    </div>
-                    <div>
-                      <div className="text-2xl font-bold text-slate-900">38</div>
-                      <div className="text-xs text-slate-500">Fictional Appointments</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-center text-sm text-slate-500">
-                  Full settings management is available in owner accounts.
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  disabled={signingOut}
-                  className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50 transition-colors"
-                >
-                  {signingOut ? "Signing out..." : "Sign Out"}
-                </button>
-              </div>
-            </div>
           ) : (
-            <div className="flex gap-3 flex-1 min-h-0 pt-2">
-              <aside className="shrink-0 w-[200px]">
-                <SettingsSidebar
-                  activeSection={settingsSection}
-                  onSelect={setSettingsSection}
-                  onBack={() => setCenterMode("schedule")}
-                />
-              </aside>
-              <main className="flex-1 min-w-0 max-w-3xl">
-                <SettingsPanel section={settingsSection} />
-              </main>
-            </div>
+            <DashboardSettingsArea
+              isTester={isTester}
+              settingsSection={settingsSection}
+              onSettingsSelect={setSettingsSection}
+              onBack={() => setCenterMode("schedule")}
+              onSignOut={handleSignOut}
+              signingOut={signingOut}
+            />
           )}
         </div>
       </div>

@@ -30,7 +30,8 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const session = await getSession();
-    if (session.role !== "owner") {
+    const isTester = session.role === "tester";
+    if (session.role !== "owner" && !isTester) {
       return json({ error: "Unauthorized" }, 403);
     }
 
@@ -44,6 +45,7 @@ export async function POST(req: Request) {
       description: (body.description || "").trim() || null,
       duration_minutes: typeof body.duration_minutes === "number" ? body.duration_minutes : 60,
       active: true,
+      is_demo: isTester,
     };
     if (body.color) row.color = body.color.trim();
 
@@ -62,7 +64,8 @@ export async function POST(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const session = await getSession();
-    if (session.role !== "owner") {
+    const isTester = session.role === "tester";
+    if (session.role !== "owner" && !isTester) {
       return json({ error: "Unauthorized" }, 403);
     }
 
@@ -70,6 +73,11 @@ export async function PATCH(req: Request) {
 
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing service id" }, 400);
+
+    if (isTester) {
+      const { data } = await supabaseAdmin.from("services").select("is_demo").eq("id", id).maybeSingle();
+      if (!data?.is_demo) return json({ error: "Service not found" }, 404);
+    }
 
     const update: Record<string, any> = { updated_at: new Date().toISOString() };
     if (body.name !== undefined) update.name = body.name.trim();
@@ -87,6 +95,35 @@ export async function PATCH(req: Request) {
     return json({ ok: true });
   } catch (e: any) {
     console.error("SERVICES_PATCH_ERROR", e);
+    return json({ error: e?.message || "Server error" }, 500);
+  }
+}
+
+// Demo-only delete — regardless of caller, this only ever removes a row
+// tagged is_demo = true. Real services have no delete capability (only the
+// existing active/inactive toggle); this exists specifically so the
+// Interactive Business Experience can let a tester create a throwaway
+// demo service and then actually delete it.
+export async function DELETE(req: Request) {
+  try {
+    const session = await getSession();
+    if (session.role !== "owner" && session.role !== "tester") {
+      return json({ error: "Unauthorized" }, 403);
+    }
+
+    const body = await req.json();
+    const id = (body.id || "").trim();
+    if (!id) return json({ error: "Missing service id" }, 400);
+
+    const { data } = await supabaseAdmin.from("services").select("is_demo").eq("id", id).maybeSingle();
+    if (!data?.is_demo) return json({ error: "Service not found" }, 404);
+
+    const { error } = await supabaseAdmin.from("services").delete().eq("id", id);
+    if (error) throw error;
+
+    return json({ ok: true });
+  } catch (e: any) {
+    console.error("SERVICES_DELETE_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);
   }
 }
