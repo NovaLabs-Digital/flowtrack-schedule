@@ -41,6 +41,11 @@ export async function GET() {
       smsConfigured: !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN && !!process.env.TWILIO_FROM_NUMBER,
       activeStaff: activeStaff ?? 0,
       totalStaff: totalStaff ?? 0,
+      // Mirrors BUSINESS_TZ in lib/timezone.ts, which every scheduling
+      // computation is actually anchored to — shown read-only in Settings
+      // since there's no per-company timezone column yet, and this is the
+      // real value in effect, not a placeholder.
+      timezoneLabel: "Eastern Time (US & Canada) — GMT-04:00",
     };
 
     return json({ ok: true, settings: data, status });

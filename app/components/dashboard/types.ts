@@ -62,12 +62,4 @@ export type EmployeeHours = {
 export type MobileTab = "schedule" | "clients" | "settings" | "map";
 export type ViewMode = "day" | "weekdays" | "week";
 export type CenterMode = "schedule" | "settings";
-export type SettingsSection =
-  | "company"
-  | "services"
-  | "staff"
-  | "preferences"
-  | "colors"
-  | "darkmode"
-  | "future"
-  | "archived";
+export type SettingsSection = "company" | "services" | "staff" | "archived";

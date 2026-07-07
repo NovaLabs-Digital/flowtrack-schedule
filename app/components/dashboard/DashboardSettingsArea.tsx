@@ -1,6 +1,6 @@
 "use client";
 
-import SettingsSidebar from "@/app/components/dashboard/SettingsSidebar";
+import SettingsTabBar from "@/app/components/dashboard/SettingsTabBar";
 import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
 import StaffPanel from "@/app/components/dashboard/StaffPanel";
 import ServicesPanel from "@/app/components/dashboard/ServicesPanel";
@@ -35,13 +35,11 @@ export default function DashboardSettingsArea({
 
   if (!isTester) {
     return (
-      <div className="flex gap-3 flex-1 min-h-0 pt-2">
-        <aside className="shrink-0 w-[200px]">
-          <SettingsSidebar activeSection={settingsSection} onSelect={onSettingsSelect} onBack={onBack} />
-        </aside>
-        <main className="flex-1 min-w-0 max-w-3xl">
+      <div className="flex flex-col flex-1 min-h-0 pt-2">
+        <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
+        <div className="flex-1 min-h-0 overflow-auto pt-5">
           <SettingsPanel section={settingsSection} />
-        </main>
+        </div>
       </div>
     );
   }

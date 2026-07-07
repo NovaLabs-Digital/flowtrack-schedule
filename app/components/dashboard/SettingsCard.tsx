@@ -5,23 +5,30 @@
 // Kept intentionally small: title/helper header, a body slot, and an
 // optional footer (typically Save/Cancel + a dirty-state hint).
 export default function SettingsCard({
+  id,
   title,
+  badge,
   helper,
   headerRight,
   footer,
   children,
 }: {
+  id?: string;
   title: string;
+  badge?: React.ReactNode;
   helper?: string;
   headerRight?: React.ReactNode;
   footer?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+    <div id={id} className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden scroll-mt-4">
       <div className="p-6 pb-0 flex items-start justify-between gap-4">
         <div>
-          <div className="text-sm font-semibold text-slate-900">{title}</div>
+          <div className="flex items-center gap-2">
+            <div className="text-sm font-semibold text-slate-900">{title}</div>
+            {badge}
+          </div>
           {helper && <div className="mt-1 text-xs text-slate-500">{helper}</div>}
         </div>
         {headerRight}
@@ -33,6 +40,18 @@ export default function SettingsCard({
         </div>
       )}
     </div>
+  );
+}
+
+// Small honest marker for cards whose fields are interactive but not yet
+// wired to persistence (Company/Communication Preferences, Subscription) —
+// preferred over a dashed "coming soon" box when we want the card to still
+// visually match a fully-designed reference, just clearly labeled.
+export function PreviewPill() {
+  return (
+    <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+      Preview
+    </span>
   );
 }
 
