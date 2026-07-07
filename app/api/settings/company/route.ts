@@ -23,7 +23,27 @@ export async function GET() {
 
     if (error) throw error;
 
-    return json({ ok: true, settings: data });
+    // Real-only signals for the Company Status strip — booleans derived from
+    // actual provider config / DB counts, never a placeholder value. Only
+    // booleans and counts leave this route, never the underlying credentials.
+    const { count: totalStaff } = await supabaseAdmin
+      .from("employees")
+      .select("id", { count: "exact", head: true })
+      .eq("is_demo", false);
+    const { count: activeStaff } = await supabaseAdmin
+      .from("employees")
+      .select("id", { count: "exact", head: true })
+      .eq("is_demo", false)
+      .eq("active", true);
+
+    const status = {
+      emailConfigured: !!process.env.RESEND_API_KEY && !!process.env.RESEND_FROM_EMAIL,
+      smsConfigured: !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN && !!process.env.TWILIO_FROM_NUMBER,
+      activeStaff: activeStaff ?? 0,
+      totalStaff: totalStaff ?? 0,
+    };
+
+    return json({ ok: true, settings: data, status });
   } catch (e: any) {
     console.error("COMPANY_SETTINGS_GET_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);

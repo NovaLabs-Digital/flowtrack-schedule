@@ -1,85 +1,104 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import SettingsCard, { DirtyHint, ComingSoonNotice } from "@/app/components/dashboard/SettingsCard";
+import SettingsToggle from "@/app/components/dashboard/SettingsToggle";
+import CompanyStatusStrip from "@/app/components/dashboard/CompanyStatusStrip";
 
-type CompanyForm = {
-  company_name: string;
-  phone: string;
-  email: string;
-  address: string;
-  city: string;
-  state: string;
-  zip: string;
-};
+type IdentityForm = { company_name: string };
+type ContactForm = { phone: string; email: string; address: string; city: string; state: string; zip: string };
+type SchedulingForm = { booking_enabled: boolean };
 
-const EMPTY: CompanyForm = {
-  company_name: "",
-  phone: "",
-  email: "",
-  address: "",
-  city: "",
-  state: "",
-  zip: "",
-};
+type Status = { emailConfigured: boolean; smsConfigured: boolean; activeStaff: number; totalStaff: number };
+
+const EMPTY_IDENTITY: IdentityForm = { company_name: "" };
+const EMPTY_CONTACT: ContactForm = { phone: "", email: "", address: "", city: "", state: "", zip: "" };
+const EMPTY_SCHEDULING: SchedulingForm = { booking_enabled: false };
+const inputCls =
+  "w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
 
 export default function CompanyInfoPanel() {
-  const [form, setForm] = useState<CompanyForm>(EMPTY);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
+
+  // Each card owns its own draft + last-saved snapshot, so dirty-state and
+  // Save are per-card (one question, one commit point) rather than one
+  // page-wide form.
+  const [identity, setIdentity] = useState<IdentityForm>(EMPTY_IDENTITY);
+  const [identitySaved, setIdentitySaved] = useState<IdentityForm>(EMPTY_IDENTITY);
+  const [identitySaving, setIdentitySaving] = useState(false);
+  const [identityMsg, setIdentityMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const [contact, setContact] = useState<ContactForm>(EMPTY_CONTACT);
+  const [contactSaved, setContactSaved] = useState<ContactForm>(EMPTY_CONTACT);
+  const [contactSaving, setContactSaving] = useState(false);
+  const [contactMsg, setContactMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const [scheduling, setScheduling] = useState<SchedulingForm>(EMPTY_SCHEDULING);
+  const [schedulingSaved, setSchedulingSaved] = useState<SchedulingForm>(EMPTY_SCHEDULING);
+  const [schedulingSaving, setSchedulingSaving] = useState(false);
+  const [schedulingMsg, setSchedulingMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/settings/company")
       .then((r) => r.json())
       .then((data) => {
-        if (data.settings) {
-          setForm({
-            company_name: data.settings.company_name ?? "",
-            phone: data.settings.phone ?? "",
-            email: data.settings.email ?? "",
-            address: data.settings.address ?? "",
-            city: data.settings.city ?? "",
-            state: data.settings.state ?? "",
-            zip: data.settings.zip ?? "",
-          });
+        const s = data.settings;
+        if (s) {
+          const nextIdentity = { company_name: s.company_name ?? "" };
+          const nextContact = {
+            phone: s.phone ?? "",
+            email: s.email ?? "",
+            address: s.address ?? "",
+            city: s.city ?? "",
+            state: s.state ?? "",
+            zip: s.zip ?? "",
+          };
+          const nextScheduling = { booking_enabled: Boolean(s.booking_enabled) };
+          setIdentity(nextIdentity);
+          setIdentitySaved(nextIdentity);
+          setContact(nextContact);
+          setContactSaved(nextContact);
+          setScheduling(nextScheduling);
+          setSchedulingSaved(nextScheduling);
         }
+        if (data.status) setStatus(data.status);
       })
-      .catch(() => setMessage({ type: "error", text: "Failed to load company settings." }))
+      .catch(() => setIdentityMsg({ type: "error", text: "Failed to load company settings." }))
       .finally(() => setLoading(false));
   }, []);
 
-  function set(field: keyof CompanyForm, value: string) {
-    setForm((prev) => ({ ...prev, [field]: value }));
-    setMessage(null);
-  }
-
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
+  async function save(
+    fields: Record<string, unknown>,
+    onSuccess: () => void,
+    setSaving: (v: boolean) => void,
+    setMsg: (m: { type: "success" | "error"; text: string } | null) => void
+  ) {
     setSaving(true);
-    setMessage(null);
-
+    setMsg(null);
     try {
       const res = await fetch("/api/settings/company", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(fields),
       });
       const data = await res.json().catch(() => ({}));
-
       if (!res.ok) {
-        setMessage({ type: "error", text: data?.error || "Save failed." });
+        setMsg({ type: "error", text: data?.error || "Save failed." });
         return;
       }
-      setMessage({ type: "success", text: "Company info saved." });
+      onSuccess();
+      setMsg({ type: "success", text: "Saved." });
     } catch {
-      setMessage({ type: "error", text: "Network error. Please try again." });
+      setMsg({ type: "error", text: "Network error. Please try again." });
     } finally {
       setSaving(false);
     }
   }
 
-  const inputCls =
-    "w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
+  const identityDirty = identity.company_name !== identitySaved.company_name;
+  const contactDirty = JSON.stringify(contact) !== JSON.stringify(contactSaved);
+  const schedulingDirty = scheduling.booking_enabled !== schedulingSaved.booking_enabled;
 
   if (loading) {
     return (
@@ -90,31 +109,87 @@ export default function CompanyInfoPanel() {
   }
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="text-sm font-semibold text-slate-900">Company Info</div>
-      <div className="mt-1 text-xs text-slate-500">
-        Business details used across the application.
-      </div>
+    <div className="space-y-5 max-w-3xl">
+      {status && (
+        <CompanyStatusStrip
+          emailConfigured={status.emailConfigured}
+          smsConfigured={status.smsConfigured}
+          bookingEnabled={scheduling.booking_enabled}
+          activeStaff={status.activeStaff}
+          totalStaff={status.totalStaff}
+        />
+      )}
 
-      <form onSubmit={handleSave} className="mt-5 space-y-4 max-w-xl">
-        <div>
+      <SettingsCard
+        title="Business Identity"
+        helper="Who you are — used across confirmations, invoices, and the public booking page."
+        footer={
+          <>
+            <DirtyHint dirty={identityDirty} />
+            <button
+              type="button"
+              disabled={identitySaving || !identityDirty}
+              onClick={() =>
+                save(
+                  { company_name: identity.company_name },
+                  () => setIdentitySaved(identity),
+                  setIdentitySaving,
+                  setIdentityMsg
+                )
+              }
+              className="rounded-xl bg-[#0f172a] px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-40 transition-colors"
+            >
+              {identitySaving ? "Saving..." : "Save"}
+            </button>
+          </>
+        }
+      >
+        <div className="max-w-md">
           <label className="block text-xs font-medium text-slate-600 mb-1">Company Name</label>
           <input
             type="text"
-            value={form.company_name}
-            onChange={(e) => set("company_name", e.target.value)}
+            value={identity.company_name}
+            onChange={(e) => setIdentity({ company_name: e.target.value })}
             className={inputCls}
             placeholder="e.g. Alberto's Cleaning Services"
           />
         </div>
+        {identityMsg && (
+          <div
+            className={[
+              "rounded-xl border px-3 py-2 text-xs",
+              identityMsg.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
+            ].join(" ")}
+          >
+            {identityMsg.text}
+          </div>
+        )}
+      </SettingsCard>
 
+      <SettingsCard
+        title="Contact & Location"
+        helper="Where clients reach you and where your service area is centered."
+        footer={
+          <>
+            <DirtyHint dirty={contactDirty} />
+            <button
+              type="button"
+              disabled={contactSaving || !contactDirty}
+              onClick={() => save(contact, () => setContactSaved(contact), setContactSaving, setContactMsg)}
+              className="rounded-xl bg-[#0f172a] px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-40 transition-colors"
+            >
+              {contactSaving ? "Saving..." : "Save"}
+            </button>
+          </>
+        }
+      >
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Phone</label>
             <input
               type="tel"
-              value={form.phone}
-              onChange={(e) => set("phone", e.target.value)}
+              value={contact.phone}
+              onChange={(e) => setContact((p) => ({ ...p, phone: e.target.value }))}
               className={inputCls}
               placeholder="+13861234567"
             />
@@ -123,32 +198,30 @@ export default function CompanyInfoPanel() {
             <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
             <input
               type="email"
-              value={form.email}
-              onChange={(e) => set("email", e.target.value)}
+              value={contact.email}
+              onChange={(e) => setContact((p) => ({ ...p, email: e.target.value }))}
               className={inputCls}
               placeholder="info@company.com"
             />
           </div>
         </div>
-
         <div>
           <label className="block text-xs font-medium text-slate-600 mb-1">Address</label>
           <input
             type="text"
-            value={form.address}
-            onChange={(e) => set("address", e.target.value)}
+            value={contact.address}
+            onChange={(e) => setContact((p) => ({ ...p, address: e.target.value }))}
             className={inputCls}
             placeholder="123 Main St"
           />
         </div>
-
         <div className="grid grid-cols-3 gap-4">
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">City</label>
             <input
               type="text"
-              value={form.city}
-              onChange={(e) => set("city", e.target.value)}
+              value={contact.city}
+              onChange={(e) => setContact((p) => ({ ...p, city: e.target.value }))}
               className={inputCls}
               placeholder="Orlando"
             />
@@ -157,8 +230,8 @@ export default function CompanyInfoPanel() {
             <label className="block text-xs font-medium text-slate-600 mb-1">State</label>
             <input
               type="text"
-              value={form.state}
-              onChange={(e) => set("state", e.target.value)}
+              value={contact.state}
+              onChange={(e) => setContact((p) => ({ ...p, state: e.target.value }))}
               className={inputCls}
               placeholder="FL"
             />
@@ -167,37 +240,74 @@ export default function CompanyInfoPanel() {
             <label className="block text-xs font-medium text-slate-600 mb-1">ZIP</label>
             <input
               type="text"
-              value={form.zip}
-              onChange={(e) => set("zip", e.target.value)}
+              value={contact.zip}
+              onChange={(e) => setContact((p) => ({ ...p, zip: e.target.value }))}
               className={inputCls}
               placeholder="32801"
             />
           </div>
         </div>
-
-        {message && (
+        {contactMsg && (
           <div
             className={[
               "rounded-xl border px-3 py-2 text-xs",
-              message.type === "success"
-                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                : "border-rose-200 bg-rose-50 text-rose-700",
+              contactMsg.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
             ].join(" ")}
           >
-            {message.text}
+            {contactMsg.text}
           </div>
         )}
+      </SettingsCard>
 
-        <div>
-          <button
-            type="submit"
-            disabled={saving}
-            className="rounded-xl bg-[#0f172a] px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50 transition-colors"
+      <SettingsCard
+        title="Scheduling Preferences"
+        helper="Defaults that control how appointments get booked."
+        footer={
+          <>
+            <DirtyHint dirty={schedulingDirty} />
+            <button
+              type="button"
+              disabled={schedulingSaving || !schedulingDirty}
+              onClick={() =>
+                save(
+                  { booking_enabled: scheduling.booking_enabled },
+                  () => setSchedulingSaved(scheduling),
+                  setSchedulingSaving,
+                  setSchedulingMsg
+                )
+              }
+              className="rounded-xl bg-[#0f172a] px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-40 transition-colors"
+            >
+              {schedulingSaving ? "Saving..." : "Save"}
+            </button>
+          </>
+        }
+      >
+        <SettingsToggle
+          checked={scheduling.booking_enabled}
+          onChange={(next) => setScheduling({ booking_enabled: next })}
+          label="Allow clients to book online"
+          helper="Keeps your public booking page live"
+        />
+        {schedulingMsg && (
+          <div
+            className={[
+              "rounded-xl border px-3 py-2 text-xs",
+              schedulingMsg.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
+            ].join(" ")}
           >
-            {saving ? "Saving..." : "Save Company Info"}
-          </button>
-        </div>
-      </form>
+            {schedulingMsg.text}
+          </div>
+        )}
+      </SettingsCard>
+
+      <SettingsCard title="Communication Preferences" helper="What clients automatically hear from you, and when.">
+        <ComingSoonNotice text="Communication preferences will be available in a future update." />
+      </SettingsCard>
+
+      <SettingsCard title="Subscription & Plan" helper="Your Nova Labs Schedule plan and billing.">
+        <ComingSoonNotice text="Subscription management will be available in a future update." />
+      </SettingsCard>
     </div>
   );
 }
