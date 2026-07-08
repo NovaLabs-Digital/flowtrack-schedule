@@ -7,18 +7,20 @@ import { SettingsSection } from "@/app/components/dashboard/types";
 // software config panel. "Preferences"/"Notifications"/"Billing" aren't
 // separate pages (nothing distinct exists to show yet): they jump back to
 // Company Info and scroll to the matching card there, since that's exactly
-// where that content already lives.
-const TABS: { key: SettingsSection; label: string; icon: string; anchor?: string }[] = [
-  { key: "company", label: "Company Info", icon: "\u{1F3E2}" },
-  { key: "services", label: "Services", icon: "\u{1F9F0}" },
-  { key: "staff", label: "Employees", icon: "\u{1F465}" },
-  { key: "archived", label: "Archived Clients", icon: "\u{1F4C1}" },
+// where that content already lives. Styled visibly lighter than the primary
+// tabs, with a divider ahead of them, so the two navigation levels (switch
+// section vs. scroll within a section) don't read as the same action.
+const TABS: { key: SettingsSection; label: string }[] = [
+  { key: "company", label: "Company Info" },
+  { key: "services", label: "Services" },
+  { key: "staff", label: "Employees" },
+  { key: "archived", label: "Archived Clients" },
 ];
 
-const ANCHOR_TABS: { label: string; icon: string; anchor: string }[] = [
-  { label: "Preferences", icon: "\u{2699}\u{FE0F}", anchor: "company-preferences-card" },
-  { label: "Notifications", icon: "\u{1F514}", anchor: "communication-preferences-card" },
-  { label: "Billing", icon: "\u{1F4B3}", anchor: "subscription-card" },
+const ANCHOR_TABS: { label: string; anchor: string }[] = [
+  { label: "Preferences", anchor: "company-preferences-card" },
+  { label: "Notifications", anchor: "communication-preferences-card" },
+  { label: "Billing", anchor: "subscription-card" },
 ];
 
 export default function SettingsTabBar({
@@ -30,31 +32,45 @@ export default function SettingsTabBar({
 }) {
   function goToAnchor(anchor: string) {
     onSelect("company");
-    // Wait a tick for the Company Info panel to mount before scrolling.
-    window.setTimeout(() => {
-      document.getElementById(anchor)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Company Info fetches its own data on mount, so switching from another
+    // tab means the target card doesn't exist yet for a beat (an initial
+    // "Loading..." render, then the real cards). Poll briefly instead of a
+    // fixed delay, since a single short timeout raced this fetch and
+    // silently no-op'd when jumping here from a different tab.
+    let attempts = 0;
+    const poll = window.setInterval(() => {
+      attempts += 1;
+      const el = document.getElementById(anchor);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        window.clearInterval(poll);
+      } else if (attempts > 40) {
+        window.clearInterval(poll); // ~2s — give up quietly rather than poll forever
+      }
     }, 50);
   }
 
-  const tabCls = (isActive: boolean) =>
+  const primaryTabCls = (isActive: boolean) =>
     [
-      "flex items-center gap-1.5 px-3.5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
+      "px-3.5 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
       isActive
         ? "border-blue-600 text-blue-600"
         : "border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300",
     ].join(" ");
 
+  const anchorTabCls =
+    "px-3 py-2.5 text-[13px] font-normal text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-colors whitespace-nowrap -mb-px";
+
   return (
     <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto">
-      {TABS.map(({ key, label, icon }) => (
-        <button key={key} onClick={() => onSelect(key)} className={tabCls(activeSection === key)}>
-          <span className="text-[15px] leading-none">{icon}</span>
+      {TABS.map(({ key, label }) => (
+        <button key={key} onClick={() => onSelect(key)} className={primaryTabCls(activeSection === key)}>
           {label}
         </button>
       ))}
-      {ANCHOR_TABS.map(({ label, icon, anchor }) => (
-        <button key={label} onClick={() => goToAnchor(anchor)} className={tabCls(false)}>
-          <span className="text-[15px] leading-none">{icon}</span>
+      <div className="w-px h-4 bg-slate-200 mx-2 shrink-0" />
+      {ANCHOR_TABS.map(({ label, anchor }) => (
+        <button key={label} onClick={() => goToAnchor(anchor)} className={anchorTabCls}>
           {label}
         </button>
       ))}

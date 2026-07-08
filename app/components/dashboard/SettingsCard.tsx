@@ -49,7 +49,7 @@ export default function SettingsCard({
 // visually match a fully-designed reference, just clearly labeled.
 export function PreviewPill() {
   return (
-    <span className="text-[10px] font-semibold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+    <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400 bg-slate-100 rounded-full px-1.5 py-0.5">
       Preview
     </span>
   );

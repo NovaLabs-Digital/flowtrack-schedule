@@ -37,7 +37,7 @@ export default function DashboardSettingsArea({
     return (
       <div className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
-        <div className="flex-1 min-h-0 overflow-auto pt-5">
+        <div className="flex-1 min-h-0 overflow-auto pt-8">
           <SettingsPanel section={settingsSection} />
         </div>
       </div>
