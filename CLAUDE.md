@@ -17,6 +17,8 @@ The goal is not to build the biggest platform.
 
 The goal is to build software that entrepreneurs actually use every day.
 
+Special is better than big.
+
 
 # NOVA LABS DIGITAL - AI DEVELOPER OPERATING MANUAL
 
@@ -29,6 +31,8 @@ The mission of Nova Labs Digital is to build practical software that helps solo 
 The company philosophy is:
 
 "Work on the business, not in the business."
+
+We are not building software. We are building businesses that happen to be software.
 
 Every product should reduce stress, simplify operations, save time, or improve decision-making for business owners.
 
@@ -128,6 +132,10 @@ Avoid:
 * Complex frameworks
 * Features that are not immediately useful
 
+Whenever two solutions exist, choose the one that requires less explanation.
+
+Avoid unnecessary options. Avoid unnecessary clicks. Avoid unnecessary words. Every click should have a purpose.
+
 ---
 
 ### Build Small
@@ -151,6 +159,20 @@ A simple feature that works is better than a sophisticated feature that fails.
 
 Reliability is more important than cleverness.
 
+Avoid fake data, decorative widgets, and meaningless statistics. If something appears on screen, it must either work, be clearly identified as a preview, or remain hidden until it is ready.
+
+Honesty builds trust.
+
+---
+
+### Launch Philosophy
+
+Version 1.0 is not perfection.
+
+Version 1.0 must be reliable, professional, clear, and trustworthy.
+
+After launch, improvements should come primarily from real users, not assumptions.
+
 ---
 
 ### User Experience First
@@ -163,6 +185,18 @@ The founder values:
 * Fast workflows
 
 When choosing between technical purity and user experience, prioritize user experience.
+
+Users should always feel like they are managing their business, not configuring software. Whenever wording can be business-oriented instead of technical, choose the business wording.
+
+Every page should naturally guide the user's eyes. Priority order:
+
+1. Page title
+2. Business identity
+3. Daily actions
+4. Configuration
+5. Advanced options
+
+Users should never wonder where to look first.
 
 ---
 
@@ -182,9 +216,36 @@ Avoid:
 * Excessive settings
 * Unnecessary pages
 
-The visual benchmark is FlowTrack.
+Every screen should answer one simple business question, and never mix unrelated purposes on the same page. For example:
 
-Future products should feel like part of the same family.
+* Dashboard → What is happening today?
+* Clients → Who are my customers?
+* Employees → Who works for me?
+* Settings → How does my business operate?
+
+The same rule applies one level down: every card should answer one clear question. "Business Identity" answers who we are. "Contact & Location" answers how clients reach us. "Scheduling Preferences" answers how the business operates. "Communication" answers how clients hear from us. "Subscription" answers what powers the business. If a card answers multiple unrelated questions, split it.
+
+White space is functional. It creates confidence. Do not fill space simply because it exists — if something does not improve understanding, remove it.
+
+The visual benchmark is FlowTrack. FlowTrack, Schedule, GateKeeper, and every future Nova Labs application should share a common visual language, so that a user immediately recognizes: "This feels like a Nova Labs product." Design consistency is part of the product.
+
+---
+
+## Excellence
+
+We do not chase perfection. We pursue excellence.
+
+Excellence means:
+
+* Thoughtful decisions
+* Clean architecture
+* Honest interfaces
+* Reliable software
+* Continuous improvement
+
+If something improves clarity, simplicity, trust, or usability, it is worth doing.
+
+If it merely makes the interface busier or more impressive, reject it.
 
 ---
 
@@ -246,3 +307,7 @@ Remember:
 The goal is not to build the biggest platform.
 
 The goal is to build software that entrepreneurs actually use every day.
+
+Special is better than big.
+
+Build software people enjoy trusting. Growth will follow.
