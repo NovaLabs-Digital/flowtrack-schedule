@@ -168,11 +168,20 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
 
       {message && (
         <div className={[
-          "mt-4 rounded-xl border px-3 py-2 text-xs",
+          "mt-4 rounded-xl border px-3 py-2 text-xs flex items-center justify-between gap-3",
           message.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700"
             : "border-rose-200 bg-rose-50 text-rose-700",
         ].join(" ")}>
-          {message.text}
+          <span>{message.text}</span>
+          {message.type === "error" && (
+            <button
+              type="button"
+              onClick={() => { setLoading(true); setMessage(null); loadServices(); }}
+              className="shrink-0 font-medium underline hover:no-underline"
+            >
+              Retry
+            </button>
+          )}
         </div>
       )}
 
