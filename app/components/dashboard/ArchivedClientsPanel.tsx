@@ -16,15 +16,20 @@ export default function ArchivedClientsPanel() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [restoring, setRestoring] = useState<string | null>(null);
+  // Distinguishes "initial load failed" (Retry re-fetches) from a failed
+  // restore (which reuses `message` too, but retrying that should re-attempt
+  // the restore, not reload the list).
+  const [loadFailed, setLoadFailed] = useState(false);
 
   function loadClients() {
+    setLoadFailed(false);
     fetch("/api/clients/archived")
       .then((r) => r.json())
       .then((data) => {
         if (data.clients) setClients(data.clients);
         else if (data.error) setMessage({ type: "error", text: data.error });
       })
-      .catch(() => setMessage({ type: "error", text: "Failed to load archived clients." }))
+      .catch(() => { setMessage({ type: "error", text: "Failed to load archived clients." }); setLoadFailed(true); })
       .finally(() => setLoading(false));
   }
 
@@ -67,9 +72,20 @@ export default function ArchivedClientsPanel() {
       <div className="mt-1 text-xs text-slate-500">Clients who have been archived. Restore them to make them active again.</div>
 
       {message && (
-        <div className={["mt-4 rounded-xl border px-3 py-2 text-xs",
+        <div className={["mt-4 rounded-xl border px-3 py-2 text-xs flex items-center justify-between gap-3",
           message.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
-        ].join(" ")}>{message.text}</div>
+        ].join(" ")}>
+          <span>{message.text}</span>
+          {loadFailed && (
+            <button
+              type="button"
+              onClick={() => { setLoading(true); setMessage(null); loadClients(); }}
+              className="shrink-0 font-medium underline hover:no-underline"
+            >
+              Retry
+            </button>
+          )}
+        </div>
       )}
 
       {clients.length === 0 ? (

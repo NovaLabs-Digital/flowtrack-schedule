@@ -41,6 +41,10 @@ export default function CompanyInfoPanel() {
   const [saved, setSaved] = useState<CompanyForm>(EMPTY);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  // Distinguishes "initial load failed" (Retry re-fetches) from a failed
+  // Save (which reuses `msg` too, but retrying that should resubmit the
+  // form, not reload it).
+  const [loadFailed, setLoadFailed] = useState(false);
 
   // Shared toast for the "coming soon" affordances scattered across cards
   // (logo upload, cancellation policy, subscription management) — separate
@@ -78,7 +82,8 @@ export default function CompanyInfoPanel() {
   const [reminder, setReminder] = useState("1 day before, 8:00 PM");
   const [followUp, setFollowUp] = useState("1 day after");
 
-  useEffect(() => {
+  function loadCompanySettings() {
+    setLoadFailed(false);
     fetch("/api/settings/company")
       .then((r) => r.json())
       .then((data) => {
@@ -100,9 +105,11 @@ export default function CompanyInfoPanel() {
         }
         if (data.status) setStatus(data.status);
       })
-      .catch(() => setMsg({ type: "error", text: "Failed to load company settings." }))
+      .catch(() => { setMsg({ type: "error", text: "Failed to load company settings." }); setLoadFailed(true); })
       .finally(() => setLoading(false));
-  }, []);
+  }
+
+  useEffect(() => { loadCompanySettings(); }, []);
 
   const dirty = JSON.stringify(form) !== JSON.stringify(saved) || bookingEnabled !== bookingSaved;
 
@@ -314,11 +321,20 @@ export default function CompanyInfoPanel() {
         {msg && (
           <div
             className={[
-              "rounded-xl border px-3 py-2 text-xs",
+              "rounded-xl border px-3 py-2 text-xs flex items-center justify-between gap-3",
               msg.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
             ].join(" ")}
           >
-            {msg.text}
+            <span>{msg.text}</span>
+            {loadFailed && (
+              <button
+                type="button"
+                onClick={() => { setLoading(true); setMsg(null); loadCompanySettings(); }}
+                className="shrink-0 font-medium underline hover:no-underline"
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
       </SettingsCard>
