@@ -1,5 +1,5 @@
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { getSession } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import EmployeeSchedule from "@/app/components/schedule/EmployeeSchedule";
 import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
@@ -26,15 +26,13 @@ function mondayOfWeek(offsetWeeks: number): Date {
 }
 
 export default async function SchedulePage() {
-  const cookieStore = await cookies();
-  const session = cookieStore.get("sft_session");
-  const value = session?.value ?? "";
+  const session = await getSession();
 
-  if (!value.startsWith("employee:")) {
+  if (session.role !== "employee") {
     redirect("/login");
   }
 
-  const employeeId = value.replace("employee:", "");
+  const employeeId = session.employeeId;
 
   const { data: employee, error: empErr } = await supabaseAdmin
     .from("employees")

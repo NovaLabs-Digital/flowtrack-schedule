@@ -3,6 +3,19 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS } from "@/lib/session";
+import { safeEqual } from "@/lib/safeEqual";
+import { isRateLimited, recordFailedAttempt, recordSuccessfulAttempt } from "@/lib/rateLimit";
+
+const GENERIC_AUTH_ERROR = "Invalid email or password";
+
+// A precomputed bcrypt hash of an arbitrary string, compared against when no
+// employee matches the submitted email. This keeps a "no such account"
+// response taking the same time as a "wrong password" response — without
+// it, the missing bcrypt.compare() call would make nonexistent-account
+// responses measurably faster, letting an attacker enumerate real emails by
+// timing alone even though both cases return the same error text.
+const DUMMY_PASSWORD_HASH = "$2b$10$kSPv921oLeSBUU7sdaHSWe9XzorYI./qVsIgqbcbH.hEBrYcrWeqy";
 
 function setCookie(res: NextResponse, value: string) {
   res.cookies.set("sft_session", value, {
@@ -10,12 +23,30 @@ function setCookie(res: NextResponse, value: string) {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 7,
+    maxAge: SESSION_MAX_AGE_SECONDS,
   });
 }
 
+function clientKeyFor(req: Request): string {
+  const fwd = req.headers.get("x-forwarded-for");
+  return fwd ? fwd.split(",")[0].trim() : "unknown";
+}
+
 export async function POST(req: Request) {
+  const clientKey = clientKeyFor(req);
+
   try {
+    const limited = isRateLimited(clientKey);
+    if (limited.limited) {
+      return NextResponse.json(
+        { error: "Too many attempts. Please try again later." },
+        {
+          status: 429,
+          headers: limited.retryAfterSeconds ? { "Retry-After": String(limited.retryAfterSeconds) } : undefined,
+        }
+      );
+    }
+
     const body = await req.json();
     const email = (body.email || "").trim();
     const password = (body.password || "").trim();
@@ -33,38 +64,49 @@ export async function POST(req: Request) {
         .maybeSingle();
 
       if (error) throw error;
-      if (!emp) {
-        return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
-      }
-      if (!emp.active) {
-        return NextResponse.json({ error: "Account is inactive. Contact your manager." }, { status: 401 });
-      }
-      if (!emp.password_hash || !(await bcrypt.compare(password, emp.password_hash))) {
-        return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+
+      const hashToCheck = emp?.password_hash || DUMMY_PASSWORD_HASH;
+      const passwordMatches = await bcrypt.compare(password, hashToCheck);
+      const ok = !!emp && emp.active && !!emp.password_hash && passwordMatches;
+
+      if (!ok) {
+        recordFailedAttempt(clientKey);
+        return NextResponse.json({ error: GENERIC_AUTH_ERROR }, { status: 401 });
       }
 
+      recordSuccessfulAttempt(clientKey);
       const res = NextResponse.json({ ok: true, redirect: "/schedule" });
-      setCookie(res, `employee:${emp.id}`);
+      setCookie(res, await createSessionCookieValue("employee", emp!.id));
       return res;
     }
 
     const testerEmail = process.env.TESTER_EMAIL;
     const testerPassword = process.env.TESTER_PASSWORD;
-    if (testerEmail && testerPassword && email === testerEmail && password === testerPassword) {
+    if (
+      testerEmail &&
+      testerPassword &&
+      safeEqual(email, testerEmail) &&
+      safeEqual(password, testerPassword)
+    ) {
+      recordSuccessfulAttempt(clientKey);
       const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
-      setCookie(res, "tester");
+      setCookie(res, await createSessionCookieValue("tester"));
       return res;
     }
 
     const validEmail = process.env.ADMIN_EMAIL;
     const validPassword = process.env.ADMIN_PASSWORD;
+    const ownerOk =
+      !!validEmail && !!validPassword && safeEqual(email, validEmail) && safeEqual(password, validPassword);
 
-    if (!validEmail || !validPassword || email !== validEmail || password !== validPassword) {
-      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
+    if (!ownerOk) {
+      recordFailedAttempt(clientKey);
+      return NextResponse.json({ error: GENERIC_AUTH_ERROR }, { status: 401 });
     }
 
+    recordSuccessfulAttempt(clientKey);
     const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
-    setCookie(res, "authenticated");
+    setCookie(res, await createSessionCookieValue("owner"));
     return res;
   } catch (e: any) {
     console.error("LOGIN_ERROR", e);

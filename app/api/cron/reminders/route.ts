@@ -5,6 +5,7 @@ import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms } from "@/lib/notify";
 import { reminder24hTemplates } from "@/lib/templates";
+import { safeEqual } from "@/lib/safeEqual";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -14,7 +15,8 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const secret = url.searchParams.get("secret");
-    if (!secret || secret !== process.env.CRON_SECRET) {
+    const cronSecret = process.env.CRON_SECRET;
+    if (!secret || !cronSecret || !safeEqual(secret, cronSecret)) {
       return json({ error: "Unauthorized" }, 401);
     }
 

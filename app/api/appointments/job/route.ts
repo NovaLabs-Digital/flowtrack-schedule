@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { getSession } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 function json(data: any, status = 200) {
@@ -10,15 +10,13 @@ function json(data: any, status = 200) {
 
 export async function POST(req: Request) {
   try {
-    const cookieStore = await cookies();
-    const session = cookieStore.get("sft_session");
-    const value = session?.value ?? "";
+    const session = await getSession();
 
-    if (!value.startsWith("employee:")) {
+    if (session.role !== "employee") {
       return json({ error: "Unauthorized" }, 401);
     }
 
-    const employeeId = value.replace("employee:", "");
+    const employeeId = session.employeeId;
 
     const body = await req.json();
     const appointmentId = (body.appointment_id || "").trim();

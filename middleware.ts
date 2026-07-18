@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { verifySessionCookie } from "@/lib/sessionCrypto";
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const session = request.cookies.get("sft_session");
   const value = session?.value ?? "";
-  const isOwner = value === "authenticated";
-  const isTester = value === "tester";
-  const isEmployee = value.startsWith("employee:");
+  const payload = await verifySessionCookie(value);
+  const isOwner = payload?.role === "owner";
+  const isTester = payload?.role === "tester";
+  const isEmployee = payload?.role === "employee";
   const path = request.nextUrl.pathname;
 
   if (path.startsWith("/dashboard")) {

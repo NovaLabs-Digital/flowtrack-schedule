@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { signSessionPayload, verifySessionCookie, newExpiry, SESSION_MAX_AGE_SECONDS } from "@/lib/sessionCrypto";
 
 export type Session =
   | { role: "owner" }
@@ -7,13 +8,28 @@ export type Session =
   | { role: "employee"; employeeId: string }
   | { role: "none" };
 
+export { SESSION_MAX_AGE_SECONDS };
+
 export async function getSession(): Promise<Session> {
   const cookieStore = await cookies();
   const value = cookieStore.get("sft_session")?.value ?? "";
-  if (value === "authenticated") return { role: "owner" };
-  if (value === "tester") return { role: "tester" };
-  if (value.startsWith("employee:")) return { role: "employee", employeeId: value.slice("employee:".length) };
-  return { role: "none" };
+  const payload = await verifySessionCookie(value);
+  if (!payload) return { role: "none" };
+  if (payload.role === "employee") return { role: "employee", employeeId: payload.employeeId };
+  return { role: payload.role };
+}
+
+// Produces the signed cookie value to hand to res.cookies.set("sft_session", ...).
+// Callers should pair this with maxAge: SESSION_MAX_AGE_SECONDS so the cookie's
+// own expiry matches the `exp` claim baked into the signed payload.
+export async function createSessionCookieValue(role: "owner" | "tester"): Promise<string>;
+export async function createSessionCookieValue(role: "employee", employeeId: string): Promise<string>;
+export async function createSessionCookieValue(role: "owner" | "tester" | "employee", employeeId?: string): Promise<string> {
+  const exp = newExpiry();
+  if (role === "employee") {
+    return signSessionPayload({ role: "employee", employeeId: employeeId as string, exp });
+  }
+  return signSessionPayload({ role, exp });
 }
 
 // Central role gate for API routes — every route in this codebase is
