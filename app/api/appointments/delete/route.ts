@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
-import { getSession } from "@/lib/session";
+import { getSession, requireRole } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -49,6 +49,8 @@ export async function POST(req: Request) {
     const appt = apptRes.data as any;
 
     const session = await getSession();
+    const deny = requireRole(session, ["owner", "tester"]);
+    if (deny) return deny;
     const isTester = session.role === "tester";
     if (isTester && !appt.is_demo) {
       return json({ error: "Appointment not found" }, 404);

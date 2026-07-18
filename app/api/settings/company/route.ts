@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession } from "@/lib/session";
+import { getSession, requireOwner } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -11,9 +11,8 @@ function json(data: any, status = 200) {
 export async function GET() {
   try {
     const session = await getSession();
-    if (session.role === "tester") {
-      return json({ error: "Unauthorized" }, 403);
-    }
+    const deny = requireOwner(session);
+    if (deny) return deny;
 
     const { data, error } = await supabaseAdmin
       .from("company_settings")

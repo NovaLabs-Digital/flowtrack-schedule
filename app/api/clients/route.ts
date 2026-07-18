@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession } from "@/lib/session";
+import { getSession, requireRole } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -23,6 +23,8 @@ export async function PATCH(req: Request) {
     if (!id) return json({ error: "Missing client id" }, 400);
 
     const session = await getSession();
+    const deny = requireRole(session, ["owner", "tester"]);
+    if (deny) return deny;
     const isTester = session.role === "tester";
     if (isTester) {
       const { data } = await supabaseAdmin.from("clients").select("is_demo").eq("id", id).maybeSingle();
@@ -70,6 +72,8 @@ export async function POST(req: Request) {
     if (!id) return json({ error: "Missing client id" }, 400);
 
     const session = await getSession();
+    const deny = requireRole(session, ["owner", "tester"]);
+    if (deny) return deny;
     const isTester = session.role === "tester";
     if (isTester) {
       const { data } = await supabaseAdmin.from("clients").select("is_demo").eq("id", id).maybeSingle();
