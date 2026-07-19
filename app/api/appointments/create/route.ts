@@ -7,6 +7,7 @@ import { getSession } from "@/lib/session";
 import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
+import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDateStringFromInstant, type BusyRange } from "@/lib/availability";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -26,8 +27,19 @@ export async function POST(req: Request) {
     const session = await getSession();
     const isOwner = session.role === "owner";
     const isTester = session.role === "tester";
+    const isEmployee = session.role === "employee";
 
-    if (!isOwner && !isTester) {
+    // Employees have no legitimate reason to create appointments — same
+    // flat-deny treatment as every other owner-facing mutation route.
+    if (isEmployee) {
+      return json({ error: "Unauthorized" }, 403);
+    }
+
+    // Anyone left (role: "none") is the public /book flow — never owner or
+    // tester, since both were already excluded above.
+    const isPublic = !isOwner && !isTester;
+
+    if (isPublic) {
       const { data: settings } = await supabaseAdmin
         .from("company_settings")
         .select("booking_enabled")
@@ -43,12 +55,15 @@ export async function POST(req: Request) {
     const service_type = (body.service_type || "").trim();
     const scheduled_for = (body.scheduled_for || "").trim();
     const notes = (body.notes || "").trim();
-    const duration_minutes = typeof body.duration_minutes === "number" ? body.duration_minutes : 60;
-    const scheduled_end = (body.scheduled_end || "").trim() || null;
+    let duration_minutes = typeof body.duration_minutes === "number" ? body.duration_minutes : 60;
+    let scheduled_end = (body.scheduled_end || "").trim() || null;
 
-    const frequency_type: string = (body.frequency_type || "one_time").trim();
-    const repeat_weeks: number = typeof body.repeat_weeks === "number" ? body.repeat_weeks : 1;
-    const employee_id: string | null = (body.employee_id || "").trim() || null;
+    // Recurrence and staff assignment are owner/tester-only capabilities —
+    // a public booking is always a single, unassigned appointment; the
+    // owner triages staff assignment afterward.
+    const frequency_type: string = isPublic ? "one_time" : (body.frequency_type || "one_time").trim();
+    const repeat_weeks: number = isPublic ? 1 : (typeof body.repeat_weeks === "number" ? body.repeat_weeks : 1);
+    const employee_id: string | null = isPublic ? null : ((body.employee_id || "").trim() || null);
     // Defaults to "both" so the public /book self-booking page (no staff choice) keeps sending a confirmation.
     const notify_channel: NotifyChannel = body.notify_channel || "both";
 
@@ -56,9 +71,66 @@ export async function POST(req: Request) {
       return json({ error: "Missing required fields" }, 400);
     }
 
-    // Resolve client — tester sessions are scoped to is_demo rows only, so a
-    // tester can never reference or attach a new appointment to a real client.
-    let clientId: string | null = (body.client_id || "").trim() || null;
+    if (isPublic) {
+      // The service must be a real, active, non-demo offering — duration
+      // comes from the service record, never trusted from the request body,
+      // since it directly drives the availability/conflict check below.
+      const { data: svc } = await supabaseAdmin
+        .from("services")
+        .select("name, duration_minutes")
+        .eq("name", service_type)
+        .eq("is_demo", false)
+        .eq("active", true)
+        .maybeSingle();
+      if (!svc) return json({ error: "Please choose a valid service." }, 400);
+      duration_minutes = svc.duration_minutes || 60;
+      scheduled_end = null;
+
+      // Validate the time slot before touching the clients table at all —
+      // a rejected booking (bad hours, already taken) must not leave behind
+      // a client row created for a booking that never actually happened.
+      const startDate = new Date(scheduled_for);
+      if (isNaN(startDate.getTime())) {
+        return json({ error: "Invalid date/time." }, 400);
+      }
+      const endDate = new Date(startDate.getTime() + duration_minutes * 60000);
+
+      if (!isWithinBusinessHours(startDate, endDate)) {
+        return json({ error: "That time is outside business hours. Please choose another time." }, 400);
+      }
+
+      // Defense-in-depth: re-check the exact slot server-side, independent
+      // of whatever the availability endpoint showed the browser — a direct
+      // API request can't be trusted to have honored it.
+      const dayStr = businessDateStringFromInstant(startDate);
+      const { start: dayStart, end: dayEnd } = businessDayBounds(dayStr);
+      const { data: dayAppts, error: dayApptsErr } = await supabaseAdmin
+        .from("appointments")
+        .select("scheduled_for, scheduled_end, duration_minutes")
+        .eq("status", "scheduled")
+        .eq("is_demo", false)
+        .gte("scheduled_for", dayStart.toISOString())
+        .lt("scheduled_for", dayEnd.toISOString());
+      if (dayApptsErr) throw dayApptsErr;
+
+      const busy: BusyRange[] = (dayAppts ?? []).map((a) => {
+        const bStart = new Date(a.scheduled_for);
+        const bEnd = a.scheduled_end
+          ? new Date(a.scheduled_end)
+          : new Date(bStart.getTime() + (a.duration_minutes || 60) * 60000);
+        return { start: bStart, end: bEnd };
+      });
+
+      if (!isSlotAvailable(startDate, endDate, busy)) {
+        return json({ error: "That time is no longer available. Please choose another time." }, 409);
+      }
+    }
+
+    // Never trust a client-supplied client_id from the public form — a
+    // public caller resolves strictly by matching name/email/phone below,
+    // same as any other new booking. Owner/tester may still pass one to
+    // attach to a specific existing (or, for tester, demo) client.
+    let clientId: string | null = isPublic ? null : ((body.client_id || "").trim() || null);
 
     if (clientId) {
       const { data } = await supabaseAdmin
@@ -72,9 +144,15 @@ export async function POST(req: Request) {
       const name = (body.name || "").trim();
       const email = (body.email || "").trim();
       const phone = (body.phone || "").trim();
+      const address = (body.address || "").trim();
 
       if (!name) return json({ error: "Client name is required" }, 400);
       if (!email && !phone) return json({ error: "Provide at least email or phone" }, 400);
+      if (isPublic && !phone) return json({ error: "Phone is required" }, 400);
+      if (isPublic && !address) return json({ error: "Address is required" }, 400);
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return json({ error: "Please enter a valid email address." }, 400);
+      }
 
       if (email) {
         const { data } = await supabaseAdmin
@@ -89,7 +167,7 @@ export async function POST(req: Request) {
       if (!clientId) {
         const ins = await supabaseAdmin
           .from("clients")
-          .insert({ name, email: email || null, phone: phone || null, is_demo: isTester })
+          .insert({ name, email: email || null, phone: phone || null, address: address || null, is_demo: isTester })
           .select("id").single();
         if (ins.error) throw ins.error;
         clientId = ins.data.id;

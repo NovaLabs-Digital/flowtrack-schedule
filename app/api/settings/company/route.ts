@@ -75,6 +75,9 @@ export async function POST(req: Request) {
     if (typeof body.booking_enabled === "boolean") {
       fields.booking_enabled = body.booking_enabled;
     }
+    if (typeof body.notifications_enabled === "boolean") {
+      fields.notifications_enabled = body.notifications_enabled;
+    }
 
     const { data: existing } = await supabaseAdmin
       .from("company_settings")

@@ -1,6 +1,6 @@
 import { DateTime } from "luxon";
 
-const BUSINESS_TZ = "America/New_York";
+export const BUSINESS_TZ = "America/New_York";
 
 // A JS Date representing "right now," but with its local getters/setters
 // (getDate, getDay, getHours, setHours, toDateString, etc.) always reflecting

@@ -18,6 +18,7 @@ const TABS: { key: SettingsSection; label: string }[] = [
 ];
 
 const ANCHOR_TABS: { label: string; anchor: string }[] = [
+  { label: "Automation", anchor: "automation-card" },
   { label: "Preferences", anchor: "company-preferences-card" },
   { label: "Notifications", anchor: "communication-preferences-card" },
   { label: "Billing", anchor: "subscription-card" },

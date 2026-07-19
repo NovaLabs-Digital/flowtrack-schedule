@@ -55,10 +55,13 @@ export default function CompanyInfoPanel() {
     window.setTimeout(() => setToast(null), 2500);
   }
 
-  // Booking toggle — same real booking_enabled column as before, just
-  // living inside the single hero card's Save now instead of its own card.
+  // Automation toggles — real, persisted columns, live together in their
+  // own Automation card (Settings → Automation) with a shared Save,
+  // separate from the Company Information profile fields above.
   const [bookingEnabled, setBookingEnabled] = useState(false);
   const [bookingSaved, setBookingSaved] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [notificationsSaved, setNotificationsSaved] = useState(true);
 
   // Visual-only fields with no backing column yet (no schema change made
   // for this pass) — interactive so the page doesn't look broken, but not
@@ -102,6 +105,8 @@ export default function CompanyInfoPanel() {
           setSaved(next);
           setBookingEnabled(Boolean(s.booking_enabled));
           setBookingSaved(Boolean(s.booking_enabled));
+          setNotificationsEnabled(Boolean(s.notifications_enabled));
+          setNotificationsSaved(Boolean(s.notifications_enabled));
         }
         if (data.status) setStatus(data.status);
       })
@@ -111,7 +116,8 @@ export default function CompanyInfoPanel() {
 
   useEffect(() => { loadCompanySettings(); }, []);
 
-  const dirty = JSON.stringify(form) !== JSON.stringify(saved) || bookingEnabled !== bookingSaved;
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved);
+  const automationDirty = bookingEnabled !== bookingSaved || notificationsEnabled !== notificationsSaved;
 
   async function handleSave() {
     setSaving(true);
@@ -120,7 +126,7 @@ export default function CompanyInfoPanel() {
       const res = await fetch("/api/settings/company", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, booking_enabled: bookingEnabled }),
+        body: JSON.stringify(form),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -128,12 +134,41 @@ export default function CompanyInfoPanel() {
         return;
       }
       setSaved(form);
-      setBookingSaved(bookingEnabled);
       setMsg({ type: "success", text: "Saved." });
     } catch {
       setMsg({ type: "error", text: "Network error. Please try again." });
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Automation settings save independently of the company profile above —
+  // a feature's on/off switch shouldn't be entangled with unrelated profile
+  // edits (or block on them being valid/saved first).
+  const [automationSaving, setAutomationSaving] = useState(false);
+  const [automationMsg, setAutomationMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  async function handleSaveAutomation() {
+    setAutomationSaving(true);
+    setAutomationMsg(null);
+    try {
+      const res = await fetch("/api/settings/company", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ booking_enabled: bookingEnabled, notifications_enabled: notificationsEnabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAutomationMsg({ type: "error", text: data?.error || "Save failed." });
+        return;
+      }
+      setBookingSaved(bookingEnabled);
+      setNotificationsSaved(notificationsEnabled);
+      setAutomationMsg({ type: "success", text: "Saved." });
+    } catch {
+      setAutomationMsg({ type: "error", text: "Network error. Please try again." });
+    } finally {
+      setAutomationSaving(false);
     }
   }
 
@@ -300,17 +335,6 @@ export default function CompanyInfoPanel() {
                 placeholder="www.yourcompany.com"
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Allow clients to book online</label>
-              <div className="pt-1">
-                <SettingsToggle
-                  checked={bookingEnabled}
-                  onChange={setBookingEnabled}
-                  label="Public booking page"
-                  helper="Included in Save Changes above"
-                />
-              </div>
-            </div>
           </div>
         </div>
 
@@ -335,6 +359,60 @@ export default function CompanyInfoPanel() {
                 Retry
               </button>
             )}
+          </div>
+        )}
+      </SettingsCard>
+
+      <SettingsCard
+        id="automation-card"
+        title="Automation"
+        helper="Control what happens automatically for your business."
+        headerRight={
+          <button
+            type="button"
+            disabled={automationSaving || !automationDirty}
+            onClick={handleSaveAutomation}
+            className={primaryBtnCls}
+          >
+            {automationSaving ? "Saving..." : "Save Changes"}
+          </button>
+        }
+      >
+        <SettingsToggle
+          checked={bookingEnabled}
+          onChange={setBookingEnabled}
+          label="Enable Public Booking"
+          helper={
+            bookingEnabled
+              ? "Your /book page is live — customers can request appointments online."
+              : "Off by default. Customers see a friendly message and must contact you directly."
+          }
+        />
+        <div className="border-t border-slate-100 pt-3">
+          <SettingsToggle
+            checked={notificationsEnabled}
+            onChange={setNotificationsEnabled}
+            label="Enable Client Notifications"
+            helper={
+              notificationsEnabled
+                ? "Confirmations, updates, cancellations, and reminders send normally, per each client's own email/SMS preferences."
+                : "Master switch is off — no email or SMS goes out for any appointment, even for clients with email/SMS preferences enabled."
+            }
+          />
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <DirtyHint dirty={automationDirty} />
+        </div>
+
+        {automationMsg && (
+          <div
+            className={[
+              "rounded-xl border px-3 py-2 text-xs",
+              automationMsg.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
+            ].join(" ")}
+          >
+            {automationMsg.text}
           </div>
         )}
       </SettingsCard>

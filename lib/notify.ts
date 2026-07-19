@@ -1,5 +1,6 @@
 import twilio from "twilio";
 import { Resend } from "resend";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 let resendClient: Resend | null = null;
 function getResend(): Resend {
@@ -15,6 +16,23 @@ const twilioClient = twilio(
 );
 
 const disabled = process.env.DISABLE_MESSAGES === "true";
+
+// The owner's Settings → Automation → "Enable Client Notifications" master
+// switch. This is the single choke point every route's send goes through
+// (create/update/cancel/public-cancel/reminders all call sendEmail/sendSms
+// and nothing else), so gating it here — rather than in each route — makes
+// it impossible for a route to forget the check or bypass it. Read fresh on
+// every call rather than cached: sends are low-frequency (appointment
+// actions), so an extra read is cheap, and it avoids any staleness window
+// after the owner flips the toggle.
+async function ownerNotificationsEnabled(): Promise<boolean> {
+  const { data } = await supabaseAdmin
+    .from("company_settings")
+    .select("notifications_enabled")
+    .limit(1)
+    .maybeSingle();
+  return Boolean(data?.notifications_enabled);
+}
 
 export type NotifyChannel = "email" | "sms" | "both" | "none";
 
@@ -54,6 +72,10 @@ export async function sendSms(to: string, body: string) {
     console.log("[DISABLE_MESSAGES] SMS skipped — to:", to, "| body:", body);
     return "disabled";
   }
+  if (!(await ownerNotificationsEnabled())) {
+    console.log("[notifications_enabled=false] SMS skipped — to:", to, "| body:", body);
+    return "notifications-off";
+  }
   const msg = await twilioClient.messages.create({
     to,
     from: process.env.TWILIO_FROM_NUMBER!,
@@ -66,6 +88,10 @@ export async function sendEmail(to: string, subject: string, text: string) {
   if (disabled) {
     console.log("[DISABLE_MESSAGES] Email skipped — to:", to, "| subject:", subject, "| body:", text);
     return "disabled";
+  }
+  if (!(await ownerNotificationsEnabled())) {
+    console.log("[notifications_enabled=false] Email skipped — to:", to, "| subject:", subject);
+    return "notifications-off";
   }
   const fromName = process.env.RESEND_FROM_NAME || "FlowTrack Schedule";
   const { data, error } = await getResend().emails.send({
