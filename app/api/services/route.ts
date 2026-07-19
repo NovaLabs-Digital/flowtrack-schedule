@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession, requireRole } from "@/lib/session";
+import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -13,11 +13,13 @@ export async function GET() {
     const session = await getSession();
     const deny = requireRole(session, ["owner", "tester"]);
     if (deny) return deny;
+    assertWorkspace(session);
     const isTester = session.role === "tester";
 
     const { data, error } = await supabaseAdmin
       .from("services")
       .select("id, name, description, duration_minutes, active, color, created_at, updated_at")
+      .eq("workspace_id", session.workspaceId)
       .eq("is_demo", isTester)
       .order("name", { ascending: true });
 
@@ -48,6 +50,7 @@ export async function POST(req: Request) {
       duration_minutes: typeof body.duration_minutes === "number" ? body.duration_minutes : 60,
       active: true,
       is_demo: isTester,
+      workspace_id: session.workspaceId,
     };
     if (body.color) row.color = body.color.trim();
 
@@ -76,9 +79,18 @@ export async function PATCH(req: Request) {
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing service id" }, 400);
 
-    if (isTester) {
-      const { data } = await supabaseAdmin.from("services").select("is_demo").eq("id", id).maybeSingle();
-      if (!data?.is_demo) return json({ error: "Service not found" }, 404);
+    // Always confirm the row exists in this workspace before mutating — an
+    // UPDATE whose WHERE clause matches nothing succeeds silently with zero
+    // rows affected. Checked for every role, not just tester.
+    {
+      const { data } = await supabaseAdmin
+        .from("services")
+        .select("is_demo")
+        .eq("id", id)
+        .eq("workspace_id", session.workspaceId)
+        .maybeSingle();
+      if (!data) return json({ error: "Service not found" }, 404);
+      if (isTester && !data.is_demo) return json({ error: "Service not found" }, 404);
     }
 
     const update: Record<string, any> = { updated_at: new Date().toISOString() };
@@ -91,7 +103,8 @@ export async function PATCH(req: Request) {
     const { error } = await supabaseAdmin
       .from("services")
       .update(update)
-      .eq("id", id);
+      .eq("id", id)
+      .eq("workspace_id", session.workspaceId);
 
     if (error) throw error;
     return json({ ok: true });
@@ -117,10 +130,19 @@ export async function DELETE(req: Request) {
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing service id" }, 400);
 
-    const { data } = await supabaseAdmin.from("services").select("is_demo").eq("id", id).maybeSingle();
+    const { data } = await supabaseAdmin
+      .from("services")
+      .select("is_demo")
+      .eq("id", id)
+      .eq("workspace_id", session.workspaceId)
+      .maybeSingle();
     if (!data?.is_demo) return json({ error: "Service not found" }, 404);
 
-    const { error } = await supabaseAdmin.from("services").delete().eq("id", id);
+    const { error } = await supabaseAdmin
+      .from("services")
+      .delete()
+      .eq("id", id)
+      .eq("workspace_id", session.workspaceId);
     if (error) throw error;
 
     return json({ ok: true });

@@ -17,6 +17,7 @@ export async function POST(req: Request) {
     }
 
     const employeeId = session.employeeId;
+    const workspaceId = session.workspaceId;
 
     const body = await req.json();
     const appointmentId = (body.appointment_id || "").trim();
@@ -31,10 +32,14 @@ export async function POST(req: Request) {
       .from("appointments")
       .select("id, employee_id, actual_started_at, actual_completed_at")
       .eq("id", appointmentId)
+      .eq("workspace_id", workspaceId)
       .maybeSingle();
 
     if (fetchErr) throw fetchErr;
     if (!appt) return json({ error: "Appointment not found" }, 404);
+    // Both checks required: the appointment must be assigned to this exact
+    // employee AND belong to their workspace — either alone isn't enough
+    // once employee IDs could ever collide or be guessed across workspaces.
     if (appt.employee_id !== employeeId) {
       return json({ error: "Unauthorized" }, 403);
     }
@@ -61,7 +66,8 @@ export async function POST(req: Request) {
     const { error: updateErr } = await supabaseAdmin
       .from("appointments")
       .update(update)
-      .eq("id", appointmentId);
+      .eq("id", appointmentId)
+      .eq("workspace_id", workspaceId);
 
     if (updateErr) throw updateErr;
 

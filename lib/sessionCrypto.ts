@@ -10,10 +10,15 @@ export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
 export type SessionRole = "owner" | "tester" | "employee";
 
+// workspaceId is required on every role as of the Phase 2 tenant-scoping
+// work — a session that predates this (signed before workspaceId existed)
+// fails signature-shape validation below and is treated as no session at
+// all, forcing a fresh login rather than silently running with an unscoped
+// or wrong-workspace session.
 export type SessionPayload =
-  | { role: "owner"; exp: number }
-  | { role: "tester"; exp: number }
-  | { role: "employee"; employeeId: string; exp: number };
+  | { role: "owner"; workspaceId: string; exp: number }
+  | { role: "tester"; workspaceId: string; exp: number }
+  | { role: "employee"; employeeId: string; workspaceId: string; exp: number };
 
 // SESSION_SECRET is the only key used to sign/verify sessions — it must
 // never fall back to a database or provider secret (a leak of one must not
@@ -97,6 +102,7 @@ export async function verifySessionCookie(value: string): Promise<SessionPayload
     const payload = JSON.parse(decoder.decode(base64UrlDecode(payloadB64))) as SessionPayload;
 
     if (typeof payload.exp !== "number" || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    if (typeof payload.workspaceId !== "string" || !payload.workspaceId) return null;
     if (payload.role === "employee") {
       return typeof payload.employeeId === "string" && payload.employeeId ? payload : null;
     }

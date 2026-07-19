@@ -4,10 +4,11 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession } from "@/lib/session";
-import { sendEmail, sendSms, shouldSend, describeProviderError, NotifyChannel } from "@/lib/notify";
+import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
 import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDateStringFromInstant, type BusyRange } from "@/lib/availability";
+import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -39,11 +40,16 @@ export async function POST(req: Request) {
     // tester, since both were already excluded above.
     const isPublic = !isOwner && !isTester;
 
+    // Public booking resolves to the one fixed real workspace for now — see
+    // lib/workspace.ts. Owner/tester use their own session's workspace.
+    const workspaceId: string =
+      session.role === "owner" || session.role === "tester" ? session.workspaceId : REAL_WORKSPACE_ID;
+
     if (isPublic) {
       const { data: settings } = await supabaseAdmin
         .from("company_settings")
         .select("booking_enabled")
-        .limit(1)
+        .eq("workspace_id", workspaceId)
         .maybeSingle();
       if (!settings?.booking_enabled) {
         return json({ error: "Online booking is currently unavailable." }, 403);
@@ -79,6 +85,7 @@ export async function POST(req: Request) {
         .from("services")
         .select("name, duration_minutes")
         .eq("name", service_type)
+        .eq("workspace_id", workspaceId)
         .eq("is_demo", false)
         .eq("active", true)
         .maybeSingle();
@@ -108,6 +115,7 @@ export async function POST(req: Request) {
         .from("appointments")
         .select("scheduled_for, scheduled_end, duration_minutes")
         .eq("status", "scheduled")
+        .eq("workspace_id", workspaceId)
         .eq("is_demo", false)
         .gte("scheduled_for", dayStart.toISOString())
         .lt("scheduled_for", dayEnd.toISOString());
@@ -137,6 +145,7 @@ export async function POST(req: Request) {
         .from("clients")
         .select("id")
         .eq("id", clientId)
+        .eq("workspace_id", workspaceId)
         .eq("is_demo", isTester)
         .maybeSingle();
       if (!data) return json({ error: "Client not found" }, 404);
@@ -156,22 +165,36 @@ export async function POST(req: Request) {
 
       if (email) {
         const { data } = await supabaseAdmin
-          .from("clients").select("id").eq("email", email).eq("is_demo", isTester).maybeSingle();
+          .from("clients").select("id").eq("email", email).eq("workspace_id", workspaceId).eq("is_demo", isTester).maybeSingle();
         clientId = data?.id ?? null;
       }
       if (!clientId && phone) {
         const { data } = await supabaseAdmin
-          .from("clients").select("id").eq("phone", phone).eq("is_demo", isTester).maybeSingle();
+          .from("clients").select("id").eq("phone", phone).eq("workspace_id", workspaceId).eq("is_demo", isTester).maybeSingle();
         clientId = data?.id ?? null;
       }
       if (!clientId) {
         const ins = await supabaseAdmin
           .from("clients")
-          .insert({ name, email: email || null, phone: phone || null, address: address || null, is_demo: isTester })
+          .insert({ name, email: email || null, phone: phone || null, address: address || null, is_demo: isTester, workspace_id: workspaceId })
           .select("id").single();
         if (ins.error) throw ins.error;
         clientId = ins.data.id;
       }
+    }
+
+    // employee_id is an assignment target, not the caller's own identity —
+    // never trust it alone. Confirm it belongs to this workspace before
+    // attaching a new appointment to it.
+    if (employee_id) {
+      const empRes = await supabaseAdmin
+        .from("employees")
+        .select("id")
+        .eq("id", employee_id)
+        .eq("workspace_id", workspaceId)
+        .maybeSingle();
+      if (empRes.error) throw empRes.error;
+      if (!empRes.data) return json({ error: "Employee not found" }, 404);
     }
 
     // Check column support
@@ -203,6 +226,7 @@ export async function POST(req: Request) {
         cancel_token: crypto.randomBytes(24).toString("hex"),
         status: "scheduled",
         is_demo: isTester,
+        workspace_id: workspaceId,
       };
       if (hasDuration) row.duration_minutes = duration_minutes;
       if (hasEnd && endOffsetMs) row.scheduled_end = new Date(d.getTime() + endOffsetMs).toISOString();
@@ -232,6 +256,7 @@ export async function POST(req: Request) {
       .from("clients")
       .select("name, email, phone, auto_email, auto_sms")
       .eq("id", clientId)
+      .eq("workspace_id", workspaceId)
       .single();
 
     if (!isTester && !clientRes.error && clientRes.data && firstId) {
@@ -241,17 +266,17 @@ export async function POST(req: Request) {
 
       if (cEmail && auto_email && shouldSend(notify_channel, "email")) {
         try {
-          const providerId = await sendEmail(cEmail, t.email.subject, t.email.body);
-          await supabaseAdmin.from("messages_sent").insert({
+          const providerId = await sendEmail(cEmail, t.email.subject, t.email.body, workspaceId);
+          await recordMessageSent({
             appointment_id: firstId,
-            channel: "email", kind: "confirmation",
+            channel: "email", kind: "confirmation", workspace_id: workspaceId,
             to_value: cEmail, body: t.email.body, provider_id: providerId,
           });
         } catch (err) {
           console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
-          await supabaseAdmin.from("messages_sent").insert({
+          await recordMessageSent({
             appointment_id: firstId,
-            channel: "email", kind: "confirmation",
+            channel: "email", kind: "confirmation", workspace_id: workspaceId,
             to_value: cEmail, body: t.email.body, provider_id: "failed",
           });
         }
@@ -260,17 +285,17 @@ export async function POST(req: Request) {
       // failure must not block the other channel.
       if (cPhone && auto_sms && shouldSend(notify_channel, "sms")) {
         try {
-          const providerId = await sendSms(cPhone, t.sms);
-          await supabaseAdmin.from("messages_sent").insert({
+          const providerId = await sendSms(cPhone, t.sms, workspaceId);
+          await recordMessageSent({
             appointment_id: firstId,
-            channel: "sms", kind: "confirmation",
+            channel: "sms", kind: "confirmation", workspace_id: workspaceId,
             to_value: cPhone, body: t.sms, provider_id: providerId,
           });
         } catch (err) {
           console.error("NOTIFY_SMS_ERROR", describeProviderError(err));
-          await supabaseAdmin.from("messages_sent").insert({
+          await recordMessageSent({
             appointment_id: firstId,
-            channel: "sms", kind: "confirmation",
+            channel: "sms", kind: "confirmation", workspace_id: workspaceId,
             to_value: cPhone, body: t.sms, provider_id: "failed",
           });
         }

@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS } from "@/lib/session";
 import { safeEqual } from "@/lib/safeEqual";
 import { isRateLimited, recordFailedAttempt, recordSuccessfulAttempt } from "@/lib/rateLimit";
+import { REAL_WORKSPACE_ID, DEMO_WORKSPACE_ID } from "@/lib/workspace";
 
 const GENERIC_AUTH_ERROR = "Invalid email or password";
 
@@ -59,7 +60,7 @@ export async function POST(req: Request) {
     if (role === "employee") {
       const { data: emp, error } = await supabaseAdmin
         .from("employees")
-        .select("id, password_hash, active")
+        .select("id, password_hash, active, workspace_id")
         .eq("email", email)
         .maybeSingle();
 
@@ -76,7 +77,7 @@ export async function POST(req: Request) {
 
       recordSuccessfulAttempt(clientKey);
       const res = NextResponse.json({ ok: true, redirect: "/schedule" });
-      setCookie(res, await createSessionCookieValue("employee", emp!.id));
+      setCookie(res, await createSessionCookieValue("employee", emp!.id, emp!.workspace_id));
       return res;
     }
 
@@ -90,7 +91,7 @@ export async function POST(req: Request) {
     ) {
       recordSuccessfulAttempt(clientKey);
       const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
-      setCookie(res, await createSessionCookieValue("tester"));
+      setCookie(res, await createSessionCookieValue("tester", DEMO_WORKSPACE_ID));
       return res;
     }
 
@@ -106,7 +107,7 @@ export async function POST(req: Request) {
 
     recordSuccessfulAttempt(clientKey);
     const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
-    setCookie(res, await createSessionCookieValue("owner"));
+    setCookie(res, await createSessionCookieValue("owner", REAL_WORKSPACE_ID));
     return res;
   } catch (e: any) {
     console.error("LOGIN_ERROR", e);

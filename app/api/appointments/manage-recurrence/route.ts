@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { generateFutureDates } from "@/lib/recurrence";
-import { getSession, requireRole } from "@/lib/session";
+import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -23,19 +23,22 @@ export async function POST(req: Request) {
       return json({ error: "Invalid frequency_type" }, 400);
     }
 
+    const session = await getSession();
+    const deny = requireRole(session, ["owner", "tester"]);
+    if (deny) return deny;
+    assertWorkspace(session);
+    const isTester = session.role === "tester";
+    const workspaceId = session.workspaceId;
+
     const { data: appt, error: fetchErr } = await supabaseAdmin
       .from("appointments")
       .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status, is_demo")
       .eq("id", appointmentId)
+      .eq("workspace_id", workspaceId)
       .maybeSingle();
 
     if (fetchErr) throw fetchErr;
     if (!appt) return json({ error: "Appointment not found" }, 404);
-
-    const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
-    if (deny) return deny;
-    const isTester = session.role === "tester";
     if (isTester && !appt.is_demo) {
       return json({ error: "Appointment not found" }, 404);
     }
@@ -47,6 +50,7 @@ export async function POST(req: Request) {
         .from("appointments")
         .select("id")
         .eq("series_id", appt.series_id)
+        .eq("workspace_id", workspaceId)
         .eq("status", "scheduled")
         .eq("is_demo", appt.is_demo)
         .gt("scheduled_for", appt.scheduled_for);
@@ -58,7 +62,8 @@ export async function POST(req: Request) {
         const { error } = await supabaseAdmin
           .from("appointments")
           .update({ status: "cancelled" })
-          .in("id", sibIds);
+          .in("id", sibIds)
+          .eq("workspace_id", workspaceId);
         if (error) throw error;
         cancelled = sibIds.length;
       }
@@ -74,7 +79,8 @@ export async function POST(req: Request) {
         repeat_weeks: newRepeatWeeks,
         series_id: newSeriesId,
       })
-      .eq("id", appointmentId);
+      .eq("id", appointmentId)
+      .eq("workspace_id", workspaceId);
 
     if (updateErr) throw updateErr;
 
@@ -103,6 +109,7 @@ export async function POST(req: Request) {
         frequency_type: newFrequency,
         repeat_weeks: newRepeatWeeks,
         is_demo: appt.is_demo,
+        workspace_id: workspaceId,
       }));
 
       if (rows.length > 0) {

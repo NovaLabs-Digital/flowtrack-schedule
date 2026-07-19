@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession, requireRole } from "@/lib/session";
+import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -25,10 +25,22 @@ export async function PATCH(req: Request) {
     const session = await getSession();
     const deny = requireRole(session, ["owner", "tester"]);
     if (deny) return deny;
+    assertWorkspace(session);
     const isTester = session.role === "tester";
-    if (isTester) {
-      const { data } = await supabaseAdmin.from("clients").select("is_demo").eq("id", id).maybeSingle();
-      if (!data?.is_demo) return json({ error: "Client not found" }, 404);
+    // Always confirm the row exists in this workspace before mutating —
+    // an UPDATE whose WHERE clause matches nothing succeeds silently with
+    // zero rows affected, which would otherwise look identical to a real
+    // success. Checked for every role, not just tester, so a wrong-workspace
+    // ID gets an honest 404 instead of a misleading 200.
+    {
+      const { data } = await supabaseAdmin
+        .from("clients")
+        .select("is_demo")
+        .eq("id", id)
+        .eq("workspace_id", session.workspaceId)
+        .maybeSingle();
+      if (!data) return json({ error: "Client not found" }, 404);
+      if (isTester && !data.is_demo) return json({ error: "Client not found" }, 404);
     }
 
     const update: Record<string, any> = {};
@@ -54,7 +66,11 @@ export async function PATCH(req: Request) {
     if (Object.keys(update).length === 0)
       return json({ error: "Nothing to update" }, 400);
 
-    const { error } = await supabaseAdmin.from("clients").update(update).eq("id", id);
+    const { error } = await supabaseAdmin
+      .from("clients")
+      .update(update)
+      .eq("id", id)
+      .eq("workspace_id", session.workspaceId);
     if (error) throw error;
 
     return json({ ok: true });
@@ -74,16 +90,32 @@ export async function POST(req: Request) {
     const session = await getSession();
     const deny = requireRole(session, ["owner", "tester"]);
     if (deny) return deny;
+    assertWorkspace(session);
     const isTester = session.role === "tester";
-    if (isTester) {
-      const { data } = await supabaseAdmin.from("clients").select("is_demo").eq("id", id).maybeSingle();
-      if (!data?.is_demo) return json({ error: "Client not found" }, 404);
+    // Always confirm the row exists in this workspace before mutating —
+    // an UPDATE whose WHERE clause matches nothing succeeds silently with
+    // zero rows affected, which would otherwise look identical to a real
+    // success. Checked for every role, not just tester, so a wrong-workspace
+    // ID gets an honest 404 instead of a misleading 200.
+    {
+      const { data } = await supabaseAdmin
+        .from("clients")
+        .select("is_demo")
+        .eq("id", id)
+        .eq("workspace_id", session.workspaceId)
+        .maybeSingle();
+      if (!data) return json({ error: "Client not found" }, 404);
+      if (isTester && !data.is_demo) return json({ error: "Client not found" }, 404);
     }
 
     if (action === "archive") {
       const update: Record<string, any> = { archived_at: new Date().toISOString() };
       if (await hasColumn("status")) update.status = "inactive";
-      const { error } = await supabaseAdmin.from("clients").update(update).eq("id", id);
+      const { error } = await supabaseAdmin
+        .from("clients")
+        .update(update)
+        .eq("id", id)
+        .eq("workspace_id", session.workspaceId);
       if (error) throw error;
       return json({ ok: true });
     }
@@ -91,7 +123,11 @@ export async function POST(req: Request) {
     if (action === "restore") {
       const update: Record<string, any> = { archived_at: null };
       if (await hasColumn("status")) update.status = "active";
-      const { error } = await supabaseAdmin.from("clients").update(update).eq("id", id);
+      const { error } = await supabaseAdmin
+        .from("clients")
+        .update(update)
+        .eq("id", id)
+        .eq("workspace_id", session.workspaceId);
       if (error) throw error;
       return json({ ok: true });
     }

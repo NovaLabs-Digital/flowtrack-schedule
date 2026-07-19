@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession, requireOwner } from "@/lib/session";
+import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -13,11 +13,12 @@ export async function GET() {
     const session = await getSession();
     const deny = requireOwner(session);
     if (deny) return deny;
+    assertWorkspace(session);
 
     const { data, error } = await supabaseAdmin
       .from("company_settings")
       .select("*")
-      .limit(1)
+      .eq("workspace_id", session.workspaceId)
       .maybeSingle();
 
     if (error) throw error;
@@ -28,10 +29,12 @@ export async function GET() {
     const { count: totalStaff } = await supabaseAdmin
       .from("employees")
       .select("id", { count: "exact", head: true })
+      .eq("workspace_id", session.workspaceId)
       .eq("is_demo", false);
     const { count: activeStaff } = await supabaseAdmin
       .from("employees")
       .select("id", { count: "exact", head: true })
+      .eq("workspace_id", session.workspaceId)
       .eq("is_demo", false)
       .eq("active", true);
 
@@ -82,19 +85,20 @@ export async function POST(req: Request) {
     const { data: existing } = await supabaseAdmin
       .from("company_settings")
       .select("id")
-      .limit(1)
+      .eq("workspace_id", session.workspaceId)
       .maybeSingle();
 
     if (existing) {
       const { error } = await supabaseAdmin
         .from("company_settings")
         .update(fields)
-        .eq("id", existing.id);
+        .eq("id", existing.id)
+        .eq("workspace_id", session.workspaceId);
       if (error) throw error;
     } else {
       const { error } = await supabaseAdmin
         .from("company_settings")
-        .insert(fields);
+        .insert({ ...fields, workspace_id: session.workspaceId });
       if (error) throw error;
     }
 

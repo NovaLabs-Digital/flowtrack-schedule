@@ -1,16 +1,21 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession } from "@/lib/session";
 import BookingForm from "@/app/components/book/BookingForm";
+import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 
 export const dynamic = "force-dynamic";
 
 export default async function BookPage() {
+  // Public booking resolves to the one fixed real workspace for now — see
+  // lib/workspace.ts. Not /book/[slug] yet; not needed until a second
+  // workspace exists.
   const [session, settingsRes, servicesRes] = await Promise.all([
     getSession(),
-    supabaseAdmin.from("company_settings").select("booking_enabled, company_name").limit(1).maybeSingle(),
+    supabaseAdmin.from("company_settings").select("booking_enabled, company_name").eq("workspace_id", REAL_WORKSPACE_ID).maybeSingle(),
     supabaseAdmin
       .from("services")
       .select("name, description, duration_minutes")
+      .eq("workspace_id", REAL_WORKSPACE_ID)
       .eq("is_demo", false)
       .eq("active", true)
       .order("name", { ascending: true }),

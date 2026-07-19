@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession, requireRole } from "@/lib/session";
+import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -14,11 +14,13 @@ export async function GET() {
     const session = await getSession();
     const deny = requireRole(session, ["owner", "tester"]);
     if (deny) return deny;
+    assertWorkspace(session);
     const isTester = session.role === "tester";
 
     const { data, error } = await supabaseAdmin
       .from("employees")
       .select("id, name, phone, color, active, email, position")
+      .eq("workspace_id", session.workspaceId)
       .eq("is_demo", isTester)
       .order("name", { ascending: true });
 
@@ -47,6 +49,7 @@ export async function POST(req: Request) {
       phone: (body.phone || "").trim() || null,
       color: (body.color || "#3B82F6").trim(),
       active: body.active !== false,
+      workspace_id: session.workspaceId,
     };
     const email = (body.email || "").trim();
     if (email) row.email = email;
@@ -82,9 +85,18 @@ export async function PATCH(req: Request) {
     const id = (body.id || "").trim();
     if (!id) return json({ error: "Missing employee id" }, 400);
 
-    if (isTester) {
-      const { data } = await supabaseAdmin.from("employees").select("is_demo").eq("id", id).maybeSingle();
-      if (!data?.is_demo) return json({ error: "Employee not found" }, 404);
+    // Always confirm the row exists in this workspace before mutating — an
+    // UPDATE whose WHERE clause matches nothing succeeds silently with zero
+    // rows affected. Checked for every role, not just tester.
+    {
+      const { data } = await supabaseAdmin
+        .from("employees")
+        .select("is_demo")
+        .eq("id", id)
+        .eq("workspace_id", session.workspaceId)
+        .maybeSingle();
+      if (!data) return json({ error: "Employee not found" }, 404);
+      if (isTester && !data.is_demo) return json({ error: "Employee not found" }, 404);
     }
 
     const update: Record<string, any> = {};
@@ -104,7 +116,8 @@ export async function PATCH(req: Request) {
     const { error } = await supabaseAdmin
       .from("employees")
       .update(update)
-      .eq("id", id);
+      .eq("id", id)
+      .eq("workspace_id", session.workspaceId);
 
     if (error) throw error;
     return json({ ok: true });

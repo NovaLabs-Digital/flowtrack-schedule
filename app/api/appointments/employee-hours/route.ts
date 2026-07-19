@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { getSession, requireOwner } from "@/lib/session";
+import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 function json(data: any, status = 200) {
@@ -13,6 +13,8 @@ export async function POST(req: Request) {
     const session = await getSession();
     const deny = requireOwner(session);
     if (deny) return deny;
+    assertWorkspace(session);
+    const workspaceId = session.workspaceId;
 
     const body = await req.json();
 
@@ -35,8 +37,10 @@ export async function POST(req: Request) {
       .from("appointments")
       .select("actual_started_at, actual_completed_at")
       .eq("id", appointment_id)
+      .eq("workspace_id", workspaceId)
       .maybeSingle();
     if (apptRes.error) throw apptRes.error;
+    if (!apptRes.data) return json({ error: "Appointment not found" }, 404);
     const appt = apptRes.data;
     const trackedMs = appt?.actual_started_at && appt?.actual_completed_at
       ? new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()
@@ -44,6 +48,18 @@ export async function POST(req: Request) {
     if (trackedMs > 0) {
       return json({ error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." }, 409);
     }
+
+    // employee_id is an assignment target, not the caller's own identity —
+    // never trust it alone. Confirm it actually belongs to this workspace
+    // before attaching hours to it.
+    const empRes = await supabaseAdmin
+      .from("employees")
+      .select("id")
+      .eq("id", employee_id)
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    if (empRes.error) throw empRes.error;
+    if (!empRes.data) return json({ error: "Employee not found" }, 404);
 
     const { data, error } = await supabaseAdmin
       .from("appointment_employee_hours")
@@ -54,6 +70,7 @@ export async function POST(req: Request) {
           hours_worked,
           note: note || null,
           updated_at: new Date().toISOString(),
+          workspace_id: workspaceId,
         },
         { onConflict: "appointment_id,employee_id" }
       )

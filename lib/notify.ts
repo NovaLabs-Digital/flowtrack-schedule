@@ -25,11 +25,16 @@ const disabled = process.env.DISABLE_MESSAGES === "true";
 // every call rather than cached: sends are low-frequency (appointment
 // actions), so an extra read is cheap, and it avoids any staleness window
 // after the owner flips the toggle.
-async function ownerNotificationsEnabled(): Promise<boolean> {
+//
+// Workspace-scoped as of Phase 2 tenant scoping — every caller must know
+// which workspace the notification belongs to (the appointment/client's
+// own workspace_id, never a single global row) so one workspace's
+// notification setting can never affect another's.
+async function ownerNotificationsEnabled(workspaceId: string): Promise<boolean> {
   const { data } = await supabaseAdmin
     .from("company_settings")
     .select("notifications_enabled")
-    .limit(1)
+    .eq("workspace_id", workspaceId)
     .maybeSingle();
   return Boolean(data?.notifications_enabled);
 }
@@ -67,13 +72,43 @@ export function describeProviderError(err: unknown): string {
   }
 }
 
-export async function sendSms(to: string, body: string) {
+export type MessageSentRow = {
+  appointment_id: string | null;
+  channel: "email" | "sms";
+  kind: string;
+  workspace_id: string;
+  to_value: string;
+  body: string;
+  provider_id: string;
+};
+
+// Writes the audit-trail row for a notification attempt (success or failed).
+// This insert is diagnostic only — its failure must never throw or fail the
+// appointment operation/notification flow it's recording, so the error is
+// only logged. Logged under a distinct tag (MESSAGES_SENT_INSERT_ERROR) from
+// provider send failures (NOTIFY_EMAIL_ERROR / NOTIFY_SMS_ERROR) so the two
+// failure classes stay distinguishable. Never logs to_value/body/provider
+// credentials — only the non-sensitive routing fields.
+export async function recordMessageSent(row: MessageSentRow): Promise<void> {
+  const { error } = await supabaseAdmin.from("messages_sent").insert(row);
+  if (error) {
+    console.error("MESSAGES_SENT_INSERT_ERROR", {
+      channel: row.channel,
+      kind: row.kind,
+      appointment_id: row.appointment_id,
+      workspace_id: row.workspace_id,
+      error: error.message,
+    });
+  }
+}
+
+export async function sendSms(to: string, body: string, workspaceId: string) {
   if (disabled) {
     console.log("[DISABLE_MESSAGES] SMS skipped — to:", to, "| body:", body);
     return "disabled";
   }
-  if (!(await ownerNotificationsEnabled())) {
-    console.log("[notifications_enabled=false] SMS skipped — to:", to, "| body:", body);
+  if (!(await ownerNotificationsEnabled(workspaceId))) {
+    console.log("[notifications_enabled=false] SMS skipped — to:", to, "| body:", body, "| workspace:", workspaceId);
     return "notifications-off";
   }
   const msg = await twilioClient.messages.create({
@@ -84,13 +119,13 @@ export async function sendSms(to: string, body: string) {
   return msg.sid;
 }
 
-export async function sendEmail(to: string, subject: string, text: string) {
+export async function sendEmail(to: string, subject: string, text: string, workspaceId: string) {
   if (disabled) {
     console.log("[DISABLE_MESSAGES] Email skipped — to:", to, "| subject:", subject, "| body:", text);
     return "disabled";
   }
-  if (!(await ownerNotificationsEnabled())) {
-    console.log("[notifications_enabled=false] Email skipped — to:", to, "| subject:", subject);
+  if (!(await ownerNotificationsEnabled(workspaceId))) {
+    console.log("[notifications_enabled=false] Email skipped — to:", to, "| subject:", subject, "| workspace:", workspaceId);
     return "notifications-off";
   }
   const fromName = process.env.RESEND_FROM_NAME || "FlowTrack Schedule";

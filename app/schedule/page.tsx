@@ -33,11 +33,13 @@ export default async function SchedulePage() {
   }
 
   const employeeId = session.employeeId;
+  const workspaceId = session.workspaceId;
 
   const { data: employee, error: empErr } = await supabaseAdmin
     .from("employees")
     .select("id, name, color, active, phone, position")
     .eq("id", employeeId)
+    .eq("workspace_id", workspaceId)
     .maybeSingle();
 
   if (empErr || !employee || !employee.active) {
@@ -48,6 +50,7 @@ export default async function SchedulePage() {
     .from("appointments")
     .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at, employee_id")
     .eq("employee_id", employeeId)
+    .eq("workspace_id", workspaceId)
     .eq("status", "scheduled")
     .order("scheduled_for", { ascending: true })
     .returns<Appointment[]>();
@@ -62,6 +65,7 @@ export default async function SchedulePage() {
     const { data: clientRows } = await supabaseAdmin
       .from("clients")
       .select("id, name, address")
+      .eq("workspace_id", workspaceId)
       .in("id", clientIds);
 
     for (const c of clientRows ?? []) {
@@ -71,9 +75,15 @@ export default async function SchedulePage() {
 
   const services: Record<string, string> = {};
   try {
+    // Employees only ever work for the real business, never the demo
+    // experience — is_demo=false is explicit here, not tied to a role
+    // check, since this fixes a real bug where real and demo service
+    // colors were previously mixed together with no filter at all.
     const { data: svcRows } = await supabaseAdmin
       .from("services")
-      .select("name, color");
+      .select("name, color")
+      .eq("workspace_id", workspaceId)
+      .eq("is_demo", false);
     for (const s of svcRows ?? []) {
       if (s.color) services[s.name] = s.color;
     }
@@ -84,7 +94,7 @@ export default async function SchedulePage() {
     const { data: companyRow } = await supabaseAdmin
       .from("company_settings")
       .select("phone")
-      .limit(1)
+      .eq("workspace_id", workspaceId)
       .maybeSingle();
     officePhone = companyRow?.phone ?? null;
   } catch {}
@@ -94,7 +104,8 @@ export default async function SchedulePage() {
     const { data: hoursRows } = await supabaseAdmin
       .from("appointment_employee_hours")
       .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
-      .eq("employee_id", employeeId);
+      .eq("employee_id", employeeId)
+      .eq("workspace_id", workspaceId);
     employeeHours = hoursRows ?? [];
   } catch {}
 

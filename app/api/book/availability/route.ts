@@ -8,6 +8,7 @@ import {
   todayBusinessDate,
   type BusyRange,
 } from "@/lib/availability";
+import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -22,7 +23,7 @@ export async function GET(req: Request) {
     const { data: settings } = await supabaseAdmin
       .from("company_settings")
       .select("booking_enabled")
-      .limit(1)
+      .eq("workspace_id", REAL_WORKSPACE_ID)
       .maybeSingle();
 
     if (!settings?.booking_enabled) {
@@ -47,6 +48,7 @@ export async function GET(req: Request) {
       .from("services")
       .select("duration_minutes")
       .eq("name", serviceName)
+      .eq("workspace_id", REAL_WORKSPACE_ID)
       .eq("is_demo", false)
       .eq("active", true)
       .maybeSingle();
@@ -60,6 +62,7 @@ export async function GET(req: Request) {
       .from("appointments")
       .select("scheduled_for, scheduled_end, duration_minutes")
       .eq("status", "scheduled")
+      .eq("workspace_id", REAL_WORKSPACE_ID)
       .eq("is_demo", false)
       .gte("scheduled_for", start.toISOString())
       .lt("scheduled_for", end.toISOString());
