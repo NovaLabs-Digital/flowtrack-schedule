@@ -24,10 +24,17 @@ All three roles authenticate through the same endpoint, `POST /api/auth/login`, 
 
 ### Owner login flow
 
-1. Client submits `email` + `password`.
-2. Server compares against `ADMIN_EMAIL` / `ADMIN_PASSWORD` using a constant-time comparison.
-3. On match, the server creates a signed session payload `{ role: "owner", exp }` and sets it as the `sft_session` cookie.
-4. On mismatch, a generic `Invalid email or password` error is returned — the same message used for every other failure case on this endpoint.
+As of Phase 3 (tenant-foundation auth migration), owner login is **dual-path**: Supabase Auth is the primary verification method, with the legacy environment-variable check kept as a temporary fallback so a bug in the new path can never lock the owner out.
+
+1. Client submits `email` + `password` (no `role` field, distinguishing it from employee login).
+2. **Primary path**: an isolated, request-local Supabase client — created fresh per request with the anon key (`SUPABASE_URL` / `SUPABASE_ANON_KEY`), `persistSession: false`, `autoRefreshToken: false`, `detectSessionInUrl: false` — calls `auth.signInWithPassword()`. This client is deliberately separate from the shared service-role `supabaseAdmin` client and holds no elevated database privileges; any session/token it receives is read only long enough to extract the authenticated user's id, then discarded — never stored, never sent to the browser. Only the existing `sft_session` cookie is ever issued.
+3. On success, the shared `supabaseAdmin` client (service-role) resolves the caller's workspace by looking up `workspace_memberships` for that user id with `role = "owner"`. If a membership is found, its `workspace_id` is used for the new session.
+4. **Fallback path**: if the primary path doesn't resolve a workspace for any reason — wrong Supabase Auth credentials, a missing/errored membership lookup, or Supabase Auth being unreachable — the server falls back to comparing against `ADMIN_EMAIL` / `ADMIN_PASSWORD` using a constant-time comparison, exactly as before Phase 3. On success here, the workspace is the fixed real workspace id.
+5. Whichever path succeeds, the server creates a signed session payload `{ role: "owner", workspaceId, exp }` and sets it as the `sft_session` cookie — the client-visible response is identical either way, so which path succeeded is never observable to the caller.
+6. On failure of both paths, the same generic `Invalid email or password` error is returned — the same message used for every other failure case on this endpoint.
+7. Server logs record only a fixed `authPath` label (`"supabase_auth"` or `"env_fallback"`) on success, and fixed tags (`OWNER_AUTH_MEMBERSHIP_MISSING`, `OWNER_AUTH_MEMBERSHIP_QUERY_ERROR`) on a primary-path resolution failure — never the submitted email, password, profile id, or any Supabase Auth token.
+
+**Fallback removal**: `ADMIN_EMAIL` / `ADMIN_PASSWORD` are intended to be temporary. Once production logs show the primary (`supabase_auth`) path succeeding consistently over a full deployment cycle, a follow-up change should remove the fallback block and its environment variables in a separate, low-risk change.
 
 ### Employee login flow
 
@@ -107,7 +114,7 @@ Routes that touch identity, staff records, or settings (`/api/employees` writes,
 
 ### Cookie format
 
-`sft_session` holds a two-part string: `<base64url-encoded JSON payload>.<base64url-encoded HMAC signature>`. The payload contains the role, (for employees) the employee ID, and an expiry timestamp. Nothing in the payload is encrypted — it isn't secret data, only tamper-evident data — but it is not human-guessable either without the signature also matching.
+`sft_session` holds a two-part string: `<base64url-encoded JSON payload>.<base64url-encoded HMAC signature>`. The payload contains the role, a `workspaceId` (required on every role since Phase 2 tenant scoping), (for employees) the employee ID, and an expiry timestamp. Nothing in the payload is encrypted — it isn't secret data, only tamper-evident data — but it is not human-guessable either without the signature also matching. A payload missing `workspaceId` (i.e. one signed before Phase 2) fails validation and is treated as no session at all.
 
 ### Signature
 
@@ -180,9 +187,10 @@ Before Sprint 1, several routes assumed that if a caller wasn't a `tester`, it w
 | Variable | Purpose |
 |---|---|
 | `SESSION_SECRET` | The sole key used to sign and verify `sft_session` cookies. Must be set in every environment (local, Preview, Production) before that environment can create or accept any session. Not shared with, or derived from, any database or third-party provider credential. |
-| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Owner login credentials, checked with a constant-time comparison. |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Owner login credentials for the **temporary fallback path** (see [Owner login flow](#owner-login-flow)). Checked with a constant-time comparison. Intended to be removed once the Supabase Auth path is confirmed reliable in production. |
 | `TESTER_EMAIL` / `TESTER_PASSWORD` | Tester (demo experience) login credentials. |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Server-side database access (bypasses row-level security — the app enforces authorization in code, not in the database). Used only for data access, never for session signing. |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Server-side database access (bypasses row-level security — the app enforces authorization in code, not in the database). Used only for data access, never for session signing or credential verification. |
+| `SUPABASE_ANON_KEY` | Used only by the isolated, request-local client created for owner Supabase Auth verification (`auth.signInWithPassword`). Never used for database access — that's `supabaseAdmin`'s job. Not `NEXT_PUBLIC_`-prefixed because this client is created and used entirely server-side and is never bundled into browser code. |
 | `CRON_SECRET` | Authorizes the scheduled reminder-sending endpoint; compared with the same constant-time comparison used elsewhere in the auth path. |
 
 No example values are included here by design — see each variable's own configuration source for its actual value.
@@ -210,6 +218,7 @@ These are documented as **future enhancements**, not current defects — each wa
 - **Signup flow**: there is no self-service account creation; owner and employee accounts are provisioned directly.
 - **Password reset improvements**: no self-service password reset flow currently exists.
 - **Stateless logout**: because sessions are not tracked server-side, a copied cookie remains valid until its own expiry even after the original browser logs out (see [Session Architecture](#session-architecture)). A server-side revocation list would close this gap if ever needed.
+- **Employee email uniqueness is global, not per-workspace**: `employees.email` is enforced unique across the entire table (`idx_employees_email`), not scoped to `workspace_id`. Two different real workspaces cannot each have an employee with the same email address today — the second insert fails at the database level. This is an accepted, temporary limitation, not an oversight: the employee-email constraint, workspace identification at login, and the login UI itself will be redesigned together when true multi-workspace customer onboarding is built. It is out of scope for the current single-real-workspace phase (see [Security History](#security-history)).
 
 ---
 
@@ -246,6 +255,10 @@ Closed a class of unauthorized-access vulnerabilities where API routes lacked an
 ### Security Sprint 2 — Session & Login Hardening
 
 Replaced the previous unsigned, forgeable session cookie with a signed, expiring, tamper-evident one (`SESSION_SECRET`-based HMAC). Added login rate limiting, generic authentication error messages to prevent account enumeration, constant-time comparisons on all sensitive credential checks, and removed diagnostic startup logging that exposed infrastructure details.
+
+### Tenant Foundation Phase 3 — Owner Auth Migration
+
+Migrated owner login from a purely environment-variable credential check to a dual-path model: Supabase Auth (via an isolated, request-local, token-discarding client) is now the primary verification method, resolving the owner's workspace from a `profiles`/`workspace_memberships` backfill instead of a hardcoded workspace constant. `ADMIN_EMAIL` / `ADMIN_PASSWORD` remain as a temporary fallback for one deployment cycle so a bug in the new path cannot lock the owner out (see [Owner login flow](#owner-login-flow)). Employee login, tester login, public booking, and every business-data route were explicitly left unchanged in this phase. The known global (non-per-workspace) uniqueness of `employees.email` was left in place and documented as a deferred limitation (see [Known Limitations](#known-limitations)) rather than addressed here, since fixing it requires a coordinated redesign of the employee-email constraint, workspace identification, and login UI together — out of scope while only one real workspace exists.
 
 ---
 
