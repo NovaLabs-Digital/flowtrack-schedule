@@ -7,7 +7,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS } from "@/lib/session";
 import { safeEqual } from "@/lib/safeEqual";
 import { isRateLimited, recordFailedAttempt, recordSuccessfulAttempt } from "@/lib/rateLimit";
-import { REAL_WORKSPACE_ID, DEMO_WORKSPACE_ID } from "@/lib/workspace";
+import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
 
 // Isolated, request-local client used ONLY to verify owner credentials
 // against Supabase Auth (auth.signInWithPassword). Deliberately separate
@@ -110,20 +110,17 @@ export async function POST(req: Request) {
       return res;
     }
 
-    // Owner login is dual-path for this phase: Supabase Auth is the primary
-    // verification method; the legacy ADMIN_EMAIL/ADMIN_PASSWORD check is a
-    // temporary fallback (see docs/SECURITY.md) so a bug in the new path
-    // can never lock the owner out. Both paths, on success, resolve the
-    // same workspaceId and produce an identical session cookie — nothing
-    // about the client-visible response differs between them.
-    let workspaceId: string | null = null;
-    let authPath: "supabase_auth" | "env_fallback" | null = null;
-
+    // Owner login is verified exclusively through Supabase Auth (the
+    // temporary ADMIN_EMAIL/ADMIN_PASSWORD fallback was removed after
+    // production verification — see docs/SECURITY.md). The workspace is
+    // always resolved from workspace_memberships, never a hardcoded
+    // constant, so both conditions below must hold for login to succeed.
     const ownerAuthClient = createOwnerAuthClient();
     const { data: authData, error: authErr } = await ownerAuthClient.auth.signInWithPassword({ email, password });
     // authData.session (access_token/refresh_token) is intentionally never
     // read past this point — only authData.user.id (an identifier, not a
     // credential) is used below.
+    let workspaceId: string | null = null;
     if (!authErr && authData?.user) {
       const { data: membership, error: membershipErr } = await supabaseAdmin
         .from("workspace_memberships")
@@ -138,32 +135,17 @@ export async function POST(req: Request) {
         console.error("OWNER_AUTH_MEMBERSHIP_QUERY_ERROR");
       } else if (membership?.workspace_id) {
         workspaceId = membership.workspace_id;
-        authPath = "supabase_auth";
       } else {
         console.error("OWNER_AUTH_MEMBERSHIP_MISSING");
       }
     }
 
-    // Fallback path — only attempted if the primary path didn't resolve a
-    // workspace, for any reason (wrong credentials, missing/errored
-    // membership lookup, Supabase Auth unavailable, etc).
     if (!workspaceId) {
-      const validEmail = process.env.ADMIN_EMAIL;
-      const validPassword = process.env.ADMIN_PASSWORD;
-      const ownerOk =
-        !!validEmail && !!validPassword && safeEqual(email, validEmail) && safeEqual(password, validPassword);
-      if (ownerOk) {
-        workspaceId = REAL_WORKSPACE_ID;
-        authPath = "env_fallback";
-      }
-    }
-
-    if (!workspaceId || !authPath) {
       recordFailedAttempt(clientKey);
       return NextResponse.json({ error: GENERIC_AUTH_ERROR }, { status: 401 });
     }
 
-    console.log("OWNER_LOGIN_SUCCESS", { authPath });
+    console.log("OWNER_LOGIN_SUCCESS");
     recordSuccessfulAttempt(clientKey);
     const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
     setCookie(res, await createSessionCookieValue("owner", workspaceId));
