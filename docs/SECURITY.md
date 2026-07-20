@@ -185,11 +185,36 @@ Before Sprint 1, several routes assumed that if a caller wasn't a `tester`, it w
 |---|---|
 | `SESSION_SECRET` | The sole key used to sign and verify `sft_session` cookies. Must be set in every environment (local, Preview, Production) before that environment can create or accept any session. Not shared with, or derived from, any database or third-party provider credential. |
 | `TESTER_EMAIL` / `TESTER_PASSWORD` | Tester (demo experience) login credentials. |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Server-side database access (bypasses row-level security — the app enforces authorization in code, not in the database). Used only for data access, never for session signing or credential verification. |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Server-side database access. The service role bypasses RLS by Supabase's design — see [Database Access & Row Level Security](#database-access--row-level-security) for how that interacts with this app's enforcement model. Used only for data access, never for session signing or credential verification. |
 | `SUPABASE_ANON_KEY` | Used only by the isolated, request-local client created for owner Supabase Auth verification (`auth.signInWithPassword`). Never used for database access — that's `supabaseAdmin`'s job. Not `NEXT_PUBLIC_`-prefixed because this client is created and used entirely server-side and is never bundled into browser code. |
 | `CRON_SECRET` | Authorizes the scheduled reminder-sending endpoint; compared with the same constant-time comparison used elsewhere in the auth path. |
 
 No example values are included here by design — see each variable's own configuration source for its actual value.
+
+---
+
+## Database Access & Row Level Security
+
+*(Tenant Foundation Phase 4A — investigation and verification; Phase 4B — formalized via migration `014_enable_rls_no_policies.sql`.)*
+
+**Verified authoritative state**, confirmed empirically (querying every table below with the Supabase **anon** key — no service role, no auth session — returned HTTP `200` with an empty result set on every single one, never the real rows and never a grants/permission error, which is the specific signature of RLS-enabled-with-no-policy rather than a revoked grant):
+
+- Row Level Security is enabled on all 10 tenant/business tables: `workspaces`, `profiles`, `workspace_memberships`, `company_settings`, `employees`, `clients`, `services`, `appointments`, `appointment_employee_hours`, `messages_sent`.
+- `FORCE ROW LEVEL SECURITY` is **false** on all of them (irrelevant in practice, since the app never connects as the table owner).
+- **No RLS policies exist** on any of them.
+- `anon` and `authenticated` hold standard default table grants, but receive deny-all behavior in practice because RLS is enabled with zero policies.
+- No views or materialized views depend on these tables; no `SECURITY DEFINER` function references any of them.
+
+**What this means, precisely:**
+
+- This is **not** workspace-aware RLS. No policy scopes `authenticated` to their own `workspace_id` — there is no policy at all. The effect is simpler and blunter: **deny-all for anyone who isn't the service role.**
+- **Workspace isolation** (returning the *correct* workspace's data, not just blocking outsiders) is enforced entirely in application code — every route under `app/api/**` and every server component scopes its queries by `workspace_id`, audited exhaustively during Tenant Foundation Phase 2.
+- **This RLS configuration is a second, independent layer**: the audited routes ensure correctness; RLS ensures nothing can reach these tables *at all* except through the service-role client those routes use. Business-data access must remain server-only, through `lib/supabaseAdmin.ts` — no client code should ever query these tables directly with the anon key.
+- Migration `014_enable_rls_no_policies.sql` makes this state **explicit and versioned** rather than an artifact of however these tables happened to be created — it changes no runtime behavior, only formalizes what was already true.
+
+**Do not**, under any circumstance, disable RLS on these tables or add a permissive policy (e.g. `USING (true)`) to silence a Supabase dashboard "RLS enabled, no policies" warning. That warning is correctly describing the intended state — it is not a problem to fix. Doing either would remove real, currently-effective protection against direct anon-key access to real business and tenant data.
+
+If workspace-aware RLS policies are ever deliberately designed in the future (e.g. as part of a move toward client-side Supabase Auth sessions instead of the current server-only model), that is a separate, larger architectural decision requiring its own review — not something to add incrementally to this migration.
 
 ---
 
@@ -260,6 +285,10 @@ Migrated owner login from a purely environment-variable credential check to Supa
 
 After the Supabase Auth path was confirmed working in production (verified via runtime logs showing `OWNER_LOGIN_SUCCESS` with no membership-resolution errors, on the correct deployed commit, with no credentials or tokens appearing in logs), the temporary `ADMIN_EMAIL` / `ADMIN_PASSWORD` fallback was removed from `app/api/auth/login/route.ts`. Owner login now succeeds only when Supabase Auth verifies the credentials **and** `workspace_memberships` resolves an owner workspace — there is no other path. The `ADMIN_EMAIL` / `ADMIN_PASSWORD` environment variables themselves were intentionally left in place in Vercel/local environments at this step; removing the now-unused variables is a separate, later cleanup action.
 
+### Tenant Foundation Phase 4A/4B — Database Access Lockdown Verification & Formalization
+
+A post-Phase-3 assessment tested direct anon-key access against every tenant/business table and found RLS already enabled with zero policies (deny-all for `anon`/`authenticated`) — a real, currently-effective protection layer that had never been documented and was previously assumed not to exist. Phase 4B formalized this with migration `014_enable_rls_no_policies.sql`, which explicitly re-asserts `ENABLE ROW LEVEL SECURITY` on all 10 tables (a no-op given the verified state, making the intended configuration explicit and versioned rather than an artifact of however the tables were originally created) — no policies, no `FORCE ROW LEVEL SECURITY`, no grant changes. See [Database Access & Row Level Security](#database-access--row-level-security).
+
 ---
 
 ## Development Rules
@@ -273,3 +302,5 @@ Permanent rules for all future development on this codebase:
 - Demo data must remain isolated from production data. Any new table or route a tester can reach must respect `is_demo` scoping exactly like existing routes do.
 - Never reuse infrastructure secrets (database keys, provider credentials) for unrelated purposes such as session signing. Each secret should have exactly one job.
 - Verify security-relevant changes before deployment: a role-by-role access-matrix test, plus `tsc`/`eslint`/`build`, before anything touching authentication or authorization ships.
+- Never disable Row Level Security on `workspaces`, `profiles`, `workspace_memberships`, `company_settings`, `employees`, `clients`, `services`, `appointments`, `appointment_employee_hours`, or `messages_sent`, and never add a permissive policy to any of them to silence a Supabase dashboard warning. See [Database Access & Row Level Security](#database-access--row-level-security) — the no-policy deny-all state is intentional.
+- Every new table holding business or tenant data must have RLS enabled from creation, following the same no-policy deny-all pattern, since the app only ever accesses these tables through the service-role client.
