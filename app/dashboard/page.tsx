@@ -88,15 +88,22 @@ export default async function DashboardPage() {
 
   let employeeHours: any[] = [];
   try {
-    const apptIds = (appointments ?? []).map((a) => a.id);
-    if (apptIds.length > 0) {
-      const hoursRes = await supabaseAdmin
-        .from("appointment_employee_hours")
-        .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
-        .eq("workspace_id", workspaceId)
-        .in("appointment_id", apptIds);
-      if (!hoursRes.error) employeeHours = hoursRes.data ?? [];
-    }
+    // Scoped by workspace_id alone — NOT filtered through an
+    // .in("appointment_id", apptIds) list built from `appointments`. A
+    // workspace with enough appointments to hit PostgREST's default
+    // max-rows (1000) truncates that list, and passing a ~1000-UUID list
+    // to .in() outright fails the request ("Bad Request") rather than
+    // erroring gracefully — which silently left `employeeHours` at its
+    // initial `[]` on every load for any workspace past that size,
+    // masking every saved manual-hours entry after every refresh. This
+    // table only ever holds the (much smaller) set of manual overrides,
+    // so scoping by workspace_id directly is both simpler and correct
+    // regardless of how many appointments the workspace has.
+    const hoursRes = await supabaseAdmin
+      .from("appointment_employee_hours")
+      .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
+      .eq("workspace_id", workspaceId);
+    if (!hoursRes.error) employeeHours = hoursRes.data ?? [];
   } catch {
     // appointment_employee_hours table may not exist yet
   }

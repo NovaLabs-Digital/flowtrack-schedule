@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Appointment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
 import { startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
-import { hasWorkedHours, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
+import { hasWorkedHours, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes, formatMinutesAsDuration } from "@/lib/payroll";
 
 function formatDateTime(iso: string) {
   const d = toBusinessLocal(iso);
@@ -44,16 +44,6 @@ function formatDuration(mins: number) {
   const m = mins % 60;
   if (h === 0) return `${m}m`;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
-}
-
-// Used only for the read-only "Worked Time" value — always shows minutes
-// (zero-padded) once there's at least one hour, e.g. "3h 00m", "1h 05m",
-// so the value reads consistently instead of dropping ":00".
-function formatWorkedDuration(mins: number) {
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  if (h === 0) return `${m}m`;
-  return `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
 // Only ever rendered by DispatchPanel when needsWorkedHoursAttention() is
@@ -294,9 +284,11 @@ export default function DispatchPanel({
                 Worked Time <span className="text-emerald-600">&#10003;</span>
               </div>
               <div className="text-sm font-semibold text-emerald-900 mt-0.5">
-                {formatWorkedDuration(resolveWorkedMinutes(selectedAppt, employeeHours, employee.id))}
+                {formatMinutesAsDuration(resolveWorkedMinutes(selectedAppt, employeeHours, employee.id))}
               </div>
-              <div className="text-[10px] text-emerald-700 mt-1">No action needed — hours are tracked automatically.</div>
+              <div className="text-[10px] text-emerald-700 mt-1">
+                {isJobTrackingComplete(selectedAppt) ? "Hours tracked automatically." : "Manually entered."}
+              </div>
             </div>
           </div>
         ) : selectedAppt && employee && needsWorkedHoursAttention(selectedAppt, employeeHours) ? (

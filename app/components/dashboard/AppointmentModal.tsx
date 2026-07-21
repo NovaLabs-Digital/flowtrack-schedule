@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Appointment, Client, Service, Employee } from "@/app/components/dashboard/types";
+import { Appointment, Client, Service, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
+import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 
 const FALLBACK_SERVICES = [
@@ -163,11 +164,12 @@ type Props = {
   appointments: Appointment[];
   services: Service[];
   employees: Employee[];
+  employeeHours: EmployeeHours[];
   editing?: { appointment: Appointment; client: Client };
   prefill?: { date: string; time: string };
 };
 
-export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, editing, prefill }: Props) {
+export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, editing, prefill }: Props) {
   const isEdit = !!editing;
 
   const serviceNames = services.length > 0 ? services.map((s) => s.name) : FALLBACK_SERVICES;
@@ -256,6 +258,23 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const employeeChanged = isEdit && selectedEmployeeId !== (editing!.appointment.employee_id ?? "");
   const serviceChanged = isEdit && form.service_type !== editing!.appointment.service_type;
   const importantFieldsChanged = dateTimeChanged || employeeChanged || serviceChanged;
+
+  // Job Tracking card — visible whenever there's anything to show: a real
+  // clock-in/clock-out timestamp, a saved manual-hours entry, or (when none
+  // of those exist yet) the appointment is one the schedule grid's warning
+  // triangle would already flag. needsWorkedHoursAttention is the exact
+  // same predicate driving that triangle (lib/payroll.ts), so this card and
+  // the triangle never disagree about whether an appointment is missing
+  // hours. Never fabricates a timestamp — Started/Completed only ever show
+  // a real actual_started_at/actual_completed_at value or "Not recorded."
+  const jobTrackingAppt = editing?.appointment ?? null;
+  const jobTrackingManualEntry = jobTrackingAppt ? findManualHoursEntry(jobTrackingAppt, employeeHours) : null;
+  const jobTrackingComplete = jobTrackingAppt ? isJobTrackingComplete(jobTrackingAppt) : false;
+  const jobTrackingNeedsAttention = jobTrackingAppt ? needsWorkedHoursAttention(jobTrackingAppt, employeeHours) : false;
+  const showJobTrackingCard =
+    isEdit &&
+    !!jobTrackingAppt &&
+    (!!jobTrackingAppt.actual_started_at || !!jobTrackingAppt.actual_completed_at || !!jobTrackingManualEntry || jobTrackingNeedsAttention);
 
   // Smart default: preselect a notify channel once a meaningful field changes, but
   // never override a choice the staff member already made themselves.
@@ -665,24 +684,53 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           )}
 
           {/* Job tracking info — edit mode only */}
-          {isEdit && (editing.appointment.actual_started_at || editing.appointment.actual_completed_at) && (
-            <div className="rounded-xl border bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
-              <div className="font-medium text-slate-700">Job Tracking</div>
-              {editing.appointment.actual_started_at && (
-                <div>Started: <span className="font-medium text-slate-900">{new Date(editing.appointment.actual_started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span></div>
-              )}
-              {editing.appointment.actual_completed_at && (
-                <div>Completed: <span className="font-medium text-slate-900">{new Date(editing.appointment.actual_completed_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span></div>
-              )}
-              {editing.appointment.actual_started_at && editing.appointment.actual_completed_at && (() => {
-                const mins = Math.round((new Date(editing.appointment.actual_completed_at).getTime() - new Date(editing.appointment.actual_started_at).getTime()) / 60_000);
-                const h = Math.floor(mins / 60);
-                const m = mins % 60;
-                const label = h > 0 ? (m > 0 ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
-                return <div>Actual duration: <span className="font-medium text-slate-900">{label}</span></div>;
-              })()}
-            </div>
-          )}
+          {showJobTrackingCard && (() => {
+            const appt = jobTrackingAppt!;
+            const startedLabel = appt.actual_started_at
+              ? new Date(appt.actual_started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+              : "Not recorded";
+            const completedLabel = appt.actual_completed_at
+              ? new Date(appt.actual_completed_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+              : "Not recorded";
+            // Unresolved only — once a valid manual entry (or complete
+            // tracking) exists, jobTrackingNeedsAttention is already false,
+            // so the warning styling drops away on its own; no separate
+            // "dismiss" step needed.
+            const isWarning = jobTrackingNeedsAttention;
+            const workedMins = appt.employee_id ? resolveWorkedMinutes(appt, employeeHours, appt.employee_id) : 0;
+
+            return (
+              <div
+                className={[
+                  "rounded-xl border px-3 py-2 text-xs space-y-1",
+                  isWarning ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600",
+                ].join(" ")}
+              >
+                <div className={isWarning ? "font-medium text-amber-800" : "font-medium text-slate-700"}>Job Tracking</div>
+                <div>Started: <span className="font-medium text-slate-900">{startedLabel}</span></div>
+                <div>Completed: <span className="font-medium text-slate-900">{completedLabel}</span></div>
+                {jobTrackingComplete ? (
+                  <>
+                    <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                    <div className="text-emerald-700">Tracked automatically.</div>
+                  </>
+                ) : jobTrackingManualEntry ? (
+                  <>
+                    <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                    <div className="font-medium text-slate-700">Manually entered.</div>
+                    {jobTrackingManualEntry.note && (
+                      <div>Reason: <span className="italic">{jobTrackingManualEntry.note}</span></div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div>Worked duration: not yet available.</div>
+                    {isWarning && <div className="text-amber-700">Employee did not complete Job Tracking.</div>}
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Notes */}
           <div>

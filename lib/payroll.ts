@@ -5,6 +5,32 @@ export function toDateInputValue(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// True when an appointment has a real, complete Job Tracking duration
+// (start and complete both recorded, complete after start). Shared by
+// hasWorkedHours below and by the UI surfaces that need to say "tracked
+// automatically" vs. "manually entered" (AppointmentModal's Job Tracking
+// card, DispatchPanel's Employee Worked Hours card) — they must never
+// diverge on what counts as automatic.
+export function isJobTrackingComplete(appt: Appointment): boolean {
+  return (
+    !!appt.actual_started_at &&
+    !!appt.actual_completed_at &&
+    new Date(appt.actual_completed_at).getTime() > new Date(appt.actual_started_at).getTime()
+  );
+}
+
+// Finds the applicable-employee manual-hours entry for an appointment, if
+// any. Matches both appointment_id and employee_id — a manual entry is only
+// valid for the employee it was actually saved against (see
+// app/api/appointments/employee-hours/route.ts's appointment_id+employee_id
+// upsert key), and `?? null` normalizes appointment_id's optional-with-
+// undefined typing against EmployeeHours.employee_id's `string | null`.
+// Returns the full row (not just a boolean) since callers like the
+// appointment modal's Job Tracking card need its hours_worked/note too.
+export function findManualHoursEntry(appt: Appointment, employeeHours: EmployeeHours[]): EmployeeHours | null {
+  return employeeHours.find((h) => h.appointment_id === appt.id && h.employee_id === (appt.employee_id ?? null)) ?? null;
+}
+
 // True when an appointment has a usable worked-hours source: a completed
 // Job Tracking duration (preferred) or a manually-saved
 // appointment_employee_hours entry (fallback only). Single source of truth
@@ -12,18 +38,8 @@ export function toDateInputValue(d: Date) {
 // warning triangle and the Employee Worked Hours card, so they never disagree
 // about the same appointment.
 export function hasWorkedHours(appt: Appointment, employeeHours: EmployeeHours[]): boolean {
-  const hasJobTracking =
-    !!appt.actual_started_at &&
-    !!appt.actual_completed_at &&
-    new Date(appt.actual_completed_at).getTime() > new Date(appt.actual_started_at).getTime();
-  if (hasJobTracking) return true;
-  // Must match the applicable employee too, not just the appointment — a
-  // manual entry is only valid for the employee it was actually saved
-  // against (see app/api/appointments/employee-hours/route.ts's
-  // appointment_id+employee_id upsert key). `?? null` normalizes
-  // appointment_id's optional-with-undefined typing against
-  // EmployeeHours.employee_id's `string | null`.
-  return employeeHours.some((h) => h.appointment_id === appt.id && h.employee_id === (appt.employee_id ?? null));
+  if (isJobTrackingComplete(appt)) return true;
+  return !!findManualHoursEntry(appt, employeeHours);
 }
 
 // True when an appointment needs attention: in the past, not cancelled, and
@@ -57,6 +73,18 @@ export function formatHoursAsDuration(hours: number): string {
   const totalMins = Math.round(hours * 60);
   const h = Math.floor(totalMins / 60);
   const m = totalMins % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${String(m).padStart(2, "0")}m`;
+}
+
+// Formats a whole-minutes duration as "45m", "1h 00m", "2h 30m" — the
+// minutes-based counterpart to formatHoursAsDuration above (which takes
+// decimal hours instead). Shared by the Employee Worked Hours card, the
+// appointment modal's Job Tracking card, and the dispatch panel so a
+// worked duration always reads identically everywhere it appears.
+export function formatMinutesAsDuration(mins: number): string {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
   if (h === 0) return `${m}m`;
   return `${h}h ${String(m).padStart(2, "0")}m`;
 }

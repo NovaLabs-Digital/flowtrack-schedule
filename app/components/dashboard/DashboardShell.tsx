@@ -208,6 +208,7 @@ export default function DashboardShell({
       appointments={appointments}
       services={services}
       employees={employees}
+      employeeHours={employeeHoursState}
       editing={
         modal.mode === "edit"
           ? { appointment: modal.appointment, client: modal.client }
