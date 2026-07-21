@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { fetchAllPages } from "@/lib/paginate";
 import EmployeeSchedule from "@/app/components/schedule/EmployeeSchedule";
 import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
 import { nowInBusinessTz } from "@/lib/timezone";
@@ -46,16 +47,29 @@ export default async function SchedulePage() {
     redirect("/login");
   }
 
-  const { data: appointments } = await supabaseAdmin
-    .from("appointments")
-    .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at, employee_id")
-    .eq("employee_id", employeeId)
-    .eq("workspace_id", workspaceId)
-    .eq("status", "scheduled")
-    .order("scheduled_for", { ascending: true })
-    .returns<Appointment[]>();
+  // Paginated for the same reason as app/dashboard/page.tsx: an
+  // unbounded, long-tenured employee's "scheduled" (non-cancelled) history
+  // isn't date-windowed here and can grow past PostgREST's default
+  // 1000-row response cap over time (the busiest real employee is already
+  // at 200+). fetchAllPages (lib/paginate.ts) keeps paging until a short
+  // page confirms there's nothing left, ordered by scheduled_for with `id`
+  // as a tiebreaker, and fails closed rather than silently truncating.
+  const apptsRes = await fetchAllPages<Appointment>(async (from, to) =>
+    supabaseAdmin
+      .from("appointments")
+      .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at, employee_id")
+      .eq("employee_id", employeeId)
+      .eq("workspace_id", workspaceId)
+      .eq("status", "scheduled")
+      .order("scheduled_for", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
+  if (apptsRes.error) {
+    console.error("SCHEDULE_APPOINTMENTS_FETCH_ERROR", apptsRes.error.message);
+  }
 
-  const appts = appointments ?? [];
+  const appts = apptsRes.data ?? [];
   const clientIds = [...new Set(appts.map((a) => a.client_id))];
   // Client phone is intentionally not selected here — employees call the
   // office (see officePhone below), not the client, by default.

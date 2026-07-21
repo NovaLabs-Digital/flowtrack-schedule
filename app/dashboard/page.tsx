@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession } from "@/lib/session";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
+import { fetchAllPages } from "@/lib/paginate";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,22 +39,40 @@ export default async function DashboardPage() {
   const clients = clientsRes.data as any[] | null;
   const clientsErr = clientsRes.error;
 
+  // Paginated: a workspace's appointment history grows without bound (this
+  // one already has 1,100+), well past PostgREST's default 1000-row max
+  // response. A single unbounded .select() here silently truncated the
+  // result with no error — every appointment past row 1000 was simply
+  // missing from the whole dashboard (schedule grid, payroll, worked-hours
+  // warnings). fetchAllPages (lib/paginate.ts) keeps fetching fixed-size
+  // pages until a short page confirms there's nothing left, ordered by
+  // scheduled_for with `id` as a tiebreaker so pages never overlap or skip
+  // a row, and fails closed (returns the error) rather than silently
+  // handing back a partial set if any page fails.
   let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id, actual_started_at, actual_completed_at";
-  let apptsRes = await supabaseAdmin
-    .from("appointments")
-    .select(apptFields)
-    .eq("workspace_id", workspaceId)
-    .eq("is_demo", isTester)
-    .order("scheduled_for", { ascending: true });
-
-  if (apptsRes.error) {
-    apptFields = "id, client_id, service_type, scheduled_for, status, notes";
-    apptsRes = await supabaseAdmin
+  let apptsRes = await fetchAllPages(async (from, to) =>
+    supabaseAdmin
       .from("appointments")
       .select(apptFields)
       .eq("workspace_id", workspaceId)
       .eq("is_demo", isTester)
-      .order("scheduled_for", { ascending: true });
+      .order("scheduled_for", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
+
+  if (apptsRes.error) {
+    apptFields = "id, client_id, service_type, scheduled_for, status, notes";
+    apptsRes = await fetchAllPages(async (from, to) =>
+      supabaseAdmin
+        .from("appointments")
+        .select(apptFields)
+        .eq("workspace_id", workspaceId)
+        .eq("is_demo", isTester)
+        .order("scheduled_for", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to)
+    );
   }
 
   const appointments = apptsRes.data as any[] | null;
