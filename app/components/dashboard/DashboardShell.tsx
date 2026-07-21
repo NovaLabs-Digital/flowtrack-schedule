@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import TopBar from "@/app/components/dashboard/TopBar";
 import LeftBar from "@/app/components/dashboard/LeftBar";
@@ -63,6 +63,30 @@ export default function DashboardShell({
   const [pendingMove, setPendingMove] = useState<
     { appointment: Appointment; client: Client; scheduledFor: string; scheduledEnd: string | null } | null
   >(null);
+
+  // Mirrors the employeeHours prop, but can also be updated the instant a
+  // manual-hours save succeeds — every other mutation in this component
+  // relies solely on router.refresh() re-fetching fresh server props, which
+  // works but isn't instantaneous. The warning triangle, missing-hours
+  // count, and weekly total all read from this one state array (via
+  // lib/payroll.ts's shared hasWorkedHours/needsWorkedHoursAttention
+  // predicate), so updating it immediately here is what makes all three
+  // update immediately together, without waiting on the refresh round trip.
+  const [employeeHoursState, setEmployeeHoursState] = useState<EmployeeHours[]>(employeeHours);
+  useEffect(() => {
+    setEmployeeHoursState(employeeHours);
+  }, [employeeHours]);
+
+  function handleHoursSaved(entry: EmployeeHours) {
+    setEmployeeHoursState((prev) => {
+      const idx = prev.findIndex((h) => h.appointment_id === entry.appointment_id && h.employee_id === entry.employee_id);
+      if (idx === -1) return [...prev, entry];
+      const next = [...prev];
+      next[idx] = entry;
+      return next;
+    });
+    router.refresh();
+  }
 
   const selectedClient = useMemo(() => {
     if (!selectedClientId) return null;
@@ -265,7 +289,7 @@ export default function DashboardShell({
                   appointments={appointments}
                   services={services}
                   employees={employees}
-                  employeeHours={employeeHours}
+                  employeeHours={employeeHoursState}
                   selectedClientId={selectedClientId}
                   selectedAppointmentId={selectedApptId}
                   onSelectAppointment={handleSelectAppointment}
@@ -312,9 +336,9 @@ export default function DashboardShell({
             appointments={appointments}
             clients={clients}
             employees={employees}
-            employeeHours={employeeHours}
+            employeeHours={employeeHoursState}
             selectedAppointmentId={selectedApptId}
-            onHoursSaved={() => router.refresh()}
+            onHoursSaved={handleHoursSaved}
           />
         </aside>
       )}

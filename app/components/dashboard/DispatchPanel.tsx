@@ -65,7 +65,7 @@ function EmployeeHoursSection({
 }: {
   appointment: Appointment;
   employee: Employee;
-  onSaved: () => void;
+  onSaved: (entry: EmployeeHours) => void;
 }) {
   const [hours, setHours] = useState("");
   const [reason, setReason] = useState("");
@@ -91,10 +91,10 @@ function EmployeeHoursSection({
           note: reason.trim(),
         }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setMessage({ type: "error", text: data?.error || "Save failed." }); return; }
+      const data: { entry?: EmployeeHours; error?: string } = await res.json().catch(() => ({}));
+      if (!res.ok || !data.entry) { setMessage({ type: "error", text: data?.error || "Save failed." }); return; }
       setMessage({ type: "success", text: "Hours saved." });
-      onSaved();
+      onSaved(data.entry);
     } catch {
       setMessage({ type: "error", text: "Network error." });
     } finally {
@@ -167,7 +167,7 @@ export default function DispatchPanel({
   employees: Employee[];
   employeeHours: EmployeeHours[];
   selectedAppointmentId: string | null;
-  onHoursSaved: () => void;
+  onHoursSaved: (entry: EmployeeHours) => void;
 }) {
   const today = startOfBusinessDay(0);
   const tomorrow = startOfBusinessDay(1);

@@ -1,4 +1,4 @@
-import { Appointment, Employee, EmployeeHours } from "@/app/components/dashboard/types";
+import type { Appointment, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
 
 export function toDateInputValue(d: Date) {
@@ -17,7 +17,13 @@ export function hasWorkedHours(appt: Appointment, employeeHours: EmployeeHours[]
     !!appt.actual_completed_at &&
     new Date(appt.actual_completed_at).getTime() > new Date(appt.actual_started_at).getTime();
   if (hasJobTracking) return true;
-  return employeeHours.some((h) => h.appointment_id === appt.id);
+  // Must match the applicable employee too, not just the appointment — a
+  // manual entry is only valid for the employee it was actually saved
+  // against (see app/api/appointments/employee-hours/route.ts's
+  // appointment_id+employee_id upsert key). `?? null` normalizes
+  // appointment_id's optional-with-undefined typing against
+  // EmployeeHours.employee_id's `string | null`.
+  return employeeHours.some((h) => h.appointment_id === appt.id && h.employee_id === (appt.employee_id ?? null));
 }
 
 // True when an appointment needs attention: in the past, not cancelled, and
