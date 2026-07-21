@@ -122,7 +122,7 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
   }
 
   return (
-    <div className="min-h-[100dvh] bg-slate-50 flex flex-col">
+    <div className="min-h-[100dvh] bg-slate-50 flex flex-col safe-area-top">
       {/* Top bar */}
       <div className="shrink-0 bg-white border-b border-slate-200 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
