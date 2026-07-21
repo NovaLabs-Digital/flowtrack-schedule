@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatHoursAsDuration } from "@/lib/payroll";
 
@@ -99,7 +99,33 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
     router.push("/login");
   }
 
+  // Synchronous, render-independent lock — belt-and-suspenders against a
+  // double-click firing two requests before React re-renders the button's
+  // `disabled` state (which itself already prevents most double-submits,
+  // but relies on a state update landing first).
+  const inFlightRef = useRef<Set<string>>(new Set());
+
   async function handleJobAction(appointmentId: string, action: "start" | "complete") {
+    if (inFlightRef.current.has(appointmentId)) return;
+
+    if (action === "complete") {
+      const startedAtIso = jobTimes[appointmentId]?.started;
+      if (startedAtIso) {
+        const elapsedMs = Date.now() - new Date(startedAtIso).getTime();
+        // A clock-out this soon after clock-in is almost always an
+        // accidental tap, not a real sub-minute job — confirm before
+        // recording it. Never blocks a deliberate confirmation: the
+        // owner-side invalid-duration workflow (see lib/payroll.ts's
+        // isJobTrackingComplete) is the safety net if the employee
+        // proceeds anyway. Never fabricates or adjusts either timestamp.
+        if (elapsedMs < 60_000) {
+          const confirmed = window.confirm("You clocked in less than one minute ago. Are you sure you want to clock out?");
+          if (!confirmed) return;
+        }
+      }
+    }
+
+    inFlightRef.current.add(appointmentId);
     setLoadingJob(appointmentId);
     try {
       const res = await fetch("/api/appointments/job", {
@@ -118,7 +144,10 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
         },
       }));
     } catch {}
-    finally { setLoadingJob(null); }
+    finally {
+      inFlightRef.current.delete(appointmentId);
+      setLoadingJob(null);
+    }
   }
 
   return (

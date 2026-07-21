@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Appointment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
 import { startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
-import { hasWorkedHours, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes, formatMinutesAsDuration } from "@/lib/payroll";
+import { hasInvalidJobTrackingDuration, hasWorkedHours, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes, formatMinutesAsDuration } from "@/lib/payroll";
 
 function formatDateTime(iso: string) {
   const d = toBusinessLocal(iso);
@@ -68,6 +68,10 @@ function EmployeeHoursSection({
       setMessage({ type: "error", text: "Enter hours worked (e.g. 2.5)." });
       return;
     }
+    if (!reason.trim()) {
+      setMessage({ type: "error", text: "Enter a reason (e.g. forgot to clock in/out)." });
+      return;
+    }
     setSaving(true);
     setMessage(null);
     try {
@@ -100,7 +104,9 @@ function EmployeeHoursSection({
       </div>
 
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
-        &#9888; Employee did not complete Job Tracking.
+        &#9888; {hasInvalidJobTrackingDuration(appointment)
+          ? "Clock-in and clock-out produced no valid worked time."
+          : "Employee did not complete Job Tracking."}
       </div>
       <div className="flex items-center gap-2">
         <label className="text-xs text-slate-500 shrink-0">Hours Worked</label>

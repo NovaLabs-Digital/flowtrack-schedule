@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { isJobTrackingComplete } from "@/lib/payroll";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -28,11 +29,17 @@ export async function POST(req: Request) {
     if (!Number.isFinite(hours_worked) || hours_worked <= 0) {
       return json({ error: "Hours worked must be a positive number" }, 400);
     }
+    if (!note) return json({ error: "A reason is required (e.g. forgot to clock in/out)." }, 400);
 
     // Job Tracking is the authoritative source of worked time — a manual entry
-    // must never override or reduce it, even via a direct API call. This
-    // mirrors the DispatchPanel UI, which hides the manual form entirely once
-    // an appointment has a completed tracked duration.
+    // must never override or reduce a genuinely COMPLETE tracked duration,
+    // even via a direct API call. isJobTrackingComplete (lib/payroll.ts) is
+    // the same predicate the warning triangle, payroll, and both UI cards
+    // use — a zero/negative/sub-one-minute gap between started and
+    // completed does NOT count as complete, so a manual correction is
+    // allowed even though both timestamp fields are present. This mirrors
+    // the DispatchPanel UI, which only hides the manual form once tracking
+    // is genuinely complete.
     const apptRes = await supabaseAdmin
       .from("appointments")
       .select("actual_started_at, actual_completed_at")
@@ -41,11 +48,7 @@ export async function POST(req: Request) {
       .maybeSingle();
     if (apptRes.error) throw apptRes.error;
     if (!apptRes.data) return json({ error: "Appointment not found" }, 404);
-    const appt = apptRes.data;
-    const trackedMs = appt?.actual_started_at && appt?.actual_completed_at
-      ? new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()
-      : 0;
-    if (trackedMs > 0) {
+    if (isJobTrackingComplete(apptRes.data)) {
       return json({ error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." }, 409);
     }
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Appointment, Client, Service, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
-import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
+import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 
 const FALLBACK_SERVICES = [
@@ -725,7 +725,13 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 ) : (
                   <>
                     <div>Worked duration: not yet available.</div>
-                    {isWarning && <div className="text-amber-700">Employee did not complete Job Tracking.</div>}
+                    {isWarning && (
+                      <div className="text-amber-700">
+                        {hasInvalidJobTrackingDuration(appt)
+                          ? "Clock-in and clock-out produced no valid worked time."
+                          : "Employee did not complete Job Tracking."}
+                      </div>
+                    )}
                   </>
                 )}
               </div>

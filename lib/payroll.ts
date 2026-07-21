@@ -5,18 +5,42 @@ export function toDateInputValue(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-// True when an appointment has a real, complete Job Tracking duration
-// (start and complete both recorded, complete after start). Shared by
-// hasWorkedHours below and by the UI surfaces that need to say "tracked
-// automatically" vs. "manually entered" (AppointmentModal's Job Tracking
-// card, DispatchPanel's Employee Worked Hours card) — they must never
-// diverge on what counts as automatic.
-export function isJobTrackingComplete(appt: Appointment): boolean {
-  return (
-    !!appt.actual_started_at &&
-    !!appt.actual_completed_at &&
-    new Date(appt.actual_completed_at).getTime() > new Date(appt.actual_started_at).getTime()
-  );
+// Minimum tracked duration (milliseconds) for automatic Job Tracking to
+// count as complete. A clock-in/clock-out pair separated by only a few
+// seconds is almost always a mistake (forgot to start the job earlier, or
+// immediately re-tapped by accident), not a real sub-minute job — treating
+// it as valid would silently record "0m" (or a rounding artifact like "1m"
+// for a 45-second gap) as if it were real tracked time.
+const MIN_VALID_TRACKING_MS = 60_000;
+
+// True when an appointment has a real, complete Job Tracking duration:
+// both timestamps present, parseable, completed strictly after started,
+// and the gap is at least MIN_VALID_TRACKING_MS. Only the two timestamp
+// fields are read, so this also accepts the server route's minimal
+// `{actual_started_at, actual_completed_at}` select — it doesn't need a
+// full Appointment object. Shared by hasWorkedHours below, the
+// employee-hours API route's override guard, and every UI surface that
+// needs to say "tracked automatically" vs. "manually entered" (schedule
+// grid warning triangle, AppointmentModal's Job Tracking card,
+// DispatchPanel's Employee Worked Hours card) — they must never diverge on
+// what counts as automatic.
+export function isJobTrackingComplete(appt: Pick<Appointment, "actual_started_at" | "actual_completed_at">): boolean {
+  if (!appt.actual_started_at || !appt.actual_completed_at) return false;
+  const startedMs = new Date(appt.actual_started_at).getTime();
+  const completedMs = new Date(appt.actual_completed_at).getTime();
+  if (!Number.isFinite(startedMs) || !Number.isFinite(completedMs)) return false;
+  return completedMs - startedMs >= MIN_VALID_TRACKING_MS;
+}
+
+// True specifically when both timestamps are present but the tracked
+// duration doesn't qualify (zero, negative, sub-minute, or malformed) —
+// distinct from "never clocked in/out at all". UI surfaces use this to
+// show "Clock-in and clock-out produced no valid worked time." instead of
+// the generic "Employee did not complete Job Tracking." warning, and to
+// preserve both real timestamps rather than treating the appointment as if
+// nothing was ever recorded.
+export function hasInvalidJobTrackingDuration(appt: Pick<Appointment, "actual_started_at" | "actual_completed_at">): boolean {
+  return !!appt.actual_started_at && !!appt.actual_completed_at && !isJobTrackingComplete(appt);
 }
 
 // Finds the applicable-employee manual-hours entry for an appointment, if
@@ -57,9 +81,8 @@ export function needsWorkedHoursAttention(appt: Appointment, employeeHours: Empl
 // hasWorkedHours above. Display-only (e.g. the Employee Worked Hours card's
 // read-only "Worked Time" value) — does not affect computePayrollRows.
 export function resolveWorkedMinutes(appt: Appointment, employeeHours: EmployeeHours[], employeeId: string): number {
-  if (appt.actual_started_at && appt.actual_completed_at) {
-    const mins = Math.round((new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()) / 60_000);
-    if (mins > 0) return mins;
+  if (isJobTrackingComplete(appt)) {
+    return Math.round((new Date(appt.actual_completed_at!).getTime() - new Date(appt.actual_started_at!).getTime()) / 60_000);
   }
   const manual = employeeHours.find((h) => h.appointment_id === appt.id && h.employee_id === employeeId);
   return manual ? Math.round(manual.hours_worked * 60) : 0;
@@ -163,9 +186,9 @@ function resolveJobTrackingHours(
   employeeId: string,
   savedHoursByKey: Map<string, number>
 ): number | null {
-  if (appt.actual_started_at && appt.actual_completed_at) {
-    const mins = (new Date(appt.actual_completed_at).getTime() - new Date(appt.actual_started_at).getTime()) / 60_000;
-    if (mins > 0) return mins / 60;
+  if (isJobTrackingComplete(appt)) {
+    const mins = (new Date(appt.actual_completed_at!).getTime() - new Date(appt.actual_started_at!).getTime()) / 60_000;
+    return mins / 60;
   }
   const key = `${appt.id}|${employeeId}`;
   return savedHoursByKey.has(key) ? savedHoursByKey.get(key)! : null;
