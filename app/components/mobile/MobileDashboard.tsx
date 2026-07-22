@@ -10,6 +10,7 @@ import MobileClientsList from "@/app/components/mobile/MobileClientsList";
 import MobileSettings from "@/app/components/mobile/MobileSettings";
 import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
+import OwnerBillingBanner, { OwnerBillingBannerProps } from "@/app/components/dashboard/OwnerBillingBanner";
 
 type Props = {
   clients: Client[];
@@ -20,6 +21,10 @@ type Props = {
   onEditAppointment: (apptId: string) => void;
   onClientUpdated: () => void;
   isTester: boolean;
+  // Phase 5.5D: the same two Phase 5.5B browser-safe fields OwnerBillingBanner
+  // takes on desktop -- never the full EntitlementView, never a raw result.
+  bannerVariant: OwnerBillingBannerProps["bannerVariant"];
+  recoveryAction: OwnerBillingBannerProps["recoveryAction"];
 };
 
 function addDays(d: Date, n: number) {
@@ -56,6 +61,8 @@ export default function MobileDashboard({
   onEditAppointment,
   onClientUpdated,
   isTester,
+  bannerVariant,
+  recoveryAction,
 }: Props) {
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
@@ -100,6 +107,7 @@ export default function MobileDashboard({
           Demo Mode — fictional data, for testing only.
         </div>
       )}
+      <OwnerBillingBanner bannerVariant={bannerVariant} recoveryAction={recoveryAction} />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {selectedAppt ? (
           <MobileAppointmentDetail

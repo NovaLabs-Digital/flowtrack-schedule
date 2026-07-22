@@ -12,6 +12,7 @@ import DispatchPanel from "@/app/components/dashboard/DispatchPanel";
 import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
 import MoveConfirmDialog from "@/app/components/dashboard/MoveConfirmDialog";
 import MobileDashboard from "@/app/components/mobile/MobileDashboard";
+import OwnerBillingBanner from "@/app/components/dashboard/OwnerBillingBanner";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
@@ -40,6 +41,7 @@ export default function DashboardShell({
   employees,
   employeeHours,
   isTester,
+  entitlement,
 }: {
   clients: Client[];
   appointments: Appointment[];
@@ -47,11 +49,13 @@ export default function DashboardShell({
   employees: Employee[];
   employeeHours: EmployeeHours[];
   isTester: boolean;
-  // Phase 5.5B: plumbed through from app/dashboard/page.tsx so the prop
-  // contract exists end-to-end, but deliberately not read yet -- no banner,
-  // no disabled control, and no other visible behavior change is part of
-  // this phase. A later phase reads this to render the restricted/grace
-  // banner and disable mutation entrances.
+  // Phase 5.5D: consumed by OwnerBillingBanner (desktop below, and passed
+  // through to MobileDashboard for the mobile layout) -- only its
+  // bannerVariant/recoveryAction fields are ever read from this object.
+  // Still just the Phase 5.5B browser-safe projection, never a raw
+  // EntitlementResult; capability booleans are present on this type but
+  // deliberately not used by anything yet -- Phase 5.5E, not this phase,
+  // applies those.
   entitlement: EntitlementView;
 }) {
   const isMobile = useIsMobile();
@@ -242,6 +246,8 @@ export default function DashboardShell({
           onEditAppointment={handleEditAppointment}
           onClientUpdated={() => router.refresh()}
           isTester={isTester}
+          bannerVariant={entitlement.bannerVariant}
+          recoveryAction={entitlement.recoveryAction}
         />
         {modalEl}
       </>
@@ -257,6 +263,7 @@ export default function DashboardShell({
           Demo Mode — All information shown in Demo Mode is fictional and for testing only.
         </div>
       )}
+      <OwnerBillingBanner bannerVariant={entitlement.bannerVariant} recoveryAction={entitlement.recoveryAction} />
       <div className="flex-1 min-h-0 flex">
       {/* Left bar — full height, never moves */}
       <aside className="shrink-0 w-[230px] p-2 pr-0">
