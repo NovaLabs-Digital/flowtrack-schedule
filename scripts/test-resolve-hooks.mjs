@@ -52,5 +52,19 @@ export async function resolve(specifier, context, nextResolve) {
     }
   }
 
-  return nextResolve(specifier, context);
+  try {
+    return await nextResolve(specifier, context);
+  } catch (err) {
+    // Some package "exports" maps (e.g. Next.js's own next/server,
+    // next/headers) require the literal ".js" suffix under Node's strict
+    // ESM resolution even though TypeScript's bundler-mode resolution (and
+    // webpack) accept the extensionless form used throughout the app's own
+    // source. Only retried for genuine not-found failures, and only for
+    // bare (non-relative, non-aliased) specifiers — never masks a real
+    // resolution error for project files.
+    if (err?.code === "ERR_MODULE_NOT_FOUND" && !specifier.startsWith(".") && !specifier.startsWith("@/")) {
+      return nextResolve(specifier + ".js", context);
+    }
+    throw err;
+  }
 }
