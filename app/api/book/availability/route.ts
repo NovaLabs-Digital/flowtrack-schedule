@@ -9,6 +9,7 @@ import {
   type BusyRange,
 } from "@/lib/availability";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
+import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -20,6 +21,13 @@ function json(data: any, status = 200) {
 // about who else is booked.
 export async function GET(req: Request) {
   try {
+    // Same public-booking flow as appointments/create's public branch and
+    // the same fixed, server-controlled workspace identity — a customer who
+    // can't complete a restricted workspace's booking shouldn't be shown
+    // "available" times for it either. Runs before any operational read.
+    const capability = await requireCapabilityForWorkspace(REAL_WORKSPACE_ID, "canUsePublicBooking");
+    if (!capability.allowed) return capability.response;
+
     const { data: settings } = await supabaseAdmin
       .from("company_settings")
       .select("booking_enabled")

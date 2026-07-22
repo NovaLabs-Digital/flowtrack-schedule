@@ -3,7 +3,8 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession } from "@/lib/session";
+import { getSession, assertWorkspace } from "@/lib/session";
+import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
@@ -44,6 +45,22 @@ export async function POST(req: Request) {
     // lib/workspace.ts. Owner/tester use their own session's workspace.
     const workspaceId: string =
       session.role === "owner" || session.role === "tester" ? session.workspaceId : REAL_WORKSPACE_ID;
+
+    // Two distinct entitlement branches, each with its own capability and its
+    // own trusted workspace-identity source — never a single gate over the
+    // whole handler. The public branch's workspaceId above is always the
+    // fixed REAL_WORKSPACE_ID constant, never derived from the request, so
+    // requireCapabilityForWorkspace is safe to call with it here. Must run
+    // before any operational read (including the booking_enabled check
+    // below), any mutation, and any notification/provider/audit work.
+    if (isPublic) {
+      const capability = await requireCapabilityForWorkspace(workspaceId, "canUsePublicBooking");
+      if (!capability.allowed) return capability.response;
+    } else {
+      assertWorkspace(session);
+      const capability = await requireCapability(session, "canMutateOperationalData");
+      if (!capability.allowed) return capability.response;
+    }
 
     if (isPublic) {
       const { data: settings } = await supabaseAdmin

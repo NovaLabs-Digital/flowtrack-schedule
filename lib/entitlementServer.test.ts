@@ -334,7 +334,7 @@ describe("no database mutation or external provider call is reachable from these
   });
 });
 
-describe("only the approved Phase 5.4E1/5.4E2/5.4E3 routes reference the new gate -- every other route remains unwired", () => {
+describe("only the approved routes reference the capability gates -- every other route remains unwired", () => {
   function walk(dir: string, out: string[] = []): string[] {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
@@ -348,13 +348,22 @@ describe("only the approved Phase 5.4E1/5.4E2/5.4E3 routes reference the new gat
     return out;
   }
 
-  // The exact, approved scope through Phase 5.4E3. Any file outside this
-  // set that starts referencing requireCapability/requireCapabilityForWorkspace
-  // means enforcement crept into a route nobody reviewed for it yet -- this
-  // test exists specifically to catch that, not just to check the routes
-  // below were wired correctly (their own route.test.ts files already
-  // prove that).
-  const APPROVED_ROUTES = [
+  // requireCapability( and requireCapabilityForWorkspace( are two distinct
+  // gates, never interchangeable, so they get two separate inventories
+  // rather than one merged "references the new gate" list. Matching on the
+  // literal "(" after the name is deliberate: "requireCapabilityForWorkspace("
+  // never matches the "requireCapability(" pattern (the character right
+  // after "requireCapability" there is "F", not "("), so a file that only
+  // calls the workspace-trusted helper is never miscounted as calling the
+  // session-based one, and vice versa. Any file outside these sets that
+  // starts referencing either helper means enforcement crept into a route
+  // nobody reviewed for it yet -- this test exists specifically to catch
+  // that, not just to check the routes below were wired correctly (their
+  // own route.test.ts files already prove that).
+
+  // Session-based gate: authenticated routes, workspace identity taken
+  // exclusively from the caller's own signed session.
+  const REQUIRE_CAPABILITY_ROUTES = [
     // Phase 5.4E1 -- simple authenticated operational mutations.
     path.join("app", "api", "clients", "route.ts"),
     path.join("app", "api", "employees", "route.ts"),
@@ -364,32 +373,54 @@ describe("only the approved Phase 5.4E1/5.4E2/5.4E3 routes reference the new gat
     path.join("app", "api", "appointments", "job", "route.ts"),
     path.join("app", "api", "appointments", "employee-hours", "route.ts"),
     // Phase 5.4E3 -- authenticated appointment editing/cancellation/recurrence.
-    // appointments/create is deliberately excluded: it serves both
-    // authenticated owner/tester creation AND unauthenticated public
-    // booking in one handler (ambiguous authentication), so it was not
-    // wired in this phase -- see the Phase 5.4E3 report.
     path.join("app", "api", "appointments", "update", "route.ts"),
     path.join("app", "api", "appointments", "delete", "route.ts"),
     path.join("app", "api", "appointments", "manage-recurrence", "route.ts"),
+    // Phase 5.4E4 -- the authenticated owner/tester branch of the mixed
+    // create route (see REQUIRE_CAPABILITY_FOR_WORKSPACE_ROUTES below for
+    // its other, unauthenticated public-booking branch).
+    path.join("app", "api", "appointments", "create", "route.ts"),
   ];
 
-  test("exactly the approved E1/E2/E3 routes reference requireCapability; every other app/ file does not", () => {
+  // Server-trusted-workspace gate: no session exists at this call site at
+  // all -- the workspace identity is a fixed, server-side constant, never a
+  // caller-supplied value.
+  const REQUIRE_CAPABILITY_FOR_WORKSPACE_ROUTES = [
+    // Phase 5.4E4 -- the unauthenticated public-booking branch of the mixed
+    // create route.
+    path.join("app", "api", "appointments", "create", "route.ts"),
+    // Phase 5.4E4 -- public availability lookup, the read-only half of the
+    // same public-booking flow (see the Phase 5.4E4 report for why this is
+    // gated too, unlike public cancellation).
+    path.join("app", "api", "book", "availability", "route.ts"),
+  ];
+
+  test("exactly the approved routes call requireCapability(session, ...); every other app/ file does not", () => {
     const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
     const appDir = path.join(projectRoot, "app");
     const referencing: string[] = [];
     for (const file of walk(appDir)) {
       const text = fs.readFileSync(file, "utf8");
-      if (text.includes("requireCapability")) referencing.push(path.relative(projectRoot, file));
+      if (text.includes("requireCapability(")) referencing.push(path.relative(projectRoot, file));
     }
-    assert.deepEqual(referencing.sort(), [...APPROVED_ROUTES].sort());
+    assert.deepEqual(referencing.sort(), [...REQUIRE_CAPABILITY_ROUTES].sort());
   });
 
-  test("appointment create (public+authenticated), public cancellation/booking, cron, and Stripe routes remain unwired", () => {
+  test("exactly the approved routes call requireCapabilityForWorkspace(...); every other app/ file does not", () => {
+    const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
+    const appDir = path.join(projectRoot, "app");
+    const referencing: string[] = [];
+    for (const file of walk(appDir)) {
+      const text = fs.readFileSync(file, "utf8");
+      if (text.includes("requireCapabilityForWorkspace(")) referencing.push(path.relative(projectRoot, file));
+    }
+    assert.deepEqual(referencing.sort(), [...REQUIRE_CAPABILITY_FOR_WORKSPACE_ROUTES].sort());
+  });
+
+  test("public token cancellation, cron, and Stripe routes remain unwired to either capability gate", () => {
     const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
     const outOfScope = [
-      path.join("app", "api", "appointments", "create", "route.ts"),
       path.join("app", "api", "appointments", "cancel", "route.ts"),
-      path.join("app", "api", "book", "availability", "route.ts"),
       path.join("app", "api", "cron", "reminders", "route.ts"),
       path.join("app", "api", "cron", "reconcile-subscriptions", "route.ts"),
       path.join("app", "api", "stripe", "checkout", "route.ts"),
@@ -399,7 +430,8 @@ describe("only the approved Phase 5.4E1/5.4E2/5.4E3 routes reference the new gat
     for (const rel of outOfScope) {
       const full = path.join(projectRoot, rel);
       const text = fs.readFileSync(full, "utf8");
-      assert.ok(!text.includes("requireCapability"), `${rel} must remain unwired through Phase 5.4E3`);
+      assert.ok(!text.includes("requireCapability("), `${rel} must not call requireCapability(...)`);
+      assert.ok(!text.includes("requireCapabilityForWorkspace("), `${rel} must not call requireCapabilityForWorkspace(...)`);
     }
   });
 });

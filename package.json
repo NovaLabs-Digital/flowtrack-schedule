@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test lib/entitlement.test.ts lib/entitlementServer.test.ts lib/stripeWebhook.test.ts lib/reconcileSubscriptions.test.ts app/api/clients/route.test.ts app/api/employees/route.test.ts app/api/services/route.test.ts app/api/settings/company/route.test.ts app/api/appointments/job/route.test.ts app/api/appointments/employee-hours/route.test.ts app/api/appointments/update/route.test.ts app/api/appointments/delete/route.test.ts app/api/appointments/manage-recurrence/route.test.ts"
+    "test": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test lib/entitlement.test.ts lib/entitlementServer.test.ts lib/stripeWebhook.test.ts lib/reconcileSubscriptions.test.ts app/api/clients/route.test.ts app/api/employees/route.test.ts app/api/services/route.test.ts app/api/settings/company/route.test.ts app/api/appointments/job/route.test.ts app/api/appointments/employee-hours/route.test.ts app/api/appointments/update/route.test.ts app/api/appointments/delete/route.test.ts app/api/appointments/manage-recurrence/route.test.ts app/api/appointments/create/route.test.ts app/api/book/availability/route.test.ts"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
