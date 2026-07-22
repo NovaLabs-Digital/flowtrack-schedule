@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type { Session } from "@/lib/session";
 import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
-import { noDataResult, resolveEntitlement } from "@/lib/entitlement";
+import { noDataResult, resolveWorkspaceEntitlement } from "@/lib/entitlement";
 import type { EntitlementResult, SubscriptionRecord } from "@/lib/entitlement";
 
 // Raw shape of a subscriptions row as Postgres/PostgREST returns it
@@ -31,10 +31,20 @@ function toRecord(row: SubscriptionRow): SubscriptionRecord {
 }
 
 // Server-only: reads the subscriptions table via the service-role client
-// (same access pattern as every other table — see docs/SECURITY.md). Fails
-// closed on both "no row" and "query error" — a workspace is never granted
-// access because we couldn't determine its billing state.
+// (same access pattern as every other table — see docs/SECURITY.md) and
+// hands the result to the pure resolver in lib/entitlement.ts. Fails closed
+// on both "no row" and "query error" — a workspace is never granted access
+// because we couldn't determine its billing state.
+//
+// The demo workspace never has a subscriptions row (migration 015) and its
+// access does not depend on Stripe/Supabase data at all, so it's
+// short-circuited before the query — a Supabase outage cannot affect demo
+// mode, and demo requests never pay for a DB round-trip they don't need.
 export async function fetchEntitlementForWorkspace(workspaceId: string): Promise<EntitlementResult> {
+  if (workspaceId === DEMO_WORKSPACE_ID) {
+    return resolveWorkspaceEntitlement(workspaceId, null, new Date());
+  }
+
   const { data, error } = await supabaseAdmin
     .from("subscriptions")
     .select("billing_mode, stripe_status, trial_end, current_period_end, grace_until, cancel_at_period_end")
@@ -48,11 +58,7 @@ export async function fetchEntitlementForWorkspace(workspaceId: string): Promise
     return noDataResult("query_error");
   }
 
-  if (!data) {
-    return noDataResult("no_subscription");
-  }
-
-  return resolveEntitlement(toRecord(data as SubscriptionRow), new Date());
+  return resolveWorkspaceEntitlement(workspaceId, data ? toRecord(data as SubscriptionRow) : null, new Date());
 }
 
 const GENERIC_FORBIDDEN = { error: "Unauthorized" } as const;
@@ -69,28 +75,31 @@ const GENERIC_FORBIDDEN = { error: "Unauthorized" } as const;
 //   const entitlementDeny = await requireFullAccess(session);
 //   if (entitlementDeny) return entitlementDeny;
 //
-// DEMO-ONLY BYPASS: a tester session is granted full access only when its
-// workspaceId is exactly DEMO_WORKSPACE_ID (the shared, read-only-data demo
-// workspace intentionally has no subscriptions row at all — see migration
-// 015 — so without this bypass every tester request would fail closed).
-// A tester session carrying any other workspaceId is not a legitimate
-// state under this app's session model and fails closed rather than being
-// treated as implicitly trustworthy.
+// Not called from any route yet (Phase 5.4A is the entitlement model only —
+// route/API enforcement is a later phase).
+//
+// SESSION-INTEGRITY GUARD: a tester session should always carry
+// DEMO_WORKSPACE_ID (see lib/session.ts — tester sessions are minted with
+// exactly that workspaceId, never any other). A tester session carrying a
+// different workspaceId is not a legitimate state under this app's session
+// model, so it fails closed here rather than falling through to
+// fetchEntitlementForWorkspace (which would correctly fail closed anyway,
+// since a non-demo workspaceId with no subscriptions row resolves to
+// "no_subscription", but failing closed at this earlier, more specific
+// check produces a clearer audit log signal for what would otherwise be an
+// unusual/corrupted session).
 export async function requireFullAccess(session: Session): Promise<NextResponse | null> {
   if (session.role === "none") {
     return NextResponse.json(GENERIC_FORBIDDEN, { status: 403 });
   }
 
-  if (session.role === "tester") {
-    if (session.workspaceId === DEMO_WORKSPACE_ID) {
-      return null;
-    }
+  if (session.role === "tester" && session.workspaceId !== DEMO_WORKSPACE_ID) {
     console.error("ENTITLEMENT_TESTER_WORKSPACE_MISMATCH");
     return NextResponse.json(GENERIC_FORBIDDEN, { status: 403 });
   }
 
   const result = await fetchEntitlementForWorkspace(session.workspaceId);
-  if (result.access === "full") {
+  if (result.hasOperationalAccess) {
     return null;
   }
   return NextResponse.json(GENERIC_FORBIDDEN, { status: 403 });
