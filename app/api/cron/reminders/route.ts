@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, describeProviderError, recordMessageSent } from "@/lib/notify";
 import { reminder24hTemplates } from "@/lib/templates";
 import { safeEqual } from "@/lib/safeEqual";
+import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -61,9 +62,39 @@ export async function GET(req: Request) {
       return enabled;
     }
 
+    // One entitlement check per unique workspace present in this run,
+    // cached exactly like workspaceNotifying above -- a single cron
+    // invocation spans every workspace, so a restricted workspace must never
+    // block, slow down, or share a decision with another workspace's
+    // reminders. Uses requireCapabilityForWorkspace (never requireCapability
+    // with a manufactured session -- this route has no session at all) with
+    // the workspace_id already read off the candidate appointment row in the
+    // discovery query above -- server-derived, never request input.
+    const entitlementCache = new Map<string, boolean>();
+    async function workspaceEntitled(workspaceId: string): Promise<boolean> {
+      if (entitlementCache.has(workspaceId)) return entitlementCache.get(workspaceId)!;
+      const capability = await requireCapabilityForWorkspace(workspaceId, "canSendNotifications");
+      entitlementCache.set(workspaceId, capability.allowed);
+      return capability.allowed;
+    }
+
     let sent = 0;
+    let entitlementSkipped = 0;
 
     for (const a of appts.data || []) {
+      // Checked before the client lookup below (which reads real PII --
+      // name/email/phone) so a restricted workspace's data is never touched
+      // beyond the minimal id/workspace_id/scheduling fields already read in
+      // the discovery query above. No content is constructed, no provider is
+      // called, and reminder_24h_sent_at is never updated for a skipped
+      // appointment -- it remains eligible to be picked up once the
+      // workspace's entitlement is restored (subject to the existing 23-25h
+      // window, unchanged).
+      if (!(await workspaceEntitled(a.workspace_id))) {
+        entitlementSkipped++;
+        continue;
+      }
+
       const clientRes = await supabaseAdmin
         .from("clients")
         .select("name, email, phone, auto_email, auto_sms")
@@ -144,7 +175,7 @@ export async function GET(req: Request) {
       sent++;
     }
 
-    return json({ ok: true, checked: appts.data?.length || 0, sent });
+    return json({ ok: true, checked: appts.data?.length || 0, sent, entitlementSkipped });
   } catch (e: any) {
     console.error("CRON_REMINDERS_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);

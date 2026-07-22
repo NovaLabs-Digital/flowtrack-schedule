@@ -383,8 +383,9 @@ describe("only the approved routes reference the capability gates -- every other
   ];
 
   // Server-trusted-workspace gate: no session exists at this call site at
-  // all -- the workspace identity is a fixed, server-side constant, never a
-  // caller-supplied value.
+  // all -- the workspace identity is a fixed, server-side constant, or (for
+  // the E5 cron route) a value already read from the database by the server
+  // itself, never a caller-supplied value.
   const REQUIRE_CAPABILITY_FOR_WORKSPACE_ROUTES = [
     // Phase 5.4E4 -- the unauthenticated public-booking branch of the mixed
     // create route.
@@ -393,6 +394,12 @@ describe("only the approved routes reference the capability gates -- every other
     // same public-booking flow (see the Phase 5.4E4 report for why this is
     // gated too, unlike public cancellation).
     path.join("app", "api", "book", "availability", "route.ts"),
+    // Phase 5.4E5 -- the scheduled 24h-reminder cron, gated per-workspace
+    // using the workspace_id already read off each candidate appointment
+    // row (see the Phase 5.4E5 report). The other cron route
+    // (reconcile-subscriptions) sends no client notifications at all -- it
+    // only synchronizes Stripe subscription state -- so it remains unwired.
+    path.join("app", "api", "cron", "reminders", "route.ts"),
   ];
 
   test("exactly the approved routes call requireCapability(session, ...); every other app/ file does not", () => {
@@ -417,11 +424,12 @@ describe("only the approved routes reference the capability gates -- every other
     assert.deepEqual(referencing.sort(), [...REQUIRE_CAPABILITY_FOR_WORKSPACE_ROUTES].sort());
   });
 
-  test("public token cancellation, cron, and Stripe routes remain unwired to either capability gate", () => {
+  test("public token cancellation, subscription-reconciliation cron, and Stripe routes remain unwired to either capability gate", () => {
     const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
     const outOfScope = [
       path.join("app", "api", "appointments", "cancel", "route.ts"),
-      path.join("app", "api", "cron", "reminders", "route.ts"),
+      // Sends no client notifications -- only synchronizes Stripe
+      // subscription state -- so it has no notification capability to gate.
       path.join("app", "api", "cron", "reconcile-subscriptions", "route.ts"),
       path.join("app", "api", "stripe", "checkout", "route.ts"),
       path.join("app", "api", "stripe", "portal", "route.ts"),
