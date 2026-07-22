@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -38,6 +39,9 @@ export async function POST(req: Request) {
     if (session.role !== "owner") {
       return json({ error: "Unauthorized" }, 403);
     }
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
 
     const body = await req.json();
 
@@ -79,6 +83,9 @@ export async function PATCH(req: Request) {
     if (session.role !== "owner" && !isTester) {
       return json({ error: "Unauthorized" }, 403);
     }
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
 
     const body = await req.json();
 

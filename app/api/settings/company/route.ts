@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -63,6 +64,9 @@ export async function POST(req: Request) {
     if (session.role !== "owner") {
       return json({ error: "Unauthorized" }, 403);
     }
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
 
     const body = await req.json();
 

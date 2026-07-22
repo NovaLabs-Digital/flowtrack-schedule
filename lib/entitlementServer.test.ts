@@ -334,7 +334,7 @@ describe("no database mutation or external provider call is reachable from these
   });
 });
 
-describe("no operational route imports or invokes the new gate yet", () => {
+describe("only the approved Phase 5.4E1 routes reference the new gate -- every other route remains unwired", () => {
   function walk(dir: string, out: string[] = []): string[] {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
@@ -348,14 +348,51 @@ describe("no operational route imports or invokes the new gate yet", () => {
     return out;
   }
 
-  test("grepping app/ for requireCapability/requireCapabilityForWorkspace finds zero call sites", () => {
+  // Phase 5.4E1's exact, approved scope. Any file outside this set that
+  // starts referencing requireCapability/requireCapabilityForWorkspace
+  // means enforcement crept into a route nobody reviewed for it yet --
+  // this test exists specifically to catch that, not just to check the
+  // four routes below were wired correctly (their own route.test.ts files
+  // already prove that).
+  const APPROVED_E1_ROUTES = [
+    path.join("app", "api", "clients", "route.ts"),
+    path.join("app", "api", "employees", "route.ts"),
+    path.join("app", "api", "services", "route.ts"),
+    path.join("app", "api", "settings", "company", "route.ts"),
+  ];
+
+  test("exactly the four approved E1 routes reference requireCapability; every other app/ file does not", () => {
     const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
     const appDir = path.join(projectRoot, "app");
-    const offenders: string[] = [];
+    const referencing: string[] = [];
     for (const file of walk(appDir)) {
       const text = fs.readFileSync(file, "utf8");
-      if (text.includes("requireCapability")) offenders.push(file);
+      if (text.includes("requireCapability")) referencing.push(path.relative(projectRoot, file));
     }
-    assert.deepEqual(offenders, [], `expected zero references under app/, found: ${offenders.join(", ")}`);
+    assert.deepEqual(referencing.sort(), [...APPROVED_E1_ROUTES].sort());
+  });
+
+  test("appointment, public-booking, cancellation, job-tracking, cron, and Stripe routes remain unwired", () => {
+    const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
+    const outOfScope = [
+      path.join("app", "api", "appointments", "create", "route.ts"),
+      path.join("app", "api", "appointments", "update", "route.ts"),
+      path.join("app", "api", "appointments", "delete", "route.ts"),
+      path.join("app", "api", "appointments", "cancel", "route.ts"),
+      path.join("app", "api", "appointments", "manage-recurrence", "route.ts"),
+      path.join("app", "api", "appointments", "job", "route.ts"),
+      path.join("app", "api", "appointments", "employee-hours", "route.ts"),
+      path.join("app", "api", "book", "availability", "route.ts"),
+      path.join("app", "api", "cron", "reminders", "route.ts"),
+      path.join("app", "api", "cron", "reconcile-subscriptions", "route.ts"),
+      path.join("app", "api", "stripe", "checkout", "route.ts"),
+      path.join("app", "api", "stripe", "portal", "route.ts"),
+      path.join("app", "api", "stripe", "webhook", "route.ts"),
+    ];
+    for (const rel of outOfScope) {
+      const full = path.join(projectRoot, rel);
+      const text = fs.readFileSync(full, "utf8");
+      assert.ok(!text.includes("requireCapability"), `${rel} must remain unwired in Phase 5.4E1`);
+    }
   });
 });

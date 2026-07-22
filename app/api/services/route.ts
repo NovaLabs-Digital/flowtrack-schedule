@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -39,6 +40,9 @@ export async function POST(req: Request) {
       return json({ error: "Unauthorized" }, 403);
     }
 
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
+
     const body = await req.json();
 
     const name = (body.name || "").trim();
@@ -73,6 +77,9 @@ export async function PATCH(req: Request) {
     if (session.role !== "owner" && !isTester) {
       return json({ error: "Unauthorized" }, 403);
     }
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
 
     const body = await req.json();
 
@@ -125,6 +132,9 @@ export async function DELETE(req: Request) {
     if (session.role !== "owner" && session.role !== "tester") {
       return json({ error: "Unauthorized" }, 403);
     }
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
 
     const body = await req.json();
     const id = (body.id || "").trim();

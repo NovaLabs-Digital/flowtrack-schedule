@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -19,13 +20,22 @@ const OPTIONAL_BOOL_FIELDS = ["auto_email", "auto_sms"];
 export async function PATCH(req: Request) {
   try {
     const body = await req.json();
-    const id = (body.id || "").trim();
-    if (!id) return json({ error: "Missing client id" }, 400);
 
     const session = await getSession();
     const deny = requireRole(session, ["owner", "tester"]);
     if (deny) return deny;
     assertWorkspace(session);
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
+
+    // Request-shape validation runs only after authentication, role
+    // authorization, and the entitlement gate have all passed — an
+    // unauthenticated or restricted caller must never learn "your request
+    // was also malformed" before learning "you're not allowed to do this."
+    const id = (body.id || "").trim();
+    if (!id) return json({ error: "Missing client id" }, 400);
+
     const isTester = session.role === "tester";
     // Always confirm the row exists in this workspace before mutating —
     // an UPDATE whose WHERE clause matches nothing succeeds silently with
@@ -84,13 +94,22 @@ export async function POST(req: Request) {
   try {
     const body = await req.json();
     const action = (body.action || "").trim();
-    const id = (body.id || "").trim();
-    if (!id) return json({ error: "Missing client id" }, 400);
 
     const session = await getSession();
     const deny = requireRole(session, ["owner", "tester"]);
     if (deny) return deny;
     assertWorkspace(session);
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
+
+    // Request-shape validation runs only after authentication, role
+    // authorization, and the entitlement gate have all passed — an
+    // unauthenticated or restricted caller must never learn "your request
+    // was also malformed" before learning "you're not allowed to do this."
+    const id = (body.id || "").trim();
+    if (!id) return json({ error: "Missing client id" }, 400);
+
     const isTester = session.role === "tester";
     // Always confirm the row exists in this workspace before mutating —
     // an UPDATE whose WHERE clause matches nothing succeeds silently with
