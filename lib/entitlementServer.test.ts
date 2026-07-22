@@ -334,7 +334,7 @@ describe("no database mutation or external provider call is reachable from these
   });
 });
 
-describe("only the approved Phase 5.4E1/5.4E2 routes reference the new gate -- every other route remains unwired", () => {
+describe("only the approved Phase 5.4E1/5.4E2/5.4E3 routes reference the new gate -- every other route remains unwired", () => {
   function walk(dir: string, out: string[] = []): string[] {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
@@ -348,7 +348,7 @@ describe("only the approved Phase 5.4E1/5.4E2 routes reference the new gate -- e
     return out;
   }
 
-  // The exact, approved scope through Phase 5.4E2. Any file outside this
+  // The exact, approved scope through Phase 5.4E3. Any file outside this
   // set that starts referencing requireCapability/requireCapabilityForWorkspace
   // means enforcement crept into a route nobody reviewed for it yet -- this
   // test exists specifically to catch that, not just to check the routes
@@ -363,9 +363,17 @@ describe("only the approved Phase 5.4E1/5.4E2 routes reference the new gate -- e
     // Phase 5.4E2 -- authenticated job tracking / manual employee hours.
     path.join("app", "api", "appointments", "job", "route.ts"),
     path.join("app", "api", "appointments", "employee-hours", "route.ts"),
+    // Phase 5.4E3 -- authenticated appointment editing/cancellation/recurrence.
+    // appointments/create is deliberately excluded: it serves both
+    // authenticated owner/tester creation AND unauthenticated public
+    // booking in one handler (ambiguous authentication), so it was not
+    // wired in this phase -- see the Phase 5.4E3 report.
+    path.join("app", "api", "appointments", "update", "route.ts"),
+    path.join("app", "api", "appointments", "delete", "route.ts"),
+    path.join("app", "api", "appointments", "manage-recurrence", "route.ts"),
   ];
 
-  test("exactly the approved E1/E2 routes reference requireCapability; every other app/ file does not", () => {
+  test("exactly the approved E1/E2/E3 routes reference requireCapability; every other app/ file does not", () => {
     const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
     const appDir = path.join(projectRoot, "app");
     const referencing: string[] = [];
@@ -376,14 +384,11 @@ describe("only the approved Phase 5.4E1/5.4E2 routes reference the new gate -- e
     assert.deepEqual(referencing.sort(), [...APPROVED_ROUTES].sort());
   });
 
-  test("appointment create/update/delete/cancel/recurrence, public-booking, cron, and Stripe routes remain unwired", () => {
+  test("appointment create (public+authenticated), public cancellation/booking, cron, and Stripe routes remain unwired", () => {
     const projectRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
     const outOfScope = [
       path.join("app", "api", "appointments", "create", "route.ts"),
-      path.join("app", "api", "appointments", "update", "route.ts"),
-      path.join("app", "api", "appointments", "delete", "route.ts"),
       path.join("app", "api", "appointments", "cancel", "route.ts"),
-      path.join("app", "api", "appointments", "manage-recurrence", "route.ts"),
       path.join("app", "api", "book", "availability", "route.ts"),
       path.join("app", "api", "cron", "reminders", "route.ts"),
       path.join("app", "api", "cron", "reconcile-subscriptions", "route.ts"),
@@ -394,7 +399,7 @@ describe("only the approved Phase 5.4E1/5.4E2 routes reference the new gate -- e
     for (const rel of outOfScope) {
       const full = path.join(projectRoot, rel);
       const text = fs.readFileSync(full, "utf8");
-      assert.ok(!text.includes("requireCapability"), `${rel} must remain unwired through Phase 5.4E2`);
+      assert.ok(!text.includes("requireCapability"), `${rel} must remain unwired through Phase 5.4E3`);
     }
   });
 });

@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, NotifyChannel } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -20,6 +21,14 @@ async function hasColumn(col: string): Promise<boolean> {
 
 export async function POST(req: Request) {
   try {
+    const session = await getSession();
+    const deny = requireRole(session, ["owner", "tester"]);
+    if (deny) return deny;
+    assertWorkspace(session);
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
+
     const body = await req.json();
 
     const appointment_id = (body.appointment_id || "").trim();
@@ -29,10 +38,6 @@ export async function POST(req: Request) {
       return json({ error: "Invalid mode" }, 400);
     const notify_channel: NotifyChannel = body.notify_channel || "none";
 
-    const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
-    if (deny) return deny;
-    assertWorkspace(session);
     const isTester = session.role === "tester";
     const workspaceId = session.workspaceId;
 

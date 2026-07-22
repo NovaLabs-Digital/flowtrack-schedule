@@ -51,6 +51,12 @@ export function createFakeSupabaseAdmin(responses: Record<string, FakeSupabaseFi
     const builder: Record<string, unknown> = {
       select: (...args: unknown[]) => { record("select", args); return builder; },
       eq: (...args: unknown[]) => { record("eq", args); return builder; },
+      neq: (...args: unknown[]) => { record("neq", args); return builder; },
+      gt: (...args: unknown[]) => { record("gt", args); return builder; },
+      gte: (...args: unknown[]) => { record("gte", args); return builder; },
+      lt: (...args: unknown[]) => { record("lt", args); return builder; },
+      lte: (...args: unknown[]) => { record("lte", args); return builder; },
+      in: (...args: unknown[]) => { record("in", args); return builder; },
       order: (...args: unknown[]) => { record("order", args); return builder; },
       limit: (...args: unknown[]) => { record("limit", args); return builder; },
       is: (...args: unknown[]) => { record("is", args); return builder; },
@@ -114,6 +120,73 @@ export function deniedCapabilityResponse(): NextResponse {
 // / resolveWorkspaceEntitlement() chain runs unmocked, end to end, against
 // the fake Supabase client -- proving actual production entitlement logic
 // gates the route, not a stand-in.
+// Fake replacement for @/lib/notify's named exports, for use with
+// mock.module("@/lib/notify", { namedExports: createFakeNotify(...).namedExports }).
+// The REAL lib/notify.ts constructs a Twilio client at module-load time
+// (new Stripe-style top-level side effect) which throws without real
+// credentials, so it can never be imported (even transitively) during
+// tests -- this is the "test-only import seam" contemplated for
+// notification-capable routes. shouldSend/describeProviderError are
+// faithful copies of the real (pure, dependency-free) logic; recordMessageSent
+// routes through the SAME fake Supabase client passed in, so messages_sent
+// writes show up in the ordinary call log (writeCalls/calls.filter(...))
+// exactly like any other table; sendEmail/sendSms are call-tracking spies
+// whose resolved value (success provider id, or a rejection to simulate a
+// provider failure) is swappable per test via setSendEmailImpl/setSendSmsImpl.
+export interface FakeNotifyEmailCall {
+  to: string;
+  subject: string;
+  text: string;
+  workspaceId: string;
+}
+export interface FakeNotifySmsCall {
+  to: string;
+  body: string;
+  workspaceId: string;
+}
+
+export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Record<string, unknown> }) {
+  const emailCalls: FakeNotifyEmailCall[] = [];
+  const smsCalls: FakeNotifySmsCall[] = [];
+  let sendEmailImpl: (to: string, subject: string, text: string, workspaceId: string) => Promise<string> =
+    async () => "fake-email-provider-id";
+  let sendSmsImpl: (to: string, body: string, workspaceId: string) => Promise<string> =
+    async () => "fake-sms-provider-id";
+
+  const namedExports = {
+    shouldSend: (channel: string | undefined, medium: "email" | "sms") => {
+      if (!channel || channel === "none") return false;
+      if (channel === "both") return true;
+      return channel === medium;
+    },
+    describeProviderError: (err: unknown) => (err instanceof Error ? err.message : String(err)),
+    recordMessageSent: async (row: unknown) => {
+      const builder = supabaseAdminRef.from("messages_sent") as { insert: (row: unknown) => Promise<unknown> };
+      await builder.insert(row);
+    },
+    sendEmail: async (to: string, subject: string, text: string, workspaceId: string) => {
+      emailCalls.push({ to, subject, text, workspaceId });
+      return sendEmailImpl(to, subject, text, workspaceId);
+    },
+    sendSms: async (to: string, body: string, workspaceId: string) => {
+      smsCalls.push({ to, body, workspaceId });
+      return sendSmsImpl(to, body, workspaceId);
+    },
+  };
+
+  return {
+    namedExports,
+    emailCalls,
+    smsCalls,
+    setSendEmailImpl: (fn: (to: string, subject: string, text: string, workspaceId: string) => Promise<string>) => {
+      sendEmailImpl = fn;
+    },
+    setSendSmsImpl: (fn: (to: string, body: string, workspaceId: string) => Promise<string>) => {
+      sendSmsImpl = fn;
+    },
+  };
+}
+
 export function subscriptionRow(
   overrides: Partial<{
     billing_mode: "internal" | "stripe";

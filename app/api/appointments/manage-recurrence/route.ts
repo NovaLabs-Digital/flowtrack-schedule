@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { generateFutureDates } from "@/lib/recurrence";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -12,6 +13,14 @@ function json(data: any, status = 200) {
 
 export async function POST(req: Request) {
   try {
+    const session = await getSession();
+    const deny = requireRole(session, ["owner", "tester"]);
+    if (deny) return deny;
+    assertWorkspace(session);
+
+    const capability = await requireCapability(session, "canMutateOperationalData");
+    if (!capability.allowed) return capability.response;
+
     const body = await req.json();
 
     const appointmentId = (body.appointment_id || "").trim();
@@ -23,10 +32,6 @@ export async function POST(req: Request) {
       return json({ error: "Invalid frequency_type" }, 400);
     }
 
-    const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
-    if (deny) return deny;
-    assertWorkspace(session);
     const isTester = session.role === "tester";
     const workspaceId = session.workspaceId;
 
