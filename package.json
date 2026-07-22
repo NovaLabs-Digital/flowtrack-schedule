@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --test lib/entitlement.test.ts"
+    "test": "node --import ./scripts/test-register.mjs --test lib/entitlement.test.ts lib/stripeWebhook.test.ts lib/reconcileSubscriptions.test.ts"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",

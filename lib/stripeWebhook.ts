@@ -30,6 +30,10 @@ function toIso(unixSeconds: number | null | undefined): string | null {
   return unixSeconds === null || unixSeconds === undefined ? null : new Date(unixSeconds * 1000).toISOString();
 }
 
+function isValidDate(d: Date): boolean {
+  return !Number.isNaN(d.getTime());
+}
+
 // checkout.session.completed / customer.subscription.* events carry
 // metadata.workspace_id directly (we set it ourselves at Checkout-creation
 // time — see app/api/stripe/checkout). invoice.* events don't (Stripe
@@ -242,6 +246,57 @@ export async function updateSubscriptionIfNewer(
 }
 
 // ============================================================================
+// Phase 5.4B — the reconciliation write path. Deliberately NOT the same
+// function as updateSubscriptionIfNewer above, and deliberately does not
+// touch last_event_created_at at all. Full reasoning (see the Phase 5.4B
+// investigation report for the demonstration this is based on):
+//
+// A reconciliation read is authoritative live Stripe state, but — unlike a
+// webhook — it has no Stripe event.created timestamp of its own. Inventing
+// one (e.g. "now," at read or write time) and forcing it through
+// updateSubscriptionIfNewer would let reconciliation's own invented
+// timestamp incorrectly BLOCK a genuinely newer webhook that arrives
+// shortly after: Stripe's event.created has only second-level resolution
+// and real delivery latency, so a legitimately newer event's timestamp can
+// easily be EARLIER than reconciliation's own wall-clock "now" — exactly
+// the scenario reconciliation exists to run into (Stripe's own retry
+// backoff after an outage). That would silently drop a real update, which
+// is worse than reconciliation doing nothing.
+//
+// Instead: reconciliation writes are gated by optimistic concurrency
+// (compare-and-swap) on the row's last_event_created_at value AS OBSERVED
+// AT READ TIME — the WHERE clause requires it to be EXACTLY unchanged since
+// reconciliation read it a moment ago. If a webhook lands in that tiny
+// window and advances last_event_created_at, this write matches zero rows
+// and is safely skipped (reported as "superseded," not a failure) rather
+// than overwriting the webhook's newer data. Crucially, the SET clause
+// never includes last_event_created_at — a successful reconciliation write
+// leaves that column exactly as it was, so it can never affect any future
+// webhook's ordering comparison. The only thing to a reconciliation-touched
+// row that changes is `updated_at`, which this function uses purely as a
+// "last confirmed by reconciliation" bookkeeping marker driving the
+// eligibility query in app/api/cron/reconcile-subscriptions — no webhook
+// code reads or writes updated_at, so this has zero effect on webhook
+// ordering/idempotency/conflict/recovery behavior.
+export async function updateSubscriptionIfUnchanged(
+  workspaceId: string,
+  observedLastEventCreatedAt: string | null,
+  patch: Record<string, unknown>
+): Promise<boolean> {
+  let query = supabaseAdmin
+    .from("subscriptions")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("workspace_id", workspaceId);
+  query =
+    observedLastEventCreatedAt === null
+      ? query.is("last_event_created_at", null)
+      : query.eq("last_event_created_at", observedLastEventCreatedAt);
+  const { data, error } = await query.select("workspace_id").maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+// ============================================================================
 // Conflicting-subscription guard. If a workspace already has a live
 // subscription (trialing/active/past_due) and a webhook reports a
 // *different* subscription id for that workspace, that is evidence of a
@@ -259,7 +314,7 @@ export function isBlockingSubscriptionStatus(status: string | null): boolean {
   return !!status && LIVE_BLOCKING_STATUSES.has(status);
 }
 
-function detectSubscriptionConflict(
+export function detectSubscriptionConflict(
   currentSubscriptionId: string | null,
   currentStatus: string | null,
   incomingSubscriptionId: string
@@ -278,7 +333,51 @@ function detectSubscriptionConflict(
 // be retried.
 // ============================================================================
 
-export function buildSubscriptionPatchFromStripeSubscription(sub: Stripe.Subscription): Record<string, unknown> {
+// ============================================================================
+// Grace-period episode logic (Phase 5.4B). Approved policy: the 3-day grace
+// window begins with the FIRST payment failure of a continuous past_due
+// episode; repeated failures within that same episode must not extend or
+// reset it; any authoritative transition out of past_due clears it
+// immediately; a later genuinely new past_due episode may start a fresh one.
+//
+// The episode boundary is grace_until itself: it is only ever non-null while
+// a past_due episode is open (cleared to null the instant status moves away
+// from past_due, by the branch below), so "grace_until is currently null"
+// and "no past_due episode is open right now" are the same fact. This is
+// the ONLY grace calculation in the codebase — both the webhook handlers and
+// the Phase 5.4B reconciliation route funnel through this one function via
+// buildSubscriptionPatchFromStripeSubscription, so there is exactly one
+// interpretation of "does a fresh grace window need to start."
+function computeGracePatchField(liveStatus: string, currentGraceUntil: string | null): { grace_until?: string | null } {
+  if (liveStatus !== "past_due") {
+    // Any authoritative transition out of past_due (recovery to
+    // active/trialing, cancellation, pause, etc.) clears grace immediately.
+    return { grace_until: null };
+  }
+  if (currentGraceUntil === null) {
+    // No episode currently open — this is the first known past_due signal
+    // since grace was last cleared. Start exactly one fresh 3-day window.
+    return { grace_until: new Date(Date.now() + GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString() };
+  }
+  if (!isValidDate(new Date(currentGraceUntil))) {
+    // Can't confirm whether an episode is genuinely already open. Fail safe
+    // by NOT granting a fresh window — leave the malformed value in place
+    // (omit grace_until from the patch entirely) so Phase 5.4A's own
+    // malformed-state handling (resolveEntitlement) applies instead of this
+    // module silently extending access.
+    console.error("STRIPE_SYNC_GRACE_UNTIL_MALFORMED");
+    return {};
+  }
+  // A valid grace_until already exists — still the same open episode.
+  // Preserve it exactly: omit grace_until from the patch so the stored
+  // value is left completely untouched, not extended, not reset.
+  return {};
+}
+
+export function buildSubscriptionPatchFromStripeSubscription(
+  sub: Stripe.Subscription,
+  currentGraceUntil: string | null
+): Record<string, unknown> {
   const currentPeriodEnd = sub.items?.data?.[0]?.current_period_end ?? null;
   const patch: Record<string, unknown> = {
     stripe_subscription_id: sub.id,
@@ -290,14 +389,7 @@ export function buildSubscriptionPatchFromStripeSubscription(sub: Stripe.Subscri
     cancel_at_period_end: sub.cancel_at_period_end,
     canceled_at: toIso(sub.canceled_at),
   };
-  if (sub.status !== "past_due") {
-    // grace_until only has meaning while status is 'past_due' (see
-    // resolveEntitlement) — clear any stale value on every other status.
-    // While status IS past_due, this generic sync leaves it alone; the
-    // invoice handlers below set/clear it explicitly, since they know the
-    // actual failure/success instant.
-    patch.grace_until = null;
-  }
+  Object.assign(patch, computeGracePatchField(sub.status, currentGraceUntil));
   return patch;
 }
 
@@ -345,7 +437,7 @@ export async function handleCheckoutSessionCompleted(
 
   const { data: row, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, stripe_subscription_id, stripe_status")
+    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (error) throw error;
@@ -363,7 +455,7 @@ export async function handleCheckoutSessionCompleted(
     return;
   }
 
-  const patch = buildSubscriptionPatchFromStripeSubscription(subscription);
+  const patch = buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until);
   if (!(await verifyClaimOwnership(event.id, claimToken))) {
     console.error("STRIPE_WEBHOOK_CLAIM_LOST_BEFORE_MUTATION");
     return;
@@ -386,7 +478,7 @@ export async function handleSubscriptionUpsert(
 
   const { data: row, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, stripe_subscription_id, stripe_status")
+    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (error) throw error;
@@ -402,7 +494,7 @@ export async function handleSubscriptionUpsert(
     return;
   }
 
-  const patch = buildSubscriptionPatchFromStripeSubscription(subscription);
+  const patch = buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until);
   if (!(await verifyClaimOwnership(event.id, claimToken))) {
     console.error("STRIPE_WEBHOOK_CLAIM_LOST_BEFORE_MUTATION");
     return;
@@ -455,6 +547,12 @@ export async function handleSubscriptionDeleted(event: Stripe.Event, claimToken:
     stripe_status: sub.status,
     cancel_at_period_end: sub.cancel_at_period_end,
     canceled_at: toIso(sub.canceled_at),
+    // Deletion is a terminal transition out of past_due (status becomes
+    // 'canceled') — the approved grace policy clears grace_until on ANY
+    // authoritative transition out of past_due, including this one. Set
+    // unconditionally: a deleted subscription can never legitimately still
+    // have an open grace episode.
+    grace_until: null,
   });
 }
 
@@ -468,15 +566,17 @@ function extractInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
 // subscription id off the invoice, then retrieve the authoritative live
 // subscription and sync the same full patch every other handler uses —
 // status is never inferred from the invoice event type itself, only read
-// from what Stripe's subscriptions API reports right now. The one thing
-// specific to each direction is the grace window, applied on top of that
-// authoritative patch (see each function below).
+// from what Stripe's subscriptions API reports right now. Grace handling is
+// no longer specific to either direction (Phase 5.4B): it's fully embedded
+// in buildSubscriptionPatchFromStripeSubscription's episode logic, driven
+// entirely by (live status, currently stored grace_until) — so both
+// handlers below are now identical thin wrappers, kept as separate exported
+// names for API stability rather than collapsed into one.
 async function syncSubscriptionFromInvoiceEvent(
   event: Stripe.Event,
   claimToken: string,
   config: StripeConfig,
-  deps: WebhookDeps,
-  applyGrace: (patch: Record<string, unknown>, liveStatus: string) => void = () => {}
+  deps: WebhookDeps
 ): Promise<void> {
   const invoice = event.data.object as Stripe.Invoice;
   const subscriptionId = extractInvoiceSubscriptionId(invoice);
@@ -487,7 +587,7 @@ async function syncSubscriptionFromInvoiceEvent(
 
   const { data: row, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, stripe_subscription_id, stripe_status")
+    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until")
     .eq("stripe_subscription_id", subscriptionId)
     .maybeSingle();
   if (error) throw error;
@@ -505,8 +605,7 @@ async function syncSubscriptionFromInvoiceEvent(
     return;
   }
 
-  const patch = buildSubscriptionPatchFromStripeSubscription(subscription);
-  applyGrace(patch, subscription.status);
+  const patch = buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until);
 
   if (!(await verifyClaimOwnership(event.id, claimToken))) {
     console.error("STRIPE_WEBHOOK_CLAIM_LOST_BEFORE_MUTATION");
@@ -521,26 +620,9 @@ export async function handleInvoicePaymentFailed(
   config: StripeConfig,
   deps: WebhookDeps = defaultDeps(config)
 ): Promise<void> {
-  await syncSubscriptionFromInvoiceEvent(event, claimToken, config, deps, (patch, liveStatus) => {
-    // Only grant the 3-day grace if Stripe's authoritative state still
-    // shows past_due right now — if it's already moved on (e.g. straight to
-    // canceled), granting a fresh grace window would be wrong, and the
-    // generic patch builder's own status-based clearing already handles
-    // that case correctly.
-    if (liveStatus === "past_due") {
-      patch.grace_until = new Date(Date.now() + GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    }
-  });
+  await syncSubscriptionFromInvoiceEvent(event, claimToken, config, deps);
 }
 
-// No custom applyGrace needed: buildSubscriptionPatchFromStripeSubscription
-// already clears grace_until whenever the authoritative live status isn't
-// past_due, and leaves it untouched (retained) when it still is — exactly
-// "clear grace only once no longer past_due; otherwise retain the existing
-// deadline and keep synchronizing everything else." A successful invoice
-// doesn't always mean the subscription itself has recovered (e.g. it could
-// be a different invoice on the same subscription) — trust the
-// authoritative retrieved status, not the invoice event type, to decide.
 export async function handleInvoicePaymentSucceeded(
   event: Stripe.Event,
   claimToken: string,
