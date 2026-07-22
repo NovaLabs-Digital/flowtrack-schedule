@@ -27,6 +27,7 @@ import {
   CenterMode,
   SettingsSection,
 } from "@/app/components/dashboard/types";
+import type { EntitlementView } from "@/lib/entitlementView";
 
 type ModalState =
   | { mode: "create"; prefillDate?: string; prefillTime?: string }
@@ -46,6 +47,12 @@ export default function DashboardShell({
   employees: Employee[];
   employeeHours: EmployeeHours[];
   isTester: boolean;
+  // Phase 5.5B: plumbed through from app/dashboard/page.tsx so the prop
+  // contract exists end-to-end, but deliberately not read yet -- no banner,
+  // no disabled control, and no other visible behavior change is part of
+  // this phase. A later phase reads this to render the restricted/grace
+  // banner and disable mutation entrances.
+  entitlement: EntitlementView;
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");

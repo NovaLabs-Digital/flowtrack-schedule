@@ -3,6 +3,8 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession } from "@/lib/session";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 import { fetchAllPages } from "@/lib/paginate";
+import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
+import { projectEntitlementForOwner } from "@/lib/entitlementView";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -140,6 +142,15 @@ export default async function DashboardPage() {
     );
   }
 
+  // Resolved through the same canonical resolver every backend capability
+  // gate already uses, for this exact session-derived workspaceId — never a
+  // second policy. Projected to the minimum browser-safe shape (see
+  // lib/entitlementView.ts) before it ever reaches a client component; the
+  // raw EntitlementResult (state, reason, billing_mode, Stripe fields, IDs)
+  // never leaves this server component.
+  const entitlementResult = await fetchEntitlementForWorkspace(workspaceId);
+  const entitlement = projectEntitlementForOwner(entitlementResult);
+
   return (
     <DashboardShell
       clients={clients ?? []}
@@ -148,6 +159,7 @@ export default async function DashboardPage() {
       employees={employees ?? []}
       employeeHours={employeeHours}
       isTester={isTester}
+      entitlement={entitlement}
     />
   );
 }

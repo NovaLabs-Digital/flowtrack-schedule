@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatHoursAsDuration } from "@/lib/payroll";
+import type { EmployeeEntitlementView } from "@/lib/entitlementView";
 
 type Appointment = {
   id: string;
@@ -27,6 +28,12 @@ type Props = {
   officePhone: string | null;
   thisWeekHours: number;
   lastWeekHours: number;
+  // Phase 5.5B: plumbed through from app/schedule/page.tsx so the prop
+  // contract exists end-to-end, but deliberately not read yet -- no
+  // disabled Start/Complete button and no other visible behavior change is
+  // part of this phase. A later phase reads this to disable job tracking
+  // with a neutral, non-billing explanation.
+  entitlement: EmployeeEntitlementView;
 };
 
 function addDays(d: Date, n: number) {

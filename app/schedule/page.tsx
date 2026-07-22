@@ -6,6 +6,8 @@ import EmployeeSchedule from "@/app/components/schedule/EmployeeSchedule";
 import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
 import { nowInBusinessTz } from "@/lib/timezone";
 import type { Appointment, EmployeeHours } from "@/app/components/dashboard/types";
+import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
+import { projectEntitlementForEmployee } from "@/lib/entitlementView";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -145,6 +147,14 @@ export default async function SchedulePage() {
     rangeEnd: toDateInputValue(lastWeekEnd),
   });
 
+  // Resolved through the same canonical resolver every backend capability
+  // gate already uses, for this exact session-derived workspaceId. Projected
+  // to the employee-only shape (see lib/entitlementView.ts) -- an employee
+  // prop never carries recoveryAction, bannerVariant, or any billing-state
+  // distinction, only whether job tracking is currently available.
+  const entitlementResult = await fetchEntitlementForWorkspace(workspaceId);
+  const entitlement = projectEntitlementForEmployee(entitlementResult);
+
   return (
     <EmployeeSchedule
       employee={{ id: employee.id, name: employee.name, color: employee.color, position: employee.position ?? null }}
@@ -154,6 +164,7 @@ export default async function SchedulePage() {
       officePhone={officePhone}
       thisWeekHours={thisWeek.rows[0]?.hoursWorked ?? 0}
       lastWeekHours={lastWeek.rows[0]?.hoursWorked ?? 0}
+      entitlement={entitlement}
     />
   );
 }
