@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, describeProviderError, recordMessageSent } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
+import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -40,6 +41,21 @@ export async function POST(req: Request) {
       .eq("workspace_id", workspaceId);
 
     if (apptRes.data.is_demo) {
+      return json({ ok: true });
+    }
+
+    // The cancellation itself is intentionally never gated (Phase 5.4F/5.4G
+    // policy decision): a valid token must always be able to cancel its
+    // exact appointment regardless of the workspace's subscription state.
+    // Only the notification that follows is subject to canSendNotifications
+    // -- resolved here, per Phase 5.4G, using the workspace_id already read
+    // off the matched appointment row above (never request input). A
+    // restricted/malformed/query-error result returns the same successful
+    // cancellation response with zero further reads: the client lookup
+    // below exists solely to build the notification, so it's skipped
+    // entirely rather than performed and then discarded.
+    const capability = await requireCapabilityForWorkspace(workspaceId, "canSendNotifications");
+    if (!capability.allowed) {
       return json({ ok: true });
     }
 
