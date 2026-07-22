@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -18,6 +19,9 @@ export async function POST(req: Request) {
 
     const employeeId = session.employeeId;
     const workspaceId = session.workspaceId;
+
+    const capability = await requireCapability(session, "canUseJobTracking");
+    if (!capability.allowed) return capability.response;
 
     const body = await req.json();
     const appointmentId = (body.appointment_id || "").trim();

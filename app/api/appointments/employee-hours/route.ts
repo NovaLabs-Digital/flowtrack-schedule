@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { isJobTrackingComplete } from "@/lib/payroll";
+import { requireCapability } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -16,6 +17,9 @@ export async function POST(req: Request) {
     if (deny) return deny;
     assertWorkspace(session);
     const workspaceId = session.workspaceId;
+
+    const capability = await requireCapability(session, "canUseJobTracking");
+    if (!capability.allowed) return capability.response;
 
     const body = await req.json();
 

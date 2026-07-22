@@ -56,6 +56,7 @@ export function createFakeSupabaseAdmin(responses: Record<string, FakeSupabaseFi
       is: (...args: unknown[]) => { record("is", args); return builder; },
       update: (...args: unknown[]) => { record("update", args); return builder; },
       insert: (...args: unknown[]) => { record("insert", args); return builder; },
+      upsert: (...args: unknown[]) => { record("upsert", args); return builder; },
       delete: (...args: unknown[]) => { record("delete", args); return builder; },
       maybeSingle: () => { record("maybeSingle", []); return resolve(); },
       single: () => { record("single", []); return resolve(); },
