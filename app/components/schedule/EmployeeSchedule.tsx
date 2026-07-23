@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatHoursAsDuration } from "@/lib/payroll";
 import type { EmployeeEntitlementView } from "@/lib/entitlementView";
+import EmployeeJobActionButton from "@/app/components/schedule/EmployeeJobActionButton";
 
 type Appointment = {
   id: string;
@@ -28,11 +29,12 @@ type Props = {
   officePhone: string | null;
   thisWeekHours: number;
   lastWeekHours: number;
-  // Phase 5.5B: plumbed through from app/schedule/page.tsx so the prop
-  // contract exists end-to-end, but deliberately not read yet -- no
-  // disabled Start/Complete button and no other visible behavior change is
-  // part of this phase. A later phase reads this to disable job tracking
-  // with a neutral, non-billing explanation.
+  // Phase 5.5B plumbed this through from app/schedule/page.tsx without
+  // reading it. Phase 5.5E-D reads canUseJobTracking to disable Start/
+  // Complete (via EmployeeJobActionButton) with a neutral operational
+  // explanation -- the server-side canUseJobTracking capability gate in
+  // app/api/appointments/job/route.ts remains the authoritative
+  // enforcement; this is UX only.
   entitlement: EmployeeEntitlementView;
 };
 
@@ -76,7 +78,7 @@ function greeting(): string {
   return "Good evening";
 }
 
-export default function EmployeeSchedule({ employee, appointments, clients, serviceColors, officePhone, thisWeekHours, lastWeekHours }: Props) {
+export default function EmployeeSchedule({ employee, appointments, clients, serviceColors, officePhone, thisWeekHours, lastWeekHours, entitlement }: Props) {
   const router = useRouter();
   const [dayOffset, setDayOffset] = useState(0);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -335,23 +337,12 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                   {/* Job action button */}
                   {!isCompleted && (
                     <div className="pt-2">
-                      {!isStarted ? (
-                        <button
-                          onClick={() => handleJobAction(a.id, "start")}
-                          disabled={loadingJob === a.id}
-                          className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white active:bg-blue-700 disabled:opacity-50 transition-colors"
-                        >
-                          {loadingJob === a.id ? "Starting..." : "Start Job"}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleJobAction(a.id, "complete")}
-                          disabled={loadingJob === a.id}
-                          className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white active:bg-emerald-700 disabled:opacity-50 transition-colors"
-                        >
-                          {loadingJob === a.id ? "Completing..." : "Complete Job"}
-                        </button>
-                      )}
+                      <EmployeeJobActionButton
+                        action={!isStarted ? "start" : "complete"}
+                        loading={loadingJob === a.id}
+                        canUseJobTracking={entitlement.canUseJobTracking}
+                        onActivate={() => handleJobAction(a.id, !isStarted ? "start" : "complete")}
+                      />
                     </div>
                   )}
 
