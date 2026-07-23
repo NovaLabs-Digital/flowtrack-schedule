@@ -5,6 +5,18 @@ import { Appointment, Client, Service, Employee, EmployeeHours } from "@/app/com
 import { countFutureOccurrences } from "@/lib/recurrence";
 import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1A: shown once per modal instance, referenced via
+// aria-describedby by every capability-gated mutation button below, rather
+// than repeating the explanation next to each one -- avoids duplicating a
+// billing-adjacent notice throughout a single modal. Deliberately generic
+// operational wording (never billing/subscription/Stripe/entitlement
+// language) -- the existing owner account-status banner rendered above
+// this modal by its parent (unchanged by this phase) is the one place
+// that context is actually explained.
+const RESTRICTED_NOTICE_ID = "appointment-modal-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 const FALLBACK_SERVICES = [
   "Regular Cleaning",
@@ -167,9 +179,17 @@ type Props = {
   employeeHours: EmployeeHours[];
   editing?: { appointment: Appointment; client: Client };
   prefill?: { date: string; time: string };
+  // Phase 5.5E-E1A: the one canonical EntitlementView field this modal's
+  // mutation controls are governed by -- never a raw EntitlementView/
+  // EntitlementResult, never billing/subscription state, never a
+  // workspace/Stripe identifier. The server-side canMutateOperationalData
+  // capability gate on appointments/create, update, delete, and
+  // manage-recurrence (unchanged by this phase) remains the sole security
+  // boundary; this is UX only.
+  canMutateOperationalData: boolean;
 };
 
-export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, editing, prefill }: Props) {
+export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, editing, prefill, canMutateOperationalData }: Props) {
   const isEdit = !!editing;
 
   const serviceNames = services.length > 0 ? services.map((s) => s.name) : FALLBACK_SERVICES;
@@ -301,6 +321,13 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Blocks both a click on the (already-disabled) submit button AND a
+    // native implicit form submission triggered by pressing Enter inside
+    // any text input in this form -- the latter goes straight to this
+    // onSubmit handler, bypassing the button and its `disabled` attribute
+    // entirely, so this check (not the button's disabled state alone) is
+    // what actually prevents a restricted Enter-submit.
+    if (!canMutateOperationalData) return;
     if (!validateForm()) return;
 
     if (isEdit && isRecurring && !editScope) {
@@ -312,6 +339,11 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   }
 
   async function executeEdit(mode: "single" | "future") {
+    // Defense-in-depth: executeEdit has a second call site (the recurring-
+    // appointment edit-scope buttons below) that bypasses handleSubmit's
+    // own guard entirely, so the check is repeated here rather than relied
+    // on only at that one call site.
+    if (!canMutateOperationalData) return;
     if (!validateForm()) return;
 
     const scheduled_for = new Date(`${form.date}T${form.time_in}`).toISOString();
@@ -378,6 +410,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
   async function executeDelete(mode: "single" | "future") {
     if (!editing) return;
+    if (!canMutateOperationalData) return;
 
     setCancelling(true);
     setError("");
@@ -393,6 +426,29 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     } catch {
       setError("Network error. Please try again.");
     } finally { setCancelling(false); setShowDeleteMenu(false); setConfirmDelete(null); }
+  }
+
+  async function saveRecurrence() {
+    if (!editing) return;
+    if (!canMutateOperationalData) return;
+
+    setSavingRecurrence(true);
+    setError("");
+    try {
+      const res = await fetch("/api/appointments/manage-recurrence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          appointment_id: editing.appointment.id,
+          frequency_type: manageFreq,
+          repeat_weeks: manageWeeks,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(data?.error || "Failed to update recurrence."); return; }
+      onSaved();
+    } catch { setError("Network error."); }
+    finally { setSavingRecurrence(false); }
   }
 
   const inputCls = "w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900";
@@ -652,29 +708,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               )}
 
               <div className="flex gap-2 pt-1">
-                <button type="button" disabled={savingRecurrence}
-                  onClick={async () => {
-                    setSavingRecurrence(true);
-                    setError("");
-                    try {
-                      const res = await fetch("/api/appointments/manage-recurrence", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          appointment_id: editing.appointment.id,
-                          frequency_type: manageFreq,
-                          repeat_weeks: manageWeeks,
-                        }),
-                      });
-                      const data = await res.json().catch(() => ({}));
-                      if (!res.ok) { setError(data?.error || "Failed to update recurrence."); return; }
-                      onSaved();
-                    } catch { setError("Network error."); }
-                    finally { setSavingRecurrence(false); }
-                  }}
+                <CapabilityGatedButton
+                  type="button"
+                  allowed={canMutateOperationalData}
+                  disabled={savingRecurrence}
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                  onClick={saveRecurrence}
                   className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors">
                   {savingRecurrence ? "Saving..." : "Save Recurrence"}
-                </button>
+                </CapabilityGatedButton>
                 <button type="button" onClick={() => setShowManageRecurrence(false)}
                   className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-white transition-colors">
                   Cancel
@@ -757,20 +799,41 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
           )}
 
+          {/* Phase 5.5E-E1A: one shared notice for the whole modal, referenced
+              via aria-describedby by every capability-gated button below --
+              never repeated per-button. Rendered regardless of which panel
+              (main actions / edit scope / delete confirm / recurrence) is
+              currently visible, since it sits above all of them. */}
+          {!canMutateOperationalData && (
+            <div id={RESTRICTED_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              {RESTRICTED_WORDING}
+            </div>
+          )}
+
           {/* Edit scope choice for recurring appointments */}
           {editScope && isRecurring && (
             <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-2 space-y-1">
               <div className="text-[11px] font-medium text-slate-500 px-2 pb-1">Apply changes to:</div>
-              <button type="button" onClick={() => executeEdit("single")} disabled={submitting}
+              <CapabilityGatedButton
+                type="button"
+                allowed={canMutateOperationalData}
+                disabled={submitting}
+                ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                onClick={() => executeEdit("single")}
                 className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50">
                 <div className="font-medium text-slate-900">Only this appointment</div>
                 <div className="text-slate-500 mt-0.5">Change this one only</div>
-              </button>
-              <button type="button" onClick={() => executeEdit("future")} disabled={submitting}
+              </CapabilityGatedButton>
+              <CapabilityGatedButton
+                type="button"
+                allowed={canMutateOperationalData}
+                disabled={submitting}
+                ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                onClick={() => executeEdit("future")}
                 className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50">
                 <div className="font-medium text-blue-700">This and all future appointments</div>
                 <div className="text-slate-500 mt-0.5">Apply to all remaining in this series</div>
-              </button>
+              </CapabilityGatedButton>
               <button type="button" onClick={() => setEditScope(null)}
                 className="w-full rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700">
                 Cancel
@@ -781,10 +844,14 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           {/* Actions */}
           {!editScope && (
             <div className="flex gap-2 pt-1">
-              <button type="submit" disabled={submitting || cancelling}
+              <CapabilityGatedButton
+                type="submit"
+                allowed={canMutateOperationalData}
+                disabled={submitting || cancelling}
+                ariaDescribedBy={RESTRICTED_NOTICE_ID}
                 className="flex-1 rounded-xl bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-50">
                 {submitting ? (isEdit ? "Saving..." : "Creating...") : (isEdit ? "Save Changes" : "Create Appointment")}
-              </button>
+              </CapabilityGatedButton>
               {isEdit && editing.appointment.status !== "cancelled" && (
                 <div className="relative">
                   <button type="button" onClick={() => setShowDeleteMenu((v) => !v)} disabled={submitting || cancelling}
@@ -831,10 +898,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 />
               </div>
               <div className="flex gap-2 mt-2">
-                <button type="button" onClick={() => executeDelete(confirmDelete)} disabled={cancelling}
+                <CapabilityGatedButton
+                  type="button"
+                  allowed={canMutateOperationalData}
+                  disabled={cancelling}
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                  onClick={() => executeDelete(confirmDelete)}
                   className="rounded-lg bg-rose-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-50">
                   {cancelling ? "Deleting..." : "Yes, Delete"}
-                </button>
+                </CapabilityGatedButton>
                 <button type="button" onClick={() => setConfirmDelete(null)}
                   className="rounded-lg border border-slate-300 px-4 py-1.5 text-xs text-slate-700 hover:bg-white">
                   No, Go Back

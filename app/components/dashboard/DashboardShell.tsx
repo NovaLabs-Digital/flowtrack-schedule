@@ -51,11 +51,12 @@ export default function DashboardShell({
   isTester: boolean;
   // Phase 5.5D: consumed by OwnerBillingBanner (desktop below, and passed
   // through to MobileDashboard for the mobile layout) -- only its
-  // bannerVariant/recoveryAction fields are ever read from this object.
-  // Still just the Phase 5.5B browser-safe projection, never a raw
-  // EntitlementResult; capability booleans are present on this type but
-  // deliberately not used by anything yet -- Phase 5.5E, not this phase,
-  // applies those.
+  // bannerVariant/recoveryAction fields are ever read there. Phase
+  // 5.5E-E1A additionally threads entitlement.canMutateOperationalData
+  // through to AppointmentModal (below) -- still just the Phase 5.5B
+  // browser-safe projection, never a raw EntitlementResult. The remaining
+  // capability booleans are present on this type but not yet consumed by
+  // any other owner control -- later E-E phases apply those.
   entitlement: EntitlementView;
 }) {
   const isMobile = useIsMobile();
@@ -230,6 +231,7 @@ export default function DashboardShell({
           ? { date: modal.prefillDate ?? "", time: modal.prefillTime ?? "" }
           : undefined
       }
+      canMutateOperationalData={entitlement.canMutateOperationalData}
     />
   );
 
