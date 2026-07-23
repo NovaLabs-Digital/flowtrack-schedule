@@ -408,6 +408,18 @@ describe("only the approved routes reference the capability gates -- every other
     // matched appointment row. This route intentionally does NOT appear in
     // REQUIRE_CAPABILITY_ROUTES above -- it has no session to check.
     path.join("app", "api", "appointments", "cancel", "route.ts"),
+    // Phase 5.5E-C -- the post-mutation confirmation/update/cancellation
+    // notification step in these two authenticated routes, gated
+    // independently of their existing requireCapability(session,
+    // "canMutateOperationalData") mutation gate (which is why they also
+    // appear in REQUIRE_CAPABILITY_ROUTES above). Uses
+    // requireCapabilityForWorkspace with the exact same trusted
+    // `workspaceId` the mutation gate already established for the session
+    // (session.workspaceId), not a manufactured session -- the notification
+    // step doesn't need the session-integrity re-check requireCapability
+    // performs, since that guard already ran earlier in the same request.
+    path.join("app", "api", "appointments", "update", "route.ts"),
+    path.join("app", "api", "appointments", "delete", "route.ts"),
   ];
 
   test("exactly the approved routes call requireCapability(session, ...); every other app/ file does not", () => {

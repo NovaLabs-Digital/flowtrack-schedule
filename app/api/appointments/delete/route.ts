@@ -5,7 +5,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, NotifyChannel } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
-import { requireCapability } from "@/lib/entitlementServer";
+import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -68,6 +68,17 @@ export async function POST(req: Request) {
 
     async function notifyCancellation() {
       if (notify_channel === "none" || appt.is_demo) return;
+
+      // The cancellation mutation has already completed and succeeded
+      // regardless of what happens next -- canSendNotifications is evaluated
+      // as an independent follow-up step, using the exact workspaceId this
+      // route already established for the authenticated session, never
+      // re-derived and never request-supplied. When denied, the client
+      // lookup below is skipped entirely -- same pattern as
+      // appointments/cancel and cron/reminders.
+      const notifyCapability = await requireCapabilityForWorkspace(workspaceId, "canSendNotifications");
+      if (!notifyCapability.allowed) return;
+
       const clientRes = await supabaseAdmin
         .from("clients")
         .select("name, email, phone, auto_email, auto_sms")

@@ -109,7 +109,12 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
   for (const [label, row] of FULL_STATES) {
     test(`${label} permits owner appointment creation, existing response contract unchanged`, async () => {
       resetFixtures({
-        subscriptions: [{ data: row }],
+        // Two queued rows: the canMutateOperationalData mutation gate consumes
+        // the first, and the canSendNotifications gate (Phase 5.5E-C) consumes
+        // the second -- both read the same real state here, matching what a
+        // single subscriptions row would actually resolve to twice in
+        // production.
+        subscriptions: [{ data: row }, { data: row }],
         clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
         appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
         messages_sent: [{ error: null }, { error: null }],
@@ -231,7 +236,9 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
   for (const [label, row] of FULL_STATES) {
     test(`${label} permits public booking, existing response contract unchanged`, async () => {
       resetFixtures({
-        subscriptions: [{ data: row }],
+        // Two queued rows: canUsePublicBooking consumes the first, and the
+        // canSendNotifications gate (Phase 5.5E-C) consumes the second.
+        subscriptions: [{ data: row }, { data: row }],
         company_settings: [{ data: { booking_enabled: true } }],
         services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
         appointments: [{ data: [] }, ...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
@@ -343,7 +350,7 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
 describe("notification behavior is preserved exactly once entitled, on both branches", () => {
   test("authenticated: a provider failure on one channel is isolated -- the other channel still attempts, mutation still succeeds", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
       appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
       messages_sent: [{ error: null }, { error: null }],
@@ -361,7 +368,7 @@ describe("notification behavior is preserved exactly once entitled, on both bran
 
   test("public: notify_channel = 'none' suppresses both provider calls, mutation still succeeds", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { booking_enabled: true } }],
       services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
       appointments: [{ data: [] }, ...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
@@ -382,7 +389,7 @@ describe("notification behavior is preserved exactly once entitled, on both bran
 
   test("public: client opted out (auto_email/auto_sms false) -> notification remains suppressed, zero provider calls", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { booking_enabled: true } }],
       services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
       appointments: [{ data: [] }, ...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-public-2" }] }],
@@ -396,6 +403,100 @@ describe("notification behavior is preserved exactly once entitled, on both bran
     sessionToReturn = { role: "none" };
     const res = await POST(req(publicBody()));
     assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+});
+
+describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmation, independent of the mutation capability", () => {
+  test("authenticated: mutation allowed, notification denied -> creation succeeds unchanged, zero provider calls, zero messages_sent, notify client re-fetch skipped", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData: allowed
+        { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
+      ],
+      clients: [{ data: { id: "client-1" } }], // only the client_id validation lookup -- no notify re-fetch
+      appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody()));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, appointmentId: "appt-new-1", created: 1 });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "messages_sent").length, 0);
+    // The client_id validation lookup (.maybeSingle()) still ran; the notify
+    // re-fetch (.single()) is the one that must never run.
+    assert.equal(currentFake.calls.filter((c) => c.table === "clients" && c.method === "single").length, 0, "the notify re-fetch never happened");
+  });
+
+  test("authenticated: mutation allowed, notification entitlement check query_error -> fails closed, creation still succeeds, zero provider calls", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { error: { message: "simulated DB error" } },
+      ],
+      clients: [{ data: { id: "client-1" } }],
+      appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody()));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, appointmentId: "appt-new-1", created: 1 });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("authenticated: a spoofed workspace_id in the body does not change which workspace's notification capability is checked", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { data: subscriptionRow({ stripe_status: "canceled" }) },
+      ],
+      clients: [{ data: { id: "client-1" } }],
+      appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ workspace_id: DEMO_WORKSPACE_ID })));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("public: booking allowed, notification denied -> booking succeeds unchanged, zero provider calls, zero messages_sent, notify client re-fetch skipped", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) }, // canUsePublicBooking: allowed
+        { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
+      ],
+      company_settings: [{ data: { booking_enabled: true } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+      appointments: [{ data: [] }, ...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      clients: [
+        { data: null }, // email lookup: not found
+        { data: null }, // phone lookup: not found
+        { data: { id: "new-client-1" } }, // insert new client
+        // deliberately no fourth fixture -- proves the notify re-fetch is never queried
+      ],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody()));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, appointmentId: "appt-public-1", created: 1 });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "messages_sent").length, 0);
+  });
+
+  test("tester/demo creation never reaches a notification-capability check at all (existing !isTester short-circuit, zero subscriptions queries)", async () => {
+    resetFixtures({
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Demo Client", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
+    });
+    sessionToReturn = TESTER_SESSION;
+    const res = await POST(req(authBody()));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "subscriptions").length, 0);
     assert.equal(currentNotify.emailCalls.length, 0);
     assert.equal(currentNotify.smsCalls.length, 0);
   });
@@ -424,5 +525,24 @@ describe("the two entitlement branches call distinct, correctly-scoped gates (so
     const gateIndex = routeSource.indexOf("requireCapabilityForWorkspace(workspaceId");
     const bodyParseIndex = routeSource.indexOf("const body = await req.json();");
     assert.ok(gateIndex > -1 && bodyParseIndex > -1 && gateIndex < bodyParseIndex);
+  });
+
+  test("the notification gate calls requireCapabilityForWorkspace(workspaceId, \"canSendNotifications\") exactly once, using the shared workspaceId", () => {
+    const count = routeSource.split('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")').length - 1;
+    assert.equal(count, 1);
+  });
+
+  test("the notification gate runs after the appointments INSERT, never before it", () => {
+    const insertIndex = routeSource.indexOf(".insert(rows)");
+    const notifyGateIndex = routeSource.indexOf('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")');
+    assert.ok(insertIndex > -1 && notifyGateIndex > -1 && insertIndex < notifyGateIndex);
+  });
+
+  test("the notification gate runs before the notify client (PII) re-fetch and before any sendEmail/sendSms call", () => {
+    const notifyGateIndex = routeSource.indexOf('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")');
+    const sendEmailIndex = routeSource.indexOf("sendEmail(");
+    const sendSmsIndex = routeSource.indexOf("sendSms(");
+    assert.ok(notifyGateIndex > -1 && sendEmailIndex > -1 && sendSmsIndex > -1);
+    assert.ok(notifyGateIndex < sendEmailIndex && notifyGateIndex < sendSmsIndex);
   });
 });

@@ -17,6 +17,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   createFakeSupabaseAdmin,
   createFakeNotify,
@@ -227,7 +229,7 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
 describe("notification behavior is preserved exactly once entitled", () => {
   test("entitled + notify_channel requested + opted in -> existing provider send + messages_sent behavior occurs", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt() }, // fetch existing
         { error: null }, // update
@@ -247,7 +249,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
 
   test("client opted out (auto_email/auto_sms false) -> notification remains suppressed, zero provider calls", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt() },
         { error: null },
@@ -279,7 +281,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
       throw new Error("simulated Resend outage");
     });
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt() },
         { error: null },
@@ -297,6 +299,61 @@ describe("notification behavior is preserved exactly once entitled", () => {
     assert.deepEqual(await res.json(), { ok: true });
     assert.equal(currentNotify.emailCalls.length, 1, "email was still attempted");
     assert.equal(currentNotify.smsCalls.length, 1, "sms still attempted despite the email failure");
+  });
+});
+
+describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notification, independent of canMutateOperationalData", () => {
+  test("mutation allowed, notification denied -> update succeeds unchanged, zero provider calls, zero messages_sent, appt/client re-fetch skipped", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData: allowed
+        { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
+      ],
+      appointments: [
+        { data: existingAppt() }, // fetch existing
+        { error: null }, // update
+        // deliberately no third fixture -- proves the notify re-fetch never happens
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "messages_sent").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "clients").length, 0, "the notify client re-fetch never happened");
+  });
+
+  test("mutation allowed, notification entitlement check query_error -> fails closed, update still succeeds, zero provider calls", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { error: { message: "simulated DB error" } },
+      ],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("a spoofed workspace_id in the body does not change which workspace's notification capability is checked", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { data: subscriptionRow({ stripe_status: "canceled" }) },
+      ],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", notify_channel: "both", workspace_id: DEMO_WORKSPACE_ID }));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
   });
 });
 
@@ -363,5 +420,32 @@ describe("existing appointment-editing business rules remain unchanged once enti
     const res = await PATCH(req({ appointment_id: "appt-1", employee_id: "emp-outside" }));
     assert.equal(res.status, 404);
     assert.deepEqual(await res.json(), { error: "Employee not found" });
+  });
+});
+
+describe("Phase 5.5E-C: the notification gate is source-correctly placed and scoped (source-level proof)", () => {
+  const routeSource = fs.readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+
+  test("calls requireCapabilityForWorkspace(workspaceId, \"canSendNotifications\") exactly once", () => {
+    const count = routeSource.split('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")').length - 1;
+    assert.equal(count, 1);
+  });
+
+  test("the notification gate runs after the appointment/sibling/client UPDATE calls, never before them", () => {
+    const updateIndex = routeSource.indexOf(".update(apptUpdate)");
+    const notifyGateIndex = routeSource.indexOf('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")');
+    assert.ok(updateIndex > -1 && notifyGateIndex > -1 && updateIndex < notifyGateIndex);
+  });
+
+  test("the notification gate runs before the notify appointment/client re-fetch and before any sendEmail/sendSms call", () => {
+    const notifyGateIndex = routeSource.indexOf('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")');
+    const sendEmailIndex = routeSource.indexOf("sendEmail(");
+    const sendSmsIndex = routeSource.indexOf("sendSms(");
+    assert.ok(notifyGateIndex > -1 && sendEmailIndex > -1 && sendSmsIndex > -1);
+    assert.ok(notifyGateIndex < sendEmailIndex && notifyGateIndex < sendSmsIndex);
+  });
+
+  test("the notification gate uses the same trusted workspaceId already used for the canMutateOperationalData gate, never a new/request-derived value", () => {
+    assert.ok(routeSource.includes("const workspaceId = session.workspaceId;"));
   });
 });

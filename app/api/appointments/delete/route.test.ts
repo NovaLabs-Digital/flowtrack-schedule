@@ -18,6 +18,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   createFakeSupabaseAdmin,
   createFakeNotify,
@@ -233,7 +235,7 @@ describe("POST /api/appointments/delete -- entitlement gate", () => {
 describe("notification behavior is preserved exactly once entitled", () => {
   test("entitled + notify_channel requested + opted in -> existing provider send + messages_sent behavior occurs", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt() }, { error: null }],
       clients: [{ data: optedInClient() }],
       messages_sent: [{ error: null }, { error: null }],
@@ -249,7 +251,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
 
   test("client opted out (auto_email/auto_sms false) -> notification remains suppressed, zero provider calls", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt() }, { error: null }],
       clients: [{ data: { name: "Jane", email: "jane@example.com", phone: "+15551234567", auto_email: false, auto_sms: false } }],
     });
@@ -284,7 +286,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
 
   test("a provider failure on one channel is isolated -- the other channel still attempts, mutation still succeeds", async () => {
     resetFixtures({
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt() }, { error: null }],
       clients: [{ data: optedInClient() }],
       messages_sent: [{ error: null }, { error: null }],
@@ -298,6 +300,78 @@ describe("notification behavior is preserved exactly once entitled", () => {
     assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
     assert.equal(currentNotify.emailCalls.length, 1, "email was still attempted");
     assert.equal(currentNotify.smsCalls.length, 1, "sms still attempted despite the email failure");
+  });
+});
+
+describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notification, independent of canMutateOperationalData", () => {
+  test("mutation allowed, notification denied -> cancellation succeeds unchanged, zero provider calls, zero messages_sent, client re-fetch skipped", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData: allowed
+        { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
+      ],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "messages_sent").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "clients").length, 0, "the notify client re-fetch never happened");
+  });
+
+  test("mutation allowed, notification entitlement check query_error -> fails closed, cancellation still succeeds, zero provider calls", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { error: { message: "simulated DB error" } },
+      ],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("a spoofed workspace_id in the body does not change which workspace's notification capability is checked", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { data: subscriptionRow({ stripe_status: "canceled" }) },
+      ],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both", workspace_id: DEMO_WORKSPACE_ID }));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("mode = 'future': mutation allowed, notification denied -> bulk cancellation succeeds unchanged, zero provider calls", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { data: subscriptionRow({ stripe_status: "canceled" }) },
+      ],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) }, // fetch existing
+        { error: null }, // hasColumn("series_id") probe
+        { data: [{ id: "appt-1" }, { id: "appt-2" }] }, // target ids query
+        { error: null }, // bulk cancel
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 2 });
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
   });
 });
 
@@ -338,5 +412,45 @@ describe("existing cancellation business rules remain unchanged once entitled", 
     const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
     assert.equal(res.status, 404);
     assert.deepEqual(await res.json(), { error: "Appointment not found" });
+  });
+});
+
+describe("Phase 5.5E-C: the notification gate is source-correctly placed and scoped (source-level proof)", () => {
+  const routeSource = fs.readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+
+  test("calls requireCapabilityForWorkspace(workspaceId, \"canSendNotifications\") exactly once, inside notifyCancellation()", () => {
+    const count = routeSource.split('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")').length - 1;
+    assert.equal(count, 1);
+  });
+
+  test("notifyCancellation() -- which contains the notification gate -- is only ever invoked after an UPDATE call, in both the single-mode and future-mode branches", () => {
+    // notifyCancellation is a function DECLARATION defined once, above both
+    // call sites -- its body text necessarily precedes both `.update({
+    // status: "cancelled" })` calls even though it only ever EXECUTES after
+    // them, so this test checks call-site (invocation) ordering, not raw
+    // text position of the gate itself (that placement, within the function
+    // body, before the client read/provider calls, is checked separately
+    // below).
+    const updateCalls = [...routeSource.matchAll(/\.update\(\{ status: "cancelled" \}\)/g)].map((m) => m.index!);
+    const invokeCalls = [...routeSource.matchAll(/await notifyCancellation\(\);/g)].map((m) => m.index!);
+    assert.equal(updateCalls.length, 2, "single-mode and future-mode each have their own cancellation UPDATE");
+    assert.equal(invokeCalls.length, 2, "single-mode and future-mode each invoke notifyCancellation() once");
+    // Each invocation must come after its corresponding branch's UPDATE.
+    assert.ok(invokeCalls[0] > updateCalls[0]);
+    assert.ok(invokeCalls[1] > updateCalls[1]);
+  });
+
+  test("the notification gate runs before the client (PII) read and before any sendEmail/sendSms call", () => {
+    const notifyGateIndex = routeSource.indexOf('requireCapabilityForWorkspace(workspaceId, "canSendNotifications")');
+    const clientReadIndex = routeSource.indexOf('.from("clients")');
+    const sendEmailIndex = routeSource.indexOf("sendEmail(");
+    const sendSmsIndex = routeSource.indexOf("sendSms(");
+    assert.ok(notifyGateIndex > -1 && clientReadIndex > -1 && sendEmailIndex > -1 && sendSmsIndex > -1);
+    assert.ok(notifyGateIndex < clientReadIndex);
+    assert.ok(notifyGateIndex < sendEmailIndex && notifyGateIndex < sendSmsIndex);
+  });
+
+  test("the notification gate uses the same trusted workspaceId already used for the canMutateOperationalData gate, never a new/request-derived value", () => {
+    assert.ok(routeSource.includes("const workspaceId = session.workspaceId;"));
   });
 });

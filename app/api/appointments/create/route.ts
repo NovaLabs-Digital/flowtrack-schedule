@@ -269,52 +269,66 @@ export async function POST(req: Request) {
 
     // Send confirmation for the first occurrence only — never for demo
     // bookings, regardless of DISABLE_MESSAGES or the client's auto_email/sms.
-    const clientRes = await supabaseAdmin
-      .from("clients")
-      .select("name, email, phone, auto_email, auto_sms")
-      .eq("id", clientId)
-      .eq("workspace_id", workspaceId)
-      .single();
+    // The appointment above is already fully created and this response will
+    // report success regardless of what happens next -- canSendNotifications
+    // is evaluated as an independent follow-up step, using the exact
+    // workspaceId this request already established (owner/tester's session,
+    // or the fixed public-booking constant), never re-derived and never
+    // request-supplied. When denied, the client lookup itself is skipped
+    // entirely -- same pattern as appointments/cancel and cron/reminders --
+    // so a restricted workspace's client PII is never read for a
+    // notification that will never be sent.
+    if (!isTester && firstId) {
+      const notifyCapability = await requireCapabilityForWorkspace(workspaceId, "canSendNotifications");
+      if (notifyCapability.allowed) {
+        const clientRes = await supabaseAdmin
+          .from("clients")
+          .select("name, email, phone, auto_email, auto_sms")
+          .eq("id", clientId)
+          .eq("workspace_id", workspaceId)
+          .single();
 
-    if (!isTester && !clientRes.error && clientRes.data && firstId) {
-      const { name: cName, email: cEmail, phone: cPhone, auto_email, auto_sms } = clientRes.data;
-      const cancelUrl = `${process.env.NEXT_PUBLIC_APP_URL}/cancel?token=${rows[0].cancel_token}`;
-      const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl);
+        if (!clientRes.error && clientRes.data) {
+          const { name: cName, email: cEmail, phone: cPhone, auto_email, auto_sms } = clientRes.data;
+          const cancelUrl = `${process.env.NEXT_PUBLIC_APP_URL}/cancel?token=${rows[0].cancel_token}`;
+          const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl);
 
-      if (cEmail && auto_email && shouldSend(notify_channel, "email")) {
-        try {
-          const providerId = await sendEmail(cEmail, t.email.subject, t.email.body, workspaceId);
-          await recordMessageSent({
-            appointment_id: firstId,
-            channel: "email", kind: "confirmation", workspace_id: workspaceId,
-            to_value: cEmail, body: t.email.body, provider_id: providerId,
-          });
-        } catch (err) {
-          console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
-          await recordMessageSent({
-            appointment_id: firstId,
-            channel: "email", kind: "confirmation", workspace_id: workspaceId,
-            to_value: cEmail, body: t.email.body, provider_id: "failed",
-          });
-        }
-      }
-      // Runs even if the email attempt above failed — one provider's
-      // failure must not block the other channel.
-      if (cPhone && auto_sms && shouldSend(notify_channel, "sms")) {
-        try {
-          const providerId = await sendSms(cPhone, t.sms, workspaceId);
-          await recordMessageSent({
-            appointment_id: firstId,
-            channel: "sms", kind: "confirmation", workspace_id: workspaceId,
-            to_value: cPhone, body: t.sms, provider_id: providerId,
-          });
-        } catch (err) {
-          console.error("NOTIFY_SMS_ERROR", describeProviderError(err));
-          await recordMessageSent({
-            appointment_id: firstId,
-            channel: "sms", kind: "confirmation", workspace_id: workspaceId,
-            to_value: cPhone, body: t.sms, provider_id: "failed",
-          });
+          if (cEmail && auto_email && shouldSend(notify_channel, "email")) {
+            try {
+              const providerId = await sendEmail(cEmail, t.email.subject, t.email.body, workspaceId);
+              await recordMessageSent({
+                appointment_id: firstId,
+                channel: "email", kind: "confirmation", workspace_id: workspaceId,
+                to_value: cEmail, body: t.email.body, provider_id: providerId,
+              });
+            } catch (err) {
+              console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
+              await recordMessageSent({
+                appointment_id: firstId,
+                channel: "email", kind: "confirmation", workspace_id: workspaceId,
+                to_value: cEmail, body: t.email.body, provider_id: "failed",
+              });
+            }
+          }
+          // Runs even if the email attempt above failed — one provider's
+          // failure must not block the other channel.
+          if (cPhone && auto_sms && shouldSend(notify_channel, "sms")) {
+            try {
+              const providerId = await sendSms(cPhone, t.sms, workspaceId);
+              await recordMessageSent({
+                appointment_id: firstId,
+                channel: "sms", kind: "confirmation", workspace_id: workspaceId,
+                to_value: cPhone, body: t.sms, provider_id: providerId,
+              });
+            } catch (err) {
+              console.error("NOTIFY_SMS_ERROR", describeProviderError(err));
+              await recordMessageSent({
+                appointment_id: firstId,
+                channel: "sms", kind: "confirmation", workspace_id: workspaceId,
+                to_value: cPhone, body: t.sms, provider_id: "failed",
+              });
+            }
+          }
         }
       }
     }

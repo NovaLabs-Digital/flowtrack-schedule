@@ -5,7 +5,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, NotifyChannel } from "@/lib/notify";
 import { changeTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
-import { requireCapability } from "@/lib/entitlementServer";
+import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -164,54 +164,64 @@ export async function PATCH(req: Request) {
     }
 
     if (notify_channel !== "none" && !existing.data.is_demo) {
-      const apptRes = await supabaseAdmin
-        .from("appointments")
-        .select("service_type, scheduled_for")
-        .eq("id", appointment_id)
-        .eq("workspace_id", workspaceId)
-        .single();
-      const clientRes = await supabaseAdmin
-        .from("clients")
-        .select("name, email, phone, auto_email, auto_sms")
-        .eq("id", existing.data.client_id)
-        .eq("workspace_id", workspaceId)
-        .single();
+      // The appointment/client updates above have already completed and
+      // succeeded regardless of what happens next -- canSendNotifications is
+      // evaluated as an independent follow-up step, using the exact
+      // workspaceId this route already established for the authenticated
+      // session, never re-derived and never request-supplied. When denied,
+      // the appointment/client lookups below are skipped entirely -- same
+      // pattern as appointments/cancel and cron/reminders.
+      const notifyCapability = await requireCapabilityForWorkspace(workspaceId, "canSendNotifications");
+      if (notifyCapability.allowed) {
+        const apptRes = await supabaseAdmin
+          .from("appointments")
+          .select("service_type, scheduled_for")
+          .eq("id", appointment_id)
+          .eq("workspace_id", workspaceId)
+          .single();
+        const clientRes = await supabaseAdmin
+          .from("clients")
+          .select("name, email, phone, auto_email, auto_sms")
+          .eq("id", existing.data.client_id)
+          .eq("workspace_id", workspaceId)
+          .single();
 
-      if (!apptRes.error && !clientRes.error) {
-        const { name, email, phone, auto_email, auto_sms } = clientRes.data;
-        const { service_type, scheduled_for } = apptRes.data;
-        const t = changeTemplates(name, service_type, scheduled_for);
+        if (!apptRes.error && !clientRes.error) {
+          const { name, email, phone, auto_email, auto_sms } = clientRes.data;
+          const { service_type, scheduled_for } = apptRes.data;
+          const t = changeTemplates(name, service_type, scheduled_for);
 
-        if (email && auto_email && shouldSend(notify_channel, "email")) {
-          try {
-            const providerId = await sendEmail(email, t.email.subject, t.email.body, workspaceId);
-            await recordMessageSent({
-              appointment_id, channel: "email", kind: "update", workspace_id: workspaceId,
-              to_value: email, body: t.email.body, provider_id: providerId,
-            });
-          } catch (err) {
-            console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
-            await recordMessageSent({
-              appointment_id, channel: "email", kind: "update", workspace_id: workspaceId,
-              to_value: email, body: t.email.body, provider_id: "failed",
-            });
+          if (email && auto_email && shouldSend(notify_channel, "email")) {
+            try {
+              const providerId = await sendEmail(email, t.email.subject, t.email.body, workspaceId);
+              await recordMessageSent({
+                appointment_id, channel: "email", kind: "update", workspace_id: workspaceId,
+                to_value: email, body: t.email.body, provider_id: providerId,
+              });
+            } catch (err) {
+              console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
+              await recordMessageSent({
+                appointment_id, channel: "email", kind: "update", workspace_id: workspaceId,
+                to_value: email, body: t.email.body, provider_id: "failed",
+              });
+            }
           }
-        }
-        // Runs even if the email attempt above failed — one provider's
-        // failure must not block the other channel.
-        if (phone && auto_sms && shouldSend(notify_channel, "sms")) {
-          try {
-            const providerId = await sendSms(phone, t.sms, workspaceId);
-            await recordMessageSent({
-              appointment_id, channel: "sms", kind: "update", workspace_id: workspaceId,
-              to_value: phone, body: t.sms, provider_id: providerId,
-            });
-          } catch (err) {
-            console.error("NOTIFY_SMS_ERROR", describeProviderError(err));
-            await recordMessageSent({
-              appointment_id, channel: "sms", kind: "update", workspace_id: workspaceId,
-              to_value: phone, body: t.sms, provider_id: "failed",
-            });
+          // Runs even if the email attempt above failed — one provider's
+          // failure must not block the other channel.
+          if (phone && auto_sms && shouldSend(notify_channel, "sms")) {
+            try {
+              const providerId = await sendSms(phone, t.sms, workspaceId);
+              await recordMessageSent({
+                appointment_id, channel: "sms", kind: "update", workspace_id: workspaceId,
+                to_value: phone, body: t.sms, provider_id: providerId,
+              });
+            } catch (err) {
+              console.error("NOTIFY_SMS_ERROR", describeProviderError(err));
+              await recordMessageSent({
+                appointment_id, channel: "sms", kind: "update", workspace_id: workspaceId,
+                to_value: phone, body: t.sms, provider_id: "failed",
+              });
+            }
           }
         }
       }
