@@ -4,6 +4,16 @@ import { useState } from "react";
 import { Appointment, Client } from "@/app/components/dashboard/types";
 import { NotifyChoicePanel, NotifyChannel, preferredNotifyChannel } from "@/app/components/dashboard/AppointmentModal";
 import { toBusinessLocal } from "@/lib/timezone";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1B: this dialog's own restricted notice, distinct from
+// AppointmentModal's (appointment-modal-restricted-notice) and
+// AppointmentDetailPanel's (appointment-detail-restricted-notice) -- ids
+// must be unique wherever multiple of these components could be mounted
+// together. Same approved wording, shared once across this dialog's 2-3
+// commit buttons.
+const RESTRICTED_NOTICE_ID = "move-confirm-dialog-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 function formatDateTime(iso: string) {
   const d = toBusinessLocal(iso);
@@ -19,9 +29,10 @@ type Props = {
   scheduledEnd: string | null;
   onClose: () => void;
   onMoved: () => void;
+  canMutateOperationalData: boolean;
 };
 
-export default function MoveConfirmDialog({ appointment, client, scheduledFor, scheduledEnd, onClose, onMoved }: Props) {
+export default function MoveConfirmDialog({ appointment, client, scheduledFor, scheduledEnd, onClose, onMoved, canMutateOperationalData }: Props) {
   // Dragging always changes date/time, so smart-default to the client's preferred
   // method (or "both") right away — the picker below still lets staff change it.
   const [notifyChannel, setNotifyChannel] = useState<NotifyChannel>(
@@ -33,6 +44,12 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
   const isRecurring = !!appointment.series_id && !!appointment.frequency_type && appointment.frequency_type !== "one_time";
 
   async function execute(mode: "single" | "future") {
+    // Defense-in-depth: this reaches /api/appointments/update, which already
+    // enforces this same capability before mutating anything. This guard
+    // exists so a stale or programmatic invocation of execute() (e.g. this
+    // dialog somehow still mounted from before a mid-session downgrade)
+    // cannot issue the request either, not just a disabled button click.
+    if (!canMutateOperationalData) return;
     setSubmitting(true);
     setError("");
     try {
@@ -95,19 +112,27 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 mt-3">{error}</div>
         )}
 
+        {!canMutateOperationalData && (
+          <div id={RESTRICTED_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 mt-3">
+            {RESTRICTED_WORDING}
+          </div>
+        )}
+
         {isRecurring ? (
           <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50/50 p-2 space-y-1">
             <div className="text-[11px] font-medium text-slate-500 px-2 pb-1">Apply move to:</div>
-            <button type="button" onClick={() => execute("single")} disabled={submitting}
+            <CapabilityGatedButton type="button" allowed={canMutateOperationalData} onClick={() => execute("single")} disabled={submitting}
+              ariaDescribedBy={RESTRICTED_NOTICE_ID}
               className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50">
               <div className="font-medium text-slate-900">Only this appointment</div>
               <div className="text-slate-500 mt-0.5">Move this one only</div>
-            </button>
-            <button type="button" onClick={() => execute("future")} disabled={submitting}
+            </CapabilityGatedButton>
+            <CapabilityGatedButton type="button" allowed={canMutateOperationalData} onClick={() => execute("future")} disabled={submitting}
+              ariaDescribedBy={RESTRICTED_NOTICE_ID}
               className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50">
               <div className="font-medium text-blue-700">This and all future appointments</div>
               <div className="text-slate-500 mt-0.5">Apply time change to all remaining in this series</div>
-            </button>
+            </CapabilityGatedButton>
             <button type="button" onClick={onClose} disabled={submitting}
               className="w-full rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700 disabled:opacity-50">
               Cancel
@@ -115,10 +140,11 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
           </div>
         ) : (
           <div className="flex gap-2 mt-4">
-            <button type="button" onClick={() => execute("single")} disabled={submitting}
+            <CapabilityGatedButton type="button" allowed={canMutateOperationalData} onClick={() => execute("single")} disabled={submitting}
+              ariaDescribedBy={RESTRICTED_NOTICE_ID}
               className="flex-1 rounded-xl bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-50">
               {submitting ? "Moving..." : "Move Appointment"}
-            </button>
+            </CapabilityGatedButton>
             <button type="button" onClick={onClose} disabled={submitting}
               className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
               Cancel

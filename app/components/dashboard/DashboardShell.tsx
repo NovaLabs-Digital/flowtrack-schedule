@@ -51,12 +51,13 @@ export default function DashboardShell({
   isTester: boolean;
   // Phase 5.5D: consumed by OwnerBillingBanner (desktop below, and passed
   // through to MobileDashboard for the mobile layout) -- only its
-  // bannerVariant/recoveryAction fields are ever read there. Phase
-  // 5.5E-E1A additionally threads entitlement.canMutateOperationalData
-  // through to AppointmentModal (below) -- still just the Phase 5.5B
-  // browser-safe projection, never a raw EntitlementResult. The remaining
-  // capability booleans are present on this type but not yet consumed by
-  // any other owner control -- later E-E phases apply those.
+  // bannerVariant/recoveryAction fields are ever read there. Phase 5.5E-E1A
+  // threaded entitlement.canMutateOperationalData through to AppointmentModal
+  // (below); Phase 5.5E-E1B threads the same value through to
+  // AppointmentDetailPanel, ScheduleGrid, and MoveConfirmDialog -- still just
+  // the Phase 5.5B browser-safe projection, never a raw EntitlementResult.
+  // The remaining capability booleans are present on this type but not yet
+  // consumed by any other owner control -- later E-E phases apply those.
   entitlement: EntitlementView;
 }) {
   const isMobile = useIsMobile();
@@ -314,6 +315,7 @@ export default function DashboardShell({
                   onCellClick={handleCellClick}
                   onDropAppointment={handleDropAppointment}
                   weekOffset={weekOffset}
+                  canMutateOperationalData={entitlement.canMutateOperationalData}
                 />
               </div>
 
@@ -327,6 +329,7 @@ export default function DashboardShell({
                     services={services}
                     onEdit={() => handleEditAppointment(selectedAppt.id)}
                     onCancelled={handleAppointmentCancelled}
+                    canMutateOperationalData={entitlement.canMutateOperationalData}
                   />
                 ) : (
                   <ClientPanel client={selectedClient} appointments={appointments} onClientUpdated={() => router.refresh()} />
@@ -370,6 +373,7 @@ export default function DashboardShell({
           scheduledEnd={pendingMove.scheduledEnd}
           onClose={() => setPendingMove(null)}
           onMoved={handleMoved}
+          canMutateOperationalData={entitlement.canMutateOperationalData}
         />
       )}
     </div>

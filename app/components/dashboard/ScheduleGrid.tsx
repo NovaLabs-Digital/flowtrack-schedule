@@ -203,6 +203,7 @@ export default function ScheduleGrid({
   onCellClick,
   onDropAppointment,
   weekOffset,
+  canMutateOperationalData,
 }: {
   viewMode: ViewMode;
   clients: Client[];
@@ -217,8 +218,17 @@ export default function ScheduleGrid({
   onCellClick: (date: Date, hour: number, minute: number) => void;
   onDropAppointment?: (appointmentId: string, scheduledFor: string, scheduledEnd: string | null) => void;
   weekOffset: number;
+  canMutateOperationalData: boolean;
 }) {
   const dragEnabled = !!onDropAppointment;
+  // Phase 5.5E-E1B: dragging always initiates a reschedule mutation (via
+  // MoveConfirmDialog -> PATCH /api/appointments/update, already
+  // server-enforced), so drag must be disabled at the earliest boundary
+  // when the owner can't mutate -- not just at the eventual confirm step.
+  // Read-only interactions (selecting a card, clicking an empty cell to
+  // create -- itself gated inside the already-governed AppointmentModal)
+  // are deliberately NOT conditioned on this flag.
+  const dragMutationEnabled = dragEnabled && canMutateOperationalData;
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverCell, setDragOverCell] = useState<string | null>(null);
   const serviceDurations: Record<string, number> = {};
@@ -270,6 +280,10 @@ export default function ScheduleGrid({
     setDragOverCell(null);
     const id = draggingId;
     setDraggingId(null);
+    // Defense-in-depth: guards against stale draggingId state or a
+    // programmatic drop reaching this far even though drag initiation and
+    // the drop targets below are already disabled when restricted.
+    if (!canMutateOperationalData) return;
     if (!id || !onDropAppointment) return;
 
     const appt = appointments.find((a) => a.id === id);
@@ -382,15 +396,15 @@ export default function ScheduleGrid({
                           console.log("[CELL_CLICK]", formatDay(d), `${h}:${String(min).padStart(2, "0")}`);
                           onCellClick(d, h, min);
                         }}
-                        onDragOver={dragEnabled ? (e) => {
+                        onDragOver={dragMutationEnabled ? (e) => {
                           e.preventDefault();
                           e.dataTransfer.dropEffect = "move";
                           setDragOverCell(cellKey);
                         } : undefined}
-                        onDragLeave={dragEnabled ? () => {
+                        onDragLeave={dragMutationEnabled ? () => {
                           setDragOverCell((cur) => (cur === cellKey ? null : cur));
                         } : undefined}
-                        onDrop={dragEnabled ? (e) => {
+                        onDrop={dragMutationEnabled ? (e) => {
                           e.preventDefault();
                           handleDrop(d, h, min);
                         } : undefined}
@@ -463,22 +477,22 @@ export default function ScheduleGrid({
                     return (
                       <button
                         key={a.id}
-                        draggable={dragEnabled}
+                        draggable={dragMutationEnabled}
                         onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}
                         onDoubleClick={(e) => { e.stopPropagation(); onEditAppointment?.(a.id); }}
-                        onDragStart={dragEnabled ? (e) => {
+                        onDragStart={dragMutationEnabled ? (e) => {
                           e.stopPropagation();
                           e.dataTransfer.effectAllowed = "move";
                           e.dataTransfer.setData("text/plain", a.id);
                           setDraggingId(a.id);
                         } : undefined}
-                        onDragEnd={dragEnabled ? () => { setDraggingId(null); setDragOverCell(null); } : undefined}
+                        onDragEnd={dragMutationEnabled ? () => { setDraggingId(null); setDragOverCell(null); } : undefined}
                         className={[
                           "absolute rounded-lg border text-left shadow-sm overflow-hidden px-2 z-[5]",
                           useServiceColor ? `service-tint text-slate-900${darkTextCls}` : statusPill(a.status),
                           selected ? "ring-2 ring-blue-600 bg-blue-100/60 z-[6]" : "",
                           sameClient && !selected ? "outline outline-2 outline-blue-600/30" : "",
-                          dragEnabled ? "cursor-grab active:cursor-grabbing" : "",
+                          dragMutationEnabled ? "cursor-grab active:cursor-grabbing" : "",
                           draggingId === a.id ? "opacity-40" : "",
                           // While dragging, OTHER cards must not intercept drag/drop events —
                           // otherwise dropping onto an occupied time slot hits that appointment's

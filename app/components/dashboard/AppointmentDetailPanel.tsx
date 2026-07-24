@@ -3,6 +3,15 @@
 import { useState } from "react";
 import { Appointment, Client, Employee, Service } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1B: this panel's own restricted notice, distinct from
+// AppointmentModal's (appointment-modal-restricted-notice) -- both
+// components can be mounted at the same time (selecting an appointment
+// keeps this panel mounted underneath the edit modal), so the ids must not
+// collide. Same approved wording, same shared-once-per-panel pattern.
+const RESTRICTED_NOTICE_ID = "appointment-detail-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 function scheduledMinutes(appt: Appointment, services: Service[]): number {
   if (appt.scheduled_end) {
@@ -29,6 +38,7 @@ type Props = {
   services: Service[];
   onEdit: () => void;
   onCancelled: () => void;
+  canMutateOperationalData: boolean;
 };
 
 // Desktop "Appointment Details" control center — the appointment-focused
@@ -36,7 +46,7 @@ type Props = {
 // just a client) is selected. Mirrors MobileAppointmentDetail.tsx's
 // Call/Text/Cancel pattern for parity with mobile, reusing the exact same
 // /api/appointments/delete endpoint — no new backend logic.
-export default function AppointmentDetailPanel({ appointment, client, employee, services, onEdit, onCancelled }: Props) {
+export default function AppointmentDetailPanel({ appointment, client, employee, services, onEdit, onCancelled, canMutateOperationalData }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
 
@@ -45,6 +55,12 @@ export default function AppointmentDetailPanel({ appointment, client, employee, 
   const end = new Date(start.getTime() + durationMinutes * 60_000);
 
   async function handleCancel() {
+    // Defense-in-depth: the server route this reaches already enforces this
+    // same capability before mutating anything -- this guard only prevents a
+    // restricted owner's client from ever issuing the request at all. See
+    // CapabilityGatedButton.ts for the corresponding disabled-state guard on
+    // the "Cancel Appointment" control below.
+    if (!canMutateOperationalData) return;
     if (!confirm("Cancel this appointment?")) return;
     setCancelling(true);
     setError("");
@@ -124,15 +140,23 @@ export default function AppointmentDetailPanel({ appointment, client, employee, 
         <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
       )}
 
+      {!canMutateOperationalData && (
+        <div id={RESTRICTED_NOTICE_ID} className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          {RESTRICTED_WORDING}
+        </div>
+      )}
+
       <div className="mt-3">
-        <button
+        <CapabilityGatedButton
           type="button"
+          allowed={canMutateOperationalData}
           onClick={handleCancel}
           disabled={cancelling}
+          ariaDescribedBy={RESTRICTED_NOTICE_ID}
           className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50 transition-colors"
         >
           {cancelling ? "Cancelling..." : "Cancel Appointment"}
-        </button>
+        </CapabilityGatedButton>
       </div>
     </div>
   );
