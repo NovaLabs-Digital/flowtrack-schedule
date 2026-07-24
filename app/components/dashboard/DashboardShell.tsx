@@ -53,11 +53,13 @@ export default function DashboardShell({
   // through to MobileDashboard for the mobile layout) -- only its
   // bannerVariant/recoveryAction fields are ever read there. Phase 5.5E-E1A
   // threaded entitlement.canMutateOperationalData through to AppointmentModal
-  // (below); Phase 5.5E-E1B threads the same value through to
-  // AppointmentDetailPanel, ScheduleGrid, and MoveConfirmDialog -- still just
-  // the Phase 5.5B browser-safe projection, never a raw EntitlementResult.
-  // The remaining capability booleans are present on this type but not yet
-  // consumed by any other owner control -- later E-E phases apply those.
+  // (below); Phase 5.5E-E1B threaded the same value through to
+  // AppointmentDetailPanel, ScheduleGrid, and MoveConfirmDialog; Phase
+  // 5.5E-E1C threads it through to TopBar and MobileDashboard's appointment-
+  // entry controls -- still just the Phase 5.5B browser-safe projection,
+  // never a raw EntitlementResult. The remaining capability booleans are
+  // present on this type but not yet consumed by any other owner control --
+  // later E-E phases apply those.
   entitlement: EntitlementView;
 }) {
   const isMobile = useIsMobile();
@@ -165,6 +167,16 @@ export default function DashboardShell({
   }
 
   function handleAdd() {
+    // Defense-in-depth: the sole shared callback behind both TopBar's
+    // desktop "Add Appointment" and MobileDashboard's "+ Add Appointment"
+    // (each also guards locally before calling this) -- guarding it here
+    // too means create-mode modal state can never open via either entry
+    // control, or a stale/programmatic call, while restricted. The
+    // ScheduleGrid empty-cell click path (handleCellClick) is a separate
+    // function, deliberately not gated here -- it remains out of scope for
+    // this phase and stays protected only by AppointmentModal's own E-E1A
+    // submit-time guard, exactly as before.
+    if (!entitlement.canMutateOperationalData) return;
     setModal({ mode: "create" });
   }
 
@@ -251,6 +263,7 @@ export default function DashboardShell({
           isTester={isTester}
           bannerVariant={entitlement.bannerVariant}
           recoveryAction={entitlement.recoveryAction}
+          canMutateOperationalData={entitlement.canMutateOperationalData}
         />
         {modalEl}
       </>
@@ -294,6 +307,7 @@ export default function DashboardShell({
           onAdd={handleAdd}
           weekOffset={weekOffset}
           onWeekChange={setWeekOffset}
+          canMutateOperationalData={entitlement.canMutateOperationalData}
         />
 
         <div className="flex-1 min-h-0 flex flex-col px-2 pb-2">

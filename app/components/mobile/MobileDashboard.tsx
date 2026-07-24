@@ -11,6 +11,13 @@ import MobileSettings from "@/app/components/mobile/MobileSettings";
 import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 import OwnerBillingBanner, { OwnerBillingBannerProps } from "@/app/components/dashboard/OwnerBillingBanner";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1C: this control's own restricted notice, distinct from every
+// other component's -- see TopBar.tsx for the matching desktop constant and
+// the reason each of these ids must be unique.
+const RESTRICTED_NOTICE_ID = "mobile-dashboard-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 type Props = {
   clients: Client[];
@@ -25,6 +32,10 @@ type Props = {
   // takes on desktop -- never the full EntitlementView, never a raw result.
   bannerVariant: OwnerBillingBannerProps["bannerVariant"];
   recoveryAction: OwnerBillingBannerProps["recoveryAction"];
+  // Phase 5.5E-E1C: threaded to the "+ Add Appointment" control below --
+  // still just the Phase 5.5B browser-safe projection, never a raw
+  // EntitlementResult.
+  canMutateOperationalData: boolean;
 };
 
 function addDays(d: Date, n: number) {
@@ -63,6 +74,7 @@ export default function MobileDashboard({
   isTester,
   bannerVariant,
   recoveryAction,
+  canMutateOperationalData,
 }: Props) {
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
@@ -233,13 +245,23 @@ export default function MobileDashboard({
 
                 {/* Add Appointment */}
                 <div className="shrink-0 px-4 pb-3 pt-1">
-                  <button
+                  {!canMutateOperationalData && (
+                    <div
+                      id={RESTRICTED_NOTICE_ID}
+                      className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
+                    >
+                      {RESTRICTED_WORDING}
+                    </div>
+                  )}
+                  <CapabilityGatedButton
                     type="button"
+                    allowed={canMutateOperationalData}
                     onClick={onAdd}
-                    className="w-full rounded-xl bg-slate-900 px-4 py-3.5 text-sm font-semibold text-white active:bg-slate-800 transition-colors"
+                    ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                    className="w-full rounded-xl bg-slate-900 px-4 py-3.5 text-sm font-semibold text-white active:bg-slate-800 disabled:opacity-50 transition-colors"
                   >
                     + Add Appointment
-                  </button>
+                  </CapabilityGatedButton>
                 </div>
               </>
             )}

@@ -4,6 +4,15 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ViewMode } from "@/app/components/dashboard/types";
 
+// Phase 5.5E-E1C: this control's own restricted notice, distinct from every
+// other component's (appointment-modal-restricted-notice,
+// appointment-detail-restricted-notice, move-confirm-dialog-restricted-
+// notice) -- TopBar is always mounted on desktop alongside
+// AppointmentDetailPanel/AppointmentModal, so ids must not collide. Same
+// approved wording.
+const RESTRICTED_NOTICE_ID = "topbar-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
+
 export default function TopBar({
   onGoToday,
   onAdd,
@@ -12,6 +21,7 @@ export default function TopBar({
   isMobile,
   viewMode,
   onChangeView,
+  canMutateOperationalData,
 }: {
   onGoToday: () => void;
   onAdd: () => void;
@@ -20,10 +30,22 @@ export default function TopBar({
   isMobile?: boolean;
   viewMode?: ViewMode;
   onChangeView?: (m: ViewMode) => void;
+  canMutateOperationalData: boolean;
 }) {
   const router = useRouter();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+
+  // Defense-in-depth: DashboardShell's handleAdd (this desktop control's
+  // onAdd) already guards the same way before opening AppointmentModal in
+  // create mode -- this local guard exists so a disabled client control is
+  // never itself the only thing standing between a restricted owner and the
+  // create workflow, matching the pattern already established for every
+  // other governed control in this phase's predecessors.
+  function handleAddClick() {
+    if (!canMutateOperationalData) return;
+    onAdd();
+  }
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -149,14 +171,40 @@ export default function TopBar({
 
         {/* Right: actions */}
         <div className="flex items-center gap-2">
-          <button
-            onClick={onAdd}
-            data-tour="add-appointment"
-            className="flex items-center gap-1.5 rounded-lg bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 transition-colors"
-          >
-            <span className="text-base leading-none">+</span>
-            Add Appointment
-          </button>
+          {/* Not CapabilityGatedButton: this control carries data-tour=
+              "add-appointment", a load-bearing selector the Interactive
+              Business Experience demo tour targets
+              (demoExperienceSteps.ts) -- CapabilityGatedButton has no
+              passthrough for arbitrary attributes, so routing this button
+              through it would silently drop that attribute and break the
+              tour. Disabled/aria-disabled/aria-describedby and the guarded
+              click handler below replicate CapabilityGatedButton's own
+              behavior directly instead. */}
+          <div className="relative">
+            <button
+              onClick={handleAddClick}
+              disabled={!canMutateOperationalData}
+              aria-disabled={!canMutateOperationalData}
+              aria-describedby={!canMutateOperationalData ? RESTRICTED_NOTICE_ID : undefined}
+              data-tour="add-appointment"
+              className="flex items-center gap-1.5 rounded-lg bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50 transition-colors"
+            >
+              <span className="text-base leading-none">+</span>
+              Add Appointment
+            </button>
+            {/* Reuses this file's own established absolute-dropdown pattern
+                (see the user-menu panel below) rather than inventing new
+                tooltip behavior -- keeps the single-row action cluster's
+                layout completely undisturbed. */}
+            {!canMutateOperationalData && (
+              <div
+                id={RESTRICTED_NOTICE_ID}
+                className="absolute top-full mt-1 left-0 z-50 w-56 rounded-xl border border-slate-200 bg-white shadow-lg px-3 py-2 text-xs text-slate-600"
+              >
+                {RESTRICTED_WORDING}
+              </div>
+            )}
+          </div>
 
           <div className="relative">
             <input
