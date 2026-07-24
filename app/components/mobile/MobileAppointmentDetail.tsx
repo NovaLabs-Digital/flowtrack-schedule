@@ -3,6 +3,17 @@
 import { useState } from "react";
 import { Appointment, Client, Employee } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1D: this control's own restricted notice, distinct from every
+// other component's (appointment-modal-restricted-notice,
+// appointment-detail-restricted-notice, move-confirm-dialog-restricted-
+// notice, topbar-restricted-notice, mobile-dashboard-restricted-notice) --
+// AppointmentModal can be mounted at the same time as this screen (Edit
+// opens it as an overlay while this screen stays mounted underneath), so
+// ids must not collide. Same approved wording.
+const RESTRICTED_NOTICE_ID = "mobile-appointment-detail-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 function formatTime(d: Date) {
   const h = d.getHours();
@@ -28,6 +39,7 @@ type Props = {
   onEdit: () => void;
   onCancelled: () => void;
   onViewClient?: () => void;
+  canMutateOperationalData: boolean;
 };
 
 // Screen 2 of the approved mockup. "Edit" reuses the existing AppointmentModal
@@ -43,6 +55,7 @@ export default function MobileAppointmentDetail({
   onEdit,
   onCancelled,
   onViewClient,
+  canMutateOperationalData,
 }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
@@ -51,6 +64,12 @@ export default function MobileAppointmentDetail({
   const end = new Date(start.getTime() + durationMinutes * 60_000);
 
   async function handleCancel() {
+    // Defense-in-depth: the server route this reaches already enforces this
+    // same capability before mutating anything -- this guard only prevents a
+    // restricted owner's client from ever issuing the request at all. See
+    // CapabilityGatedButton.ts for the corresponding disabled-state guard on
+    // the "Cancel Appointment" control below.
+    if (!canMutateOperationalData) return;
     if (!confirm("Cancel this appointment?")) return;
     setCancelling(true);
     setError("");
@@ -70,6 +89,20 @@ export default function MobileAppointmentDetail({
     }
   }
 
+  // Correction to the original E-E1D implementation: Edit is a
+  // mutation-workflow entry control (it opens AppointmentModal, whose own
+  // create/edit submit path is already governed under E-E1A) and must be
+  // governed here too, not treated as read-only navigation -- mirrors
+  // TopBar.tsx's handleAddClick (E-E1C), which wraps a prop-supplied
+  // callback with the same kind of local guard for the same reason.
+  // Defense-in-depth: CapabilityGatedButton already guards its own onClick
+  // internally, but this guard additionally stops any stale or programmatic
+  // call to onEdit that doesn't go through a click at all.
+  function handleEditClick() {
+    if (!canMutateOperationalData) return;
+    onEdit();
+  }
+
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-slate-100">
       {/* Header */}
@@ -78,9 +111,15 @@ export default function MobileAppointmentDetail({
           ←
         </button>
         <div className="text-sm font-semibold text-slate-900">Appointment</div>
-        <button type="button" onClick={onEdit} className="text-sm font-medium text-blue-600">
+        <CapabilityGatedButton
+          type="button"
+          allowed={canMutateOperationalData}
+          onClick={handleEditClick}
+          ariaDescribedBy={RESTRICTED_NOTICE_ID}
+          className="text-sm font-medium text-blue-600 disabled:opacity-50"
+        >
           Edit
-        </button>
+        </CapabilityGatedButton>
       </div>
 
       <div className="flex-1 min-h-0 overflow-auto p-4 space-y-3">
@@ -177,15 +216,23 @@ export default function MobileAppointmentDetail({
           <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
         )}
 
+        {!canMutateOperationalData && (
+          <div id={RESTRICTED_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            {RESTRICTED_WORDING}
+          </div>
+        )}
+
         {/* Cancel */}
-        <button
+        <CapabilityGatedButton
           type="button"
+          allowed={canMutateOperationalData}
           onClick={handleCancel}
           disabled={cancelling}
+          ariaDescribedBy={RESTRICTED_NOTICE_ID}
           className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 active:bg-rose-100 disabled:opacity-50 transition-colors"
         >
           {cancelling ? "Cancelling..." : "Cancel Appointment"}
-        </button>
+        </CapabilityGatedButton>
       </div>
     </div>
   );

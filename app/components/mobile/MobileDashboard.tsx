@@ -134,6 +134,7 @@ export default function MobileDashboard({
               onClientUpdated();
             }}
             onViewClient={() => setClientDrawerId(selectedAppt.client_id)}
+            canMutateOperationalData={canMutateOperationalData}
           />
         ) : (
           <>
