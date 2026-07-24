@@ -1,6 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1E: this panel's own restricted notice, distinct from every
+// other component's -- shown once, referenced via aria-describedby by every
+// row's Restore control.
+const RESTRICTED_NOTICE_ID = "archived-clients-panel-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 type ArchivedClient = {
   id: string;
@@ -11,7 +18,7 @@ type ArchivedClient = {
   status: string | null;
 };
 
-export default function ArchivedClientsPanel() {
+export default function ArchivedClientsPanel({ canMutateOperationalData }: { canMutateOperationalData: boolean }) {
   const [clients, setClients] = useState<ArchivedClient[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -36,6 +43,10 @@ export default function ArchivedClientsPanel() {
   useEffect(() => { loadClients(); }, []);
 
   async function restore(id: string) {
+    // Defense-in-depth: the server route this reaches already enforces this
+    // same capability before mutating anything -- this guard only prevents
+    // a restricted owner's client from ever issuing the request at all.
+    if (!canMutateOperationalData) return;
     setRestoring(id);
     setMessage(null);
     try {
@@ -88,6 +99,12 @@ export default function ArchivedClientsPanel() {
         </div>
       )}
 
+      {!canMutateOperationalData && (
+        <div id={RESTRICTED_NOTICE_ID} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          {RESTRICTED_WORDING}
+        </div>
+      )}
+
       {clients.length === 0 ? (
         <div className="mt-6 text-center py-8">
           <div className="text-3xl text-slate-200 mb-2">&#128100;</div>
@@ -117,13 +134,15 @@ export default function ArchivedClientsPanel() {
                   </span>
                 </div>
                 <div>
-                  <button
+                  <CapabilityGatedButton
+                    allowed={canMutateOperationalData}
                     onClick={() => restore(c.id)}
                     disabled={restoring === c.id}
+                    ariaDescribedBy={RESTRICTED_NOTICE_ID}
                     className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition-colors"
                   >
                     {restoring === c.id ? "Restoring..." : "Restore"}
-                  </button>
+                  </CapabilityGatedButton>
                 </div>
               </div>
             ))}

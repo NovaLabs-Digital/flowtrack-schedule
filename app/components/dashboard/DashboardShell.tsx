@@ -55,11 +55,14 @@ export default function DashboardShell({
   // threaded entitlement.canMutateOperationalData through to AppointmentModal
   // (below); Phase 5.5E-E1B threaded the same value through to
   // AppointmentDetailPanel, ScheduleGrid, and MoveConfirmDialog; Phase
-  // 5.5E-E1C threads it through to TopBar and MobileDashboard's appointment-
-  // entry controls -- still just the Phase 5.5B browser-safe projection,
-  // never a raw EntitlementResult. The remaining capability booleans are
-  // present on this type but not yet consumed by any other owner control --
-  // later E-E phases apply those.
+  // 5.5E-E1C threaded it through to TopBar and MobileDashboard's appointment-
+  // entry controls; Phase 5.5E-E1D threaded it through to
+  // MobileAppointmentDetail; Phase 5.5E-E1E threads it through to ClientPanel
+  // and (via DashboardSettingsArea/SettingsPanel) ArchivedClientsPanel --
+  // still just the Phase 5.5B browser-safe projection, never a raw
+  // EntitlementResult. The remaining capability booleans are present on this
+  // type but not yet consumed by any other owner control -- later E-E phases
+  // apply those.
   entitlement: EntitlementView;
 }) {
   const isMobile = useIsMobile();
@@ -346,7 +349,12 @@ export default function DashboardShell({
                     canMutateOperationalData={entitlement.canMutateOperationalData}
                   />
                 ) : (
-                  <ClientPanel client={selectedClient} appointments={appointments} onClientUpdated={() => router.refresh()} />
+                  <ClientPanel
+                    client={selectedClient}
+                    appointments={appointments}
+                    onClientUpdated={() => router.refresh()}
+                    canMutateOperationalData={entitlement.canMutateOperationalData}
+                  />
                 )}
               </div>
             </>
@@ -358,6 +366,7 @@ export default function DashboardShell({
               onBack={() => setCenterMode("schedule")}
               onSignOut={handleSignOut}
               signingOut={signingOut}
+              canMutateOperationalData={entitlement.canMutateOperationalData}
             />
           )}
         </div>

@@ -14,6 +14,10 @@ type Props = {
   onBack: () => void;
   onSignOut: () => void;
   signingOut: boolean;
+  // Phase 5.5E-E1E: passed straight through to SettingsPanel, which forwards
+  // it only to ArchivedClientsPanel -- still just the Phase 5.5B
+  // browser-safe projection, never a raw EntitlementResult.
+  canMutateOperationalData: boolean;
 };
 
 // Owner always gets the real, unrestricted Settings sidebar/panel — untouched
@@ -30,6 +34,7 @@ export default function DashboardSettingsArea({
   onBack,
   onSignOut,
   signingOut,
+  canMutateOperationalData,
 }: Props) {
   const { active, currentStep, restart } = useDemoExperienceContext();
 
@@ -38,7 +43,7 @@ export default function DashboardSettingsArea({
       <div className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
         <div className="flex-1 min-h-0 overflow-auto pt-8">
-          <SettingsPanel section={settingsSection} />
+          <SettingsPanel section={settingsSection} canMutateOperationalData={canMutateOperationalData} />
         </div>
       </div>
     );

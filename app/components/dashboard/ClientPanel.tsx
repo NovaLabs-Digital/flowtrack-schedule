@@ -3,6 +3,17 @@
 import { useState } from "react";
 import { Client, Appointment } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1E: this panel's own restricted notice, distinct from every
+// other component's -- shown once in the always-rendered header, referenced
+// via aria-describedby by all three governed controls below (Edit,
+// Archive/Restore, Save Client) even though Save Client renders in a
+// separate area of this same component (the edit form), matching the
+// established pattern from AppointmentDetailPanel/MobileAppointmentDetail
+// (one shared notice per component, not per control).
+const RESTRICTED_NOTICE_ID = "client-panel-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 function SectionHeader({ children, action }: { children: React.ReactNode; action?: string }) {
   return (
@@ -97,9 +108,9 @@ function initForm(c: Client): EditForm {
 }
 
 export default function ClientPanel({
-  client, appointments, onClientUpdated,
+  client, appointments, onClientUpdated, canMutateOperationalData,
 }: {
-  client: Client | null; appointments: Appointment[]; onClientUpdated: () => void;
+  client: Client | null; appointments: Appointment[]; onClientUpdated: () => void; canMutateOperationalData: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<EditForm>(initForm(client ?? {} as Client));
@@ -107,6 +118,12 @@ export default function ClientPanel({
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   function startEdit() {
+    // Defense-in-depth: the server route this eventually reaches (via
+    // saveEdit) already enforces this same capability before mutating
+    // anything -- this guard additionally prevents the edit form itself
+    // from ever opening for a restricted owner, per this phase's explicit
+    // "do not open client forms" requirement.
+    if (!canMutateOperationalData) return;
     if (!client) return;
     setForm(initForm(client));
     setEditing(true);
@@ -114,6 +131,7 @@ export default function ClientPanel({
   }
 
   async function saveEdit() {
+    if (!canMutateOperationalData) return;
     if (!client) return;
     if (!form.name.trim()) { setMessage({ type: "error", text: "Name is required." }); return; }
     setSaving(true); setMessage(null);
@@ -133,6 +151,7 @@ export default function ClientPanel({
   }
 
   async function doAction(action: "archive" | "restore") {
+    if (!canMutateOperationalData) return;
     if (!client) return;
     setSaving(true); setMessage(null);
     try {
@@ -179,13 +198,18 @@ export default function ClientPanel({
           </div>
           {client && !editing && (
             <div className="flex items-center gap-1.5 shrink-0">
-              <button onClick={startEdit} className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors">&#9998; Edit</button>
+              <CapabilityGatedButton allowed={canMutateOperationalData} onClick={startEdit} ariaDescribedBy={RESTRICTED_NOTICE_ID} className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50 transition-colors">&#9998; Edit</CapabilityGatedButton>
               {isArchived
-                ? <button onClick={() => doAction("restore")} disabled={saving} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 shadow-sm hover:bg-emerald-100 disabled:opacity-50">Restore</button>
-                : <button onClick={() => doAction("archive")} disabled={saving} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 shadow-sm hover:bg-amber-100 disabled:opacity-50">Archive</button>}
+                ? <CapabilityGatedButton allowed={canMutateOperationalData} onClick={() => doAction("restore")} disabled={saving} ariaDescribedBy={RESTRICTED_NOTICE_ID} className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 shadow-sm hover:bg-emerald-100 disabled:opacity-50">Restore</CapabilityGatedButton>
+                : <CapabilityGatedButton allowed={canMutateOperationalData} onClick={() => doAction("archive")} disabled={saving} ariaDescribedBy={RESTRICTED_NOTICE_ID} className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 shadow-sm hover:bg-amber-100 disabled:opacity-50">Archive</CapabilityGatedButton>}
             </div>
           )}
         </div>
+        {!canMutateOperationalData && (
+          <div id={RESTRICTED_NOTICE_ID} className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            {RESTRICTED_WORDING}
+          </div>
+        )}
       </div>
 
       {/* Edit form - replaces the 5-column workspace when active */}
@@ -252,7 +276,7 @@ export default function ClientPanel({
               </label>
             </div>
             <div className="flex gap-1.5 pt-1">
-              <button onClick={saveEdit} disabled={saving} className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs text-white hover:bg-slate-800 disabled:opacity-50">{saving ? "Saving..." : "Save Client"}</button>
+              <CapabilityGatedButton allowed={canMutateOperationalData} onClick={saveEdit} disabled={saving} ariaDescribedBy={RESTRICTED_NOTICE_ID} className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs text-white hover:bg-slate-800 disabled:opacity-50">{saving ? "Saving..." : "Save Client"}</CapabilityGatedButton>
               <button onClick={() => { setEditing(false); setMessage(null); }} className="rounded-lg border border-slate-300 px-4 py-1.5 text-xs text-slate-700 hover:bg-slate-50">Cancel</button>
             </div>
           </div>
