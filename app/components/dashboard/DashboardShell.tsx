@@ -57,12 +57,16 @@ export default function DashboardShell({
   // AppointmentDetailPanel, ScheduleGrid, and MoveConfirmDialog; Phase
   // 5.5E-E1C threaded it through to TopBar and MobileDashboard's appointment-
   // entry controls; Phase 5.5E-E1D threaded it through to
-  // MobileAppointmentDetail; Phase 5.5E-E1E threads it through to ClientPanel
-  // and (via DashboardSettingsArea/SettingsPanel) ArchivedClientsPanel --
-  // still just the Phase 5.5B browser-safe projection, never a raw
-  // EntitlementResult. The remaining capability booleans are present on this
-  // type but not yet consumed by any other owner control -- later E-E phases
-  // apply those.
+  // MobileAppointmentDetail; Phase 5.5E-E1E threaded it through to ClientPanel
+  // and (via DashboardSettingsArea/SettingsPanel) ArchivedClientsPanel; Phase
+  // 5.5E-E1F threaded it through to CompanyInfoPanel/ServicesPanel/StaffPanel.
+  // Phase 5.5E-E1G threads entitlement.canUseJobTracking (a different field
+  // on this same trusted projection, deliberately not canMutateOperationalData
+  // -- see DispatchPanel.tsx) through to DispatchPanel's owner manual
+  // worked-hours correction, matching the same capability its server route
+  // already enforces. Still just the Phase 5.5B browser-safe projection,
+  // never a raw EntitlementResult. canSendNotifications remains unconsumed
+  // by any owner UI control.
   entitlement: EntitlementView;
 }) {
   const isMobile = useIsMobile();
@@ -382,6 +386,7 @@ export default function DashboardShell({
             employeeHours={employeeHoursState}
             selectedAppointmentId={selectedApptId}
             onHoursSaved={handleHoursSaved}
+            canUseJobTracking={entitlement.canUseJobTracking}
           />
         </aside>
       )}

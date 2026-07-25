@@ -5,6 +5,17 @@ import { Appointment, Client, Employee, EmployeeHours } from "@/app/components/d
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
 import { startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
 import { hasInvalidJobTrackingDuration, hasWorkedHours, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes, formatMinutesAsDuration } from "@/lib/payroll";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1G: this control's own restricted notice, distinct from every
+// other component's. Gated on canUseJobTracking, not canMutateOperationalData
+// -- this manual-hours correction is the owner-invoked counterpart to
+// employee Job Tracking (the server route it reaches already enforces the
+// same capability), not a general operational-data edit. Employee Start/
+// Complete Job actions (EmployeeJobActionButton.ts) are a completely
+// separate component/session/policy and are untouched by this file.
+const RESTRICTED_NOTICE_ID = "employee-hours-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 function formatDateTime(iso: string) {
   const d = toBusinessLocal(iso);
@@ -51,11 +62,12 @@ function formatDuration(mins: number) {
 // manual entry yet) — so this form is always the missing-hours exception,
 // never a way to edit an appointment's tracked duration.
 function EmployeeHoursSection({
-  appointment, employee, onSaved,
+  appointment, employee, onSaved, canUseJobTracking,
 }: {
   appointment: Appointment;
   employee: Employee;
   onSaved: (entry: EmployeeHours) => void;
+  canUseJobTracking: boolean;
 }) {
   const [hours, setHours] = useState("");
   const [reason, setReason] = useState("");
@@ -63,6 +75,10 @@ function EmployeeHoursSection({
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   async function save() {
+    // Defense-in-depth: the server route this reaches already enforces this
+    // same capability before mutating anything -- this guard only prevents
+    // a restricted owner's client from ever issuing the request at all.
+    if (!canUseJobTracking) return;
     const hoursNum = Number(hours);
     if (!hours.trim() || !Number.isFinite(hoursNum) || hoursNum <= 0) {
       setMessage({ type: "error", text: "Enter hours worked (e.g. 2.5)." });
@@ -117,7 +133,8 @@ function EmployeeHoursSection({
           value={hours}
           onChange={(e) => setHours(e.target.value)}
           placeholder="2.5"
-          className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={!canUseJobTracking}
+          className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
         />
       </div>
       <div className="flex items-center gap-2">
@@ -127,7 +144,8 @@ function EmployeeHoursSection({
           value={reason}
           onChange={(e) => setReason(e.target.value)}
           placeholder="e.g. forgot to clock in/out"
-          className="flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+          disabled={!canUseJobTracking}
+          className="flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
         />
       </div>
       {message && (
@@ -138,14 +156,21 @@ function EmployeeHoursSection({
           {message.text}
         </div>
       )}
-      <button
+      {!canUseJobTracking && (
+        <div id={RESTRICTED_NOTICE_ID} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-600">
+          {RESTRICTED_WORDING}
+        </div>
+      )}
+      <CapabilityGatedButton
         type="button"
+        allowed={canUseJobTracking}
         onClick={save}
         disabled={saving}
+        ariaDescribedBy={RESTRICTED_NOTICE_ID}
         className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
       >
         {saving ? "Saving..." : "Save Worked Hours"}
-      </button>
+      </CapabilityGatedButton>
     </div>
   );
 }
@@ -157,6 +182,7 @@ export default function DispatchPanel({
   employeeHours,
   selectedAppointmentId,
   onHoursSaved,
+  canUseJobTracking,
 }: {
   appointments: Appointment[];
   clients: Client[];
@@ -164,6 +190,7 @@ export default function DispatchPanel({
   employeeHours: EmployeeHours[];
   selectedAppointmentId: string | null;
   onHoursSaved: (entry: EmployeeHours) => void;
+  canUseJobTracking: boolean;
 }) {
   const today = startOfBusinessDay(0);
   const tomorrow = startOfBusinessDay(1);
@@ -303,6 +330,7 @@ export default function DispatchPanel({
             appointment={selectedAppt}
             employee={employee}
             onSaved={onHoursSaved}
+            canUseJobTracking={canUseJobTracking}
           />
         ) : (
           <div className="text-xs text-slate-400">
