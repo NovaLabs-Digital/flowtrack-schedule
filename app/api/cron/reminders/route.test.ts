@@ -1,7 +1,8 @@
 // Phase 5.4E5: route-level tests for app/api/cron/reminders/route.ts
-// (GET only, scheduler-triggered, no session -- authenticated by a
-// query-string secret compared with process.env.CRON_SECRET via
-// safeEqual). Proves requireCapabilityForWorkspace(workspaceId,
+// (GET only, scheduler-triggered, no session -- authenticated by an
+// `Authorization: Bearer <CRON_SECRET>` header via lib/cronAuth.ts, matching
+// how Vercel Cron actually delivers the configured secret -- see Phase
+// 5.6C). Proves requireCapabilityForWorkspace(workspaceId,
 // "canSendNotifications") is resolved once per unique workspace present in
 // a run, strictly after scheduler authentication and strictly before any
 // per-workspace operational read (the client lookup), mutation, or
@@ -50,11 +51,15 @@ function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
   currentFake = createFakeSupabaseAdmin(responses);
   currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabaseAdmin.from(t) });
 }
-function req(secret: string | null | undefined = "test-cron-secret", extra = "") {
+// `token` is the Bearer credential sent in the Authorization header (the
+// real Vercel Cron transport); `extraQuery` optionally appends an unrelated
+// query string to prove it has no bearing on authentication.
+function req(token: string | null | undefined = "test-cron-secret", extraQuery = "") {
   const base = "http://localhost/api/cron/reminders";
-  if (secret === null || secret === undefined) return new Request(`${base}${extra ? `?${extra}` : ""}`);
-  const qs = `secret=${encodeURIComponent(secret)}${extra ? `&${extra}` : ""}`;
-  return new Request(`${base}?${qs}`);
+  const url = `${base}${extraQuery ? `?${extraQuery}` : ""}`;
+  const headers: Record<string, string> = {};
+  if (token !== null && token !== undefined) headers.authorization = `Bearer ${token}`;
+  return new Request(url, { headers });
 }
 
 const WORKSPACE_A = "aaaaaaaa-0000-0000-0000-0000000000a1";
@@ -75,8 +80,8 @@ function optedInClient(overrides: Record<string, unknown> = {}) {
   return { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true, ...overrides };
 }
 
-describe("GET /api/cron/reminders -- scheduler authentication", () => {
-  test("missing secret is denied before any Supabase call", async () => {
+describe("GET /api/cron/reminders -- scheduler authentication (Bearer, Phase 5.6C)", () => {
+  test("missing Authorization header is denied before any Supabase call", async () => {
     resetFixtures({});
     const res = await GET(req(null));
     assert.equal(res.status, 401);
@@ -84,7 +89,23 @@ describe("GET /api/cron/reminders -- scheduler authentication", () => {
     assert.equal(currentFake.calls.length, 0);
   });
 
-  test("wrong secret is denied before any Supabase call", async () => {
+  test("wrong scheme is denied before any Supabase call", async () => {
+    resetFixtures({});
+    const res = await GET(new Request("http://localhost/api/cron/reminders", { headers: { authorization: "Basic dGVzdC1jcm9uLXNlY3JldA==" } }));
+    assert.equal(res.status, 401);
+    assert.deepEqual(await res.json(), { error: "Unauthorized" });
+    assert.equal(currentFake.calls.length, 0);
+  });
+
+  test("empty Bearer token is denied before any Supabase call", async () => {
+    resetFixtures({});
+    const res = await GET(new Request("http://localhost/api/cron/reminders", { headers: { authorization: "Bearer " } }));
+    assert.equal(res.status, 401);
+    assert.deepEqual(await res.json(), { error: "Unauthorized" });
+    assert.equal(currentFake.calls.length, 0);
+  });
+
+  test("wrong token is denied before any Supabase call", async () => {
     resetFixtures({});
     const res = await GET(req("wrong-secret"));
     assert.equal(res.status, 401);
@@ -92,9 +113,37 @@ describe("GET /api/cron/reminders -- scheduler authentication", () => {
     assert.equal(currentFake.calls.length, 0);
   });
 
-  test("correct secret reaches entitlement/operational processing", async () => {
+  test("missing CRON_SECRET env fails closed even with a well-formed Bearer header", async () => {
+    resetFixtures({});
+    const original = process.env.CRON_SECRET;
+    delete process.env.CRON_SECRET;
+    try {
+      const res = await GET(req("test-cron-secret"));
+      assert.equal(res.status, 401);
+      assert.equal(currentFake.calls.length, 0);
+    } finally {
+      process.env.CRON_SECRET = original;
+    }
+  });
+
+  test("query-string-only authentication (?secret=) is rejected -- the Authorization header is required", async () => {
+    resetFixtures({});
+    const res = await GET(req(null, "secret=test-cron-secret"));
+    assert.equal(res.status, 401);
+    assert.deepEqual(await res.json(), { error: "Unauthorized" });
+    assert.equal(currentFake.calls.length, 0);
+  });
+
+  test("correct Bearer token reaches entitlement/operational processing", async () => {
     resetFixtures({ appointments: [{ data: [] }] });
     const res = await GET(req("test-cron-secret"));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, checked: 0, sent: 0, entitlementSkipped: 0 });
+  });
+
+  test("a valid Bearer token still works if an unrelated ?secret= query parameter is present", async () => {
+    resetFixtures({ appointments: [{ data: [] }] });
+    const res = await GET(req("test-cron-secret", "secret=irrelevant-decoy"));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, checked: 0, sent: 0, entitlementSkipped: 0 });
   });
@@ -315,8 +364,8 @@ describe("GET /api/cron/reminders -- workspace identity cannot be spoofed", () =
       subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }],
       appointments: [{ data: [apptCandidate({ workspace_id: WORKSPACE_A })] }],
     });
-    const url = `http://localhost/api/cron/reminders?secret=test-cron-secret`;
-    const res = await GET(new Request(url, { headers: { "x-workspace-id": DEMO_WORKSPACE_ID } }));
+    const url = `http://localhost/api/cron/reminders`;
+    const res = await GET(new Request(url, { headers: { authorization: "Bearer test-cron-secret", "x-workspace-id": DEMO_WORKSPACE_ID } }));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, checked: 1, sent: 0, entitlementSkipped: 1 });
   });
@@ -413,10 +462,15 @@ describe("the entitlement gate is source-correctly scoped (source-level proof)",
     assert.ok(gateIndex > -1 && clientReadIndex > -1 && gateIndex < clientReadIndex);
   });
 
-  test("scheduler-secret authentication remains the very first check, before the entitlement gate", () => {
-    const authIndex = routeSource.indexOf("safeEqual(secret, cronSecret)");
+  test("scheduler Bearer authentication remains the very first check, before the entitlement gate", () => {
+    const authIndex = routeSource.indexOf("isAuthorizedCronRequest(authHeader, process.env.CRON_SECRET)");
     const gateIndex = routeSource.indexOf("workspaceEntitled(a.workspace_id)");
     assert.ok(authIndex > -1 && gateIndex > -1 && authIndex < gateIndex);
+  });
+
+  test("authentication reads the Authorization header, not a query-string secret", () => {
+    assert.ok(routeSource.includes('req.headers.get("authorization")'));
+    assert.ok(!routeSource.includes('searchParams.get("secret")'));
   });
 
   test("demo suppression via is_demo = false on the discovery query is unchanged", () => {

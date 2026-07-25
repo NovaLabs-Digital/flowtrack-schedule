@@ -5,7 +5,7 @@ import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, describeProviderError, recordMessageSent } from "@/lib/notify";
 import { reminder24hTemplates } from "@/lib/templates";
-import { safeEqual } from "@/lib/safeEqual";
+import { isAuthorizedCronRequest } from "@/lib/cronAuth";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
 function json(data: any, status = 200) {
@@ -14,10 +14,8 @@ function json(data: any, status = 200) {
 
 export async function GET(req: Request) {
   try {
-    const url = new URL(req.url);
-    const secret = url.searchParams.get("secret");
-    const cronSecret = process.env.CRON_SECRET;
-    if (!secret || !cronSecret || !safeEqual(secret, cronSecret)) {
+    const authHeader = req.headers.get("authorization");
+    if (!isAuthorizedCronRequest(authHeader, process.env.CRON_SECRET)) {
       return json({ error: "Unauthorized" }, 401);
     }
 

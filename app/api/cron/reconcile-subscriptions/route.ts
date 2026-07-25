@@ -9,8 +9,8 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getStripeConfig } from "@/lib/stripe";
 import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
 import { updateSubscriptionIfUnchanged } from "@/lib/stripeWebhook";
+import { isAuthorizedCronRequest } from "@/lib/cronAuth";
 import {
-  isAuthorizedCronRequest,
   reconcileRows,
   RECONCILE_STALE_THRESHOLD_MS,
   RECONCILE_BATCH_LIMIT,
@@ -18,16 +18,17 @@ import {
 
 // Phase 5.4B — bounded reconciliation for Stripe-billed subscriptions whose
 // local state hasn't been confirmed by a webhook (or a prior reconciliation
-// run) within RECONCILE_STALE_THRESHOLD_MS. Not scheduled by anything yet —
-// this route exists and can be invoked manually/for testing, but no
-// external cron trigger or vercel.json entry is added in this phase.
+// run) within RECONCILE_STALE_THRESHOLD_MS. Deliberately NOT scheduled in
+// vercel.json (Phase 5.6C) — this route exists and can be invoked
+// manually/for testing, but subscription-state sync relies solely on Stripe
+// webhooks for now; scheduling this is a separate, later decision.
 //
-// No session auth — same model as app/api/cron/reminders: a shared-secret
-// query param, checked before any database or Stripe access.
+// No session auth — same model as app/api/cron/reminders: a shared secret
+// (CRON_SECRET) sent as `Authorization: Bearer <secret>` by Vercel Cron,
+// checked before any database or Stripe access. See lib/cronAuth.ts.
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const secret = url.searchParams.get("secret");
-  if (!isAuthorizedCronRequest(secret, process.env.CRON_SECRET)) {
+  const authHeader = req.headers.get("authorization");
+  if (!isAuthorizedCronRequest(authHeader, process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -1,6 +1,5 @@
 import "server-only";
 import type Stripe from "stripe";
-import { safeEqual } from "@/lib/safeEqual";
 import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
 import { buildSubscriptionPatchFromStripeSubscription } from "@/lib/stripeWebhook";
 
@@ -26,11 +25,6 @@ export const RECONCILE_STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 // through a larger backlog instead of one batch of stale rows crowding out
 // the rest forever.
 export const RECONCILE_BATCH_LIMIT = 25;
-
-export function isAuthorizedCronRequest(secretParam: string | null, envSecret: string | undefined): boolean {
-  if (!secretParam || !envSecret) return false;
-  return safeEqual(secretParam, envSecret);
-}
 
 export interface ReconcileRow {
   workspace_id: string;

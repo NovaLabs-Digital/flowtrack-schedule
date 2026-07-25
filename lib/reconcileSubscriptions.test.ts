@@ -9,7 +9,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import type Stripe from "stripe";
 
-const { reconcileRows, isAuthorizedCronRequest, RECONCILE_BATCH_LIMIT, RECONCILE_STALE_THRESHOLD_MS } = await import(
+const { reconcileRows, RECONCILE_BATCH_LIMIT, RECONCILE_STALE_THRESHOLD_MS } = await import(
   "./reconcileSubscriptions.ts"
 );
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("./workspace.ts");
@@ -211,21 +211,6 @@ describe("batch boundedness", () => {
     await reconcileRows(rows, deps);
     assert.equal(retrieveCalls.length, 5);
     assert.equal(applyCalls.length, 5);
-  });
-});
-
-describe("cron authorization", () => {
-  test("missing secret param is unauthorized", () => {
-    assert.equal(isAuthorizedCronRequest(null, "the-real-secret"), false);
-  });
-  test("missing configured env secret is unauthorized (fails closed, never open)", () => {
-    assert.equal(isAuthorizedCronRequest("guess", undefined), false);
-  });
-  test("wrong secret is unauthorized", () => {
-    assert.equal(isAuthorizedCronRequest("wrong", "the-real-secret"), false);
-  });
-  test("correct secret is authorized", () => {
-    assert.equal(isAuthorizedCronRequest("the-real-secret", "the-real-secret"), true);
   });
 });
 
