@@ -3,6 +3,14 @@
 import { useEffect, useState } from "react";
 import { Service } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
+// Edit/Enable-Disable/Delete, and the Add/Edit form's Save submit are all
+// facets of the single "manage services" task, matching the ClientPanel
+// precedent (one notice per component, not per control).
+const RESTRICTED_NOTICE_ID = "services-panel-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 // Curated, non-neon palette so service colors stay consistent and read well as
 // a soft transparent card background across every ScheduleFlowTrack install.
@@ -33,7 +41,13 @@ const PRESET_COLORS = [
 type EditForm = { name: string; description: string; color: string };
 const EMPTY_FORM: EditForm = { name: "", description: "", color: PRESET_COLORS[0].hex };
 
-export default function ServicesPanel({ isTester = false }: { isTester?: boolean }) {
+export default function ServicesPanel({
+  isTester = false,
+  canMutateOperationalData,
+}: {
+  isTester?: boolean;
+  canMutateOperationalData: boolean;
+}) {
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -57,6 +71,11 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
   useEffect(() => { loadServices(); }, []);
 
   function startEdit(s: Service) {
+    // Defense-in-depth: the server route this eventually reaches (via
+    // handleSave) already enforces this same capability before mutating
+    // anything -- this guard additionally prevents the edit form itself
+    // from ever opening for a restricted owner.
+    if (!canMutateOperationalData) return;
     setEditingId(s.id);
     setShowAdd(false);
     setForm({ name: s.name, description: s.description ?? "", color: s.color ?? PRESET_COLORS[0].hex });
@@ -64,6 +83,7 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
   }
 
   function startAdd() {
+    if (!canMutateOperationalData) return;
     setEditingId(null);
     setShowAdd(true);
     setForm(EMPTY_FORM);
@@ -78,6 +98,7 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+    if (!canMutateOperationalData) return;
     if (!form.name.trim()) { setMessage({ type: "error", text: "Service name is required." }); return; }
 
     setSaving(true);
@@ -104,6 +125,7 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
   }
 
   async function handleDelete(s: Service) {
+    if (!canMutateOperationalData) return;
     if (!confirm(`Delete "${s.name}"? This cannot be undone.`)) return;
     setMessage(null);
     try {
@@ -123,6 +145,7 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
   }
 
   async function toggleActive(s: Service) {
+    if (!canMutateOperationalData) return;
     setMessage(null);
     try {
       const res = await fetch("/api/services", {
@@ -157,14 +180,22 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
           <div className="mt-1 text-xs text-slate-500">Manage the services your business offers.</div>
         </div>
         {!showAdd && !editingId && (
-          <button
+          <CapabilityGatedButton
+            allowed={canMutateOperationalData}
             onClick={startAdd}
-            className="rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 transition-colors"
+            ariaDescribedBy={RESTRICTED_NOTICE_ID}
+            className="rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50 transition-colors"
           >
             + Add Service
-          </button>
+          </CapabilityGatedButton>
         )}
       </div>
+
+      {!canMutateOperationalData && (
+        <div id={RESTRICTED_NOTICE_ID} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          {RESTRICTED_WORDING}
+        </div>
+      )}
 
       {message && (
         <div className={[
@@ -230,13 +261,15 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
             </div>
           </div>
           <div className="flex gap-2">
-            <button
+            <CapabilityGatedButton
               type="submit"
+              allowed={canMutateOperationalData}
               disabled={saving}
+              ariaDescribedBy={RESTRICTED_NOTICE_ID}
               className="rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50 transition-colors"
             >
               {saving ? "Saving..." : editingId ? "Save Changes" : "Add Service"}
-            </button>
+            </CapabilityGatedButton>
             <button
               type="button"
               onClick={cancelForm}
@@ -288,16 +321,20 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
-                <button
+                <CapabilityGatedButton
+                  allowed={canMutateOperationalData}
                   onClick={() => startEdit(s)}
-                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 transition-colors flex items-center gap-1"
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors flex items-center gap-1"
                 >
                   <span className="text-[10px]">&#9998;</span> Edit
-                </button>
-                <button
+                </CapabilityGatedButton>
+                <CapabilityGatedButton
+                  allowed={canMutateOperationalData}
                   onClick={() => toggleActive(s)}
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
                   className={[
-                    "rounded-lg border px-2.5 py-1 text-xs transition-colors flex items-center gap-1",
+                    "rounded-lg border px-2.5 py-1 text-xs transition-colors flex items-center gap-1 disabled:opacity-50",
                     s.active
                       ? "border-rose-200 text-rose-600 hover:bg-rose-50"
                       : "border-emerald-200 text-emerald-600 hover:bg-emerald-50",
@@ -305,14 +342,16 @@ export default function ServicesPanel({ isTester = false }: { isTester?: boolean
                 >
                   <span className="text-[10px]">{s.active ? "✘" : "✔"}</span>
                   {s.active ? "Disable" : "Enable"}
-                </button>
+                </CapabilityGatedButton>
                 {isTester && (
-                  <button
+                  <CapabilityGatedButton
+                    allowed={canMutateOperationalData}
                     onClick={() => handleDelete(s)}
-                    className="rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1 text-xs text-rose-700 hover:bg-rose-100 transition-colors flex items-center gap-1"
+                    ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                    className="rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1 text-xs text-rose-700 hover:bg-rose-100 disabled:opacity-50 transition-colors flex items-center gap-1"
                   >
                     <span className="text-[10px]">🗑</span> Delete
-                  </button>
+                  </CapabilityGatedButton>
                 )}
               </div>
             </div>

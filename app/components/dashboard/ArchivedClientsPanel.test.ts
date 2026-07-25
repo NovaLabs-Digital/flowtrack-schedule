@@ -30,15 +30,25 @@ describe("prop wiring: full DashboardShell -> ... -> ArchivedClientsPanel chain"
     assert.match(source, /canMutateOperationalData:\s*boolean/);
   });
 
-  test("SettingsPanel forwards canMutateOperationalData to ArchivedClientsPanel only, not to Company/Services/Staff", () => {
+  test("SettingsPanel forwards canMutateOperationalData to ArchivedClientsPanel", () => {
     const archivedIdx = settingsPanelSource.indexOf('if (section === "archived")');
     assert.notEqual(archivedIdx, -1);
     const line = settingsPanelSource.slice(archivedIdx, archivedIdx + 150);
     assert.match(line, /<ArchivedClientsPanel canMutateOperationalData=\{canMutateOperationalData\} \/>/);
+  });
 
-    for (const marker of ['<CompanyInfoPanel />', '<ServicesPanel />', '<StaffPanel />']) {
-      assert.ok(settingsPanelSource.includes(marker), `expected ${marker} unchanged`);
-    }
+  // As of Phase 5.5E-E1F, CompanyInfoPanel/ServicesPanel/StaffPanel also
+  // receive this same trusted value (they own real mutation controls of
+  // their own, governed in that later phase) -- SettingsPanel.tsx is an
+  // explicitly in-scope file there, so this is an intentional, correct
+  // update to what this pre-existing E-E1E test asserts about it, not a
+  // regression. CompanyInfoPanel/ServicesPanel/StaffPanel.test.ts (added in
+  // that phase) are the authoritative tests for their own wiring/governance;
+  // this assertion only confirms SettingsPanel.tsx forwards the SAME single
+  // trusted value uniformly to all four sections, never a second value.
+  test("SettingsPanel forwards the same canMutateOperationalData value to every section that owns a real mutation control (Company, Services, Staff, Archived)", () => {
+    const matches = settingsPanelSource.match(/canMutateOperationalData=\{canMutateOperationalData\}/g) ?? [];
+    assert.equal(matches.length, 4, "expected CompanyInfoPanel, ServicesPanel, StaffPanel, and ArchivedClientsPanel each wired once");
   });
 
   test("DashboardSettingsArea passes canMutateOperationalData straight through to SettingsPanel", () => {

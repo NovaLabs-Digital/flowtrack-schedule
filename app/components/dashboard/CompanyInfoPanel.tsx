@@ -4,6 +4,18 @@ import { useEffect, useState } from "react";
 import SettingsCard, { DirtyHint, PreviewPill } from "@/app/components/dashboard/SettingsCard";
 import SettingsToggle from "@/app/components/dashboard/SettingsToggle";
 import CompanyStatusStrip from "@/app/components/dashboard/CompanyStatusStrip";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1F: two separate logical mutation-control areas in this
+// panel -- Company Information and Automation are independent cards with
+// independent Save actions and independent dirty-state, matching this
+// codebase's own card-splitting principle (one card answers one question) --
+// so each gets its own notice rather than sharing one across the whole
+// panel. Distinct from every other component's notice id established in
+// earlier phases.
+const COMPANY_NOTICE_ID = "company-info-restricted-notice";
+const AUTOMATION_NOTICE_ID = "company-automation-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 type CompanyForm = { company_name: string; phone: string; email: string; address: string; city: string; state: string; zip: string };
 type Status = { emailConfigured: boolean; smsConfigured: boolean; activeStaff: number; totalStaff: number; timezoneLabel: string };
@@ -29,7 +41,7 @@ function initials(name: string): string {
   return words.slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
 }
 
-export default function CompanyInfoPanel() {
+export default function CompanyInfoPanel({ canMutateOperationalData }: { canMutateOperationalData: boolean }) {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status | null>(null);
 
@@ -120,6 +132,10 @@ export default function CompanyInfoPanel() {
   const automationDirty = bookingEnabled !== bookingSaved || notificationsEnabled !== notificationsSaved;
 
   async function handleSave() {
+    // Defense-in-depth: the server route this reaches already enforces this
+    // same capability before mutating anything -- this guard only prevents
+    // a restricted owner's client from ever issuing the request at all.
+    if (!canMutateOperationalData) return;
     setSaving(true);
     setMsg(null);
     try {
@@ -149,6 +165,7 @@ export default function CompanyInfoPanel() {
   const [automationMsg, setAutomationMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   async function handleSaveAutomation() {
+    if (!canMutateOperationalData) return;
     setAutomationSaving(true);
     setAutomationMsg(null);
     try {
@@ -201,9 +218,15 @@ export default function CompanyInfoPanel() {
         title="Company Information"
         helper="This information is used in your communications and scheduling."
         headerRight={
-          <button type="button" disabled={saving || !dirty} onClick={handleSave} className={primaryBtnCls}>
+          <CapabilityGatedButton
+            allowed={canMutateOperationalData}
+            disabled={saving || !dirty}
+            onClick={handleSave}
+            ariaDescribedBy={COMPANY_NOTICE_ID}
+            className={primaryBtnCls}
+          >
             {saving ? "Saving..." : "Save Changes"}
-          </button>
+          </CapabilityGatedButton>
         }
       >
         <div className="flex flex-col sm:flex-row gap-6">
@@ -342,6 +365,12 @@ export default function CompanyInfoPanel() {
           <DirtyHint dirty={dirty} />
         </div>
 
+        {!canMutateOperationalData && (
+          <div id={COMPANY_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            {RESTRICTED_WORDING}
+          </div>
+        )}
+
         {msg && (
           <div
             className={[
@@ -368,14 +397,15 @@ export default function CompanyInfoPanel() {
         title="Automation"
         helper="Control what happens automatically for your business."
         headerRight={
-          <button
-            type="button"
+          <CapabilityGatedButton
+            allowed={canMutateOperationalData}
             disabled={automationSaving || !automationDirty}
             onClick={handleSaveAutomation}
+            ariaDescribedBy={AUTOMATION_NOTICE_ID}
             className={primaryBtnCls}
           >
             {automationSaving ? "Saving..." : "Save Changes"}
-          </button>
+          </CapabilityGatedButton>
         }
       >
         <SettingsToggle
@@ -404,6 +434,12 @@ export default function CompanyInfoPanel() {
         <div className="flex items-center justify-between pt-1">
           <DirtyHint dirty={automationDirty} />
         </div>
+
+        {!canMutateOperationalData && (
+          <div id={AUTOMATION_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            {RESTRICTED_WORDING}
+          </div>
+        )}
 
         {automationMsg && (
           <div

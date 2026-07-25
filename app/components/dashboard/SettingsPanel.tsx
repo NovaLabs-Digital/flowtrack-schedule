@@ -11,14 +11,15 @@ export default function SettingsPanel({
   canMutateOperationalData,
 }: {
   section: SettingsSection;
-  // Phase 5.5E-E1E: forwarded only to ArchivedClientsPanel, the one section
-  // here with an owner mutation control (Restore) -- Company/Services/Staff
-  // are untouched, out of this phase's scope.
+  // Phase 5.5E-E1E forwarded this only to ArchivedClientsPanel. Phase
+  // 5.5E-E1F forwards the same trusted value to every section here that
+  // owns a real mutation control (Company, Services, Staff) -- still just
+  // the Phase 5.5B browser-safe projection, never a raw EntitlementResult.
   canMutateOperationalData: boolean;
 }) {
-  if (section === "company") return <CompanyInfoPanel />;
-  if (section === "services") return <ServicesPanel />;
-  if (section === "staff") return <StaffPanel />;
+  if (section === "company") return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} />;
+  if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} />;
+  if (section === "staff") return <StaffPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "archived") return <ArchivedClientsPanel canMutateOperationalData={canMutateOperationalData} />;
   return null;
 }

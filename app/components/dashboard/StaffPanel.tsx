@@ -3,6 +3,15 @@
 import { useEffect, useState } from "react";
 import { Employee } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
+import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+
+// Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
+// Edit/Deactivate-Reactivate (active and inactive lists alike), and the
+// Add/Edit form's Save submit (including password changes, which flow
+// through this same submit and the same server-enforced route) are all
+// facets of the single "manage staff" task.
+const RESTRICTED_NOTICE_ID = "staff-panel-restricted-notice";
+const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 const PRESET_COLORS = [
   { hex: "#3B82F6", label: "Blue" },
@@ -21,7 +30,13 @@ const CUSTOM_POSITION = "__custom__";
 type EditForm = { name: string; phone: string; email: string; password: string; color: string; position: string };
 const EMPTY_FORM: EditForm = { name: "", phone: "", email: "", password: "", color: PRESET_COLORS[0].hex, position: "" };
 
-export default function StaffPanel({ isTester = false }: { isTester?: boolean }) {
+export default function StaffPanel({
+  isTester = false,
+  canMutateOperationalData,
+}: {
+  isTester?: boolean;
+  canMutateOperationalData: boolean;
+}) {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -50,6 +65,11 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
   useEffect(() => { loadEmployees(); }, []);
 
   function startEdit(e: Employee) {
+    // Defense-in-depth: the server route this eventually reaches (via
+    // handleSave) already enforces this same capability before mutating
+    // anything -- this guard additionally prevents the edit form itself
+    // from ever opening for a restricted owner.
+    if (!canMutateOperationalData) return;
     setEditingId(e.id);
     setShowAdd(false);
     const position = e.position ?? "";
@@ -60,6 +80,7 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
   }
 
   function startAdd() {
+    if (!canMutateOperationalData) return;
     setEditingId(null);
     setShowAdd(true);
     setForm(EMPTY_FORM);
@@ -77,6 +98,7 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
 
   async function handleSave(ev: React.FormEvent) {
     ev.preventDefault();
+    if (!canMutateOperationalData) return;
     if (!form.name.trim()) { setMessage({ type: "error", text: "Employee name is required." }); return; }
 
     setSaving(true);
@@ -110,6 +132,7 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
   }
 
   async function toggleActive(e: Employee) {
+    if (!canMutateOperationalData) return;
     setMessage(null);
     try {
       const res = await fetch("/api/employees", {
@@ -147,14 +170,22 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
           <div className="mt-1 text-xs text-slate-500">Manage employees and assign them to appointments.</div>
         </div>
         {!isTester && !showAdd && !editingId && (
-          <button
+          <CapabilityGatedButton
+            allowed={canMutateOperationalData}
             onClick={startAdd}
-            className="rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 transition-colors"
+            ariaDescribedBy={RESTRICTED_NOTICE_ID}
+            className="rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50 transition-colors"
           >
             + Add Employee
-          </button>
+          </CapabilityGatedButton>
         )}
       </div>
+
+      {!canMutateOperationalData && (
+        <div id={RESTRICTED_NOTICE_ID} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          {RESTRICTED_WORDING}
+        </div>
+      )}
 
       {message && (
         <div className={[
@@ -274,13 +305,15 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
             </div>
           </div>
           <div className="flex gap-2">
-            <button
+            <CapabilityGatedButton
               type="submit"
+              allowed={canMutateOperationalData}
               disabled={saving}
+              ariaDescribedBy={RESTRICTED_NOTICE_ID}
               className="rounded-xl bg-[#0f172a] px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-50 transition-colors"
             >
               {saving ? "Saving..." : editingId ? "Save Changes" : "Add Employee"}
-            </button>
+            </CapabilityGatedButton>
             <button
               type="button"
               onClick={cancelForm}
@@ -326,18 +359,22 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
-                <button
+                <CapabilityGatedButton
+                  allowed={canMutateOperationalData}
                   onClick={() => startEdit(e)}
-                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 transition-colors"
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors"
                 >
                   Edit
-                </button>
-                <button
+                </CapabilityGatedButton>
+                <CapabilityGatedButton
+                  allowed={canMutateOperationalData}
                   onClick={() => toggleActive(e)}
-                  className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs text-rose-600 hover:bg-rose-50 transition-colors"
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                  className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs text-rose-600 hover:bg-rose-50 disabled:opacity-50 transition-colors"
                 >
                   Deactivate
-                </button>
+                </CapabilityGatedButton>
               </div>
             </div>
           ))}
@@ -366,18 +403,22 @@ export default function StaffPanel({ isTester = false }: { isTester?: boolean })
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <button
+                    <CapabilityGatedButton
+                      allowed={canMutateOperationalData}
                       onClick={() => startEdit(e)}
-                      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 transition-colors"
+                      ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                      className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors"
                     >
                       Edit
-                    </button>
-                    <button
+                    </CapabilityGatedButton>
+                    <CapabilityGatedButton
+                      allowed={canMutateOperationalData}
                       onClick={() => toggleActive(e)}
-                      className="rounded-lg border border-emerald-200 px-2.5 py-1 text-xs text-emerald-600 hover:bg-emerald-50 transition-colors"
+                      ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                      className="rounded-lg border border-emerald-200 px-2.5 py-1 text-xs text-emerald-600 hover:bg-emerald-50 disabled:opacity-50 transition-colors"
                     >
                       Reactivate
-                    </button>
+                    </CapabilityGatedButton>
                   </div>
                 </div>
               ))}

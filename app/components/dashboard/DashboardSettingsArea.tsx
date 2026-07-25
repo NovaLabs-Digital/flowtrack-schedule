@@ -51,6 +51,13 @@ export default function DashboardSettingsArea({
 
   const carveOutActive = active && (currentStep?.id === "employees" || currentStep?.id === "services");
 
+  // Phase 5.5E-E1F: StaffPanel/ServicesPanel now require canMutateOperationalData
+  // as a prop, so this carve-out reuses the same value already threaded into
+  // this component from DashboardShell -- not a second, parallel prop. A
+  // tester session always resolves to the canonical "demo" entitlement state
+  // (FULL_CAPABILITIES), so this is always true here in practice; passed
+  // through rather than hardcoded so the carve-out still degrades correctly
+  // if that policy ever changes.
   if (carveOutActive) {
     const section = settingsSection === "staff" || settingsSection === "services" ? settingsSection : "staff";
     return (
@@ -93,7 +100,9 @@ export default function DashboardSettingsArea({
           </div>
         </aside>
         <main className="flex-1 min-w-0 max-w-3xl">
-          {section === "staff" ? <StaffPanel isTester /> : <ServicesPanel isTester />}
+          {section === "staff"
+            ? <StaffPanel isTester canMutateOperationalData={canMutateOperationalData} />
+            : <ServicesPanel isTester canMutateOperationalData={canMutateOperationalData} />}
         </main>
       </div>
     );
