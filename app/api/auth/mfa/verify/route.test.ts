@@ -29,7 +29,9 @@ let aalResult: { data: unknown } = { data: { currentLevel: "aal2" } };
 let listFactorsResult: { data: unknown } = { data: { totp: [{ id: "factor-1", status: "verified" }] } };
 let recordedAttempts: string[] = [];
 let consumedTokens: string[] = [];
+let consumeReturnsNull = false;
 let clearedPendingCookie = false;
+let loggedArgs: unknown[] = [];
 let findOwnerMembershipImpl: (id: string) => Promise<unknown> = async () => ({ workspaceId: WORKSPACE_ID, sessionEpoch: 1 });
 let createdSessionParams: Record<string, unknown> | null = null;
 let rateLimitCalls: Array<{ bucket: string; key: string }> = [];
@@ -65,8 +67,13 @@ mock.module("@/lib/mfaPending", {
       recordedAttempts.push(token);
       return recordedAttempts.filter((t) => t === token).length;
     },
+    // Phase 5.7D-R7: models the real atomic delete-and-return semantics --
+    // returns the (mocked) consumed row's data by default, or null when
+    // consumeReturnsNull simulates a lost race / already-consumed replay.
     consumePendingMfaChallenge: async (token: string) => {
       consumedTokens.push(token);
+      if (consumeReturnsNull) return null;
+      return challenge;
     },
     MFA_MAX_ATTEMPTS: 5,
   },
@@ -108,7 +115,9 @@ function resetState() {
   listFactorsResult = { data: { totp: [{ id: "factor-1", status: "verified" }] } };
   recordedAttempts = [];
   consumedTokens = [];
+  consumeReturnsNull = false;
   clearedPendingCookie = false;
+  loggedArgs = [];
   findOwnerMembershipImpl = async () => ({ workspaceId: WORKSPACE_ID, sessionEpoch: 1 });
   createdSessionParams = null;
   rateLimitCalls = [];
@@ -228,6 +237,82 @@ describe("POST /api/auth/mfa/verify -- multiple verified factors require a legit
 
     const resGood = await POST(req({ code: "123456", factorId: "factor-b" }));
     assert.equal(resGood.status, 200);
+  });
+});
+
+describe("POST /api/auth/mfa/verify -- atomic consumption gates session issuance (Phase 5.7D-R7)", () => {
+  test("a lost consumption race (consumePendingMfaChallenge returns null) fails closed with 401, never issues a session, even though aal2 was already confirmed", async () => {
+    resetState();
+    consumeReturnsNull = true;
+    const res = await POST(req({ code: "123456" }));
+    assert.equal(res.status, 401);
+    assert.equal(createdSessionParams, null);
+  });
+
+  test("a lost race returns the same generic expired-session message as no-pending-challenge -- no distinguishing signal", async () => {
+    resetState();
+    consumeReturnsNull = true;
+    const raceLostBody = await (await POST(req({ code: "123456" }))).json();
+
+    resetState();
+    pendingToken = null;
+    const noChallengeBody = await (await POST(req({ code: "123456" }))).json();
+
+    assert.deepEqual(raceLostBody, noChallengeBody);
+  });
+
+  test("a lost race never reaches membership lookup or cookie issuance -- consumption is checked before any further work", async () => {
+    resetState();
+    consumeReturnsNull = true;
+    let membershipCalled = false;
+    findOwnerMembershipImpl = async () => {
+      membershipCalled = true;
+      return { workspaceId: WORKSPACE_ID, sessionEpoch: 1 };
+    };
+    await POST(req({ code: "123456" }));
+    assert.equal(membershipCalled, false, "findOwnerMembership must never be called once consumption itself has already failed");
+  });
+
+  test("a winning consumption still clears the pending cookie on the fail-closed response path, same as every other 401 in this route", async () => {
+    resetState();
+    consumeReturnsNull = true;
+    await POST(req({ code: "123456" }));
+    assert.equal(clearedPendingCookie, true);
+  });
+});
+
+describe("POST /api/auth/mfa/verify -- access/refresh tokens never leak (Phase 5.7D-R7)", () => {
+  test("a successful verification's JSON response body never contains the challenge's access or refresh token values", async () => {
+    resetState();
+    challenge = { ...challenge!, supabaseAccessToken: "SECRET-ACCESS-TOKEN-VALUE", supabaseRefreshToken: "SECRET-REFRESH-TOKEN-VALUE" };
+    const res = await POST(req({ code: "123456" }));
+    const rawBody = JSON.stringify(await res.json());
+    assert.ok(!rawBody.includes("SECRET-ACCESS-TOKEN-VALUE"));
+    assert.ok(!rawBody.includes("SECRET-REFRESH-TOKEN-VALUE"));
+  });
+
+  test("no console.error call anywhere in this route's paths includes the access or refresh token values", async () => {
+    resetState();
+    challenge = { ...challenge!, supabaseAccessToken: "SECRET-ACCESS-TOKEN-VALUE", supabaseRefreshToken: "SECRET-REFRESH-TOKEN-VALUE" };
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      loggedArgs.push(...args);
+    };
+    try {
+      // Exercise both a failure path (logs MFA_VERIFY_MEMBERSHIP_MISSING)
+      // and the success path -- neither should ever log a token value.
+      findOwnerMembershipImpl = async () => null;
+      await POST(req({ code: "123456" }));
+      findOwnerMembershipImpl = async () => ({ workspaceId: WORKSPACE_ID, sessionEpoch: 1 });
+      consumeReturnsNull = false;
+      challenge = { ...challenge!, supabaseAccessToken: "SECRET-ACCESS-TOKEN-VALUE", supabaseRefreshToken: "SECRET-REFRESH-TOKEN-VALUE" };
+      await POST(req({ code: "654321" }));
+    } finally {
+      console.error = originalError;
+    }
+    const loggedText = JSON.stringify(loggedArgs);
+    assert.ok(!loggedText.includes("SECRET-ACCESS-TOKEN-VALUE"));
+    assert.ok(!loggedText.includes("SECRET-REFRESH-TOKEN-VALUE"));
   });
 });
 

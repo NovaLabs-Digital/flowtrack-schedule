@@ -90,6 +90,8 @@ export async function POST(req: Request) {
     if (verifyErr || !verifyData) {
       const attempts = await recordFailedMfaAttempt(token);
       if (attempts >= MFA_MAX_ATTEMPTS) {
+        // Lockout: destroy the challenge outright (its returned data isn't
+        // needed here — the request is being denied either way).
         await consumePendingMfaChallenge(token);
         const res = NextResponse.json({ error: LOCKED_ERROR }, { status: 401 });
         clearMfaPendingCookie(res);
@@ -108,13 +110,30 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: GENERIC_ERROR }, { status: 401 });
     }
 
+    // Phase 5.7D-R7: atomic delete-and-return consumption is the actual
+    // gate for session issuance, placed immediately once the server has
+    // independently confirmed aal2 — not an afterthought performed once
+    // everything else has already succeeded. Whichever concurrent
+    // request's delete actually removes the row is the only one permitted
+    // to proceed; every other request (replay, race, browser retry) gets
+    // null back here and fails closed, before ever reaching membership
+    // lookup or session issuance. If anything below this point fails
+    // (e.g. no membership found), the challenge is already gone — there
+    // is no path back to retry it; a fresh login is required.
+    const consumed = await consumePendingMfaChallenge(token);
+    if (!consumed) {
+      const res = NextResponse.json({ error: EXPIRED_ERROR }, { status: 401 });
+      clearMfaPendingCookie(res);
+      return res;
+    }
+
     // Workspace identity match: looked up fresh, keyed by the SAME
-    // authUserId that was just challenged — the resulting session's
-    // workspaceId/authUserId/sessionEpoch all come from this one row, so
-    // the Auth identity and the workspace it's granted access to can never
-    // drift apart (Phase 5.7D-R2 audit: "workspace membership and MFA
-    // identity must refer to the same Auth user").
-    const membership = await findOwnerMembership(challenge.authUserId);
+    // authUserId the just-consumed row itself confirms — the resulting
+    // session's workspaceId/authUserId/sessionEpoch all come from this one
+    // row, so the Auth identity and the workspace it's granted access to
+    // can never drift apart (Phase 5.7D-R2 audit: "workspace membership
+    // and MFA identity must refer to the same Auth user").
+    const membership = await findOwnerMembership(consumed.authUserId);
     if (!membership) {
       console.error("MFA_VERIFY_MEMBERSHIP_MISSING");
       return NextResponse.json({ error: "Unable to complete sign-in. Please try again." }, { status: 500 });
@@ -123,14 +142,10 @@ export async function POST(req: Request) {
     const trusted = body.trustDevice === true;
     const sessionValue = await createOwnerSessionCookieValue({
       workspaceId: membership.workspaceId,
-      authUserId: challenge.authUserId,
+      authUserId: consumed.authUserId,
       sessionEpoch: membership.sessionEpoch,
       trusted,
     });
-
-    // Single-use: this pending challenge can never be presented again after
-    // this point, even before its own 5-minute expiry.
-    await consumePendingMfaChallenge(token);
 
     const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
     setOwnerSessionCookie(res, sessionValue, trusted);
