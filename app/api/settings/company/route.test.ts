@@ -11,6 +11,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
 
@@ -170,5 +172,99 @@ describe("GET /api/settings/company is governed by canViewExistingData (Phase 5.
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
     assert.equal(currentFake.calls.filter((c) => c.table === "company_settings").length, 0);
+  });
+});
+
+describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
+  function lastCompanySettingsWrite() {
+    const writes = writeCalls(currentFake.calls).filter((c) => c.table === "company_settings");
+    return writes[writes.length - 1];
+  }
+
+  test("saving only company_name (an existing row) never includes notifications_enabled or booking_enabled in the persisted fields -- an unrelated Company Info save cannot change either toggle", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { company_name: "Acme Cleaning" }));
+    assert.equal(res.status, 200);
+    const write = lastCompanySettingsWrite();
+    assert.equal(write.method, "update");
+    const fields = write.args[0] as Record<string, unknown>;
+    assert.ok(!("notifications_enabled" in fields), "unrelated save must not touch notifications_enabled");
+    assert.ok(!("booking_enabled" in fields), "unrelated save must not touch booking_enabled");
+  });
+
+  test("saving only booking_enabled never includes notifications_enabled in the persisted fields -- the two Automation toggles are still independently omittable", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { booking_enabled: true }));
+    assert.equal(res.status, 200);
+    const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+    assert.ok(!("notifications_enabled" in fields));
+    assert.equal(fields.booking_enabled, true);
+  });
+
+  test("an explicit notifications_enabled: false is persisted as exactly false, never omitted or coerced", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { notifications_enabled: false }));
+    assert.equal(res.status, 200);
+    const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+    assert.equal(fields.notifications_enabled, false);
+  });
+
+  test("an explicit notifications_enabled: true is persisted as exactly true -- a genuinely intentional enable is not blocked", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { notifications_enabled: true }));
+    assert.equal(res.status, 200);
+    const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+    assert.equal(fields.notifications_enabled, true);
+  });
+
+  test("first-ever save for a brand-new workspace (no existing row) inserts notifications_enabled exactly as supplied, scoped to the caller's own workspace_id", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: null }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { notifications_enabled: false, booking_enabled: false }));
+    assert.equal(res.status, 200);
+    const write = lastCompanySettingsWrite();
+    assert.equal(write.method, "insert");
+    const fields = write.args[0] as Record<string, unknown>;
+    assert.equal(fields.notifications_enabled, false);
+    assert.equal(fields.workspace_id, REAL_WORKSPACE_ID);
+  });
+
+  test("workspace scoping is present on the update path -- the persistence route never writes without an .eq(\"workspace_id\", ...) filter", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await POST(req("POST", { notifications_enabled: true }));
+    const workspaceScopedEq = currentFake.calls.some(
+      (c) => c.table === "company_settings" && c.method === "eq" && c.args[0] === "workspace_id" && c.args[1] === REAL_WORKSPACE_ID
+    );
+    assert.ok(workspaceScopedEq, "expected an .eq(\"workspace_id\", <caller's own workspace>) filter on the company_settings write path");
+  });
+
+  test("this route never imports @/lib/notify -- no code path in this file can call sendEmail/sendSms, so saving a setting can never itself send a notification", () => {
+    const source = fs.readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+    assert.ok(!source.includes("@/lib/notify"));
+    assert.ok(!source.includes("sendEmail"));
+    assert.ok(!source.includes("sendSms"));
   });
 });

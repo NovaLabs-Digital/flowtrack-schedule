@@ -70,10 +70,25 @@ export default function CompanyInfoPanel({ canMutateOperationalData }: { canMuta
   // Automation toggles — real, persisted columns, live together in their
   // own Automation card (Settings → Automation) with a shared Save,
   // separate from the Company Information profile fields above.
+  //
+  // Phase 5.7C: both toggles MUST default to false, matching the fail-closed
+  // semantics every server-side consumer already enforces
+  // (Boolean(data?.notifications_enabled) in lib/notify.ts and
+  // app/api/cron/reminders/route.ts -- a missing row or missing column reads
+  // as "off," never "on"). Before this fix, notificationsEnabled/
+  // notificationsSaved defaulted to true, so a brand-new workspace with no
+  // company_settings row yet (see docs/CONTROLLED_CUSTOMER_ONBOARDING.md)
+  // would silently treat notifications as already-on -- and because
+  // handleSaveAutomation always sends BOTH toggle values together (see
+  // below), saving after touching only the booking toggle would persist
+  // that never-loaded true as if the owner had explicitly enabled it. The
+  // load effect below (loadCompanySettings) is the only thing ever allowed
+  // to move either of these off false -- and only with a genuinely loaded,
+  // persisted value, never a default.
   const [bookingEnabled, setBookingEnabled] = useState(false);
   const [bookingSaved, setBookingSaved] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [notificationsSaved, setNotificationsSaved] = useState(true);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [notificationsSaved, setNotificationsSaved] = useState(false);
 
   // Visual-only fields with no backing column yet (no schema change made
   // for this pass) — interactive so the page doesn't look broken, but not

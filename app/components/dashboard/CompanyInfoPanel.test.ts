@@ -212,3 +212,96 @@ describe("no duplicated billing surface, no leaked internal detail", () => {
     }
   });
 });
+
+describe("Phase 5.7C: notifications_enabled fails closed before the stored value is known", () => {
+  test("notificationsEnabled and notificationsSaved both initialize to false, matching bookingEnabled/bookingSaved -- neither can ever read as enabled before load", () => {
+    assert.ok(source.includes('const [bookingEnabled, setBookingEnabled] = useState(false);'));
+    assert.ok(source.includes('const [bookingSaved, setBookingSaved] = useState(false);'));
+    assert.ok(source.includes('const [notificationsEnabled, setNotificationsEnabled] = useState(false);'));
+    assert.ok(source.includes('const [notificationsSaved, setNotificationsSaved] = useState(false);'));
+    // The old, unsafe defaults must not reappear anywhere in the file.
+    assert.ok(!source.includes('useState(true);\n  const [notificationsSaved'));
+    assert.ok(!/notificationsEnabled,\s*setNotificationsEnabled\]\s*=\s*useState\(true\)/.test(source));
+    assert.ok(!/notificationsSaved,\s*setNotificationsSaved\]\s*=\s*useState\(true\)/.test(source));
+  });
+
+  test("every call site that ever assigns notificationsEnabled/notificationsSaved derives from loaded server data or the live in-memory state -- never a literal true", () => {
+    // setNotificationsEnabled is called exactly once in the whole file:
+    // inside loadCompanySettings' if (s) branch, from Boolean(s.notifications_enabled).
+    // (Counting the literal call, rather than a capturing regex, avoids
+    // breaking on Boolean(...)'s own nested parenthesis.)
+    const enabledCallCount = (source.match(/setNotificationsEnabled\(/g) ?? []).length;
+    assert.equal(enabledCallCount, 1, "setNotificationsEnabled must be called exactly once in the whole file");
+    assert.ok(source.includes("setNotificationsEnabled(Boolean(s.notifications_enabled));"));
+
+    // setNotificationsSaved is called twice: once in the same load branch
+    // (Boolean(s.notifications_enabled), identical to the above), and once
+    // in handleSaveAutomation after a successful save, where it must copy
+    // the CURRENT notificationsEnabled state (itself already proven
+    // fail-closed above) -- never a literal true.
+    const savedCallCount = (source.match(/setNotificationsSaved\(/g) ?? []).length;
+    assert.equal(savedCallCount, 2, "setNotificationsSaved must be called exactly twice in the whole file");
+    assert.ok(source.includes("setNotificationsSaved(Boolean(s.notifications_enabled));"));
+    assert.ok(source.includes("setNotificationsSaved(notificationsEnabled);"));
+    assert.ok(!/setNotificationsSaved\(\s*true\s*\)/.test(source), "setNotificationsSaved must never be called with a literal true");
+  });
+
+  test("the loading branch returns before the Automation card (and its Save button / handleSaveAutomation) ever renders -- submission is structurally impossible before the settings query resolves", () => {
+    const loadingReturnIdx = source.indexOf("if (loading) {");
+    const automationCardIdx = source.indexOf('id="automation-card"');
+    const handleSaveAutomationDeclIdx = source.indexOf("async function handleSaveAutomation()");
+    assert.notEqual(loadingReturnIdx, -1);
+    assert.notEqual(automationCardIdx, -1);
+    // handleSaveAutomation is declared as a function above the JSX (normal
+    // for a component body) -- what matters is that its ONLY render site
+    // (the button wired to onClick={handleSaveAutomation}) is textually
+    // part of the automation-card JSX block, which sits after the `if
+    // (loading)` early return in the component's control flow.
+    assert.ok(handleSaveAutomationDeclIdx > -1);
+    assert.ok(loadingReturnIdx < automationCardIdx, "the loading early-return must appear before the Automation card in source order");
+    const onClickIdx = source.indexOf("onClick={handleSaveAutomation}");
+    assert.ok(onClickIdx > automationCardIdx, "the Automation Save button belongs to the automation-card block, which is unreachable while loading");
+  });
+
+  test("the load effect runs exactly once per mount (empty dependency array) -- a rerender cannot re-trigger a fresh fetch or otherwise perturb the loaded value", () => {
+    assert.ok(source.includes("useEffect(() => { loadCompanySettings(); }, []);"));
+  });
+
+  test("Company Information's own Save (handleSave) sends only CompanyForm fields -- notifications_enabled and booking_enabled are structurally absent from its payload, so an unrelated profile-field save can never change either toggle", () => {
+    assert.ok(!/type CompanyForm = \{[^}]*notifications_enabled/.test(source), "CompanyForm must not carry notifications_enabled");
+    assert.ok(!/type CompanyForm = \{[^}]*booking_enabled/.test(source), "CompanyForm must not carry booking_enabled");
+    const handleSaveStart = source.indexOf("async function handleSave()");
+    const handleSaveEnd = source.indexOf("async function handleSaveAutomation()");
+    const handleSaveBody = source.slice(handleSaveStart, handleSaveEnd);
+    assert.ok(handleSaveBody.includes("body: JSON.stringify(form)"));
+    assert.ok(!handleSaveBody.includes("notifications_enabled"));
+    assert.ok(!handleSaveBody.includes("booking_enabled"));
+  });
+
+  test("Automation's Save (handleSaveAutomation) transmits the live notificationsEnabled state variable directly -- never a literal true, and never a ?? / || fallback that could substitute true for an unresolved value", () => {
+    const handleSaveAutomationStart = source.indexOf("async function handleSaveAutomation()");
+    const handleSaveAutomationBody = source.slice(handleSaveAutomationStart, handleSaveAutomationStart + 900);
+    assert.ok(handleSaveAutomationBody.includes("notifications_enabled: notificationsEnabled"));
+    assert.ok(!/notifications_enabled:\s*true\b/.test(handleSaveAutomationBody));
+    assert.ok(!handleSaveAutomationBody.includes("notificationsEnabled ?? true"));
+    assert.ok(!handleSaveAutomationBody.includes("notificationsEnabled || true"));
+  });
+
+  test("no `?? true`, `|| true`, or literal true fallback exists anywhere in the file for either automation toggle -- a missing/unresolved value can never be silently treated as enabled", () => {
+    assert.ok(!/notificationsEnabled\s*\?\?\s*true/.test(source));
+    assert.ok(!/notificationsEnabled\s*\|\|\s*true/.test(source));
+    assert.ok(!/bookingEnabled\s*\?\?\s*true/.test(source));
+    assert.ok(!/bookingEnabled\s*\|\|\s*true/.test(source));
+  });
+
+  test("the owner can still intentionally toggle notifications in both directions -- the toggle's onChange is wired directly to the raw setter, unconstrained by direction", () => {
+    assert.ok(source.includes("onChange={setNotificationsEnabled}"));
+    // A raw setState setter passed directly as onChange applies whatever
+    // boolean SettingsToggle reports -- false->true and true->false are
+    // both reachable through the identical, unconditional call site; there
+    // is no branch here that could special-case or block one direction.
+    const idx = source.indexOf("onChange={setNotificationsEnabled}");
+    const before = source.slice(Math.max(0, idx - 60), idx);
+    assert.ok(!before.includes("?"), "onChange must not be conditionally wired");
+  });
+});
