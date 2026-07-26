@@ -63,3 +63,19 @@ describe("app/signup/page.tsx -- redirect handling for every signup outcome", ()
     assert.ok(source.includes("/mfa/challenge"));
   });
 });
+
+// Phase 5.7D-R8: the company-name field's placeholder was corrected from a
+// customer-specific example to a generic one -- this repo's copy must never
+// reference Nova Labs Digital's own founder/customer by name or imply any
+// specific customer's business is a template for a new signup.
+describe("app/signup/page.tsx -- generic company-name placeholder (Phase 5.7D-R8)", () => {
+  test("the company-name placeholder is exactly 'Your company name' -- no 'e.g.' prefix, no example business name", () => {
+    assert.ok(source.includes('placeholder="Your company name"'));
+  });
+
+  test("no customer-specific or founder-specific wording appears anywhere in this page's source", () => {
+    for (const forbidden of ["Alberto", "Alberto’s Cleaning Services", "Alberto's Cleaning Services", "ACS", "Cleaning Services"]) {
+      assert.ok(!source.includes(forbidden), `must not reference "${forbidden}"`);
+    }
+  });
+});
