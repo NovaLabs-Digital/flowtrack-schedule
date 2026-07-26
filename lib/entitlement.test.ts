@@ -1,6 +1,7 @@
-// Phase 5.4A: focused automated tests for the canonical entitlement
-// resolver (lib/entitlement.ts). Pure unit tests — no Supabase, no Stripe,
-// no Next.js — run directly under Node's built-in test runner:
+// Phase 5.4A (original) / Phase 5.6F (current): focused automated tests for
+// the canonical entitlement resolver (lib/entitlement.ts). Pure unit tests
+// — no Supabase, no Stripe, no Next.js — run directly under Node's built-in
+// test runner:
 //
 //   node --test lib/entitlement.test.ts
 //   (or: npm test)
@@ -15,6 +16,7 @@ import {
   resolveEntitlement,
   resolveWorkspaceEntitlement,
   noDataResult,
+  READ_ONLY_PERIOD_MS,
   type SubscriptionRecord,
 } from "./entitlement.ts";
 import { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } from "./workspace.ts";
@@ -29,6 +31,8 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
     currentPeriodEnd: null,
     graceUntil: null,
     cancelAtPeriodEnd: false,
+    canceledAt: null,
+    accessEndedAt: null,
     ...overrides,
   };
 }
@@ -45,15 +49,30 @@ function assertFullAccess(result: ReturnType<typeof resolveEntitlement>) {
   assert.equal(result.canSendNotifications, true);
 }
 
+// "Read-only": the 30-day window (or the one query_error carve-out) --
+// billing/view/export remain allowed, everything operational is denied.
 function assertRestricted(result: ReturnType<typeof resolveEntitlement>) {
   assert.equal(result.hasOperationalAccess, false);
   assert.equal(result.isReadOnly, true);
-  // Approved policy: billing recovery + viewing/exporting existing data
-  // must remain allowed in every restricted state, without exception.
   assert.equal(result.canManageBilling, true);
   assert.equal(result.canViewExistingData, true);
   assert.equal(result.canExportData, true);
-  // Everything operational is denied.
+  assert.equal(result.canMutateOperationalData, false);
+  assert.equal(result.canUseJobTracking, false);
+  assert.equal(result.canUsePublicBooking, false);
+  assert.equal(result.canSendNotifications, false);
+}
+
+// "Locked": strictly more restricted than read-only -- viewing and
+// exporting existing data are ALSO denied. Used for every "_locked" state,
+// plus incomplete/incomplete_expired/no_subscription (reason
+// "no_subscription")/every malformed_* reason (Phase 5.6F).
+function assertLocked(result: ReturnType<typeof resolveEntitlement>) {
+  assert.equal(result.hasOperationalAccess, false);
+  assert.equal(result.isReadOnly, true);
+  assert.equal(result.canManageBilling, true, "billing/reactivation must remain reachable even when locked");
+  assert.equal(result.canViewExistingData, false);
+  assert.equal(result.canExportData, false);
   assert.equal(result.canMutateOperationalData, false);
   assert.equal(result.canUseJobTracking, false);
   assert.equal(result.canUsePublicBooking, false);
@@ -112,135 +131,295 @@ describe("full operational access states", () => {
   });
 });
 
-describe("grace-period boundary (exact instant, exclusive of full access)", () => {
-  test("now === graceUntil exactly -> restricted (boundary instant is already expired)", () => {
-    const graceUntil = new Date(NOW.getTime());
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "past_due", graceUntil }), NOW);
-    assertRestricted(result);
-    assert.equal(result.state, "past_due_expired");
-    assert.equal(result.reason, "past_due_grace_expired");
-  });
+// Shared boundary-matrix runner: every timed-restriction status family
+// (past_due, canceled, unpaid, paused) follows the exact same 30-day
+// read-only-then-locked math off its own reliable boundary timestamp
+// (lib/entitlement.ts's resolveTimedRestriction). Running the identical
+// four-instant matrix against all four families is what actually proves
+// they share one implementation, not four independently-hand-tuned ones.
+function timedBoundaryMatrix(
+  label: string,
+  buildRecord: (boundary: Date) => SubscriptionRecord,
+  readOnlyState: string,
+  lockedState: string,
+  // past_due's boundary (graceUntil) doubles as the full-access/grace gate
+  // itself -- a "future" graceUntil means still-in-grace (full access), a
+  // fundamentally different scenario from canceled_at/accessEndedAt's
+  // "future boundary" clock-skew edge case. Skip that one sub-test for
+  // past_due; its full-access-during-grace behavior is already covered by
+  // the "full operational access states" describe block above.
+  includeFutureBoundaryCase = true
+) {
+  describe(`${label} 30-day read-only/locked boundary (exact instant)`, () => {
+    test("1ms before boundary + 30 days -> read-only (still viewable/exportable)", () => {
+      const boundary = new Date(NOW.getTime() - READ_ONLY_PERIOD_MS + 1);
+      const result = resolveEntitlement(buildRecord(boundary), NOW);
+      assertRestricted(result);
+      assert.equal(result.state, readOnlyState);
+      assert.equal(result.restrictedSince?.getTime(), boundary.getTime());
+      assert.equal(result.readOnlyEndsAt?.getTime(), boundary.getTime() + READ_ONLY_PERIOD_MS);
+    });
 
-  test("past_due, 1ms after grace expiry -> restricted", () => {
-    const graceUntil = new Date(NOW.getTime() - 1);
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "past_due", graceUntil }), NOW);
-    assertRestricted(result);
-    assert.equal(result.state, "past_due_expired");
-  });
-});
+    test("now === boundary + 30 days exactly -> locked (boundary instant is already locked)", () => {
+      const boundary = new Date(NOW.getTime() - READ_ONLY_PERIOD_MS);
+      const result = resolveEntitlement(buildRecord(boundary), NOW);
+      assertLocked(result);
+      assert.equal(result.state, lockedState);
+      assert.equal(result.reason, lockedState);
+    });
 
-describe("restricted states", () => {
-  test("unpaid -> restricted", () => {
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "unpaid" }), NOW);
-    assertRestricted(result);
-    assert.equal(result.state, "unpaid");
-  });
+    test("1ms after boundary + 30 days -> locked", () => {
+      const boundary = new Date(NOW.getTime() - READ_ONLY_PERIOD_MS - 1);
+      const result = resolveEntitlement(buildRecord(boundary), NOW);
+      assertLocked(result);
+      assert.equal(result.state, lockedState);
+    });
 
-  test("incomplete -> restricted", () => {
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "incomplete" }), NOW);
-    assertRestricted(result);
-    assert.equal(result.state, "incomplete");
+    if (includeFutureBoundaryCase) {
+      test("boundary in the future (clock skew edge case) -> still read-only, never locked", () => {
+        const boundary = new Date(NOW.getTime() + 1000);
+        const result = resolveEntitlement(buildRecord(boundary), NOW);
+        assertRestricted(result);
+        assert.equal(result.state, readOnlyState);
+      });
+    }
   });
+}
 
-  test("incomplete_expired -> restricted", () => {
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "incomplete_expired" }), NOW);
-    assertRestricted(result);
-    assert.equal(result.state, "incomplete_expired");
-  });
+timedBoundaryMatrix(
+  "canceled_at (canceled)",
+  (boundary) => stripeRecord({ stripeStatus: "canceled", canceledAt: boundary }),
+  "canceled_read_only",
+  "canceled_locked"
+);
 
-  test("canceled -> restricted (unconditionally, regardless of currentPeriodEnd)", () => {
+timedBoundaryMatrix(
+  "graceUntil (past_due, post-grace)",
+  (boundary) => stripeRecord({ stripeStatus: "past_due", graceUntil: boundary }),
+  "past_due_read_only",
+  "past_due_locked",
+  false
+);
+
+timedBoundaryMatrix(
+  "accessEndedAt (unpaid)",
+  (boundary) => stripeRecord({ stripeStatus: "unpaid", accessEndedAt: boundary }),
+  "unpaid_read_only",
+  "unpaid_locked"
+);
+
+timedBoundaryMatrix(
+  "accessEndedAt (paused)",
+  (boundary) => stripeRecord({ stripeStatus: "paused", accessEndedAt: boundary }),
+  "paused_read_only",
+  "paused_locked"
+);
+
+describe("canceled -> currentPeriodEnd is irrelevant to the boundary (canceled_at is authoritative)", () => {
+  test("a far-future currentPeriodEnd does not extend or shorten the canceled_at-driven window", () => {
+    const canceledAt = new Date(NOW.getTime() - 1000);
     const result = resolveEntitlement(
-      stripeRecord({ stripeStatus: "canceled", currentPeriodEnd: new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 10) }),
+      stripeRecord({
+        stripeStatus: "canceled",
+        canceledAt,
+        currentPeriodEnd: new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 10),
+      }),
       NOW
     );
     assertRestricted(result);
-    assert.equal(result.state, "canceled");
+    assert.equal(result.state, "canceled_read_only");
+    assert.equal(result.restrictedSince?.getTime(), canceledAt.getTime());
+    assert.equal(result.readOnlyEndsAt?.getTime(), canceledAt.getTime() + READ_ONLY_PERIOD_MS);
+  });
+});
+
+describe("a resubscribed workspace clears every timed restriction", () => {
+  test("status active again, canceled_at cleared -> full access, no lingering read-only/locked state", () => {
+    // Mirrors what the webhook handler actually writes on resubscription:
+    // buildSubscriptionPatchFromStripeSubscription sets canceled_at from
+    // the fresh Stripe subscription object (null for a brand new
+    // trialing/active subscription), and computeAccessEndedPatchField
+    // clears access_ended_at unconditionally on recovery to active/trialing
+    // -- see lib/stripeWebhook.ts.
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "active", canceledAt: null, accessEndedAt: null }), NOW);
+    assertFullAccess(result);
+    assert.equal(result.state, "active");
+    assert.equal(result.restrictedSince, null);
+    assert.equal(result.readOnlyEndsAt, null);
+  });
+});
+
+describe("no operational access, ever, regardless of elapsed time -- checkout never completed or never existed", () => {
+  test("incomplete -> locked immediately, no 30-day read-only phase", () => {
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "incomplete" }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "incomplete");
+    assert.equal(result.reason, "incomplete");
   });
 
-  test("paused -> restricted", () => {
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "paused" }), NOW);
-    assertRestricted(result);
-    assert.equal(result.state, "paused");
+  test("incomplete_expired -> locked immediately, no 30-day read-only phase", () => {
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "incomplete_expired" }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "incomplete_expired");
   });
 
-  test("no subscription row on a Stripe-billed workspace -> restricted", () => {
+  test("no subscription row on a Stripe-billed workspace -> locked, fails closed", () => {
     const result = resolveEntitlement(null, NOW);
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "no_subscription");
     assert.equal(result.reason, "no_subscription");
   });
 
-  test("query error (DB read failed) -> restricted, distinct reason from no_subscription", () => {
-    const result = noDataResult("query_error");
-    assertRestricted(result);
-    assert.equal(result.state, "no_subscription");
+});
+
+describe("Phase 5.6F-R1: service_unavailable is its own state, never no_subscription/locked/read-only", () => {
+  const result = noDataResult("query_error");
+
+  test("state is 'service_unavailable', reason is 'query_error' -- structurally distinct from a genuine no_subscription row", () => {
+    assert.equal(result.state, "service_unavailable");
     assert.equal(result.reason, "query_error");
+    assert.notEqual(result.state, "no_subscription");
+  });
+
+  test("grants no view/export/mutation/notification/job-tracking/booking capability", () => {
+    assert.equal(result.hasOperationalAccess, false);
+    assert.equal(result.canViewExistingData, false);
+    assert.equal(result.canExportData, false);
+    assert.equal(result.canMutateOperationalData, false);
+    assert.equal(result.canUseJobTracking, false);
+    assert.equal(result.canUsePublicBooking, false);
+    assert.equal(result.canSendNotifications, false);
+  });
+
+  test("billing/reactivation-path capability stays true, matching the locked profile (not that any route currently checks it)", () => {
+    assert.equal(result.canManageBilling, true);
+  });
+
+  test("carries no lifecycle timestamp -- a transient read failure must never look like an authoritative boundary", () => {
+    assert.equal(result.graceEndsAt, null);
+    assert.equal(result.restrictedSince, null);
+    assert.equal(result.readOnlyEndsAt, null);
+    assert.equal(result.billingMode, null);
+    assert.equal(result.stripeStatus, null);
+  });
+
+  test("a genuine no_subscription row (real missing row, not a query failure) remains its own distinct outcome, unaffected by this change", () => {
+    const genuine = resolveEntitlement(null, NOW);
+    assert.equal(genuine.state, "no_subscription");
+    assert.equal(genuine.reason, "no_subscription");
+    assertLocked(genuine);
+  });
+
+  test("recovery: a later successful entitlement read (not noDataResult at all) returns the workspace's real lifecycle state, independent of any prior query_error", () => {
+    // Nothing about resolveEntitlement's own logic is stateful across
+    // calls -- a fresh, successful read simply resolves normally. This
+    // proves there is no cached/sticky "service_unavailable" flag anywhere
+    // in this module.
+    const recovered = resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW);
+    assertFullAccess(recovered);
+    assert.equal(recovered.state, "active");
   });
 });
 
-describe("malformed / incomplete billing state -> restricted, never full", () => {
-  test("stripe-mode row with null status (pending, before first webhook) -> restricted", () => {
+describe("malformed billing state -> locked, never full, never a guessed read-only window", () => {
+  test("stripe-mode row with null status (pending, before first webhook) -> locked", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: null }), NOW);
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "malformed");
     assert.equal(result.reason, "malformed_missing_status");
   });
 
-  test("stripe-mode row with empty-string status -> restricted", () => {
+  test("stripe-mode row with empty-string status -> locked", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: "" }), NOW);
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "malformed");
   });
 
-  test("unrecognized Stripe status string -> restricted, not guessed as full", () => {
+  test("unrecognized Stripe status string -> locked, not guessed as full", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: "some_future_stripe_status" }), NOW);
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "malformed");
     assert.equal(result.reason, "malformed_unknown_status");
   });
 
-  test("past_due with a missing grace date -> restricted, not full", () => {
+  test("past_due with a missing grace date -> locked, not full", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: "past_due", graceUntil: null }), NOW);
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "malformed");
     assert.equal(result.reason, "malformed_grace_date");
   });
 
-  test("past_due with an unparseable grace date (Invalid Date) -> restricted, not full", () => {
+  test("past_due with an unparseable grace date (Invalid Date) -> locked, not full", () => {
     const result = resolveEntitlement(
       stripeRecord({ stripeStatus: "past_due", graceUntil: new Date("not-a-real-date") }),
       NOW
     );
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "malformed");
     assert.equal(result.reason, "malformed_grace_date");
   });
 
-  test("billing_mode neither internal nor stripe -> restricted, fails closed", () => {
+  test("billing_mode neither internal nor stripe -> locked, fails closed", () => {
     const result = resolveEntitlement(
       { ...stripeRecord(), billingMode: "not_a_real_mode" as SubscriptionRecord["billingMode"] },
       NOW
     );
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "malformed");
     assert.equal(result.reason, "malformed_billing_mode");
   });
+
+  test("canceled with a missing canceled_at -> locked, not guessed as read-only", () => {
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: null }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+    assert.equal(result.reason, "malformed_canceled_date");
+  });
+
+  test("canceled with an unparseable canceled_at (Invalid Date) -> locked, not full", () => {
+    const result = resolveEntitlement(
+      stripeRecord({ stripeStatus: "canceled", canceledAt: new Date("not-a-real-date") }),
+      NOW
+    );
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+    assert.equal(result.reason, "malformed_canceled_date");
+  });
+
+  test("unpaid with a missing access_ended_at -> locked, not guessed as read-only", () => {
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "unpaid", accessEndedAt: null }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+    assert.equal(result.reason, "malformed_access_ended_date");
+  });
+
+  test("paused with a missing access_ended_at -> locked, not guessed as read-only", () => {
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "paused", accessEndedAt: null }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+    assert.equal(result.reason, "malformed_access_ended_date");
+  });
+
+  test("unpaid with an unparseable access_ended_at (Invalid Date) -> locked, not full", () => {
+    const result = resolveEntitlement(
+      stripeRecord({ stripeStatus: "unpaid", accessEndedAt: new Date("not-a-real-date") }),
+      NOW
+    );
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+    assert.equal(result.reason, "malformed_access_ended_date");
+  });
 });
 
-describe("billing recovery and read access are preserved in every restricted state", () => {
-  const restrictedFixtures: Array<[string, SubscriptionRecord | null]> = [
-    ["past_due_expired", stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1) })],
-    ["unpaid", stripeRecord({ stripeStatus: "unpaid" })],
-    ["incomplete", stripeRecord({ stripeStatus: "incomplete" })],
-    ["incomplete_expired", stripeRecord({ stripeStatus: "incomplete_expired" })],
-    ["canceled", stripeRecord({ stripeStatus: "canceled" })],
-    ["paused", stripeRecord({ stripeStatus: "paused" })],
-    ["no_subscription", null],
-    ["malformed_missing_status", stripeRecord({ stripeStatus: null })],
-    ["malformed_grace_date", stripeRecord({ stripeStatus: "past_due", graceUntil: null })],
+describe("billing recovery and read access are preserved in every read-only state", () => {
+  const readOnlyFixtures: Array<[string, SubscriptionRecord | null]> = [
+    ["past_due_read_only", stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1) })],
+    ["unpaid_read_only", stripeRecord({ stripeStatus: "unpaid", accessEndedAt: new Date(NOW.getTime() - 1000 * 60 * 60 * 24) })],
+    ["paused_read_only", stripeRecord({ stripeStatus: "paused", accessEndedAt: new Date(NOW.getTime() - 1000 * 60 * 60 * 24) })],
+    ["canceled_read_only", stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000 * 60 * 60 * 24) })],
   ];
 
-  for (const [label, subscription] of restrictedFixtures) {
+  for (const [label, subscription] of readOnlyFixtures) {
     test(`${label} -> owner can still manage billing, view, and export`, () => {
       const result = resolveEntitlement(subscription, NOW);
       assert.equal(result.hasOperationalAccess, false, `${label} should be restricted`);
@@ -259,13 +438,48 @@ describe("billing recovery and read access are preserved in every restricted sta
   }
 });
 
+describe("every locked state denies viewing/exporting but preserves billing/reactivation", () => {
+  const lockedFixtures: Array<[string, SubscriptionRecord | null]> = [
+    ["canceled_locked", stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - READ_ONLY_PERIOD_MS - 1) })],
+    ["past_due_locked", stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - READ_ONLY_PERIOD_MS - 1) })],
+    ["unpaid_locked", stripeRecord({ stripeStatus: "unpaid", accessEndedAt: new Date(NOW.getTime() - READ_ONLY_PERIOD_MS - 1) })],
+    ["paused_locked", stripeRecord({ stripeStatus: "paused", accessEndedAt: new Date(NOW.getTime() - READ_ONLY_PERIOD_MS - 1) })],
+    ["incomplete", stripeRecord({ stripeStatus: "incomplete" })],
+    ["incomplete_expired", stripeRecord({ stripeStatus: "incomplete_expired" })],
+    ["no_subscription", null],
+    ["malformed_missing_status", stripeRecord({ stripeStatus: null })],
+    ["malformed_access_ended_date", stripeRecord({ stripeStatus: "unpaid", accessEndedAt: null })],
+  ];
+
+  for (const [label, subscription] of lockedFixtures) {
+    test(`${label} -> billing/reactivation remains reachable`, () => {
+      const result = resolveEntitlement(subscription, NOW);
+      assert.equal(result.canManageBilling, true, label);
+    });
+
+    test(`${label} -> viewing and exporting existing data are denied`, () => {
+      const result = resolveEntitlement(subscription, NOW);
+      assert.equal(result.canViewExistingData, false, label);
+      assert.equal(result.canExportData, false, label);
+    });
+
+    test(`${label} -> mutation, Job Tracking, public booking, and notifications remain denied`, () => {
+      const result = resolveEntitlement(subscription, NOW);
+      assert.equal(result.canMutateOperationalData, false, label);
+      assert.equal(result.canUseJobTracking, false, label);
+      assert.equal(result.canUsePublicBooking, false, label);
+      assert.equal(result.canSendNotifications, false, label);
+    });
+  }
+});
+
 describe("recovery: full access resumes immediately once state is entitled again", () => {
-  test("a workspace that was past_due_expired is full access again once status is synced back to active", () => {
+  test("a workspace that was past_due_locked is full access again once status is synced back to active", () => {
     const stillPastDue = resolveEntitlement(
-      stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1) }),
+      stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - READ_ONLY_PERIOD_MS - 1) }),
       NOW
     );
-    assertRestricted(stillPastDue);
+    assertLocked(stillPastDue);
 
     // Same instant, same function, only the synchronized subscription
     // state changed (as it would after a successful-payment webhook
@@ -274,6 +488,16 @@ describe("recovery: full access resumes immediately once state is entitled again
     const recovered = resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW);
     assertFullAccess(recovered);
     assert.equal(recovered.state, "active");
+  });
+
+  test("an unpaid workspace recovers to full access once status is synced back to active", () => {
+    const stillUnpaid = resolveEntitlement(
+      stripeRecord({ stripeStatus: "unpaid", accessEndedAt: new Date(NOW.getTime() - 1000) }),
+      NOW
+    );
+    assertRestricted(stillUnpaid);
+    const recovered = resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW);
+    assertFullAccess(recovered);
   });
 });
 
@@ -293,21 +517,25 @@ describe("internal/demo access is independent of Stripe identifiers and status",
 });
 
 describe("workspace identity is the only thing that can grant demo/internal access", () => {
-  test("a normal Stripe-backed workspace with no subscription row is restricted, not silently treated as demo", () => {
+  test("a normal Stripe-backed workspace with no subscription row is locked, not silently treated as demo", () => {
     // REAL_WORKSPACE_ID is not DEMO_WORKSPACE_ID; passing it through the
     // workspace-aware resolver with no subscription data must fail closed
     // exactly like the non-workspace-aware resolveEntitlement(null, now)
     // does — it must not fall through to any full-access default.
     const result = resolveWorkspaceEntitlement(REAL_WORKSPACE_ID, null, NOW);
-    assertRestricted(result);
+    assertLocked(result);
     assert.equal(result.state, "no_subscription");
   });
 
-  test("an arbitrary non-demo workspaceId with a canceled subscription stays restricted", () => {
+  test("an arbitrary non-demo workspaceId with a canceled subscription stays read-only", () => {
     const otherWorkspaceId = "11111111-1111-1111-1111-111111111111";
-    const result = resolveWorkspaceEntitlement(otherWorkspaceId, stripeRecord({ stripeStatus: "canceled" }), NOW);
+    const result = resolveWorkspaceEntitlement(
+      otherWorkspaceId,
+      stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000) }),
+      NOW
+    );
     assertRestricted(result);
-    assert.equal(result.state, "canceled");
+    assert.equal(result.state, "canceled_read_only");
   });
 
   test("resolveWorkspaceEntitlement has no role/user parameter at all -- entitlement is purely workspace-keyed", () => {

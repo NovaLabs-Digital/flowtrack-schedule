@@ -9,7 +9,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
-import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY } from "../../../lib/testSupport.ts";
+import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../lib/testSupport.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
@@ -102,8 +102,8 @@ describe("PATCH /api/services -- entitlement gate", () => {
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req("PATCH", { id: "svc-1", name: "New Name" }));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
   });
 });
 
@@ -139,13 +139,56 @@ describe("DELETE /api/services -- entitlement gate", () => {
   });
 });
 
-describe("GET /api/services remains unaffected (read-only, no entitlement gate)", () => {
-  test("succeeds even when the workspace is restricted -- GET never calls requireCapability", async () => {
-    resetFixtures({ services: [{ data: [{ id: "svc-1", name: "Haircut" }] }] });
+describe("GET /api/services is governed by canViewExistingData (Phase 5.6E)", () => {
+  test("succeeds for full access", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      services: [{ data: [{ id: "svc-1", name: "Haircut" }] }],
+    });
     sessionToReturn = OWNER_SESSION;
     const res = await GET();
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.services.length, 1);
+  });
+
+  test("still succeeds during canceled_read_only -- viewing existing data remains available", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "canceled", canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() }) },
+      ],
+      services: [{ data: [{ id: "svc-1", name: "Haircut" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 200);
+  });
+
+  test("denied once canceled_locked (30+ days after canceled_at)", async () => {
+    resetFixtures({
+      subscriptions: [
+        {
+          data: subscriptionRow({
+            stripe_status: "canceled",
+            canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * 31).toISOString(),
+          }),
+        },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+  });
+
+  test("Phase 5.6F-R1: a transient subscription-query failure rejects with 503, not the 403 subscription body, before any services-table read", async () => {
+    resetFixtures({
+      subscriptions: [{ error: { message: "simulated Supabase outage" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
+    assert.equal(currentFake.calls.filter((c) => c.table === "services").length, 0);
   });
 });

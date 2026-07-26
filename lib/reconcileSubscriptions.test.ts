@@ -7,6 +7,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import type Stripe from "stripe";
 
 const { reconcileRows, RECONCILE_BATCH_LIMIT, RECONCILE_STALE_THRESHOLD_MS } = await import(
@@ -22,6 +24,8 @@ function row(overrides: Partial<ReconcileRow> = {}): ReconcileRow {
     stripe_subscription_id: "sub_abc",
     grace_until: null,
     last_event_created_at: "2026-01-01T00:00:00.000Z",
+    trial_consumed_at: null,
+    access_ended_at: null,
     ...overrides,
   };
 }
@@ -40,7 +44,13 @@ function fakeSubscription(overrides: Partial<Stripe.Subscription> = {}): Stripe.
   } as unknown as Stripe.Subscription;
 }
 
-function spyDeps(overrides: { retrieveSubscription?: (id: string) => Promise<Stripe.Subscription>; applyPatch?: (...args: unknown[]) => Promise<boolean> } = {}) {
+const DEFAULT_NOW = new Date("2026-08-01T12:00:00.000Z");
+
+function spyDeps(overrides: {
+  retrieveSubscription?: (id: string) => Promise<Stripe.Subscription>;
+  applyPatch?: (...args: unknown[]) => Promise<boolean>;
+  now?: () => Date;
+} = {}) {
   const retrieveCalls: string[] = [];
   const applyCalls: Array<{ workspaceId: string; observed: string | null; patch: Record<string, unknown> }> = [];
   const deps = {
@@ -52,6 +62,7 @@ function spyDeps(overrides: { retrieveSubscription?: (id: string) => Promise<Str
       applyCalls.push({ workspaceId, observed, patch });
       return overrides.applyPatch ? overrides.applyPatch(workspaceId, observed, patch) : true;
     },
+    now: overrides.now ?? (() => DEFAULT_NOW),
   };
   return { deps, retrieveCalls, applyCalls };
 }
@@ -222,5 +233,143 @@ describe("result shape exposes only non-sensitive aggregate counts", () => {
     for (const value of Object.values(result)) {
       assert.equal(typeof value, "number");
     }
+  });
+});
+
+describe("Phase 5.6F-R1: trial_consumed_at repair", () => {
+  test("Stripe trial_start present, local trial_consumed_at null -> repairs trial_consumed_at from the authoritative Stripe instant", async () => {
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "trialing", trial_start: 1893456000 }),
+    });
+    await reconcileRows([row({ trial_consumed_at: null })], deps);
+    assert.equal(applyCalls[0].patch.trial_consumed_at, new Date(1893456000 * 1000).toISOString());
+  });
+
+  test("existing trial_consumed_at is never overwritten, even if Stripe reports a trial_start", async () => {
+    const existing = "2026-01-01T00:00:00.000Z";
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "trialing", trial_start: 1893456000 }),
+    });
+    await reconcileRows([row({ trial_consumed_at: existing })], deps);
+    assert.equal("trial_consumed_at" in applyCalls[0].patch, false);
+  });
+
+  test("cancellation does not clear trial history -- a canceled subscription with existing trial_consumed_at leaves it untouched", async () => {
+    const existing = "2026-01-01T00:00:00.000Z";
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "canceled", canceled_at: 1893456000, trial_start: 1893000000 }),
+    });
+    await reconcileRows([row({ trial_consumed_at: existing })], deps);
+    assert.equal("trial_consumed_at" in applyCalls[0].patch, false);
+  });
+
+  test("reactivation (status active) does not clear trial history", async () => {
+    const existing = "2026-01-01T00:00:00.000Z";
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "active", trial_start: 1893000000 }),
+    });
+    await reconcileRows([row({ trial_consumed_at: existing })], deps);
+    assert.equal("trial_consumed_at" in applyCalls[0].patch, false);
+    assert.equal(applyCalls[0].patch.access_ended_at, null, "sanity: active reactivation still clears access_ended_at");
+  });
+
+  test("reconciliation cannot restore trial eligibility -- no code path ever writes trial_consumed_at: null", () => {
+    const source = fs.readFileSync(fileURLToPath(new URL("./reconcileSubscriptions.ts", import.meta.url)), "utf8");
+    assert.ok(!source.includes("trial_consumed_at: null"), "reconciliation must never clear trial_consumed_at");
+  });
+});
+
+describe("Phase 5.6F-R1: access_ended_at repair for unpaid/paused", () => {
+  test("unpaid with missing access_ended_at uses the injected observation time (deps.now) as the documented fallback", async () => {
+    const observedAt = new Date("2026-08-01T12:00:00.000Z");
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "unpaid" }),
+      now: () => observedAt,
+    });
+    await reconcileRows([row({ access_ended_at: null })], deps);
+    assert.equal(applyCalls[0].patch.access_ended_at, observedAt.toISOString());
+  });
+
+  test("paused with missing access_ended_at uses the same injected observation-time fallback", async () => {
+    const observedAt = new Date("2026-08-01T12:00:00.000Z");
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "paused" }),
+      now: () => observedAt,
+    });
+    await reconcileRows([row({ access_ended_at: null })], deps);
+    assert.equal(applyCalls[0].patch.access_ended_at, observedAt.toISOString());
+  });
+
+  test("existing access_ended_at is never moved -- a later reconciliation run with a different now() leaves it untouched", async () => {
+    const existing = "2026-01-01T00:00:00.000Z";
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "unpaid" }),
+      now: () => new Date("2026-08-01T12:00:00.000Z"),
+    });
+    await reconcileRows([row({ access_ended_at: existing })], deps);
+    assert.equal("access_ended_at" in applyCalls[0].patch, false);
+  });
+
+  test("active reactivation clears access_ended_at unconditionally", async () => {
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "active" }),
+    });
+    await reconcileRows([row({ access_ended_at: "2026-01-01T00:00:00.000Z" })], deps);
+    assert.equal(applyCalls[0].patch.access_ended_at, null);
+  });
+
+  test("trialing reactivation clears access_ended_at unconditionally", async () => {
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "trialing" }),
+    });
+    await reconcileRows([row({ access_ended_at: "2026-01-01T00:00:00.000Z" })], deps);
+    assert.equal(applyCalls[0].patch.access_ended_at, null);
+  });
+
+  test("canceled status leaves access_ended_at untouched -- canceled_at remains the sole boundary for canceled", async () => {
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "canceled", canceled_at: 1893456000 }),
+    });
+    await reconcileRows([row({ access_ended_at: "2026-01-01T00:00:00.000Z" })], deps);
+    assert.equal("access_ended_at" in applyCalls[0].patch, false);
+    assert.equal(applyCalls[0].patch.canceled_at, new Date(1893456000 * 1000).toISOString());
+  });
+
+  test("past_due status leaves access_ended_at untouched -- grace_until remains the sole boundary for past_due", async () => {
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => fakeSubscription({ status: "past_due" }),
+    });
+    await reconcileRows([row({ access_ended_at: "2026-01-01T00:00:00.000Z", grace_until: "2026-01-04T00:00:00.000Z" })], deps);
+    assert.equal("access_ended_at" in applyCalls[0].patch, false);
+  });
+
+  test("incomplete/incomplete_expired never receive an invented access_ended_at -- no read-only entitlement is granted merely by reconciling", async () => {
+    for (const status of ["incomplete", "incomplete_expired"] as const) {
+      const { deps, applyCalls } = spyDeps({ retrieveSubscription: async () => fakeSubscription({ status }) });
+      await reconcileRows([row({ access_ended_at: null })], deps);
+      assert.equal("access_ended_at" in applyCalls[0].patch, false, status);
+    }
+  });
+
+  test("reconciliation cannot extend an existing read-only window -- duplicate runs against an already-set value are fully idempotent", async () => {
+    const existing = "2026-01-01T00:00:00.000Z";
+    const { deps, applyCalls } = spyDeps({ retrieveSubscription: async () => fakeSubscription({ status: "unpaid" }) });
+    await reconcileRows([row({ access_ended_at: existing })], deps);
+    await reconcileRows([row({ access_ended_at: existing })], deps);
+    assert.equal("access_ended_at" in applyCalls[0].patch, false);
+    assert.equal("access_ended_at" in applyCalls[1].patch, false);
+  });
+});
+
+describe("Phase 5.6F-R1: failed Stripe retrieval preserves both local lifecycle fields", () => {
+  test("a Stripe fetch failure applies no patch at all -- trial_consumed_at and access_ended_at are left completely untouched", async () => {
+    const { deps, applyCalls } = spyDeps({
+      retrieveSubscription: async () => {
+        throw new Error("simulated Stripe outage");
+      },
+    });
+    const result = await reconcileRows([row({ trial_consumed_at: "2026-01-01T00:00:00.000Z", access_ended_at: "2026-01-01T00:00:00.000Z" })], deps);
+    assert.equal(result.failed, 1);
+    assert.equal(applyCalls.length, 0, "no write of any kind occurs on a failed Stripe retrieval");
   });
 });

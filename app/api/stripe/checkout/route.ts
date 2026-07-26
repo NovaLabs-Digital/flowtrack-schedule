@@ -42,7 +42,15 @@ export async function POST() {
     }
 
     const customerId = await resolveStripeCustomerId(workspaceId, row.stripe_customer_id, config.client);
-    const url = await resolveOrCreateCheckoutSession(workspaceId, row.id, customerId, config.client, config.priceId);
+    // Phase 5.6F: trial eligibility is resolved exclusively from this
+    // workspace's own subscriptions row (never a client-supplied value --
+    // this route takes no request body at all). trial_consumed_at is set
+    // once, permanently, the first time this workspace ever completes a
+    // trial-bearing Checkout Session (see lib/stripeWebhook.ts) and is
+    // never cleared by cancellation or reactivation, so a returning
+    // customer is correctly billed immediately.
+    const trialEligible = row.trial_consumed_at === null;
+    const url = await resolveOrCreateCheckoutSession(workspaceId, row.id, customerId, config.client, config.priceId, trialEligible);
 
     return NextResponse.json({ url });
   } catch (e) {

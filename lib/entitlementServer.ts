@@ -17,6 +17,12 @@ interface SubscriptionRow {
   current_period_end: string | null;
   grace_until: string | null;
   cancel_at_period_end: boolean;
+  canceled_at: string | null;
+  // Phase 5.6F (migrations/016). Not trial_consumed_at -- that column is
+  // only ever read at Stripe Checkout creation time
+  // (lib/stripeCheckout.ts), never by the entitlement resolver, so it is
+  // deliberately not selected here.
+  access_ended_at: string | null;
 }
 
 function toRecord(row: SubscriptionRow): SubscriptionRecord {
@@ -27,6 +33,8 @@ function toRecord(row: SubscriptionRow): SubscriptionRecord {
     currentPeriodEnd: row.current_period_end ? new Date(row.current_period_end) : null,
     graceUntil: row.grace_until ? new Date(row.grace_until) : null,
     cancelAtPeriodEnd: row.cancel_at_period_end,
+    canceledAt: row.canceled_at ? new Date(row.canceled_at) : null,
+    accessEndedAt: row.access_ended_at ? new Date(row.access_ended_at) : null,
   };
 }
 
@@ -47,7 +55,7 @@ export async function fetchEntitlementForWorkspace(workspaceId: string): Promise
 
   const { data, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("billing_mode, stripe_status, trial_end, current_period_end, grace_until, cancel_at_period_end")
+    .select("billing_mode, stripe_status, trial_end, current_period_end, grace_until, cancel_at_period_end, canceled_at, access_ended_at")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 
@@ -102,7 +110,7 @@ export async function requireFullAccess(session: Session): Promise<NextResponse 
   if (result.hasOperationalAccess) {
     return null;
   }
-  return NextResponse.json(GENERIC_FORBIDDEN, { status: 403 });
+  return result.reason === "query_error" ? serviceUnavailableDenial() : NextResponse.json(GENERIC_FORBIDDEN, { status: 403 });
 }
 
 // ============================================================================
@@ -166,6 +174,33 @@ function subscriptionRestrictedDenial(): NextResponse {
   return NextResponse.json(SUBSCRIPTION_RESTRICTED_BODY, { status: 403 });
 }
 
+// Phase 5.6F-R1: a genuinely distinct outcome from subscriptionRestrictedDenial
+// above -- this is never a lifecycle determination (the request isn't being
+// told "your subscription needs attention," it's being told "we couldn't
+// even check right now"). 503, not 403: the caller did nothing wrong and
+// nothing about their subscription state was actually determined. Same
+// safety properties as SUBSCRIPTION_RESTRICTED_BODY -- no reason/state,
+// workspace/customer/subscription identifier, or provider error text.
+const SERVICE_UNAVAILABLE_BODY = {
+  error: "We're having trouble verifying your account right now. Please try again shortly.",
+  code: "ENTITLEMENT_SERVICE_UNAVAILABLE",
+} as const;
+
+function serviceUnavailableDenial(): NextResponse {
+  return NextResponse.json(SERVICE_UNAVAILABLE_BODY, { status: 503 });
+}
+
+// Chooses the correct denial shape for an already-resolved EntitlementResult
+// that denied the requested capability. The ONLY discriminant is
+// result.reason === "query_error" -- every other denial (locked, read-only,
+// malformed, incomplete, no_subscription) is an authoritative lifecycle
+// determination and gets the normal 403. Centralized here so
+// requireCapability and requireCapabilityForWorkspace can never drift from
+// each other on this distinction.
+function denialFor(result: EntitlementResult): NextResponse {
+  return result.reason === "query_error" ? serviceUnavailableDenial() : subscriptionRestrictedDenial();
+}
+
 // Injectable purely for testability (same pattern as lib/stripeWebhook.ts's
 // WebhookDeps / lib/reconcileSubscriptions.ts's ReconcileDeps) — every real
 // caller omits this argument and gets the true fetchEntitlementForWorkspace
@@ -225,7 +260,7 @@ export async function requireCapability(
   }
 
   const result = await fetchEntitlement(session.workspaceId);
-  return result[capability] ? allowed() : denied(subscriptionRestrictedDenial());
+  return result[capability] ? allowed() : denied(denialFor(result));
 }
 
 // Capability gate for a workspace identity the SERVER itself already
@@ -263,5 +298,5 @@ export async function requireCapabilityForWorkspace(
   fetchEntitlement: EntitlementFetcher = fetchEntitlementForWorkspace
 ): Promise<CapabilityCheckResult> {
   const result = await fetchEntitlement(trustedWorkspaceId);
-  return result[capability] ? allowed() : denied(subscriptionRestrictedDenial());
+  return result[capability] ? allowed() : denied(denialFor(result));
 }

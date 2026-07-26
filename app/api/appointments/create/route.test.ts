@@ -32,6 +32,7 @@ import {
   fakeSessionNamedExports,
   subscriptionRow,
   SUBSCRIPTION_RESTRICTED_BODY,
+  SERVICE_UNAVAILABLE_BODY,
 } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
 
@@ -162,8 +163,8 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody()));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
     assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), []);
   });
 
@@ -285,8 +286,8 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = { role: "none" };
     const res = await POST(req(publicBody()));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
     assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), []);
   });
 

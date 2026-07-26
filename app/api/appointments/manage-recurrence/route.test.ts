@@ -13,7 +13,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
-import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY } from "../../../../lib/testSupport.ts";
+import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
@@ -119,8 +119,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
   });
 

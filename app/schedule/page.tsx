@@ -38,6 +38,28 @@ export default async function SchedulePage() {
   const employeeId = session.employeeId;
   const workspaceId = session.workspaceId;
 
+  // Phase 5.6E: resolved BEFORE any employee/appointment/client data query,
+  // not after. Approved policy: "Employees lose access when the trial or
+  // paid entitlement ends; employees do not receive the owner's read-only
+  // grace" -- hasOperationalAccess is false for BOTH canceled_read_only and
+  // canceled_locked (and every other restricted reason), so an employee is
+  // denied the moment the OWNER's full access ends, not 30 days later. This
+  // is a plain boolean check, not a second policy -- the same canonical
+  // resolver every server-side capability gate already uses.
+  const entitlementResult = await fetchEntitlementForWorkspace(workspaceId);
+  if (!entitlementResult.hasOperationalAccess) {
+    return (
+      <div className="min-h-[100dvh] bg-slate-50 flex items-center justify-center px-6">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 shadow-sm text-center">
+          <div className="text-sm font-semibold text-slate-900">Access unavailable</div>
+          <div className="mt-2 text-xs text-slate-500 leading-relaxed">
+            Your access is currently unavailable. Please contact your business owner for assistance.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const { data: employee, error: empErr } = await supabaseAdmin
     .from("employees")
     .select("id, name, color, active, phone, position")
@@ -147,12 +169,12 @@ export default async function SchedulePage() {
     rangeEnd: toDateInputValue(lastWeekEnd),
   });
 
-  // Resolved through the same canonical resolver every backend capability
-  // gate already uses, for this exact session-derived workspaceId. Projected
-  // to the employee-only shape (see lib/entitlementView.ts) -- an employee
-  // prop never carries recoveryAction, bannerVariant, or any billing-state
-  // distinction, only whether job tracking is currently available.
-  const entitlementResult = await fetchEntitlementForWorkspace(workspaceId);
+  // entitlementResult was already resolved at the top of this component,
+  // before any query ran -- reaching this point already proves
+  // hasOperationalAccess is true. Projected to the employee-only shape (see
+  // lib/entitlementView.ts) -- an employee prop never carries
+  // recoveryAction, bannerVariant, or any billing-state distinction, only
+  // whether job tracking is currently available.
   const entitlement = projectEntitlementForEmployee(entitlementResult);
 
   return (

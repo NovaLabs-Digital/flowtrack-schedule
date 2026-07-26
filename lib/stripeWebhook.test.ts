@@ -10,6 +10,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import type Stripe from "stripe";
 
 const {
@@ -17,6 +19,8 @@ const {
   isBlockingSubscriptionStatus,
   detectSubscriptionConflict,
   updateSubscriptionIfUnchanged,
+  computeTrialConsumedPatchField,
+  computeAccessEndedPatchField,
 } = await import("./stripeWebhook.ts");
 
 function fakeSubscription(overrides: Partial<Stripe.Subscription> = {}): Stripe.Subscription {
@@ -112,6 +116,8 @@ describe("buildSubscriptionPatchFromStripeSubscription: grace episode logic", ()
         currentPeriodEnd: null,
         graceUntil: new Date(patch.grace_until as string),
         cancelAtPeriodEnd: false,
+        canceledAt: null,
+        accessEndedAt: null,
       },
       now
     );
@@ -181,5 +187,91 @@ describe("updateSubscriptionIfUnchanged: superseded-row write semantics (Phase 5
     // independent statement.
     const fromCallCount = (source.match(/\.from\(/g) ?? []).length;
     assert.equal(fromCallCount, 1, "expected exactly one .from() call -- one table statement, not two");
+  });
+});
+
+describe("computeTrialConsumedPatchField (Phase 5.6F)", () => {
+  test("sub.trial_start present, currentTrialConsumedAt null -> writes trial_consumed_at", () => {
+    const sub = fakeSubscription({ status: "trialing", trial_start: 1893456000 });
+    const patch = computeTrialConsumedPatchField(sub, null);
+    assert.equal(patch.trial_consumed_at, new Date(1893456000 * 1000).toISOString());
+  });
+
+  test("sub.trial_start present, currentTrialConsumedAt already set -> first-write-wins, patch omits the field entirely (never overwritten)", () => {
+    const sub = fakeSubscription({ status: "trialing", trial_start: 1893456000 });
+    const patch = computeTrialConsumedPatchField(sub, "2026-01-01T00:00:00.000Z");
+    assert.equal("trial_consumed_at" in patch, false);
+  });
+
+  test("sub.trial_start null (no trial on this subscription) -> patch omits the field, never invents a value", () => {
+    const sub = fakeSubscription({ status: "active", trial_start: null });
+    const patch = computeTrialConsumedPatchField(sub, null);
+    assert.equal("trial_consumed_at" in patch, false);
+  });
+
+  test("duplicate delivery of the same completion event is idempotent -- second call with the now-set value is a no-op patch", () => {
+    const sub = fakeSubscription({ status: "trialing", trial_start: 1893456000 });
+    const first = computeTrialConsumedPatchField(sub, null);
+    assert.ok(first.trial_consumed_at);
+    const second = computeTrialConsumedPatchField(sub, first.trial_consumed_at!);
+    assert.equal("trial_consumed_at" in second, false);
+  });
+});
+
+describe("computeAccessEndedPatchField (Phase 5.6F)", () => {
+  const EVENT_CREATED_ISO = "2026-07-21T12:00:00.000Z";
+
+  test("status transitions to unpaid, currentAccessEndedAt null -> writes access_ended_at = event.created", () => {
+    const patch = computeAccessEndedPatchField("unpaid", null, EVENT_CREATED_ISO);
+    assert.equal(patch.access_ended_at, EVENT_CREATED_ISO);
+  });
+
+  test("status transitions to paused, currentAccessEndedAt null -> writes access_ended_at = event.created", () => {
+    const patch = computeAccessEndedPatchField("paused", null, EVENT_CREATED_ISO);
+    assert.equal(patch.access_ended_at, EVENT_CREATED_ISO);
+  });
+
+  test("status stays unpaid, currentAccessEndedAt already set -> first-write-wins, patch omits the field entirely", () => {
+    const patch = computeAccessEndedPatchField("unpaid", "2026-01-01T00:00:00.000Z", EVENT_CREATED_ISO);
+    assert.equal("access_ended_at" in patch, false);
+  });
+
+  test("status recovers to active -> unconditionally clears access_ended_at, even if it was already null", () => {
+    const patch = computeAccessEndedPatchField("active", "2026-01-01T00:00:00.000Z", EVENT_CREATED_ISO);
+    assert.equal(patch.access_ended_at, null);
+  });
+
+  test("status recovers to trialing -> unconditionally clears access_ended_at", () => {
+    const patch = computeAccessEndedPatchField("trialing", "2026-01-01T00:00:00.000Z", EVENT_CREATED_ISO);
+    assert.equal(patch.access_ended_at, null);
+  });
+
+  test("status is canceled/past_due/incomplete/incomplete_expired -- not this function's concern, patch omits the field", () => {
+    for (const status of ["canceled", "past_due", "incomplete", "incomplete_expired"]) {
+      const patch = computeAccessEndedPatchField(status, null, EVENT_CREATED_ISO);
+      assert.equal("access_ended_at" in patch, false, status);
+    }
+  });
+
+  test("out-of-order duplicate delivery cannot extend a read-only window -- a second observation of the same status after the field is set is a no-op", () => {
+    const first = computeAccessEndedPatchField("unpaid", null, EVENT_CREATED_ISO);
+    assert.equal(first.access_ended_at, EVENT_CREATED_ISO);
+    const later = "2026-07-22T12:00:00.000Z";
+    const second = computeAccessEndedPatchField("unpaid", first.access_ended_at!, later);
+    assert.equal("access_ended_at" in second, false, "must not move the boundary forward on a later duplicate/out-of-order event");
+  });
+});
+
+describe("withTrialAndAccessEndedFields (the webhook-event-shaped composer) is only reachable from the three webhook handlers that re-fetch a live subscription (source-level proof)", () => {
+  test("lib/reconcileSubscriptions.ts never imports or calls withTrialAndAccessEndedFields itself", () => {
+    const source = fs.readFileSync(fileURLToPath(new URL("./reconcileSubscriptions.ts", import.meta.url)), "utf8");
+    assert.ok(!source.includes("withTrialAndAccessEndedFields"));
+  });
+
+  test("Phase 5.6F-R1: lib/reconcileSubscriptions.ts DOES call computeTrialConsumedPatchField and computeAccessEndedPatchField directly, as its missed-webhook recovery path", () => {
+    const source = fs.readFileSync(fileURLToPath(new URL("./reconcileSubscriptions.ts", import.meta.url)), "utf8");
+    assert.ok(source.includes("buildSubscriptionPatchFromStripeSubscription"));
+    assert.ok(source.includes("computeTrialConsumedPatchField"));
+    assert.ok(source.includes("computeAccessEndedPatchField"));
   });
 });

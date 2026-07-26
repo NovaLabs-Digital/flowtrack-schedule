@@ -393,6 +393,103 @@ export function buildSubscriptionPatchFromStripeSubscription(
   return patch;
 }
 
+// ============================================================================
+// Phase 5.6F — one-time trial and unified access-ended tracking
+// (migrations/016). Deliberately NOT part of
+// buildSubscriptionPatchFromStripeSubscription above: the three webhook
+// handlers that re-fetch a live subscription (handleCheckoutSessionCompleted,
+// handleSubscriptionUpsert, syncSubscriptionFromInvoiceEvent) merge the two
+// functions below in via withTrialAndAccessEndedFields, using the webhook
+// event's own eventCreatedIso as the "first observed" timestamp.
+//
+// Phase 5.6F-R1: lib/reconcileSubscriptions.ts calls
+// computeTrialConsumedPatchField and computeAccessEndedPatchField directly
+// (not through withTrialAndAccessEndedFields, which is webhook-event-shaped)
+// as a recovery path for a permanently missed webhook -- reconciliation has
+// no genuine Stripe event of its own, so it uses its own injected
+// observation time (ReconcileDeps.now, documented there) as the fallback
+// "first observed" timestamp instead. Both helpers are first-write-wins
+// (a currently-null field only), so this can only ever backfill a field a
+// webhook should have set and never overwrites a webhook's more precise
+// value. The one accepted, documented trade-off: if a transition is caught
+// solely by reconciliation, the backfilled timestamp is up to one
+// reconciliation interval later than the true Stripe event time, which may
+// grant up to one reconciliation interval of additional read-only access
+// beyond what an on-time webhook would have allowed. Duplicate/out-of-order
+// reconciliation runs are idempotent for the same reason a duplicate webhook
+// delivery is: both helpers are first-write-wins and never move an
+// already-set boundary or clear/move trial_consumed_at.
+// ============================================================================
+
+// A trial is "consumed" the instant Stripe actually grants one --
+// sub.trial_start is populated by Stripe exactly when a subscription
+// enters its trial period. checkout.session.completed's re-fetched
+// subscription is the first and authoritative place this is ever observed
+// for this app's checkout flow (which always requests trial_period_days
+// when the workspace is still eligible -- see lib/stripeCheckout.ts).
+// First-write-wins: once set, NEVER cleared or overwritten by any later
+// event -- a workspace's trial history survives cancellation, reactivation,
+// and reconciliation for the rest of that workspace's lifetime. An
+// abandoned Checkout Session (never completed) produces no
+// checkout.session.completed event and therefore no subscription object at
+// all, so this function is never even reached for it -- an abandoned
+// checkout structurally cannot consume a trial.
+export function computeTrialConsumedPatchField(
+  sub: Stripe.Subscription,
+  currentTrialConsumedAt: string | null
+): { trial_consumed_at?: string } {
+  if (currentTrialConsumedAt !== null) return {};
+  if (!sub.trial_start) return {};
+  return { trial_consumed_at: toIso(sub.trial_start)! };
+}
+
+// unpaid/paused are the two statuses with no Stripe-provided "when did
+// this start" timestamp (unlike canceled_at for canceled, or the locally-
+// computed grace_until for past_due) -- access_ended_at is this app's own
+// bookkeeping of the moment access genuinely stopped, for those two
+// statuses specifically. First-write-wins, exactly like grace_until above;
+// cleared unconditionally the moment status recovers to active/trialing
+// (reactivation), independently of trial_consumed_at (which never clears).
+// canceled/past_due/incomplete/incomplete_expired each have their own
+// dedicated boundary (or deliberately get none) -- this field is left
+// completely untouched (omitted from the patch) for every status other
+// than active/trialing/unpaid/paused.
+const ACCESS_ENDED_TRACKED_STATUSES = new Set(["unpaid", "paused"]);
+
+export function computeAccessEndedPatchField(
+  liveStatus: string,
+  currentAccessEndedAt: string | null,
+  eventCreatedIso: string
+): { access_ended_at?: string | null } {
+  if (liveStatus === "active" || liveStatus === "trialing") {
+    // Reactivation clears the restriction unconditionally -- the one case
+    // where this field is cleared, never invented.
+    return { access_ended_at: null };
+  }
+  if (!ACCESS_ENDED_TRACKED_STATUSES.has(liveStatus)) {
+    return {};
+  }
+  if (currentAccessEndedAt !== null) return {};
+  return { access_ended_at: eventCreatedIso };
+}
+
+// Shared by all three "re-fetched a live subscription and need the full
+// patch" webhook handlers below -- the one place trial/access-ended
+// tracking is merged into the canonical patch, so the three handlers can
+// never drift from each other on how these two fields are computed.
+function withTrialAndAccessEndedFields(
+  patch: Record<string, unknown>,
+  sub: Stripe.Subscription,
+  currentRow: { trial_consumed_at: string | null; access_ended_at: string | null },
+  eventCreatedIso: string
+): Record<string, unknown> {
+  return {
+    ...patch,
+    ...computeTrialConsumedPatchField(sub, currentRow.trial_consumed_at),
+    ...computeAccessEndedPatchField(sub.status, currentRow.access_ended_at, eventCreatedIso),
+  };
+}
+
 export interface WebhookDeps {
   retrieveSubscription: (id: string) => Promise<Stripe.Subscription>;
 }
@@ -437,7 +534,7 @@ export async function handleCheckoutSessionCompleted(
 
   const { data: row, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until")
+    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until, trial_consumed_at, access_ended_at")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (error) throw error;
@@ -455,12 +552,18 @@ export async function handleCheckoutSessionCompleted(
     return;
   }
 
-  const patch = buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until);
+  const eventCreatedIso = toIso(event.created)!;
+  const patch = withTrialAndAccessEndedFields(
+    buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until),
+    subscription,
+    row,
+    eventCreatedIso
+  );
   if (!(await verifyClaimOwnership(event.id, claimToken))) {
     console.error("STRIPE_WEBHOOK_CLAIM_LOST_BEFORE_MUTATION");
     return;
   }
-  await updateSubscriptionIfNewer(workspaceId, toIso(event.created)!, patch);
+  await updateSubscriptionIfNewer(workspaceId, eventCreatedIso, patch);
 }
 
 export async function handleSubscriptionUpsert(
@@ -478,7 +581,7 @@ export async function handleSubscriptionUpsert(
 
   const { data: row, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until")
+    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until, trial_consumed_at, access_ended_at")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (error) throw error;
@@ -494,12 +597,18 @@ export async function handleSubscriptionUpsert(
     return;
   }
 
-  const patch = buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until);
+  const eventCreatedIso = toIso(event.created)!;
+  const patch = withTrialAndAccessEndedFields(
+    buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until),
+    subscription,
+    row,
+    eventCreatedIso
+  );
   if (!(await verifyClaimOwnership(event.id, claimToken))) {
     console.error("STRIPE_WEBHOOK_CLAIM_LOST_BEFORE_MUTATION");
     return;
   }
-  await updateSubscriptionIfNewer(workspaceId, toIso(event.created)!, patch);
+  await updateSubscriptionIfNewer(workspaceId, eventCreatedIso, patch);
 }
 
 // Deliberately does NOT re-retrieve from Stripe: a deleted subscription's
@@ -587,7 +696,7 @@ async function syncSubscriptionFromInvoiceEvent(
 
   const { data: row, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until")
+    .select("workspace_id, stripe_subscription_id, stripe_status, grace_until, trial_consumed_at, access_ended_at")
     .eq("stripe_subscription_id", subscriptionId)
     .maybeSingle();
   if (error) throw error;
@@ -605,13 +714,19 @@ async function syncSubscriptionFromInvoiceEvent(
     return;
   }
 
-  const patch = buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until);
+  const eventCreatedIso = toIso(event.created)!;
+  const patch = withTrialAndAccessEndedFields(
+    buildSubscriptionPatchFromStripeSubscription(subscription, row.grace_until),
+    subscription,
+    row,
+    eventCreatedIso
+  );
 
   if (!(await verifyClaimOwnership(event.id, claimToken))) {
     console.error("STRIPE_WEBHOOK_CLAIM_LOST_BEFORE_MUTATION");
     return;
   }
-  await updateSubscriptionIfNewer(row.workspace_id, toIso(event.created)!, patch);
+  await updateSubscriptionIfNewer(row.workspace_id, eventCreatedIso, patch);
 }
 
 export async function handleInvoicePaymentFailed(

@@ -16,7 +16,7 @@ import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createFakeSupabaseAdmin, writeCalls, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY } from "../../../../lib/testSupport.ts";
+import { createFakeSupabaseAdmin, writeCalls, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
@@ -88,8 +88,8 @@ describe("GET /api/book/availability -- entitlement gate (canUsePublicBooking)",
   test("query_error on the subscriptions read denies, zero operational reads", async () => {
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
     assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), []);
   });
 

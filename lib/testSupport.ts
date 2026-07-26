@@ -57,6 +57,12 @@ export function createFakeSupabaseAdmin(responses: Record<string, FakeSupabaseFi
       lt: (...args: unknown[]) => { record("lt", args); return builder; },
       lte: (...args: unknown[]) => { record("lte", args); return builder; },
       in: (...args: unknown[]) => { record("in", args); return builder; },
+      // Phase 5.6E: added for app/api/clients/archived/route.ts's
+      // .not("archived_at", "is", null) -- the first fixture-driven test
+      // written against that route. Same no-op-filter shape as every other
+      // chain method here: the fake doesn't actually filter the queued
+      // fixture data, it only records the call and returns the builder.
+      not: (...args: unknown[]) => { record("not", args); return builder; },
       order: (...args: unknown[]) => { record("order", args); return builder; },
       limit: (...args: unknown[]) => { record("limit", args); return builder; },
       is: (...args: unknown[]) => { record("is", args); return builder; },
@@ -89,6 +95,14 @@ export const GENERIC_FORBIDDEN_BODY = { error: "Unauthorized" } as const;
 export const SUBSCRIPTION_RESTRICTED_BODY = {
   error: "This action isn't available right now — visit Billing to restore full access.",
   code: "SUBSCRIPTION_RESTRICTED",
+} as const;
+// Phase 5.6F-R1: mirrors lib/entitlementServer.ts's own (private)
+// SERVICE_UNAVAILABLE_BODY exactly -- the distinct 503 denial for a
+// transient subscription-query failure (reason "query_error"), never the
+// 403 SUBSCRIPTION_RESTRICTED body above.
+export const SERVICE_UNAVAILABLE_BODY = {
+  error: "We're having trouble verifying your account right now. Please try again shortly.",
+  code: "ENTITLEMENT_SERVICE_UNAVAILABLE",
 } as const;
 
 // Faithful, minimal re-implementations of lib/session.ts's requireRole/
@@ -195,6 +209,7 @@ export function subscriptionRow(
     current_period_end: string | null;
     grace_until: string | null;
     cancel_at_period_end: boolean;
+    canceled_at: string | null;
   }> = {}
 ) {
   return {
@@ -204,6 +219,12 @@ export function subscriptionRow(
     current_period_end: null,
     grace_until: null,
     cancel_at_period_end: false,
+    // Phase 5.6E: defaults to null (matches every pre-existing fixture that
+    // doesn't override it). A "canceled" stripe_status with no canceled_at
+    // resolves to the malformed_canceled_date state, not canceled_read_only
+    // -- callers that specifically need the read-only/locked lifecycle must
+    // pass an explicit canceled_at.
+    canceled_at: null,
     ...overrides,
   };
 }

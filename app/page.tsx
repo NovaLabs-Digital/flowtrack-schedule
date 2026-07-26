@@ -138,8 +138,14 @@ export default function LandingPage() {
             </div>
             <span className="text-xs font-medium text-slate-700">Schedule FlowTrack</span>
           </div>
-          <div className="text-xs text-slate-500">
-            Powered by Nova Labs Digital
+          <div className="flex items-center gap-4 text-xs text-slate-500">
+            <Link href="/terms" className="hover:text-slate-700 transition-colors">
+              Terms of Service
+            </Link>
+            <Link href="/privacy" className="hover:text-slate-700 transition-colors">
+              Privacy Policy
+            </Link>
+            <span>Powered by Nova Labs Digital</span>
           </div>
         </div>
       </footer>

@@ -1,0 +1,76 @@
+-- 016: Phase 5.6F — one-time trial tracking and unified access-ended
+-- tracking for the read-only/locked lifecycle.
+--
+-- Adds exactly two nullable, additive columns to the existing
+-- `subscriptions` table (migration 015). No existing column, row, index,
+-- constraint, policy, or other table is touched. No row is deleted. No
+-- status is rewritten. Safely re-runnable (every statement uses
+-- IF NOT EXISTS / guards against re-adding an existing column).
+--
+-- trial_consumed_at (timestamptz, nullable):
+--   Set exactly once, the first time Stripe confirms this workspace's
+--   subscription actually entered a trial (Stripe's own subscription.
+--   trial_start becomes non-null -- see lib/stripeWebhook.ts's
+--   computeTrialConsumedPatchField). Never cleared afterward by any later
+--   webhook, reconciliation pass, cancellation, or reactivation -- a
+--   workspace's trial history is permanent for the life of that workspace.
+--   Read at Stripe Checkout Session creation time (lib/stripeCheckout.ts)
+--   to decide whether trial_period_days may be offered again. NOT
+--   attached to email, browser, or Stripe Customer ID -- workspace_id
+--   (this table's own unique key) is the sole trial identity.
+--
+-- access_ended_at (timestamptz, nullable):
+--   This app's own bookkeeping of the moment full operational access
+--   stopped, for the two Stripe statuses that carry no Stripe-provided
+--   boundary timestamp of their own: 'unpaid' and 'paused'. Every OTHER
+--   restricted status already has a reliable existing boundary it uses
+--   instead -- canceled_at for 'canceled', the existing grace_until for
+--   'past_due' -- so this column is deliberately not read for those.
+--   Normally set by the webhook handler at the exact Stripe status
+--   transition time (see lib/stripeWebhook.ts's
+--   computeAccessEndedPatchField). If that webhook is permanently missed,
+--   the reconciliation cron (lib/reconcileSubscriptions.ts) may set this
+--   field instead, using the time reconciliation first observes the
+--   status rather than the true Stripe transition time -- see that
+--   module's own comment for the injectable observation clock this relies
+--   on. First-write-wins either way: whichever of the two writes this
+--   field first, it is never moved again by a later webhook or
+--   reconciliation run. Because of this fallback, a workspace whose
+--   webhook was permanently missed may get up to one reconciliation
+--   interval of additional read-only access beyond what a timely webhook
+--   would have allowed -- a documented, accepted trade-off, not a bug.
+--   Cleared unconditionally the moment status recovers to
+--   'active'/'trialing' (reactivation), by either path.
+
+ALTER TABLE subscriptions
+  ADD COLUMN IF NOT EXISTS trial_consumed_at timestamptz,
+  ADD COLUMN IF NOT EXISTS access_ended_at timestamptz;
+
+-- =============================================================================
+-- Backfill.
+--
+-- trial_consumed_at: intentionally NOT backfilled by this migration for any
+-- row. As of this migration, the only real, non-demo workspace in
+-- production is billing_mode = 'internal' (migration 015's backfill) --
+-- it has never used Stripe at all, so trial_consumed_at correctly stays
+-- null for it (an internal workspace is never offered a Stripe trial in
+-- the first place; the checkout route already rejects billing_mode !=
+-- 'stripe' before trial eligibility is ever evaluated). No 'stripe'-mode
+-- row with genuine trial history is known to exist at the time this
+-- migration was written. If one is discovered before this migration is
+-- applied to production, it requires the manual review described in the
+-- accompanying report -- this migration does not guess.
+--
+-- access_ended_at: intentionally NOT backfilled for any row, for the same
+-- reason -- no existing 'unpaid' or 'paused' row is known to exist, and
+-- inventing a historical timestamp from updated_at or current_period_end
+-- would not reliably represent the true moment access ended. A future
+-- 'unpaid'/'paused' row created after this migration ships normally gets
+-- access_ended_at set by the webhook handler at the moment Stripe reports
+-- that status; if that webhook is ever permanently missed, the
+-- reconciliation cron may backfill it instead from its own first
+-- observation time (see the column comment above) -- but this migration
+-- itself invents nothing for any existing row. Only a genuinely
+-- pre-existing 'unpaid'/'paused' row (if one is ever found before
+-- production migration) needs manual review.
+-- =============================================================================

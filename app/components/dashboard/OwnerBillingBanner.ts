@@ -24,27 +24,74 @@ import { beginBillingRecovery, type BillingRecoveryAction } from "@/lib/billingR
 import { SUPPORT_MAILTO_URL } from "@/lib/support";
 import type { EntitlementView } from "@/lib/entitlementView";
 
-export type OwnerBillingBannerProps = Pick<EntitlementView, "bannerVariant" | "recoveryAction">;
+export type OwnerBillingBannerProps = Pick<
+  EntitlementView,
+  "bannerVariant" | "recoveryAction" | "finalAccessDate" | "readOnlyEndsAt"
+>;
 
 type NonNoneVariant = Exclude<OwnerBillingBannerProps["bannerVariant"], "none">;
 
-// Wording keyed ONLY by bannerVariant -- the approved copy, verbatim, never
-// touched by recoveryAction or any other input.
-const CONTENT: Record<NonNoneVariant, { title: string; body: string }> = {
-  grace_warning: {
-    title: "Please update your billing information",
-    body:
-      "We couldn't confirm your latest payment. Your scheduling tools are still available for now. Update billing to prevent an interruption.",
-  },
-  restricted: {
-    title: "Billing attention is required",
-    body: "Please restore your subscription to continue using all scheduling features.",
-  },
-  verification_error: {
-    title: "We need to verify your account",
-    body: "Please contact support so we can help restore full access.",
-  },
-};
+// Fixed locale and explicit timeZone (not the ambient runtime default) so
+// this renders identically during SSR and after client hydration regardless
+// of which timezone the server process happens to run in -- the same class
+// of server/client mismatch lib/timezone.ts's nowInBusinessTz() exists to
+// avoid, applied here to a single formatted string instead of a Date.
+function formatDate(d: Date | null): string {
+  if (!d) return "the scheduled date";
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "America/New_York" });
+}
+
+// Wording keyed ONLY by bannerVariant, with the two approved dates (final
+// full-access date / read-only end date) interpolated where the approved
+// copy requires them -- never any other subscription/Stripe detail.
+function contentFor(variant: NonNoneVariant, finalAccessDate: Date | null, readOnlyEndsAt: Date | null): { title: string; body: string } {
+  switch (variant) {
+    case "grace_warning":
+      return {
+        title: "Please update your billing information",
+        body: "We couldn't confirm your latest payment. Your scheduling tools are still available for now. Update billing to prevent an interruption.",
+      };
+    case "cancel_scheduled_trial":
+      return {
+        title: "Cancellation scheduled",
+        body: `Your free trial will end and no charge will occur on ${formatDate(finalAccessDate)}. You'll keep full access until then.`,
+      };
+    case "cancel_scheduled_paid":
+      return {
+        title: "Cancellation scheduled",
+        body: `Your subscription is scheduled to end on ${formatDate(finalAccessDate)}, the end of your current paid period. You'll keep full access until then.`,
+      };
+    case "read_only":
+      return {
+        title: "Your subscription has ended — account is read-only",
+        body: `You can still view your existing data, but changes and notifications are turned off. Read-only access ends ${formatDate(readOnlyEndsAt)}. Reactivate any time to restore full access -- all your data is preserved.`,
+      };
+    case "locked":
+      return {
+        title: "Subscription required",
+        body: "Your read-only period has ended. Reactivate your subscription to restore access -- your data has been preserved.",
+      };
+    case "restricted":
+      return {
+        title: "Billing attention is required",
+        body: "Please restore your subscription to continue using all scheduling features.",
+      };
+    case "verification_error":
+      return {
+        title: "We need to verify your account",
+        body: "Please contact support so we can help restore full access.",
+      };
+    case "temporarily_unavailable":
+      // Phase 5.6F-R1: defensive-only -- app/dashboard/page.tsx renders
+      // TemporaryUnavailableScreen directly for this case and never mounts
+      // this banner at all. Kept accurate (never claims cancellation/lock)
+      // for exhaustiveness and for any future consumer.
+      return {
+        title: "Temporarily unavailable",
+        body: "We're having trouble loading your account right now. Your data is safe. Please try again in a moment.",
+      };
+  }
+}
 
 // Label keyed ONLY by recoveryAction -- never derived from bannerVariant.
 // An unusual but type-valid combination (e.g. "verification_error" paired
@@ -68,11 +115,16 @@ const UNEXPECTED_ERROR_MESSAGE = "We couldn't open billing right now. Please try
 // apart only by their approved copy).
 const VARIANT_STYLE: Record<NonNoneVariant, { wrap: string; title: string; body: string }> = {
   grace_warning: { wrap: "border-amber-200 bg-amber-50", title: "text-amber-900", body: "text-amber-800" },
+  cancel_scheduled_trial: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
+  cancel_scheduled_paid: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
+  read_only: { wrap: "border-amber-200 bg-amber-50", title: "text-amber-900", body: "text-amber-800" },
+  locked: { wrap: "border-amber-200 bg-amber-50", title: "text-amber-900", body: "text-amber-800" },
   restricted: { wrap: "border-amber-200 bg-amber-50", title: "text-amber-900", body: "text-amber-800" },
   verification_error: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
+  temporarily_unavailable: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
 };
 
-export default function OwnerBillingBanner({ bannerVariant, recoveryAction }: OwnerBillingBannerProps) {
+export default function OwnerBillingBanner({ bannerVariant, recoveryAction, finalAccessDate, readOnlyEndsAt }: OwnerBillingBannerProps) {
   const [pending, setPending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -92,7 +144,7 @@ export default function OwnerBillingBanner({ bannerVariant, recoveryAction }: Ow
 
   if (bannerVariant === "none") return null;
 
-  const content = CONTENT[bannerVariant];
+  const content = contentFor(bannerVariant, finalAccessDate, readOnlyEndsAt);
   const style = VARIANT_STYLE[bannerVariant];
   const label = recoveryAction ? ACTION_LABEL[recoveryAction] : null;
 

@@ -28,6 +28,8 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
     currentPeriodEnd: null,
     graceUntil: null,
     cancelAtPeriodEnd: false,
+    canceledAt: null,
+    accessEndedAt: null,
     ...overrides,
   };
 }
@@ -41,6 +43,8 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canSendNotifications: true,
       bannerVariant: "none",
       recoveryAction: null,
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
@@ -52,6 +56,8 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canSendNotifications: true,
       bannerVariant: "none",
       recoveryAction: null,
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
@@ -63,50 +69,144 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canSendNotifications: true,
       bannerVariant: "grace_warning",
       recoveryAction: "portal",
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
-  test("past_due_expired: restricted capabilities, restricted banner, portal recovery", () => {
+  test("past_due_read_only: restricted capabilities, read_only banner (with the exact read-only end date), portal recovery", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1000) }), NOW);
     assert.deepEqual(projectEntitlementForOwner(result), {
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
-      bannerVariant: "restricted",
+      bannerVariant: "read_only",
       recoveryAction: "portal",
+      finalAccessDate: null,
+      readOnlyEndsAt: result.readOnlyEndsAt,
     });
+    assert.ok(result.readOnlyEndsAt);
   });
 
-  test("unpaid: restricted capabilities, restricted banner, portal recovery", () => {
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "unpaid" }), NOW);
+  test("past_due_locked: locked capabilities, locked banner, portal recovery", () => {
+    const result = resolveEntitlement(
+      stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1000 * 60 * 60 * 24 * 40) }),
+      NOW
+    );
+    assert.equal(result.state, "past_due_locked");
     assert.deepEqual(projectEntitlementForOwner(result), {
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
-      bannerVariant: "restricted",
+      bannerVariant: "locked",
       recoveryAction: "portal",
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
-  test("canceled: restricted capabilities, restricted banner, checkout recovery", () => {
-    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled" }), NOW);
+  test("unpaid_read_only: restricted capabilities, read_only banner, portal recovery", () => {
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "unpaid", accessEndedAt: new Date(NOW.getTime() - 1000) }), NOW);
     assert.deepEqual(projectEntitlementForOwner(result), {
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
-      bannerVariant: "restricted",
+      bannerVariant: "read_only",
+      recoveryAction: "portal",
+      finalAccessDate: null,
+      readOnlyEndsAt: result.readOnlyEndsAt,
+    });
+    assert.ok(result.readOnlyEndsAt);
+  });
+
+  test("paused_read_only: restricted capabilities, read_only banner, portal recovery", () => {
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "paused", accessEndedAt: new Date(NOW.getTime() - 1000) }), NOW);
+    assert.deepEqual(projectEntitlementForOwner(result), {
+      canMutateOperationalData: false,
+      canUseJobTracking: false,
+      canSendNotifications: false,
+      bannerVariant: "read_only",
+      recoveryAction: "portal",
+      finalAccessDate: null,
+      readOnlyEndsAt: result.readOnlyEndsAt,
+    });
+  });
+
+  test("canceled_read_only: restricted capabilities, read_only banner (with the exact read-only end date), checkout recovery", () => {
+    const canceledAt = new Date(NOW.getTime() - 1000 * 60 * 60 * 24 * 5);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt }), NOW);
+    assert.deepEqual(projectEntitlementForOwner(result), {
+      canMutateOperationalData: false,
+      canUseJobTracking: false,
+      canSendNotifications: false,
+      bannerVariant: "read_only",
       recoveryAction: "checkout",
+      finalAccessDate: null,
+      readOnlyEndsAt: result.readOnlyEndsAt,
+    });
+    assert.ok(result.readOnlyEndsAt);
+  });
+
+  test("canceled_locked: restricted capabilities, locked banner, checkout recovery, no dates shown", () => {
+    const canceledAt = new Date(NOW.getTime() - 1000 * 60 * 60 * 24 * 40);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt }), NOW);
+    assert.equal(result.state, "canceled_locked");
+    assert.deepEqual(projectEntitlementForOwner(result), {
+      canMutateOperationalData: false,
+      canUseJobTracking: false,
+      canSendNotifications: false,
+      bannerVariant: "locked",
+      recoveryAction: "checkout",
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
-  test("no_subscription (genuinely no row): restricted capabilities, restricted banner, checkout recovery", () => {
+  test("cancel_scheduled_trial: FULL capabilities (still trialing), cancel_scheduled_trial banner with the exact trial-end date, portal recovery", () => {
+    const trialEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 10);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "trialing", trialEnd, cancelAtPeriodEnd: true }), NOW);
+    assert.deepEqual(projectEntitlementForOwner(result), {
+      canMutateOperationalData: true,
+      canUseJobTracking: true,
+      canSendNotifications: true,
+      bannerVariant: "cancel_scheduled_trial",
+      recoveryAction: "portal",
+      finalAccessDate: trialEnd,
+      readOnlyEndsAt: null,
+    });
+  });
+
+  test("cancel_scheduled_paid: FULL capabilities (still active), cancel_scheduled_paid banner with the exact period-end date, portal recovery", () => {
+    const currentPeriodEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 12);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "active", currentPeriodEnd, cancelAtPeriodEnd: true }), NOW);
+    assert.deepEqual(projectEntitlementForOwner(result), {
+      canMutateOperationalData: true,
+      canUseJobTracking: true,
+      canSendNotifications: true,
+      bannerVariant: "cancel_scheduled_paid",
+      recoveryAction: "portal",
+      finalAccessDate: currentPeriodEnd,
+      readOnlyEndsAt: null,
+    });
+  });
+
+  test("trialing/active WITHOUT cancelAtPeriodEnd never shows a scheduled-cancellation banner", () => {
+    const trialing = resolveEntitlement(stripeRecord({ stripeStatus: "trialing", cancelAtPeriodEnd: false }), NOW);
+    const active = resolveEntitlement(stripeRecord({ stripeStatus: "active", cancelAtPeriodEnd: false }), NOW);
+    assert.equal(projectEntitlementForOwner(trialing).bannerVariant, "none");
+    assert.equal(projectEntitlementForOwner(active).bannerVariant, "none");
+  });
+
+  test("no_subscription (genuinely no row): locked capabilities, locked banner, checkout recovery", () => {
     const result = resolveEntitlement(null, NOW);
     assert.deepEqual(projectEntitlementForOwner(result), {
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
-      bannerVariant: "restricted",
+      bannerVariant: "locked",
       recoveryAction: "checkout",
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
@@ -118,20 +218,32 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canSendNotifications: false,
       bannerVariant: "verification_error",
       recoveryAction: "support",
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
-  test("query_error: shares no_subscription's STATE but must resolve to verification_error/support, never checkout", () => {
+  test("Phase 5.6F-R1: query_error resolves to its OWN 'service_unavailable' state, banner 'temporarily_unavailable', no recovery action", () => {
     const result = noDataResult("query_error");
-    assert.equal(result.state, "no_subscription", "sanity: query_error and genuine no_subscription share the same state");
-    assert.equal(result.reason, "query_error", "sanity: reason is the only field distinguishing them");
+    assert.equal(result.state, "service_unavailable", "sanity: query_error is its own state, not shared with no_subscription");
+    assert.equal(result.reason, "query_error");
     assert.deepEqual(projectEntitlementForOwner(result), {
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
-      bannerVariant: "verification_error",
-      recoveryAction: "support",
+      bannerVariant: "temporarily_unavailable",
+      recoveryAction: null,
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
+  });
+
+  test("a genuine no_subscription row gets the 'locked' banner and checkout recovery, never 'temporarily_unavailable'", () => {
+    const genuine = resolveEntitlement(null, NOW);
+    assert.equal(genuine.state, "no_subscription");
+    const view = projectEntitlementForOwner(genuine);
+    assert.equal(view.bannerVariant, "locked");
+    assert.equal(view.recoveryAction, "checkout");
   });
 
   test("internal billing: full capabilities, no banner, no recovery action", () => {
@@ -142,6 +254,8 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canSendNotifications: true,
       bannerVariant: "none",
       recoveryAction: null,
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
@@ -153,30 +267,35 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canSendNotifications: true,
       bannerVariant: "none",
       recoveryAction: null,
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
     });
   });
 
   test("a non-demo workspace with no subscription data does NOT receive the demo projection", () => {
     const result = resolveWorkspaceEntitlement(REAL_WORKSPACE_ID, null, NOW);
     const view = projectEntitlementForOwner(result);
-    assert.equal(view.bannerVariant, "restricted");
+    assert.equal(view.bannerVariant, "locked");
     assert.equal(view.recoveryAction, "checkout");
   });
 
-  const UNMAPPED_RESTRICTED_STATES: Array<[string, SubscriptionRecord]> = [
+  // Phase 5.6F: incomplete/incomplete_expired never established valid
+  // entitlement -- locked capabilities, verification_error wording (never
+  // claims a read-only period that never existed), checkout recovery (the
+  // correct next step is a fresh Checkout attempt, not support).
+  const NEVER_ESTABLISHED_STATES: Array<[string, SubscriptionRecord]> = [
     ["incomplete", stripeRecord({ stripeStatus: "incomplete" })],
     ["incomplete_expired", stripeRecord({ stripeStatus: "incomplete_expired" })],
-    ["paused", stripeRecord({ stripeStatus: "paused" })],
   ];
-  for (const [label, record] of UNMAPPED_RESTRICTED_STATES) {
-    test(`${label}: not explicitly assigned by the Phase 5.5A mapping -- fails safe to restricted capabilities + verification_error/support, never a guessed checkout/portal action`, () => {
+  for (const [label, record] of NEVER_ESTABLISHED_STATES) {
+    test(`${label}: locked capabilities, verification_error banner, checkout recovery -- never a guessed read-only period`, () => {
       const result = resolveEntitlement(record, NOW);
       const view = projectEntitlementForOwner(result);
       assert.equal(view.canMutateOperationalData, false, label);
       assert.equal(view.canUseJobTracking, false, label);
       assert.equal(view.canSendNotifications, false, label);
       assert.equal(view.bannerVariant, "verification_error", label);
-      assert.equal(view.recoveryAction, "support", label);
+      assert.equal(view.recoveryAction, "checkout", label);
     });
   }
 });
@@ -186,9 +305,9 @@ describe("capability booleans are always copied verbatim from the canonical reso
     ["active", stripeRecord({ stripeStatus: "active" })],
     ["trialing", stripeRecord({ stripeStatus: "trialing" })],
     ["past_due_grace", stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() + 1000) })],
-    ["past_due_expired", stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1000) })],
-    ["unpaid", stripeRecord({ stripeStatus: "unpaid" })],
-    ["canceled", stripeRecord({ stripeStatus: "canceled" })],
+    ["past_due_read_only", stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1000) })],
+    ["unpaid_read_only", stripeRecord({ stripeStatus: "unpaid", accessEndedAt: new Date(NOW.getTime() - 1000) })],
+    ["canceled_read_only", stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000) })],
     ["no_subscription", null],
     ["malformed", stripeRecord({ stripeStatus: "not_real" })],
   ];
@@ -206,19 +325,27 @@ describe("capability booleans are always copied verbatim from the canonical reso
 describe("the owner projection never leaks raw entitlement/billing fields", () => {
   const FIXTURES = [
     resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW),
-    resolveEntitlement(stripeRecord({ stripeStatus: "canceled" }), NOW),
+    resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000) }), NOW),
     resolveEntitlement(null, NOW),
     noDataResult("query_error"),
     resolveWorkspaceEntitlement(DEMO_WORKSPACE_ID, null, NOW),
     resolveEntitlement({ ...stripeRecord(), billingMode: "internal", stripeStatus: null }, NOW),
   ];
 
-  test("contains exactly the five approved keys, nothing else, for every fixture", () => {
+  test("contains exactly the seven approved keys, nothing else, for every fixture", () => {
     for (const result of FIXTURES) {
       const view = projectEntitlementForOwner(result);
       assert.deepEqual(
         Object.keys(view).sort(),
-        ["bannerVariant", "canMutateOperationalData", "canSendNotifications", "canUseJobTracking", "recoveryAction"]
+        [
+          "bannerVariant",
+          "canMutateOperationalData",
+          "canSendNotifications",
+          "canUseJobTracking",
+          "finalAccessDate",
+          "readOnlyEndsAt",
+          "recoveryAction",
+        ]
       );
     }
   });
@@ -230,8 +357,8 @@ describe("the owner projection never leaks raw entitlement/billing fields", () =
     );
     // Sanity: the fixture really does carry sensitive, diagnosable detail
     // (proving this test would catch a leak if one were introduced).
-    assert.equal(sensitiveResult.reason, "past_due_grace_expired");
-    assert.equal(sensitiveResult.state, "past_due_expired");
+    assert.equal(sensitiveResult.reason, "past_due_read_only");
+    assert.equal(sensitiveResult.state, "past_due_read_only");
     assert.ok(sensitiveResult.graceEndsAt);
 
     const serialized = JSON.stringify(projectEntitlementForOwner(sensitiveResult));
@@ -294,6 +421,24 @@ describe("owner/employee page wiring is source-correctly scoped (source-level pr
     assert.ok(scheduleSource.includes("fetchEntitlementForWorkspace(workspaceId)"));
     assert.ok(scheduleSource.includes("projectEntitlementForEmployee(entitlementResult)"));
     assert.ok(scheduleSource.includes("entitlement={entitlement}"));
+  });
+
+  test("Phase 5.6F-R1: app/dashboard/page.tsx checks state === 'service_unavailable' BEFORE the canViewExistingData gate, and renders TemporaryUnavailableScreen there -- never LockedReactivationScreen", () => {
+    assert.ok(dashboardSource.includes('import TemporaryUnavailableScreen from "@/app/components/dashboard/TemporaryUnavailableScreen"'));
+    const serviceUnavailableCheckIndex = dashboardSource.indexOf('entitlementResult.state === "service_unavailable"');
+    const canViewCheckIndex = dashboardSource.indexOf("!entitlementResult.canViewExistingData");
+    assert.ok(serviceUnavailableCheckIndex > -1 && canViewCheckIndex > -1);
+    assert.ok(serviceUnavailableCheckIndex < canViewCheckIndex, "the service_unavailable branch must be checked first");
+    const tempScreenIndex = dashboardSource.indexOf("<TemporaryUnavailableScreen");
+    assert.ok(tempScreenIndex > serviceUnavailableCheckIndex && tempScreenIndex < canViewCheckIndex);
+  });
+
+  test("Phase 5.6F-R1: no business-data query (clients/appointments/services/employees) appears before the service_unavailable branch in app/dashboard/page.tsx", () => {
+    const serviceUnavailableCheckIndex = dashboardSource.indexOf('entitlementResult.state === "service_unavailable"');
+    const beforeCheck = dashboardSource.slice(0, serviceUnavailableCheckIndex);
+    for (const forbidden of ['.from("clients")', '.from("appointments")', '.from("services")', '.from("employees")']) {
+      assert.ok(!beforeCheck.includes(forbidden), `must not query ${forbidden} before the service_unavailable check`);
+    }
   });
 
   test("neither page reads workspace identity from request-controlled input", () => {

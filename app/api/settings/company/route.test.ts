@@ -11,7 +11,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
-import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY } from "../../../../lib/testSupport.ts";
+import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
@@ -93,8 +93,8 @@ describe("POST /api/settings/company -- entitlement gate", () => {
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { company_name: "Acme Cleaning" }));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
   });
 
   test("non-owner denial remains a plain 403 Unauthorized, never SUBSCRIPTION_RESTRICTED", async () => {
@@ -116,11 +116,10 @@ describe("POST /api/settings/company -- entitlement gate", () => {
   });
 });
 
-describe("GET /api/settings/company remains fully available while restricted (Settings/Billing viewing policy)", () => {
-  test("succeeds for a restricted workspace -- GET never calls requireCapability, opening Settings is never blocked", async () => {
+describe("GET /api/settings/company is governed by canViewExistingData (Phase 5.6E)", () => {
+  test("succeeds for a full-access workspace", async () => {
     resetFixtures({
-      // No "subscriptions" fixture queued: GET must never query entitlement
-      // at all -- if it did, the missing fixture would throw.
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true } }],
       employees: [{ count: 3 }, { count: 2 }],
     });
@@ -130,5 +129,46 @@ describe("GET /api/settings/company remains fully available while restricted (Se
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.settings.company_name, "Acme Cleaning");
+  });
+
+  test("still succeeds during canceled_read_only -- opening Settings to view/reactivate remains available", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "canceled", canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() }) },
+      ],
+      company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true } }],
+      employees: [{ count: 3 }, { count: 2 }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 200);
+  });
+
+  test("denied once canceled_locked (30+ days after canceled_at)", async () => {
+    resetFixtures({
+      subscriptions: [
+        {
+          data: subscriptionRow({
+            stripe_status: "canceled",
+            canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * 31).toISOString(),
+          }),
+        },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+  });
+
+  test("Phase 5.6F-R1: a transient subscription-query failure rejects with 503, not the 403 subscription body, before any company_settings read", async () => {
+    resetFixtures({
+      subscriptions: [{ error: { message: "simulated Supabase outage" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
+    assert.equal(currentFake.calls.filter((c) => c.table === "company_settings").length, 0);
   });
 });

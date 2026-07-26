@@ -50,6 +50,8 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
     currentPeriodEnd: null,
     graceUntil: null,
     cancelAtPeriodEnd: false,
+    canceledAt: null,
+    accessEndedAt: null,
     ...overrides,
   };
 }
@@ -95,20 +97,43 @@ const FULL_FIXTURES: Array<[string, EntitlementResult]> = [
   ],
 ];
 
-const RESTRICTED_FIXTURES: Array<[string, EntitlementResult]> = [
+// Phase 5.6F: "restricted" (read-only) fixtures keep billing/view/export;
+// "locked" fixtures keep only billing. Split from a single RESTRICTED_
+// FIXTURES list into two, matching lib/entitlement.ts's own two-tier model.
+const READ_ONLY_FIXTURES: Array<[string, EntitlementResult]> = [
   [
-    "past_due_expired",
+    "past_due_read_only",
     resolveEntitlement(stripeRecord({ stripeStatus: "past_due", graceUntil: new Date(NOW.getTime() - 1000) }), NOW),
   ],
-  ["unpaid", resolveEntitlement(stripeRecord({ stripeStatus: "unpaid" }), NOW)],
+  [
+    "unpaid_read_only",
+    resolveEntitlement(stripeRecord({ stripeStatus: "unpaid", accessEndedAt: new Date(NOW.getTime() - 1000) }), NOW),
+  ],
+  [
+    "canceled_read_only",
+    resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000) }), NOW),
+  ],
+  [
+    "paused_read_only",
+    resolveEntitlement(stripeRecord({ stripeStatus: "paused", accessEndedAt: new Date(NOW.getTime() - 1000) }), NOW),
+  ],
+];
+
+const LOCKED_FIXTURES: Array<[string, EntitlementResult]> = [
   ["incomplete", resolveEntitlement(stripeRecord({ stripeStatus: "incomplete" }), NOW)],
   ["incomplete_expired", resolveEntitlement(stripeRecord({ stripeStatus: "incomplete_expired" }), NOW)],
-  ["canceled", resolveEntitlement(stripeRecord({ stripeStatus: "canceled" }), NOW)],
-  ["paused", resolveEntitlement(stripeRecord({ stripeStatus: "paused" }), NOW)],
   ["no_subscription", resolveEntitlement(null, NOW)],
   ["malformed", resolveEntitlement(stripeRecord({ stripeStatus: "some_unrecognized_status" }), NOW)],
-  ["query_error", noDataResult("query_error")],
 ];
+
+// Phase 5.6F-R1: query_error is its OWN category, deliberately separate
+// from both READ_ONLY_FIXTURES and LOCKED_FIXTURES -- it denies every
+// capability LOCKED_FIXTURES denies, but the denial RESPONSE it produces is
+// a distinct 503 (see denialFor in lib/entitlementServer.ts), never the
+// 403 SUBSCRIPTION_RESTRICTED body every other fixture here produces.
+const SERVICE_UNAVAILABLE_FIXTURE: EntitlementResult = noDataResult("query_error");
+
+const LOCKED_RETAINED_CAPABILITIES: EntitlementCapability[] = ["canManageBilling"];
 
 describe("every canonical capability is requestable through the typed helper", () => {
   for (const capability of ALL_CAPABILITIES) {
@@ -118,10 +143,21 @@ describe("every canonical capability is requestable through the typed helper", (
       assert.equal(check.allowed, true);
     });
 
-    test(`${capability}: restricted result -> allowed only if it's a retained capability`, async () => {
-      const { fetcher } = fixedFetcher(resolveEntitlement(stripeRecord({ stripeStatus: "canceled" }), NOW));
+    test(`${capability}: read-only result -> allowed only if it's a retained capability`, async () => {
+      const { fetcher } = fixedFetcher(
+        resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000) }), NOW)
+      );
       const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
       const shouldBeAllowed = (ALWAYS_RETAINED_CAPABILITIES as string[]).includes(capability);
+      assert.equal(check.allowed, shouldBeAllowed);
+    });
+
+    test(`${capability}: locked result -> allowed only if it's canManageBilling`, async () => {
+      const { fetcher } = fixedFetcher(
+        resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000 * 60 * 60 * 24 * 40) }), NOW)
+      );
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+      const shouldBeAllowed = (LOCKED_RETAINED_CAPABILITIES as string[]).includes(capability);
       assert.equal(check.allowed, shouldBeAllowed);
     });
   }
@@ -139,8 +175,8 @@ describe("full operational states permit operational capabilities", () => {
   }
 });
 
-describe("restricted states deny operational capabilities but retain billing/view/export", () => {
-  for (const [label, result] of RESTRICTED_FIXTURES) {
+describe("read-only states deny operational capabilities but retain billing/view/export", () => {
+  for (const [label, result] of READ_ONLY_FIXTURES) {
     for (const capability of OPERATIONAL_CAPABILITIES) {
       test(`${label} -> ${capability} denied`, async () => {
         const { fetcher } = fixedFetcher(result);
@@ -155,6 +191,33 @@ describe("restricted states deny operational capabilities but retain billing/vie
         assert.equal(check.allowed, true, `${label}/${capability}`);
       });
     }
+  }
+});
+
+describe("locked states deny operational capabilities AND view/export, retaining only billing", () => {
+  for (const [label, result] of LOCKED_FIXTURES) {
+    for (const capability of OPERATIONAL_CAPABILITIES) {
+      test(`${label} -> ${capability} denied`, async () => {
+        const { fetcher } = fixedFetcher(result);
+        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+        assert.equal(check.allowed, false, `${label}/${capability}`);
+      });
+    }
+    test(`${label} -> canViewExistingData denied`, async () => {
+      const { fetcher } = fixedFetcher(result);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canViewExistingData", fetcher);
+      assert.equal(check.allowed, false, label);
+    });
+    test(`${label} -> canExportData denied`, async () => {
+      const { fetcher } = fixedFetcher(result);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canExportData", fetcher);
+      assert.equal(check.allowed, false, label);
+    });
+    test(`${label} -> canManageBilling still allowed`, async () => {
+      const { fetcher } = fixedFetcher(result);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canManageBilling", fetcher);
+      assert.equal(check.allowed, true, label);
+    });
   }
 });
 
@@ -238,7 +301,7 @@ describe("trusted workspace identity cannot be overridden by caller-supplied dat
 });
 
 describe("requireCapabilityForWorkspace uses the same canonical resolution path -- no second interpretation", () => {
-  for (const [label, result] of [...FULL_FIXTURES, ...RESTRICTED_FIXTURES]) {
+  for (const [label, result] of [...FULL_FIXTURES, ...READ_ONLY_FIXTURES, ...LOCKED_FIXTURES]) {
     test(`${label}: requireCapability and requireCapabilityForWorkspace agree, given the same EntitlementResult`, async () => {
       const { fetcher: fetcherA } = fixedFetcher(result);
       const { fetcher: fetcherB } = fixedFetcher(result);
@@ -280,8 +343,8 @@ describe("denial response contract", () => {
     );
     // Sanity: the fixture itself really does carry a diagnosable reason/state
     // (proving this test would catch a leak if one were introduced).
-    assert.equal(sensitiveResult.reason, "past_due_grace_expired");
-    assert.equal(sensitiveResult.state, "past_due_expired");
+    assert.equal(sensitiveResult.reason, "past_due_read_only");
+    assert.equal(sensitiveResult.state, "past_due_read_only");
 
     const secretWorkspaceId = "workspace-should-never-appear-in-body";
     const { fetcher } = fixedFetcher(sensitiveResult);
@@ -306,15 +369,89 @@ describe("denial response contract", () => {
   });
 });
 
-describe("resolver/query failure denies mutations without blocking view/export/billing", () => {
-  test("query_error: canMutateOperationalData denied, canViewExistingData/canExportData/canManageBilling allowed", async () => {
-    const { fetcher } = fixedFetcher(noDataResult("query_error"));
-    const mutate = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
-    const view = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canViewExistingData", fetcher);
-    const billing = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canManageBilling", fetcher);
-    assert.equal(mutate.allowed, false);
-    assert.equal(view.allowed, true);
-    assert.equal(billing.allowed, true);
+describe("Phase 5.6F-R1: a transient query failure denies every operational AND view/export capability, but as a distinct 503", () => {
+  for (const capability of OPERATIONAL_CAPABILITIES) {
+    test(`query_error: ${capability} denied`, async () => {
+      const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+      assert.equal(check.allowed, false, capability);
+    });
+  }
+
+  test("query_error: canViewExistingData denied (unlike an authoritative read-only state)", async () => {
+    const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canViewExistingData", fetcher);
+    assert.equal(check.allowed, false);
+  });
+
+  test("query_error: canExportData denied", async () => {
+    const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canExportData", fetcher);
+    assert.equal(check.allowed, false);
+  });
+
+  test("query_error: canManageBilling still allowed", async () => {
+    const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canManageBilling", fetcher);
+    assert.equal(check.allowed, true);
+  });
+
+  test("the denial is HTTP 503 with a distinct code, never the 403 SUBSCRIPTION_RESTRICTED body", async () => {
+    const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    assert.equal(check.allowed, false);
+    if (!check.allowed) {
+      assert.equal(check.response.status, 503);
+      const body = (await readResponseJson(check.response)) as Record<string, unknown>;
+      assert.equal(body.code, "ENTITLEMENT_SERVICE_UNAVAILABLE");
+      assert.notEqual(body.code, "SUBSCRIPTION_RESTRICTED");
+    }
+  });
+
+  test("the 503 body never claims cancellation, non-payment, or a permanent lock", async () => {
+    const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    assert.equal(check.allowed, false);
+    if (!check.allowed) {
+      const bodyText = JSON.stringify(await readResponseJson(check.response));
+      for (const forbidden of ["cancel", "unpaid", "past due", "permanently locked", "SUBSCRIPTION_RESTRICTED"]) {
+        assert.ok(!bodyText.toLowerCase().includes(forbidden.toLowerCase()), `must not contain "${forbidden}"`);
+      }
+    }
+  });
+
+  test("an authoritative locked/read-only denial still returns the ordinary 403, unaffected by this change", async () => {
+    const { fetcher } = fixedFetcher(LOCKED_FIXTURES[0][1]);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    assert.equal(check.allowed, false);
+    if (!check.allowed) {
+      assert.equal(check.response.status, 403);
+      const body = (await readResponseJson(check.response)) as Record<string, unknown>;
+      assert.equal(body.code, "SUBSCRIPTION_RESTRICTED");
+    }
+  });
+
+  test("requireCapabilityForWorkspace produces the identical 503 distinction (no separate interpretation)", async () => {
+    const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
+    const check = await requireCapabilityForWorkspace(REAL_WORKSPACE_ID, "canMutateOperationalData", fetcher);
+    assert.equal(check.allowed, false);
+    if (!check.allowed) {
+      assert.equal(check.response.status, 503);
+    }
+  });
+
+  test("requireFullAccess also distinguishes query_error from an authoritative denial (source-level proof)", () => {
+    // requireFullAccess has no injectable fetcher -- it always calls the
+    // real fetchEntitlementForWorkspace, so its query_error branch can't be
+    // exercised behaviorally without a live Supabase connection. Proven
+    // from source instead, matching this repo's established convention for
+    // functions with no injection seam.
+    const source = fs.readFileSync(fileURLToPath(new URL("./entitlementServer.ts", import.meta.url)), "utf8");
+    const fnStart = source.indexOf("export async function requireFullAccess");
+    assert.notEqual(fnStart, -1);
+    const fnBody = source.slice(fnStart, source.indexOf("\n}", fnStart));
+    assert.ok(fnBody.includes('result.reason === "query_error"'), "requireFullAccess must branch on query_error before falling back to the generic 403");
+    assert.ok(fnBody.includes("serviceUnavailableDenial()"), "requireFullAccess must return the 503 service-unavailable denial for query_error");
   });
 });
 
@@ -380,6 +517,15 @@ describe("only the approved routes reference the capability gates -- every other
     // create route (see REQUIRE_CAPABILITY_FOR_WORKSPACE_ROUTES below for
     // its other, unauthenticated public-booking branch).
     path.join("app", "api", "appointments", "create", "route.ts"),
+    // Phase 5.6E -- defense-in-depth read gate (canViewExistingData) on the
+    // one GET route that previously had no capability check at all. The
+    // dashboard page already stops rendering any UI that could reach this
+    // once a workspace is canceled_locked, but "do not rely on UI disabling
+    // for security" applies to reads too. employees/services/settings-
+    // company GET routes gained the same guard in this phase, but their
+    // files already appear above (their existing POST/PATCH mutation
+    // guards), so only this genuinely new file needs adding here.
+    path.join("app", "api", "clients", "archived", "route.ts"),
   ];
 
   // Server-trusted-workspace gate: no session exists at this call site at

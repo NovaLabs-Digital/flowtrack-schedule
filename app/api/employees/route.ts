@@ -16,6 +16,12 @@ export async function GET() {
     const deny = requireRole(session, ["owner", "tester"]);
     if (deny) return deny;
     assertWorkspace(session);
+    // Phase 5.6E defense-in-depth: reads must still be blocked once locked,
+    // even though the owning dashboard page already stops rendering any UI
+    // that would call this -- see the matching comment in
+    // app/api/clients/archived/route.ts.
+    const capability = await requireCapability(session, "canViewExistingData");
+    if (!capability.allowed) return capability.response;
     const isTester = session.role === "tester";
 
     const { data, error } = await supabaseAdmin

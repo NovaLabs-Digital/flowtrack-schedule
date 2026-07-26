@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession } from "@/lib/session";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
+import LockedReactivationScreen from "@/app/components/dashboard/LockedReactivationScreen";
+import TemporaryUnavailableScreen from "@/app/components/dashboard/TemporaryUnavailableScreen";
 import { fetchAllPages } from "@/lib/paginate";
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForOwner } from "@/lib/entitlementView";
@@ -19,6 +21,30 @@ export default async function DashboardPage() {
   }
   const isTester = session.role === "tester";
   const workspaceId = session.workspaceId;
+
+  // Phase 5.6E: resolved BEFORE any business-data query, not after. Once a
+  // workspace is canceled_locked (30+ calendar days after canceled_at --
+  // see lib/entitlement.ts), the approved policy requires that operational
+  // tenant data never reaches this page at all, not merely that it goes
+  // unrendered -- so the locked branch below returns before any
+  // clients/appointments/services/employees/employeeHours query ever runs.
+  const entitlementResult = await fetchEntitlementForWorkspace(workspaceId);
+  const entitlement = projectEntitlementForOwner(entitlementResult);
+
+  // Phase 5.6F-R1: checked FIRST, before the generic canViewExistingData
+  // gate below -- a transient failure to read the subscription record
+  // (state "service_unavailable") must never be treated or rendered as an
+  // authoritative locked lifecycle outcome, even though its capability
+  // profile happens to also deny canViewExistingData. Same "no tenant-data
+  // query at all" guarantee as the locked branch, but with retry-only
+  // messaging, never cancellation/lock wording.
+  if (entitlementResult.state === "service_unavailable") {
+    return <TemporaryUnavailableScreen />;
+  }
+
+  if (!entitlementResult.canViewExistingData) {
+    return <LockedReactivationScreen recoveryAction={entitlement.recoveryAction} />;
+  }
 
   let clientFields = "id, name, email, phone, archived_at, address, client_since, referred_by, status, notes, preferred_contact_method, auto_email, auto_sms";
   let clientsRes = await supabaseAdmin
@@ -142,14 +168,10 @@ export default async function DashboardPage() {
     );
   }
 
-  // Resolved through the same canonical resolver every backend capability
-  // gate already uses, for this exact session-derived workspaceId — never a
-  // second policy. Projected to the minimum browser-safe shape (see
-  // lib/entitlementView.ts) before it ever reaches a client component; the
-  // raw EntitlementResult (state, reason, billing_mode, Stripe fields, IDs)
-  // never leaves this server component.
-  const entitlementResult = await fetchEntitlementForWorkspace(workspaceId);
-  const entitlement = projectEntitlementForOwner(entitlementResult);
+  // entitlementResult/entitlement were already resolved above, before any
+  // query in this function ran -- see the canViewExistingData branch near
+  // the top of this component. Reaching this point already proves full or
+  // read-only access (never locked).
 
   return (
     <DashboardShell

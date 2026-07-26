@@ -1,12 +1,24 @@
 import "server-only";
 import type Stripe from "stripe";
 import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
-import { buildSubscriptionPatchFromStripeSubscription } from "@/lib/stripeWebhook";
+import {
+  buildSubscriptionPatchFromStripeSubscription,
+  computeTrialConsumedPatchField,
+  computeAccessEndedPatchField,
+} from "@/lib/stripeWebhook";
 
 // Phase 5.4B — core reconciliation logic, split out from the route (which
 // only does auth + the DB query + wiring) so this is unit-testable with
 // fake deps the same way lib/stripeWebhook.ts's WebhookDeps makes the
 // webhook handlers testable without a live Stripe/Supabase connection.
+//
+// Phase 5.6F-R1: this is also the safe repair path for trial_consumed_at
+// and access_ended_at when a Stripe webhook was permanently missed --
+// reused, not reimplemented, from lib/stripeWebhook.ts's own
+// computeTrialConsumedPatchField/computeAccessEndedPatchField. Deliberately
+// NOT reused, still: buildSubscriptionPatchFromStripeSubscription itself
+// stays exactly as it was (canceled_at/grace_until/status/etc.) -- only the
+// two Phase 5.6F fields are additionally merged in below, in reconcileRows.
 
 // A row is eligible once it's gone this long without being confirmed by
 // EITHER a webhook or a prior reconciliation run. Deliberately not tied to
@@ -32,6 +44,12 @@ export interface ReconcileRow {
   stripe_subscription_id: string | null;
   grace_until: string | null;
   last_event_created_at: string | null;
+  // Phase 5.6F-R1: read so this row's own already-stored values can be
+  // passed to computeTrialConsumedPatchField/computeAccessEndedPatchField
+  // as the "current" value each function's first-write-wins rule compares
+  // against -- see the repair logic below.
+  trial_consumed_at: string | null;
+  access_ended_at: string | null;
 }
 
 export interface ReconcileDeps {
@@ -41,6 +59,24 @@ export interface ReconcileDeps {
   // never go through updateSubscriptionIfNewer / never invent an
   // event.created-equivalent timestamp.
   applyPatch: (workspaceId: string, observedLastEventCreatedAt: string | null, patch: Record<string, unknown>) => Promise<boolean>;
+  // Phase 5.6F-R1: injectable purely for testability (same pattern as every
+  // other Deps clock/dependency in this codebase). The real caller
+  // (app/api/cron/reconcile-subscriptions/route.ts) omits this and gets the
+  // true wall clock. Used ONLY as the fallback "observation time" for
+  // access_ended_at when Stripe itself provides no exact transition
+  // timestamp for 'unpaid'/'paused' AND no webhook has already set one --
+  // see computeAccessEndedPatchField's eventCreatedIso parameter, reused
+  // here under a different name for the same first-write-wins field.
+  // Documented, accepted consequence: reusing this "observed now" instead
+  // of the true (unknowable) Stripe-side transition instant means a
+  // workspace whose transition was ONLY ever caught by reconciliation (its
+  // notifying webhook was permanently missed) may receive up to one
+  // reconciliation interval (RECONCILE_STALE_THRESHOLD_MS, currently 24h)
+  // of additional read-only time beyond the exact 30 days it would have
+  // gotten from a precise timestamp. This never SHORTENS the window, never
+  // moves an already-set timestamp, and never applies at all once a
+  // webhook has already recorded a more precise value.
+  now?: () => Date;
 }
 
 export interface ReconcileResult {
@@ -119,7 +155,34 @@ export async function reconcileRows(rows: ReconcileRow[], deps: ReconcileDeps): 
       // the grace-episode decision (Phase 5.4B) — so reconciliation can
       // never produce a second interpretation of what a given Stripe status
       // means.
-      const patch = buildSubscriptionPatchFromStripeSubscription(liveSubscription, row.grace_until);
+      const basePatch = buildSubscriptionPatchFromStripeSubscription(liveSubscription, row.grace_until);
+
+      // Phase 5.6F-R1: lifecycle-field REPAIR, reusing the exact same
+      // first-write-wins helpers the webhook handlers use (never a second,
+      // conflicting interpretation):
+      //   - trial_consumed_at: recovered from Stripe's own trial_start if
+      //     this row's stored value is still null. Never cleared, never
+      //     moved -- computeTrialConsumedPatchField already omits the field
+      //     entirely once a value exists, so a permanently-missed
+      //     checkout.session.completed webhook can still be repaired here
+      //     without any risk of granting a SECOND trial (the checkout
+      //     route's own eligibility check is what actually prevents that;
+      //     this only backfills the historical record).
+      //   - access_ended_at: recovered for 'unpaid'/'paused' using
+      //     deps.now() as the observation-time fallback (see ReconcileDeps'
+      //     own doc comment for the exact, documented consequence of this
+      //     choice), or cleared unconditionally on recovery to
+      //     active/trialing. Every other status (canceled, past_due,
+      //     incomplete, incomplete_expired) is untouched by this function --
+      //     canceled_at and grace_until remain the sole authoritative
+      //     boundaries for those, exactly as Phase 5.6E/5.6F already
+      //     established.
+      const observedAtIso = (deps.now ?? (() => new Date()))().toISOString();
+      const patch = {
+        ...basePatch,
+        ...computeTrialConsumedPatchField(liveSubscription, row.trial_consumed_at),
+        ...computeAccessEndedPatchField(liveSubscription.status, row.access_ended_at, observedAtIso),
+      };
       const applied = await deps.applyPatch(row.workspace_id, row.last_event_created_at, patch);
       if (applied) {
         synchronized++;

@@ -15,6 +15,11 @@ export async function GET() {
     const deny = requireOwner(session);
     if (deny) return deny;
     assertWorkspace(session);
+    // Phase 5.6E defense-in-depth: same rationale as
+    // app/api/clients/archived/route.ts -- reads must still be blocked once
+    // locked, not just left to UI disabling.
+    const capability = await requireCapability(session, "canViewExistingData");
+    if (!capability.allowed) return capability.response;
 
     const { data, error } = await supabaseAdmin
       .from("company_settings")

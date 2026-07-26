@@ -7,6 +7,12 @@ export interface SubscriptionRow {
   billing_mode: "internal" | "stripe";
   stripe_customer_id: string | null;
   stripe_status: string | null;
+  // Phase 5.6F (migrations/016). Read here, at Checkout-Session-creation
+  // time, to decide trial eligibility -- see buildSessionParams below. Null
+  // means this workspace has never consumed a trial and is eligible for
+  // one; non-null means it has, permanently, regardless of cancellation,
+  // reactivation, or how much time has passed.
+  trial_consumed_at: string | null;
 }
 
 // Claims (or reads) this workspace's single subscriptions row. workspace_id
@@ -20,7 +26,7 @@ export interface SubscriptionRow {
 export async function claimSubscriptionRow(workspaceId: string): Promise<SubscriptionRow> {
   const { data: existing, error: selectErr } = await supabaseAdmin
     .from("subscriptions")
-    .select("id, billing_mode, stripe_customer_id, stripe_status")
+    .select("id, billing_mode, stripe_customer_id, stripe_status, trial_consumed_at")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (selectErr) throw selectErr;
@@ -33,7 +39,7 @@ export async function claimSubscriptionRow(workspaceId: string): Promise<Subscri
 
   const { data: row, error: reselectErr } = await supabaseAdmin
     .from("subscriptions")
-    .select("id, billing_mode, stripe_customer_id, stripe_status")
+    .select("id, billing_mode, stripe_customer_id, stripe_status, trial_consumed_at")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   if (reselectErr) throw reselectErr;
@@ -118,18 +124,27 @@ function isStripeIdempotencyError(e: unknown): boolean {
   return !!e && typeof e === "object" && (e as { type?: string }).type === "StripeIdempotencyError";
 }
 
+// Phase 5.6F: trialEligible is resolved by the caller (the checkout route)
+// from the workspace's OWN subscriptions row -- specifically,
+// trial_consumed_at === null -- never from any client-supplied value. This
+// function has no way to grant a trial to an ineligible workspace: when
+// trialEligible is false, trial_period_days is omitted entirely (not set
+// to 0 or any other value), so Stripe charges the first invoice
+// immediately on Checkout completion, exactly like a subscription that
+// never had a trial at all.
 function buildSessionParams(
   workspaceId: string,
   customerId: string,
   priceId: string,
-  appUrl: string | undefined
+  appUrl: string | undefined,
+  trialEligible: boolean
 ): Stripe.Checkout.SessionCreateParams {
   return {
     mode: "subscription",
     customer: customerId,
     line_items: [{ price: priceId, quantity: 1 }],
     subscription_data: {
-      trial_period_days: 30,
+      ...(trialEligible ? { trial_period_days: 30 } : {}),
       metadata: { workspace_id: workspaceId },
     },
     metadata: { workspace_id: workspaceId },
@@ -170,7 +185,8 @@ export async function resolveOrCreateCheckoutSession(
   subscriptionRowId: string,
   customerId: string,
   client: Stripe,
-  priceId: string
+  priceId: string,
+  trialEligible: boolean
 ): Promise<string> {
   const openSessions = await client.checkout.sessions.list({ customer: customerId, status: "open", limit: 5 });
   const existing = openSessions.data.find((s) => s.metadata?.workspace_id === workspaceId && s.url);
@@ -179,7 +195,7 @@ export async function resolveOrCreateCheckoutSession(
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const params = buildSessionParams(workspaceId, customerId, priceId, appUrl);
+  const params = buildSessionParams(workspaceId, customerId, priceId, appUrl, trialEligible);
   const idempotencyKey = `checkout-${subscriptionRowId}`;
 
   let session: Stripe.Checkout.Session;

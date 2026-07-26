@@ -270,6 +270,8 @@ export default function DashboardShell({
           isTester={isTester}
           bannerVariant={entitlement.bannerVariant}
           recoveryAction={entitlement.recoveryAction}
+          finalAccessDate={entitlement.finalAccessDate}
+          readOnlyEndsAt={entitlement.readOnlyEndsAt}
           canMutateOperationalData={entitlement.canMutateOperationalData}
         />
         {modalEl}
@@ -286,7 +288,12 @@ export default function DashboardShell({
           Demo Mode — All information shown in Demo Mode is fictional and for testing only.
         </div>
       )}
-      <OwnerBillingBanner bannerVariant={entitlement.bannerVariant} recoveryAction={entitlement.recoveryAction} />
+      <OwnerBillingBanner
+        bannerVariant={entitlement.bannerVariant}
+        recoveryAction={entitlement.recoveryAction}
+        finalAccessDate={entitlement.finalAccessDate}
+        readOnlyEndsAt={entitlement.readOnlyEndsAt}
+      />
       <div className="flex-1 min-h-0 flex">
       {/* Left bar — full height, never moves */}
       <aside className="shrink-0 w-[230px] p-2 pr-0">

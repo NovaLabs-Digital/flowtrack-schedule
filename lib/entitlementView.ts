@@ -14,7 +14,35 @@ import type { EntitlementResult } from "@/lib/entitlement";
 //   deadlines, subscription/customer/workspace IDs, database diagnostics,
 //   provider errors, or the raw EntitlementResult itself.
 
-export type BannerVariant = "none" | "grace_warning" | "restricted" | "verification_error";
+// Phase 5.6E additions: cancel_scheduled_trial/cancel_scheduled_paid cover
+// the owner still having FULL access (trialing/active) with cancellation
+// already scheduled -- distinct from "restricted", which this component
+// never shows alongside full access. read_only/locked are now the shared
+// banner variants for EVERY timed-restriction state family (canceled,
+// past_due, unpaid, paused -- Phase 5.6F extends the same 30-day-then-
+// locked model to all four; see lib/entitlement.ts's READ_ONLY_PERIOD_MS).
+// "restricted" is no longer used by any state as of Phase 5.6F (kept in
+// the union in case a future state needs a non-timed restricted banner
+// again) -- "locked" now also covers incomplete/incomplete_expired/
+// no_subscription, which never had a 30-day read-only phase to begin with.
+// Phase 5.6F-R1: "temporarily_unavailable" is its own variant, never reused
+// from "locked"/"verification_error" -- a transient infrastructure failure
+// must never be worded as a lifecycle determination (cancelled/unpaid/
+// permanently locked) that was never actually made. In practice this
+// variant is never rendered by app/dashboard/page.tsx (which shows
+// TemporaryUnavailableScreen directly, before DashboardShell/
+// OwnerBillingBanner would ever mount), but the mapping stays correct here
+// for any other consumer and for exhaustiveness.
+export type BannerVariant =
+  | "none"
+  | "grace_warning"
+  | "cancel_scheduled_trial"
+  | "cancel_scheduled_paid"
+  | "read_only"
+  | "locked"
+  | "restricted"
+  | "verification_error"
+  | "temporarily_unavailable";
 export type RecoveryAction = "checkout" | "portal" | "support" | null;
 
 export type EntitlementView = {
@@ -23,6 +51,14 @@ export type EntitlementView = {
   canSendNotifications: boolean;
   bannerVariant: BannerVariant;
   recoveryAction: RecoveryAction;
+  // Phase 5.6E: the two dates the approved owner-facing UX explicitly
+  // requires ("exact final full-access date", "exact read-only end date").
+  // Deliberately narrow -- only these two Date fields, never the raw
+  // trialEnd/currentPeriodEnd/graceEndsAt/restrictedSince the server-only
+  // EntitlementResult carries, and never canceled_at itself. Both are null
+  // whenever bannerVariant doesn't need them.
+  finalAccessDate: Date | null;
+  readOnlyEndsAt: Date | null;
 };
 
 // Employees never see billing language or a recovery action -- only whether
@@ -39,14 +75,21 @@ export type EmployeeEntitlementView = {
 // booleans returned by the projections below -- those always come straight
 // from the resolved result, regardless of what's decided here.
 function presentationFor(result: EntitlementResult): { bannerVariant: BannerVariant; recoveryAction: RecoveryAction } {
-  // "no_subscription" is the state for BOTH a genuine no-row workspace and a
-  // Supabase query failure (see lib/entitlementServer.ts's noDataResult) --
-  // these need different UI treatment (checkout vs. "we couldn't verify
-  // this, contact support") even though they share the same state and the
-  // same restricted capability profile. reason is the only field that tells
-  // them apart, so it's checked first, ahead of the state switch below.
-  if (result.reason === "query_error") {
-    return { bannerVariant: "verification_error", recoveryAction: "support" };
+  // Phase 5.6E: checked before the state switch since it's orthogonal to
+  // state -- a subscription can be trialing/active (full access, matched by
+  // the state switch below in every OTHER case) while ALSO having
+  // cancellation already scheduled. This is the one case where full
+  // capabilities and a non-"none" banner coexist, by design (the approved
+  // policy requires the owner to see the scheduled cancellation while they
+  // still have full access).
+  if (result.cancelAtPeriodEnd && (result.state === "trialing" || result.state === "active")) {
+    return {
+      bannerVariant: result.state === "trialing" ? "cancel_scheduled_trial" : "cancel_scheduled_paid",
+      // "portal" here means "manage/undo this scheduled cancellation," not
+      // payment recovery -- the Stripe customer portal is the one existing
+      // surface that can do that; this app has no separate undo-cancel route.
+      recoveryAction: "portal",
+    };
   }
 
   switch (result.state) {
@@ -61,42 +104,68 @@ function presentationFor(result: EntitlementResult): { bannerVariant: BannerVari
       // non-blocking warning, not a restriction.
       return { bannerVariant: "grace_warning", recoveryAction: "portal" };
 
-    case "past_due_expired":
-    case "unpaid":
-      // An existing Stripe subscription/customer needs attention -- the
-      // billing portal is the correct recovery surface (Phase 5.5A policy
-      // decision #3).
-      return { bannerVariant: "restricted", recoveryAction: "portal" };
+    // Phase 5.6F: past_due/unpaid/paused all still have a real Stripe
+    // subscription/customer to fix -- the billing portal is the correct
+    // recovery surface (unchanged reasoning from Phase 5.5A policy decision
+    // #3), now applied consistently across their read-only AND locked
+    // sub-states too.
+    case "past_due_read_only":
+    case "past_due_locked":
+    case "unpaid_read_only":
+    case "unpaid_locked":
+    case "paused_read_only":
+    case "paused_locked":
+      return { bannerVariant: result.state.endsWith("_locked") ? "locked" : "read_only", recoveryAction: "portal" };
 
-    case "canceled":
+    // Phase 5.6E: the two canceled_at-driven sub-states get their own
+    // wording (exact dates) instead of a generic banner -- see
+    // OwnerBillingBanner.ts's CONTENT table. Checkout, not portal --
+    // canceled means no active Stripe subscription remains to manage.
+    case "canceled_read_only":
+      return { bannerVariant: "read_only", recoveryAction: "checkout" };
+
+    case "canceled_locked":
+      return { bannerVariant: "locked", recoveryAction: "checkout" };
+
     case "no_subscription":
       // No active subscription to manage -- checkout, not the portal
       // (Phase 5.5A policy decision #3), subject to the existing checkout
       // route's own redirectToPortal response where a subscription turns
-      // out to still exist.
-      return { bannerVariant: "restricted", recoveryAction: "checkout" };
+      // out to still exist. Phase 5.6F: this reason is now LOCKED-profile
+      // (see lib/entitlement.ts), so the banner reflects that -- in
+      // practice this banner is never actually rendered for a locked
+      // owner (app/dashboard/page.tsx shows LockedReactivationScreen
+      // instead of DashboardShell once canViewExistingData is false), but
+      // the label stays accurate for any other future consumer.
+      return { bannerVariant: "locked", recoveryAction: "checkout" };
 
     case "malformed":
       // Never claim a payment failure for data we can't confidently
       // interpret, and never guess a specific billing action (Phase 5.5A
-      // policy decision #4).
+      // policy decision #4). Unchanged wording even though Phase 5.6F
+      // moved this reason's capabilities to LOCKED -- "we need to verify
+      // your account" remains accurate and doesn't overclaim a read-only
+      // period that never existed.
       return { bannerVariant: "verification_error", recoveryAction: "support" };
 
-    // Not explicitly assigned a presentation by the Phase 5.5A approved
-    // mapping (only active/trialing/past_due_grace/past_due_expired/unpaid/
-    // canceled/no_subscription/malformed were enumerated). Each of these is
-    // a real, restricted billing state, but routing it to a specific
-    // checkout-vs-portal action from state alone would be guessing rather
-    // than projecting an approved decision. Treated the same as
-    // "malformed": restricted capabilities (unchanged, copied verbatim
-    // below), a neutral verification_error banner, and a support recovery
-    // action -- never a false claim, never a wrong recovery button. Revisit
-    // with an explicit policy decision if/when these states need their own
-    // presentation.
+    // incomplete/incomplete_expired: checkout was started but a valid
+    // subscription was never established (Phase 5.6F: now LOCKED-profile,
+    // no 30-day read-only phase -- see lib/entitlement.ts). Same reasoning
+    // as "malformed" above: never claim a read-only period that never
+    // existed. recoveryAction is "checkout", not "support" -- the correct
+    // next step really is starting a fresh checkout, not contacting
+    // support.
     case "incomplete":
     case "incomplete_expired":
-    case "paused":
-      return { bannerVariant: "verification_error", recoveryAction: "support" };
+      return { bannerVariant: "verification_error", recoveryAction: "checkout" };
+
+    // Phase 5.6F-R1: a transient failure to read the subscription record at
+    // all -- never a lifecycle claim, so no recovery action is offered here
+    // (retry is the only correct action, and it isn't a Stripe action at
+    // all -- see TemporaryUnavailableScreen, which doesn't call
+    // beginBillingRecovery).
+    case "service_unavailable":
+      return { bannerVariant: "temporarily_unavailable", recoveryAction: null };
   }
 }
 
@@ -108,6 +177,21 @@ export function projectEntitlementForOwner(result: EntitlementResult): Entitleme
     canSendNotifications: result.canSendNotifications,
     bannerVariant,
     recoveryAction,
+    // Only ever non-null for the exact banner variants that need to display
+    // it -- every other variant gets null here regardless of what the
+    // underlying EntitlementResult happens to carry, so a future banner
+    // variant can never accidentally render a stale/irrelevant date.
+    finalAccessDate:
+      bannerVariant === "cancel_scheduled_trial"
+        ? result.trialEnd
+        : bannerVariant === "cancel_scheduled_paid"
+          ? result.currentPeriodEnd
+          : null,
+    // Only "read_only" actually displays this date -- "locked" has already
+    // passed it, and neither OwnerBillingBanner.ts's nor
+    // LockedReactivationScreen.ts's locked-state copy interpolates a date,
+    // so it stays null there too rather than exposing an unused value.
+    readOnlyEndsAt: bannerVariant === "read_only" ? result.readOnlyEndsAt : null,
   };
 }
 

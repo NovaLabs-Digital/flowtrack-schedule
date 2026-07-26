@@ -32,6 +32,10 @@ type Props = {
   // takes on desktop -- never the full EntitlementView, never a raw result.
   bannerVariant: OwnerBillingBannerProps["bannerVariant"];
   recoveryAction: OwnerBillingBannerProps["recoveryAction"];
+  // Phase 5.6E: same two dates the desktop banner now needs -- see
+  // OwnerBillingBanner.ts.
+  finalAccessDate: OwnerBillingBannerProps["finalAccessDate"];
+  readOnlyEndsAt: OwnerBillingBannerProps["readOnlyEndsAt"];
   // Phase 5.5E-E1C: threaded to the "+ Add Appointment" control below --
   // still just the Phase 5.5B browser-safe projection, never a raw
   // EntitlementResult.
@@ -74,6 +78,8 @@ export default function MobileDashboard({
   isTester,
   bannerVariant,
   recoveryAction,
+  finalAccessDate,
+  readOnlyEndsAt,
   canMutateOperationalData,
 }: Props) {
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
@@ -119,7 +125,12 @@ export default function MobileDashboard({
           Demo Mode — fictional data, for testing only.
         </div>
       )}
-      <OwnerBillingBanner bannerVariant={bannerVariant} recoveryAction={recoveryAction} />
+      <OwnerBillingBanner
+        bannerVariant={bannerVariant}
+        recoveryAction={recoveryAction}
+        finalAccessDate={finalAccessDate}
+        readOnlyEndsAt={readOnlyEndsAt}
+      />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {selectedAppt ? (
           <MobileAppointmentDetail

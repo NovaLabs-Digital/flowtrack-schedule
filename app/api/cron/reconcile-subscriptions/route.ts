@@ -56,7 +56,7 @@ export async function GET(req: Request) {
   // pages/runs — never an unbounded scan either way.
   const { data: rows, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("workspace_id, billing_mode, stripe_subscription_id, grace_until, last_event_created_at, updated_at")
+    .select("workspace_id, billing_mode, stripe_subscription_id, grace_until, last_event_created_at, updated_at, trial_consumed_at, access_ended_at")
     .eq("billing_mode", "stripe")
     .neq("workspace_id", DEMO_WORKSPACE_ID)
     .lt("updated_at", thresholdIso)

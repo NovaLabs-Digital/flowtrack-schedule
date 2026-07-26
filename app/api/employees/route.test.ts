@@ -9,7 +9,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
-import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY } from "../../../lib/testSupport.ts";
+import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../lib/testSupport.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
@@ -81,8 +81,8 @@ describe("POST /api/employees -- entitlement gate", () => {
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { name: "Bob" }));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "employees"), []);
   });
 
@@ -159,11 +159,10 @@ describe("PATCH /api/employees -- entitlement gate", () => {
   });
 });
 
-describe("GET /api/employees remains unaffected (read-only, no entitlement gate)", () => {
-  test("succeeds even when the workspace is restricted -- GET never calls requireCapability", async () => {
+describe("GET /api/employees is governed by canViewExistingData (Phase 5.6E)", () => {
+  test("succeeds for full access", async () => {
     resetFixtures({
-      // No "subscriptions" fixture queued: if GET were ever wired to the
-      // gate by accident, the missing fixture would throw and fail this test.
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       employees: [{ data: [{ id: "emp-1", name: "Bob" }] }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -171,5 +170,45 @@ describe("GET /api/employees remains unaffected (read-only, no entitlement gate)
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.length, 1);
+  });
+
+  test("still succeeds during canceled_read_only -- viewing existing data remains available", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "canceled", canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() }) },
+      ],
+      employees: [{ data: [{ id: "emp-1", name: "Bob" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 200);
+  });
+
+  test("denied once canceled_locked (30+ days after canceled_at)", async () => {
+    resetFixtures({
+      subscriptions: [
+        {
+          data: subscriptionRow({
+            stripe_status: "canceled",
+            canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * 31).toISOString(),
+          }),
+        },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+  });
+
+  test("Phase 5.6F-R1: a transient subscription-query failure rejects with 503, not the 403 subscription body, before any employees-table read", async () => {
+    resetFixtures({
+      subscriptions: [{ error: { message: "simulated Supabase outage" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await GET();
+    assert.equal(res.status, 503);
+    assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
+    assert.equal(currentFake.calls.filter((c) => c.table === "employees").length, 0);
   });
 });
