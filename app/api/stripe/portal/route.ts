@@ -4,13 +4,18 @@ import { NextResponse } from "next/server";
 import { getStripeConfig } from "@/lib/stripe";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { requireCurrentOwnerSession } from "@/lib/sessionEpoch";
 
 const GENERIC_ERROR = "Unable to open billing portal";
 
 // Deliberately NOT gated by requireFullAccess (lib/entitlementServer.ts) —
 // a read-only workspace (e.g. past its grace period) must still be able to
 // reach the billing portal to fix payment and restore access. This route
-// stays reachable regardless of entitlement state.
+// stays reachable regardless of entitlement state. Phase 5.7D: the
+// session_epoch check is called directly here for the same reason (see
+// app/api/stripe/checkout/route.ts) — this route bypasses
+// requireCapability/requireFullAccess entirely, so it must re-verify the
+// session itself rather than rely on that central wiring.
 //
 // Cross-workspace access is structurally impossible here: the Stripe
 // customer id is always looked up server-side from session.workspaceId,
@@ -21,6 +26,8 @@ export async function POST() {
   const deny = requireRole(session, ["owner"]);
   if (deny) return deny;
   assertWorkspace(session);
+  const ownerSessionCheck = await requireCurrentOwnerSession(session);
+  if (!ownerSessionCheck.ok) return ownerSessionCheck.response;
 
   let config;
   try {

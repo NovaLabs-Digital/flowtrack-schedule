@@ -34,11 +34,13 @@ function req(method: string, body?: unknown) {
   });
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 
 describe("POST /api/services -- entitlement gate", () => {
   test("active permits creating a service, response unchanged", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       services: [{ error: null }],
     });
@@ -50,7 +52,8 @@ describe("POST /api/services -- entitlement gate", () => {
   });
 
   test("canceled denies with the exact SUBSCRIPTION_RESTRICTED 403, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { name: "Haircut" }));
     assert.equal(res.status, 403);
@@ -60,6 +63,7 @@ describe("POST /api/services -- entitlement gate", () => {
 
   test("internal permits creation without Stripe dependence", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ billing_mode: "internal", stripe_status: null }) }],
       services: [{ error: null }],
     });
@@ -79,6 +83,7 @@ describe("POST /api/services -- entitlement gate", () => {
 describe("PATCH /api/services -- entitlement gate", () => {
   test("active permits updating a service, response unchanged", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       services: [{ data: { is_demo: false } }, { error: null }],
     });
@@ -90,7 +95,8 @@ describe("PATCH /api/services -- entitlement gate", () => {
   });
 
   test("unpaid denies with the exact SUBSCRIPTION_RESTRICTED 403, zero writes, zero services-table reads", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "unpaid" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "unpaid" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req("PATCH", { id: "svc-1", name: "New Name" }));
     assert.equal(res.status, 403);
@@ -99,7 +105,8 @@ describe("PATCH /api/services -- entitlement gate", () => {
   });
 
   test("query_error on the subscriptions read denies, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req("PATCH", { id: "svc-1", name: "New Name" }));
     assert.equal(res.status, 503);
@@ -110,6 +117,7 @@ describe("PATCH /api/services -- entitlement gate", () => {
 describe("DELETE /api/services -- entitlement gate", () => {
   test("active permits deleting a demo-tagged row, response unchanged", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       services: [{ data: { is_demo: true } }, { error: null }],
     });
@@ -122,7 +130,8 @@ describe("DELETE /api/services -- entitlement gate", () => {
   });
 
   test("canceled denies deletion with the exact SUBSCRIPTION_RESTRICTED 403, zero writes, zero services-table reads", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await DELETE(req("DELETE", { id: "svc-1" }));
     assert.equal(res.status, 403);
@@ -131,7 +140,8 @@ describe("DELETE /api/services -- entitlement gate", () => {
   });
 
   test("a spoofed workspace_id in the request body does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await DELETE(req("DELETE", { id: "svc-1", workspace_id: "attacker-ws" }));
     assert.equal(res.status, 403);
@@ -142,6 +152,7 @@ describe("DELETE /api/services -- entitlement gate", () => {
 describe("GET /api/services is governed by canViewExistingData (Phase 5.6E)", () => {
   test("succeeds for full access", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       services: [{ data: [{ id: "svc-1", name: "Haircut" }] }],
     });
@@ -154,6 +165,7 @@ describe("GET /api/services is governed by canViewExistingData (Phase 5.6E)", ()
 
   test("still succeeds during canceled_read_only -- viewing existing data remains available", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "canceled", canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() }) },
       ],
@@ -166,6 +178,7 @@ describe("GET /api/services is governed by canViewExistingData (Phase 5.6E)", ()
 
   test("denied once canceled_locked (30+ days after canceled_at)", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         {
           data: subscriptionRow({
@@ -183,6 +196,7 @@ describe("GET /api/services is governed by canViewExistingData (Phase 5.6E)", ()
 
   test("Phase 5.6F-R1: a transient subscription-query failure rejects with 503, not the 403 subscription body, before any services-table read", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ error: { message: "simulated Supabase outage" } }],
     });
     sessionToReturn = OWNER_SESSION;

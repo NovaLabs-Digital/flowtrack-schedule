@@ -5,6 +5,19 @@ import type { Session } from "@/lib/session";
 import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
 import { noDataResult, resolveWorkspaceEntitlement } from "@/lib/entitlement";
 import type { EntitlementResult, SubscriptionRecord, EntitlementCapabilities } from "@/lib/entitlement";
+import { requireCurrentOwnerSession } from "@/lib/sessionEpoch";
+import type { OwnerSessionCheckResult } from "@/lib/sessionEpoch";
+
+// Injectable purely for testability (same rationale as EntitlementFetcher
+// below) — every real caller omits this argument and gets the true
+// requireCurrentOwnerSession, the only production code path. Tests that
+// exercise requireCapability/requireFullAccess's own capability logic in
+// isolation (without mocking @/lib/supabaseAdmin at all — see
+// lib/entitlementServer.test.ts) inject a fake that always resolves `ok`,
+// keeping this file's "no real/mocked Supabase needed" design intact.
+type OwnerSessionChecker = (session: Session) => Promise<OwnerSessionCheckResult>;
+import { SERVICE_UNAVAILABLE_BODY, serviceUnavailableDenial } from "@/lib/serviceUnavailable";
+export { SERVICE_UNAVAILABLE_BODY, serviceUnavailableDenial };
 
 // Raw shape of a subscriptions row as Postgres/PostgREST returns it
 // (migration 015). Deliberately narrower than the full table — this route
@@ -96,7 +109,10 @@ const GENERIC_FORBIDDEN = { error: "Unauthorized" } as const;
 // "no_subscription", but failing closed at this earlier, more specific
 // check produces a clearer audit log signal for what would otherwise be an
 // unusual/corrupted session).
-export async function requireFullAccess(session: Session): Promise<NextResponse | null> {
+export async function requireFullAccess(
+  session: Session,
+  checkOwnerSession: OwnerSessionChecker = requireCurrentOwnerSession
+): Promise<NextResponse | null> {
   if (session.role === "none") {
     return NextResponse.json(GENERIC_FORBIDDEN, { status: 403 });
   }
@@ -104,6 +120,16 @@ export async function requireFullAccess(session: Session): Promise<NextResponse 
   if (session.role === "tester" && session.workspaceId !== DEMO_WORKSPACE_ID) {
     console.error("ENTITLEMENT_TESTER_WORKSPACE_MISMATCH");
     return NextResponse.json(GENERIC_FORBIDDEN, { status: 403 });
+  }
+
+  // Phase 5.7D: re-verified BEFORE entitlement resolution, and before this
+  // function's own workspace-scoped query below -- a session whose
+  // signature/exp are valid may still have been revoked (password reset,
+  // MFA removal, "sign out all devices" -- see lib/sessionEpoch.ts). A
+  // no-op for employee/tester sessions.
+  const ownerSessionCheck = await checkOwnerSession(session);
+  if (!ownerSessionCheck.ok) {
+    return ownerSessionCheck.response;
   }
 
   const result = await fetchEntitlementForWorkspace(session.workspaceId);
@@ -181,14 +207,11 @@ function subscriptionRestrictedDenial(): NextResponse {
 // nothing about their subscription state was actually determined. Same
 // safety properties as SUBSCRIPTION_RESTRICTED_BODY -- no reason/state,
 // workspace/customer/subscription identifier, or provider error text.
-const SERVICE_UNAVAILABLE_BODY = {
-  error: "We're having trouble verifying your account right now. Please try again shortly.",
-  code: "ENTITLEMENT_SERVICE_UNAVAILABLE",
-} as const;
-
-function serviceUnavailableDenial(): NextResponse {
-  return NextResponse.json(SERVICE_UNAVAILABLE_BODY, { status: 503 });
-}
+// SERVICE_UNAVAILABLE_BODY / serviceUnavailableDenial moved to
+// lib/serviceUnavailable.ts (Phase 5.7D) and re-exported above, so
+// lib/sessionEpoch.ts can reuse the exact same denial shape for a
+// transient session_epoch verification failure without a circular import
+// between the two modules. Behavior and shape are unchanged.
 
 // Chooses the correct denial shape for an already-resolved EntitlementResult
 // that denied the requested capability. The ONLY discriminant is
@@ -248,7 +271,8 @@ type EntitlementFetcher = (workspaceId: string) => Promise<EntitlementResult>;
 export async function requireCapability(
   session: Session,
   capability: EntitlementCapability,
-  fetchEntitlement: EntitlementFetcher = fetchEntitlementForWorkspace
+  fetchEntitlement: EntitlementFetcher = fetchEntitlementForWorkspace,
+  checkOwnerSession: OwnerSessionChecker = requireCurrentOwnerSession
 ): Promise<CapabilityCheckResult> {
   if (session.role === "none") {
     return denied(NextResponse.json(GENERIC_FORBIDDEN, { status: 403 }));
@@ -257,6 +281,13 @@ export async function requireCapability(
   if (session.role === "tester" && session.workspaceId !== DEMO_WORKSPACE_ID) {
     console.error("ENTITLEMENT_TESTER_WORKSPACE_MISMATCH");
     return denied(NextResponse.json(GENERIC_FORBIDDEN, { status: 403 }));
+  }
+
+  // Phase 5.7D: same re-verification as requireFullAccess above, for the
+  // same reason -- a no-op for employee/tester sessions.
+  const ownerSessionCheck = await checkOwnerSession(session);
+  if (!ownerSessionCheck.ok) {
+    return denied(ownerSessionCheck.response);
   }
 
   const result = await fetchEntitlement(session.workspaceId);

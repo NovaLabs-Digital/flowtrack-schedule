@@ -29,11 +29,13 @@ function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
   currentFake = createFakeSupabaseAdmin(responses);
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 
 describe("GET /api/clients/archived is governed by canViewExistingData (Phase 5.6E)", () => {
   test("succeeds for full access", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: [{ id: "c1", name: "Jane", email: null, phone: null, archived_at: "2026-01-01T00:00:00.000Z", status: "archived" }] }],
     });
@@ -46,6 +48,7 @@ describe("GET /api/clients/archived is governed by canViewExistingData (Phase 5.
 
   test("still succeeds during canceled_read_only -- viewing existing data remains available", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "canceled", canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() }) },
       ],
@@ -58,6 +61,7 @@ describe("GET /api/clients/archived is governed by canViewExistingData (Phase 5.
 
   test("denied once canceled_locked (30+ days after canceled_at)", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         {
           data: subscriptionRow({
@@ -75,6 +79,7 @@ describe("GET /api/clients/archived is governed by canViewExistingData (Phase 5.
 
   test("canceled_locked denial happens before any clients-table read", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         {
           data: subscriptionRow({
@@ -91,6 +96,7 @@ describe("GET /api/clients/archived is governed by canViewExistingData (Phase 5.
 
   test("Phase 5.6F-R1: a transient subscription-query failure rejects with 503, not the 403 subscription body, before any clients-table read", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ error: { message: "simulated Supabase outage" } }],
     });
     sessionToReturn = OWNER_SESSION;

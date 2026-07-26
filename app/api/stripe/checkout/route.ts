@@ -3,6 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { getStripeConfig } from "@/lib/stripe";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { requireCurrentOwnerSession } from "@/lib/sessionEpoch";
 import { isBlockingSubscriptionStatus } from "@/lib/stripeWebhook";
 import {
   claimSubscriptionRow,
@@ -18,6 +19,12 @@ export async function POST() {
   const deny = requireRole(session, ["owner"]);
   if (deny) return deny;
   assertWorkspace(session);
+  // Phase 5.7D: this route is deliberately NOT gated by
+  // requireFullAccess/requireCapability (checkout must remain reachable
+  // regardless of entitlement state) -- so the session_epoch check is
+  // called directly here instead, before any workspace-scoped read.
+  const ownerSessionCheck = await requireCurrentOwnerSession(session);
+  if (!ownerSessionCheck.ok) return ownerSessionCheck.response;
   const workspaceId = session.workspaceId;
 
   let config;

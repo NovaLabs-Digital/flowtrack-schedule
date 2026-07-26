@@ -2,26 +2,13 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { createClient } from "@supabase/supabase-js";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS } from "@/lib/session";
+import { createOwnerAuthClient } from "@/lib/supabaseAuthClient";
+import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS, setMfaPendingCookie } from "@/lib/session";
+import { beginMfaFlow } from "@/lib/mfaFlow";
 import { safeEqual } from "@/lib/safeEqual";
-import { isRateLimited, recordFailedAttempt, recordSuccessfulAttempt } from "@/lib/rateLimit";
+import { checkAndRecordRateLimit, clearRateLimit } from "@/lib/durableRateLimit";
 import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
-
-// Isolated, request-local client used ONLY to verify owner credentials
-// against Supabase Auth (auth.signInWithPassword). Deliberately separate
-// from the shared service-role supabaseAdmin client — this one holds no
-// elevated database privileges and is never used for any table access.
-// No session persistence/refresh/URL detection: the token pair this client
-// may receive is read no further than checking for success and is
-// discarded when the request completes — never stored, never forwarded to
-// the browser.
-function createOwnerAuthClient() {
-  return createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
-    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-  });
-}
 
 const GENERIC_AUTH_ERROR = "Invalid email or password";
 
@@ -33,6 +20,8 @@ const GENERIC_AUTH_ERROR = "Invalid email or password";
 // timing alone even though both cases return the same error text.
 const DUMMY_PASSWORD_HASH = "$2b$10$kSPv921oLeSBUU7sdaHSWe9XzorYI./qVsIgqbcbH.hEBrYcrWeqy";
 
+// Employee/tester only — UNCHANGED by Phase 5.7D (owner sessions no longer
+// use this cookie shape at all; see setOwnerSessionCookie in lib/session.ts).
 function setCookie(res: NextResponse, value: string) {
   res.cookies.set("sft_session", value, {
     httpOnly: true,
@@ -43,16 +32,24 @@ function setCookie(res: NextResponse, value: string) {
   });
 }
 
-function clientKeyFor(req: Request): string {
+function clientIpFor(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for");
   return fwd ? fwd.split(",")[0].trim() : "unknown";
 }
 
 export async function POST(req: Request) {
-  const clientKey = clientKeyFor(req);
+  const clientIp = clientIpFor(req);
 
   try {
-    const limited = isRateLimited(clientKey);
+    // Phase 5.7D-R4: durable, repository-backed rate limiting (migration
+    // 017), replacing the previous in-memory-only Map, which cannot
+    // protect a public login endpoint across Vercel's multiple concurrent
+    // serverless instances. This one atomic call both checks AND records
+    // the current attempt; a successful login clears the bucket below
+    // (clearRateLimit), preserving the pre-existing "only failures count"
+    // semantics rather than the stricter "every attempt counts" rule used
+    // for signup/confirmation-resend/MFA-verify.
+    const limited = await checkAndRecordRateLimit("login", clientIp);
     if (limited.limited) {
       return NextResponse.json(
         { error: "Too many attempts. Please try again later." },
@@ -72,6 +69,8 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Email and password required" }, { status: 400 });
     }
 
+    // Employee and tester authentication: UNCHANGED by Phase 5.7D. MFA
+    // applies to owners only.
     if (role === "employee") {
       const { data: emp, error } = await supabaseAdmin
         .from("employees")
@@ -86,11 +85,10 @@ export async function POST(req: Request) {
       const ok = !!emp && emp.active && !!emp.password_hash && passwordMatches;
 
       if (!ok) {
-        recordFailedAttempt(clientKey);
         return NextResponse.json({ error: GENERIC_AUTH_ERROR }, { status: 401 });
       }
 
-      recordSuccessfulAttempt(clientKey);
+      await clearRateLimit("login", clientIp);
       const res = NextResponse.json({ ok: true, redirect: "/schedule" });
       setCookie(res, await createSessionCookieValue("employee", emp!.id, emp!.workspace_id));
       return res;
@@ -104,27 +102,27 @@ export async function POST(req: Request) {
       safeEqual(email, testerEmail) &&
       safeEqual(password, testerPassword)
     ) {
-      recordSuccessfulAttempt(clientKey);
+      await clearRateLimit("login", clientIp);
       const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
       setCookie(res, await createSessionCookieValue("tester", DEMO_WORKSPACE_ID));
       return res;
     }
 
-    // Owner login is verified exclusively through Supabase Auth (the
-    // temporary ADMIN_EMAIL/ADMIN_PASSWORD fallback was removed after
-    // production verification — see docs/SECURITY.md). The workspace is
-    // always resolved from workspace_memberships, never a hardcoded
-    // constant, so both conditions below must hold for login to succeed.
+    // Owner login, step 1 of 2 (Phase 5.7D — mandatory MFA). Password
+    // verification alone is only aal1; sft_session is NEVER issued from
+    // this branch. Supabase Auth remains the sole credential verifier (the
+    // workspace is always resolved from workspace_memberships, never a
+    // hardcoded constant), but a correct password now only advances the
+    // owner to an MFA challenge/enrollment step, handed off via the
+    // short-lived sft_mfa_pending cookie — see lib/mfaFlow.ts.
     const ownerAuthClient = createOwnerAuthClient();
     const { data: authData, error: authErr } = await ownerAuthClient.auth.signInWithPassword({ email, password });
-    // authData.session (access_token/refresh_token) is intentionally never
-    // read past this point — only authData.user.id (an identifier, not a
-    // credential) is used below.
     let workspaceId: string | null = null;
+    let sessionEpoch: number | null = null;
     if (!authErr && authData?.user) {
       const { data: membership, error: membershipErr } = await supabaseAdmin
         .from("workspace_memberships")
-        .select("workspace_id")
+        .select("workspace_id, session_epoch")
         .eq("profile_id", authData.user.id)
         .eq("role", "owner")
         .maybeSingle();
@@ -135,20 +133,35 @@ export async function POST(req: Request) {
         console.error("OWNER_AUTH_MEMBERSHIP_QUERY_ERROR");
       } else if (membership?.workspace_id) {
         workspaceId = membership.workspace_id;
+        sessionEpoch = membership.session_epoch;
       } else {
         console.error("OWNER_AUTH_MEMBERSHIP_MISSING");
       }
     }
 
-    if (!workspaceId) {
-      recordFailedAttempt(clientKey);
+    if (!workspaceId || sessionEpoch === null || !authData?.session || !authData.user) {
       return NextResponse.json({ error: GENERIC_AUTH_ERROR }, { status: 401 });
     }
 
-    console.log("OWNER_LOGIN_SUCCESS");
-    recordSuccessfulAttempt(clientKey);
-    const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
-    setCookie(res, await createSessionCookieValue("owner", workspaceId));
+    await clearRateLimit("login", clientIp);
+
+    // Phase 5.7D: no factor enrolled -> mandatory enrollment (this is the
+    // same gate that safely transitions an existing pre-MFA owner account
+    // and the same one used for post-recovery re-enrollment — see the
+    // Phase 5.7D-R2 audit's "Existing-owner rollout"); one verified factor
+    // -> challenge it; multiple -> the client is told every verified
+    // factorId so it can offer a picker.
+    const flow = await beginMfaFlow(ownerAuthClient, {
+      authUserId: authData.user.id,
+      accessToken: authData.session.access_token,
+      refreshToken: authData.session.refresh_token,
+    });
+    const res = NextResponse.json({
+      ok: true,
+      next: flow.step,
+      factorIds: flow.step === "challenge" ? flow.factorIds : undefined,
+    });
+    await setMfaPendingCookie(res, flow.pendingToken);
     return res;
   } catch (e: any) {
     console.error("LOGIN_ERROR", e);

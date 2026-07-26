@@ -74,7 +74,8 @@ function req(body?: unknown, url = "http://localhost/api/appointments/create") {
   });
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 const TESTER_SESSION = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
 
 function authBody(overrides: Record<string, unknown> = {}) {
@@ -115,6 +116,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
         // the second -- both read the same real state here, matching what a
         // single subscriptions row would actually resolve to twice in
         // production.
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }, { data: row }],
         clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
         appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -148,24 +150,26 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
 
   for (const [label, row] of RESTRICTED_STATES) {
     test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero reads/writes, zero provider calls`, async () => {
-      resetFixtures({ subscriptions: [{ data: row }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: row }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req(authBody()));
       assert.equal(res.status, 403, label);
       assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY, label);
-      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), [], label);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), [], label);
       assert.equal(currentNotify.emailCalls.length, 0, label);
       assert.equal(currentNotify.smsCalls.length, 0, label);
     });
   }
 
   test("query_error on the subscriptions read denies, zero reads/writes, zero provider calls", async () => {
-    resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody()));
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), []);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), []);
   });
 
   test("employee role retains the existing flat 403 role-denial, never reaches any entitlement check, zero Supabase calls", async () => {
@@ -191,7 +195,8 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
   });
 
   test("workspace_id spoofed in the request body has no effect -- entitlement is decided before the body is even parsed", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ workspace_id: DEMO_WORKSPACE_ID })));
     assert.equal(res.status, 403);
@@ -199,7 +204,8 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
   });
 
   test("a spoofed workspace_id query-string value does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody(), "http://localhost/api/appointments/create?workspace_id=attacker-ws"));
     assert.equal(res.status, 403);
@@ -208,7 +214,8 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
 
   describe("mutation-specific validation runs only after auth/role/entitlement", () => {
     test("missing service_type + restricted workspace -> the exact SUBSCRIPTION_RESTRICTED 403, not 400", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ scheduled_for: "2026-08-03T14:00:00.000Z" }));
       assert.equal(res.status, 403);
@@ -216,7 +223,8 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
     });
 
     test("missing service_type + entitled workspace -> the existing 400 'Missing required fields' response", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ scheduled_for: "2026-08-03T14:00:00.000Z" }));
       assert.equal(res.status, 400);
@@ -276,7 +284,7 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
       assert.deepEqual(body, SUBSCRIPTION_RESTRICTED_BODY, label);
       assert.notEqual(body.error, "Unauthorized", label);
       // Not even the pre-existing booking_enabled (company_settings) read is reached.
-      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), [], label);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), [], label);
       assert.equal(currentNotify.emailCalls.length, 0, label);
       assert.equal(currentNotify.smsCalls.length, 0, label);
     });
@@ -288,7 +296,7 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
     const res = await POST(req(publicBody()));
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), []);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), []);
   });
 
   test("public workspace identity is the fixed REAL_WORKSPACE_ID constant -- a spoofed body workspace_id (including the demo id) has no effect", async () => {
@@ -351,6 +359,7 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
 describe("notification behavior is preserved exactly once entitled, on both branches", () => {
   test("authenticated: a provider failure on one channel is isolated -- the other channel still attempts, mutation still succeeds", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
       appointments: [...FIVE_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -412,6 +421,7 @@ describe("notification behavior is preserved exactly once entitled, on both bran
 describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmation, independent of the mutation capability", () => {
   test("authenticated: mutation allowed, notification denied -> creation succeeds unchanged, zero provider calls, zero messages_sent, notify client re-fetch skipped", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData: allowed
         { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
@@ -433,6 +443,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
 
   test("authenticated: mutation allowed, notification entitlement check query_error -> fails closed, creation still succeeds, zero provider calls", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) },
         { error: { message: "simulated DB error" } },
@@ -450,6 +461,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
 
   test("authenticated: a spoofed workspace_id in the body does not change which workspace's notification capability is checked", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) },
         { data: subscriptionRow({ stripe_status: "canceled" }) },

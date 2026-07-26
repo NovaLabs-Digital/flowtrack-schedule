@@ -41,6 +41,19 @@ export default function LoginPage() {
         return;
       }
 
+      // Phase 5.7D: a correct owner password now only advances to an MFA
+      // step — sft_session is never issued from this request. Employee
+      // login is unaffected (data.next is never present on that response).
+      if (data.next === "enroll") {
+        router.push("/mfa/enroll");
+        return;
+      }
+      if (data.next === "challenge") {
+        const query = data.factorIds && data.factorIds.length > 1 ? `?factors=${data.factorIds.join(",")}` : "";
+        router.push(`/mfa/challenge${query}`);
+        return;
+      }
+
       router.push(data.redirect || (role === "employee" ? "/schedule" : "/dashboard"));
     } catch {
       setError("Network error. Please try again.");
@@ -146,7 +159,13 @@ export default function LoginPage() {
           </div>
 
           <div className="mt-6 text-center text-xs text-slate-500 safe-area-bottom">
-            <div className="flex items-center justify-center gap-3">
+            <div>
+              New to ScheduleFlowTrack?{" "}
+              <Link href="/signup" className="text-blue-600 hover:text-blue-700 font-medium">
+                Create an account
+              </Link>
+            </div>
+            <div className="mt-3 flex items-center justify-center gap-3">
               <Link href="/terms" className="hover:text-slate-700 transition-colors">
                 Terms of Service
               </Link>

@@ -56,8 +56,22 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
   };
 }
 
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+
 function ownerSession(workspaceId: string): Session {
-  return { role: "owner", workspaceId };
+  return { role: "owner", workspaceId, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
+}
+
+// Phase 5.7D: requireCapability/requireFullAccess now also re-verify
+// session_epoch via lib/sessionEpoch.ts's requireCurrentOwnerSession,
+// which calls the real supabaseAdmin directly -- this file deliberately
+// tests capability-checking LOGIC in isolation, with no @/lib/supabaseAdmin
+// mock at all (every entitlement outcome here comes from an injected
+// fetcher instead). This fake always resolves "ok," keeping that isolation
+// intact; the epoch check's own fail-closed behavior (query error, missing
+// membership, mismatch) is tested separately in lib/sessionEpoch.test.ts.
+async function alwaysOkOwnerSessionCheck() {
+  return { ok: true as const };
 }
 function employeeSession(workspaceId: string): Session {
   return { role: "employee", employeeId: "emp_1", workspaceId };
@@ -139,7 +153,7 @@ describe("every canonical capability is requestable through the typed helper", (
   for (const capability of ALL_CAPABILITIES) {
     test(`${capability}: full result -> allowed`, async () => {
       const { fetcher } = fixedFetcher(resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW));
-      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
       assert.equal(check.allowed, true);
     });
 
@@ -147,7 +161,7 @@ describe("every canonical capability is requestable through the typed helper", (
       const { fetcher } = fixedFetcher(
         resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000) }), NOW)
       );
-      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
       const shouldBeAllowed = (ALWAYS_RETAINED_CAPABILITIES as string[]).includes(capability);
       assert.equal(check.allowed, shouldBeAllowed);
     });
@@ -156,7 +170,7 @@ describe("every canonical capability is requestable through the typed helper", (
       const { fetcher } = fixedFetcher(
         resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - 1000 * 60 * 60 * 24 * 40) }), NOW)
       );
-      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
       const shouldBeAllowed = (LOCKED_RETAINED_CAPABILITIES as string[]).includes(capability);
       assert.equal(check.allowed, shouldBeAllowed);
     });
@@ -168,7 +182,7 @@ describe("full operational states permit operational capabilities", () => {
     for (const capability of OPERATIONAL_CAPABILITIES) {
       test(`${label} -> ${capability} allowed`, async () => {
         const { fetcher } = fixedFetcher(result);
-        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
         assert.equal(check.allowed, true, `${label}/${capability}`);
       });
     }
@@ -180,14 +194,14 @@ describe("read-only states deny operational capabilities but retain billing/view
     for (const capability of OPERATIONAL_CAPABILITIES) {
       test(`${label} -> ${capability} denied`, async () => {
         const { fetcher } = fixedFetcher(result);
-        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
         assert.equal(check.allowed, false, `${label}/${capability}`);
       });
     }
     for (const capability of ALWAYS_RETAINED_CAPABILITIES) {
       test(`${label} -> ${capability} still allowed`, async () => {
         const { fetcher } = fixedFetcher(result);
-        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
         assert.equal(check.allowed, true, `${label}/${capability}`);
       });
     }
@@ -199,23 +213,23 @@ describe("locked states deny operational capabilities AND view/export, retaining
     for (const capability of OPERATIONAL_CAPABILITIES) {
       test(`${label} -> ${capability} denied`, async () => {
         const { fetcher } = fixedFetcher(result);
-        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+        const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
         assert.equal(check.allowed, false, `${label}/${capability}`);
       });
     }
     test(`${label} -> canViewExistingData denied`, async () => {
       const { fetcher } = fixedFetcher(result);
-      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canViewExistingData", fetcher);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canViewExistingData", fetcher, alwaysOkOwnerSessionCheck);
       assert.equal(check.allowed, false, label);
     });
     test(`${label} -> canExportData denied`, async () => {
       const { fetcher } = fixedFetcher(result);
-      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canExportData", fetcher);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canExportData", fetcher, alwaysOkOwnerSessionCheck);
       assert.equal(check.allowed, false, label);
     });
     test(`${label} -> canManageBilling still allowed`, async () => {
       const { fetcher } = fixedFetcher(result);
-      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canManageBilling", fetcher);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canManageBilling", fetcher, alwaysOkOwnerSessionCheck);
       assert.equal(check.allowed, true, label);
     });
   }
@@ -226,32 +240,32 @@ describe("internal workspace resolves without Stripe-status dependence", () => {
     const internalResult = resolveEntitlement({ ...stripeRecord(), billingMode: "internal", stripeStatus: null }, NOW);
     assert.equal(internalResult.stripeStatus, null, "sanity: internal carries no Stripe status");
     const { fetcher } = fixedFetcher(internalResult);
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, true);
   });
 });
 
 describe("only the exact trusted demo workspace receives demo capabilities", () => {
   test("owner session with workspaceId = DEMO_WORKSPACE_ID resolves full access via the REAL default fetcher (no Supabase call required)", async () => {
-    const check = await requireCapability(ownerSession(DEMO_WORKSPACE_ID), "canMutateOperationalData");
+    const check = await requireCapability(ownerSession(DEMO_WORKSPACE_ID), "canMutateOperationalData", undefined, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, true);
   });
 
   test("tester session with workspaceId = DEMO_WORKSPACE_ID resolves full access via the REAL default fetcher", async () => {
-    const check = await requireCapability(testerSession(DEMO_WORKSPACE_ID), "canMutateOperationalData");
+    const check = await requireCapability(testerSession(DEMO_WORKSPACE_ID), "canMutateOperationalData", undefined, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, true);
   });
 
   test("a non-demo workspaceId does not receive demo capabilities even with an otherwise-empty subscription", async () => {
     const { fetcher } = fixedFetcher(resolveWorkspaceEntitlement(REAL_WORKSPACE_ID, null, NOW));
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false, "no_subscription must not be mistaken for demo");
   });
 });
 
 describe("tester session with a non-demo workspace fails closed", () => {
   test("denied with the generic role/auth response, not the subscription-restricted one", async () => {
-    const check = await requireCapability(testerSession(REAL_WORKSPACE_ID), "canMutateOperationalData");
+    const check = await requireCapability(testerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", undefined, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       const body = (await readResponseJson(check.response)) as Record<string, unknown>;
@@ -261,7 +275,7 @@ describe("tester session with a non-demo workspace fails closed", () => {
   });
 
   test("session.role === 'none' is also denied with the generic response", async () => {
-    const check = await requireCapability({ role: "none" }, "canMutateOperationalData");
+    const check = await requireCapability({ role: "none" }, "canMutateOperationalData", undefined, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       const body = (await readResponseJson(check.response)) as Record<string, unknown>;
@@ -275,14 +289,14 @@ describe("owner and employee sessions resolve entitlement from their signed sess
   test("owner session: the fetcher is called with exactly session.workspaceId", async () => {
     const workspaceId = "aaaaaaaa-0000-0000-0000-000000000001";
     const { fetcher, calls } = fixedFetcher(resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW));
-    await requireCapability(ownerSession(workspaceId), "canMutateOperationalData", fetcher);
+    await requireCapability(ownerSession(workspaceId), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.deepEqual(calls, [workspaceId]);
   });
 
   test("employee session: the fetcher is called with exactly session.workspaceId (the employer's workspace)", async () => {
     const workspaceId = "bbbbbbbb-0000-0000-0000-000000000002";
     const { fetcher, calls } = fixedFetcher(resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW));
-    await requireCapability(employeeSession(workspaceId), "canUseJobTracking", fetcher);
+    await requireCapability(employeeSession(workspaceId), "canUseJobTracking", fetcher, alwaysOkOwnerSessionCheck);
     assert.deepEqual(calls, [workspaceId]);
   });
 });
@@ -295,7 +309,7 @@ describe("trusted workspace identity cannot be overridden by caller-supplied dat
   test("passing extra/unexpected properties on a session-like object has no effect beyond the trusted workspaceId field", async () => {
     const spoofed = { role: "owner", workspaceId: "trusted-ws", workspaceIdOverride: "attacker-ws", body: { workspaceId: "attacker-ws-2" } } as unknown as Session;
     const { fetcher, calls } = fixedFetcher(resolveEntitlement(stripeRecord({ stripeStatus: "active" }), NOW));
-    await requireCapability(spoofed, "canMutateOperationalData", fetcher);
+    await requireCapability(spoofed, "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.deepEqual(calls, ["trusted-ws"]);
   });
 });
@@ -305,7 +319,7 @@ describe("requireCapabilityForWorkspace uses the same canonical resolution path 
     test(`${label}: requireCapability and requireCapabilityForWorkspace agree, given the same EntitlementResult`, async () => {
       const { fetcher: fetcherA } = fixedFetcher(result);
       const { fetcher: fetcherB } = fixedFetcher(result);
-      const viaSession = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcherA);
+      const viaSession = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcherA, alwaysOkOwnerSessionCheck);
       const viaWorkspace = await requireCapabilityForWorkspace(REAL_WORKSPACE_ID, "canMutateOperationalData", fetcherB);
       assert.equal(viaSession.allowed, viaWorkspace.allowed, label);
     });
@@ -321,7 +335,7 @@ describe("requireCapabilityForWorkspace uses the same canonical resolution path 
 describe("denial response contract", () => {
   test("is exactly HTTP 403 with the approved safe code and message", async () => {
     const { fetcher } = fixedFetcher(resolveEntitlement(stripeRecord({ stripeStatus: "canceled" }), NOW));
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       assert.equal(check.response.status, 403);
@@ -348,7 +362,7 @@ describe("denial response contract", () => {
 
     const secretWorkspaceId = "workspace-should-never-appear-in-body";
     const { fetcher } = fixedFetcher(sensitiveResult);
-    const check = await requireCapability(ownerSession(secretWorkspaceId), "canMutateOperationalData", fetcher);
+    const check = await requireCapability(ownerSession(secretWorkspaceId), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       const bodyText = JSON.stringify(await readResponseJson(check.response));
@@ -360,7 +374,7 @@ describe("denial response contract", () => {
   });
 
   test("an unauthenticated (role: none) caller never receives the subscription-restricted body, only the generic one", async () => {
-    const check = await requireCapability({ role: "none" }, "canMutateOperationalData");
+    const check = await requireCapability({ role: "none" }, "canMutateOperationalData", undefined, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       const body = (await readResponseJson(check.response)) as Record<string, unknown>;
@@ -373,32 +387,32 @@ describe("Phase 5.6F-R1: a transient query failure denies every operational AND 
   for (const capability of OPERATIONAL_CAPABILITIES) {
     test(`query_error: ${capability} denied`, async () => {
       const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
-      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher);
+      const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), capability, fetcher, alwaysOkOwnerSessionCheck);
       assert.equal(check.allowed, false, capability);
     });
   }
 
   test("query_error: canViewExistingData denied (unlike an authoritative read-only state)", async () => {
     const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canViewExistingData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canViewExistingData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
   });
 
   test("query_error: canExportData denied", async () => {
     const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canExportData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canExportData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
   });
 
   test("query_error: canManageBilling still allowed", async () => {
     const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canManageBilling", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canManageBilling", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, true);
   });
 
   test("the denial is HTTP 503 with a distinct code, never the 403 SUBSCRIPTION_RESTRICTED body", async () => {
     const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       assert.equal(check.response.status, 503);
@@ -410,7 +424,7 @@ describe("Phase 5.6F-R1: a transient query failure denies every operational AND 
 
   test("the 503 body never claims cancellation, non-payment, or a permanent lock", async () => {
     const { fetcher } = fixedFetcher(SERVICE_UNAVAILABLE_FIXTURE);
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       const bodyText = JSON.stringify(await readResponseJson(check.response));
@@ -422,7 +436,7 @@ describe("Phase 5.6F-R1: a transient query failure denies every operational AND 
 
   test("an authoritative locked/read-only denial still returns the ordinary 403, unaffected by this change", async () => {
     const { fetcher } = fixedFetcher(LOCKED_FIXTURES[0][1]);
-    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher);
+    const check = await requireCapability(ownerSession(REAL_WORKSPACE_ID), "canMutateOperationalData", fetcher, alwaysOkOwnerSessionCheck);
     assert.equal(check.allowed, false);
     if (!check.allowed) {
       assert.equal(check.response.status, 403);

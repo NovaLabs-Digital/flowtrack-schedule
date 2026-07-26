@@ -38,11 +38,13 @@ function req(method: string, body?: unknown) {
   });
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 
 describe("POST /api/settings/company -- entitlement gate", () => {
   test("active permits saving settings, response unchanged", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { id: "cs-1" } }, { error: null }],
     });
@@ -55,6 +57,7 @@ describe("POST /api/settings/company -- entitlement gate", () => {
 
   test("internal permits saving settings without Stripe dependence", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ billing_mode: "internal", stripe_status: null }) }],
       company_settings: [{ data: { id: "cs-1" } }, { error: null }],
     });
@@ -64,14 +67,18 @@ describe("POST /api/settings/company -- entitlement gate", () => {
   });
 
   test("exact trusted demo workspace permits saving settings with zero subscriptions-table queries", async () => {
-    resetFixtures({ company_settings: [{ data: null }, { error: null }] });
-    sessionToReturn = { role: "owner", workspaceId: DEMO_WORKSPACE_ID };
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: null }, { error: null }],
+    });
+    sessionToReturn = { role: "owner", workspaceId: DEMO_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
     const res = await POST(req("POST", { company_name: "Demo Co" }));
     assert.equal(res.status, 200);
   });
 
   test("canceled denies saving settings with the exact SUBSCRIPTION_RESTRICTED 403, zero writes, zero company_settings reads", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { company_name: "Acme Cleaning" }));
     assert.equal(res.status, 403);
@@ -84,7 +91,8 @@ describe("POST /api/settings/company -- entitlement gate", () => {
     // (not company identity fields) is still an operational mutation and
     // must be denied while restricted -- Settings/Billing viewing stays
     // available (see the GET-is-unaffected tests below), but saving does not.
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() - 1000).toISOString() }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() - 1000).toISOString() }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { notifications_enabled: false }));
     assert.equal(res.status, 403);
@@ -92,7 +100,8 @@ describe("POST /api/settings/company -- entitlement gate", () => {
   });
 
   test("query_error on the subscriptions read denies, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { company_name: "Acme Cleaning" }));
     assert.equal(res.status, 503);
@@ -110,7 +119,8 @@ describe("POST /api/settings/company -- entitlement gate", () => {
   });
 
   test("a spoofed workspace_id in the request body does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { company_name: "Acme Cleaning", workspace_id: "attacker-ws" }));
     assert.equal(res.status, 403);
@@ -121,6 +131,7 @@ describe("POST /api/settings/company -- entitlement gate", () => {
 describe("GET /api/settings/company is governed by canViewExistingData (Phase 5.6E)", () => {
   test("succeeds for a full-access workspace", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true } }],
       employees: [{ count: 3 }, { count: 2 }],
@@ -135,6 +146,7 @@ describe("GET /api/settings/company is governed by canViewExistingData (Phase 5.
 
   test("still succeeds during canceled_read_only -- opening Settings to view/reactivate remains available", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "canceled", canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() }) },
       ],
@@ -148,6 +160,7 @@ describe("GET /api/settings/company is governed by canViewExistingData (Phase 5.
 
   test("denied once canceled_locked (30+ days after canceled_at)", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         {
           data: subscriptionRow({
@@ -165,6 +178,7 @@ describe("GET /api/settings/company is governed by canViewExistingData (Phase 5.
 
   test("Phase 5.6F-R1: a transient subscription-query failure rejects with 503, not the 403 subscription body, before any company_settings read", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ error: { message: "simulated Supabase outage" } }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -183,6 +197,7 @@ describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
 
   test("saving only company_name (an existing row) never includes notifications_enabled or booking_enabled in the persisted fields -- an unrelated Company Info save cannot change either toggle", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { id: "cs-1" } }, { error: null }],
     });
@@ -198,6 +213,7 @@ describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
 
   test("saving only booking_enabled never includes notifications_enabled in the persisted fields -- the two Automation toggles are still independently omittable", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { id: "cs-1" } }, { error: null }],
     });
@@ -211,6 +227,7 @@ describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
 
   test("an explicit notifications_enabled: false is persisted as exactly false, never omitted or coerced", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { id: "cs-1" } }, { error: null }],
     });
@@ -223,6 +240,7 @@ describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
 
   test("an explicit notifications_enabled: true is persisted as exactly true -- a genuinely intentional enable is not blocked", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { id: "cs-1" } }, { error: null }],
     });
@@ -235,6 +253,7 @@ describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
 
   test("first-ever save for a brand-new workspace (no existing row) inserts notifications_enabled exactly as supplied, scoped to the caller's own workspace_id", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: null }, { error: null }],
     });
@@ -250,6 +269,7 @@ describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
 
   test("workspace scoping is present on the update path -- the persistence route never writes without an .eq(\"workspace_id\", ...) filter", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { id: "cs-1" } }, { error: null }],
     });

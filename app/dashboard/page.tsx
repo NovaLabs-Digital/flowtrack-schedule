@@ -7,6 +7,7 @@ import TemporaryUnavailableScreen from "@/app/components/dashboard/TemporaryUnav
 import { fetchAllPages } from "@/lib/paginate";
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForOwner } from "@/lib/entitlementView";
+import { requireCurrentOwnerSession } from "@/lib/sessionEpoch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,18 @@ export default async function DashboardPage() {
   }
   const isTester = session.role === "tester";
   const workspaceId = session.workspaceId;
+
+  // Phase 5.7D: re-verified BEFORE any business-data query, not just
+  // BEFORE entitlement resolution. A signature/exp-valid owner cookie may
+  // still have been revoked (password reset, MFA removal, "sign out all
+  // devices" -- see lib/sessionEpoch.ts). A no-op for tester sessions.
+  const ownerSessionCheck = await requireCurrentOwnerSession(session);
+  if (!ownerSessionCheck.ok) {
+    if (ownerSessionCheck.response.status === 503) {
+      return <TemporaryUnavailableScreen />;
+    }
+    redirect("/login");
+  }
 
   // Phase 5.6E: resolved BEFORE any business-data query, not after. Once a
   // workspace is canceled_locked (30+ calendar days after canceled_at --

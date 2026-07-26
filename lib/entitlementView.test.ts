@@ -429,7 +429,12 @@ describe("owner/employee page wiring is source-correctly scoped (source-level pr
     const canViewCheckIndex = dashboardSource.indexOf("!entitlementResult.canViewExistingData");
     assert.ok(serviceUnavailableCheckIndex > -1 && canViewCheckIndex > -1);
     assert.ok(serviceUnavailableCheckIndex < canViewCheckIndex, "the service_unavailable branch must be checked first");
-    const tempScreenIndex = dashboardSource.indexOf("<TemporaryUnavailableScreen");
+    // Phase 5.7D: a second, earlier <TemporaryUnavailableScreen /> render
+    // site now exists for the session_epoch re-verification gate (see
+    // lib/sessionEpoch.ts) -- searching from serviceUnavailableCheckIndex
+    // onward specifically finds the entitlement branch's own render site,
+    // not that earlier, structurally distinct one.
+    const tempScreenIndex = dashboardSource.indexOf("<TemporaryUnavailableScreen", serviceUnavailableCheckIndex);
     assert.ok(tempScreenIndex > serviceUnavailableCheckIndex && tempScreenIndex < canViewCheckIndex);
   });
 

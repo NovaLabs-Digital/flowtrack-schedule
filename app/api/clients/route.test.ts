@@ -51,7 +51,8 @@ function req(method: string, body: unknown, url = "http://localhost/api/clients"
   });
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 
 describe("PATCH /api/clients -- entitlement gate", () => {
   const FULL_STATES: Array<[string, ReturnType<typeof subscriptionRow>]> = [
@@ -64,6 +65,7 @@ describe("PATCH /api/clients -- entitlement gate", () => {
   for (const [label, row] of FULL_STATES) {
     test(`${label} permits the existing mutation, response unchanged`, async () => {
       resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }],
         clients: [{ data: { is_demo: false } }, { error: null }],
       });
@@ -99,6 +101,7 @@ describe("PATCH /api/clients -- entitlement gate", () => {
   for (const [label, row] of RESTRICTED_STATES) {
     test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero writes, zero reads of the operational table`, async () => {
       resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }],
         // No "clients" fixture queued at all -- proves the route never
         // reaches its own existence-check read when denied.
@@ -117,7 +120,8 @@ describe("PATCH /api/clients -- entitlement gate", () => {
   }
 
   test("query_error (Supabase read failure on subscriptions) denies the mutation, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req("PATCH", { id: "client-1", name: "New Name" }));
     assert.equal(res.status, 503);
@@ -152,7 +156,8 @@ describe("PATCH /api/clients -- entitlement gate", () => {
     // workspace_id pointing at a hypothetical "full access" workspace must
     // have no effect -- if it did, this fixture setup would incorrectly
     // succeed instead of denying.
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req("PATCH", { id: "client-1", name: "New Name", workspace_id: "attacker-controlled-full-access-ws" }));
     assert.equal(res.status, 403);
@@ -173,7 +178,8 @@ describe("PATCH /api/clients -- entitlement gate", () => {
     });
 
     test("missing id + authenticated but restricted workspace -> the exact 403 SUBSCRIPTION_RESTRICTED response, not 400, zero clients-table access", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await PATCH(req("PATCH", { name: "New Name" })); // no id at all
       assert.equal(res.status, 403);
@@ -182,7 +188,8 @@ describe("PATCH /api/clients -- entitlement gate", () => {
     });
 
     test("missing id + authenticated, authorized, entitled workspace -> the existing 400 'Missing client id' response", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await PATCH(req("PATCH", { name: "New Name" })); // no id at all
       assert.equal(res.status, 400);
@@ -199,6 +206,7 @@ describe("PATCH /api/clients -- entitlement gate", () => {
 describe("POST /api/clients (archive/restore) -- entitlement gate", () => {
   test("active permits archive, response unchanged", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { is_demo: false } }, { error: null }, { error: null }],
     });
@@ -210,7 +218,8 @@ describe("POST /api/clients (archive/restore) -- entitlement gate", () => {
   });
 
   test("canceled denies archive with the exact SUBSCRIPTION_RESTRICTED 403, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { id: "client-1", action: "archive" }));
     assert.equal(res.status, 403);
@@ -219,7 +228,8 @@ describe("POST /api/clients (archive/restore) -- entitlement gate", () => {
   });
 
   test("canceled denies restore with the exact SUBSCRIPTION_RESTRICTED 403, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { id: "client-1", action: "restore" }));
     assert.equal(res.status, 403);
@@ -241,7 +251,8 @@ describe("POST /api/clients (archive/restore) -- entitlement gate", () => {
     });
 
     test("missing id + authenticated but restricted workspace -> the exact 403 SUBSCRIPTION_RESTRICTED response, not 400, zero clients-table access", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req("POST", { action: "archive" })); // no id at all
       assert.equal(res.status, 403);
@@ -250,7 +261,8 @@ describe("POST /api/clients (archive/restore) -- entitlement gate", () => {
     });
 
     test("missing id + authenticated, authorized, entitled workspace -> the existing 400 'Missing client id' response", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req("POST", { action: "archive" })); // no id at all
       assert.equal(res.status, 400);

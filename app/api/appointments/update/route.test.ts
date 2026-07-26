@@ -70,7 +70,8 @@ function req(body?: unknown, url = "http://localhost/api/appointments/update") {
   });
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 
 function existingAppt(overrides: Record<string, unknown> = {}) {
   return {
@@ -98,6 +99,7 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
   for (const [label, row] of FULL_STATES) {
     test(`${label} permits editing a single appointment, response unchanged`, async () => {
       resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }],
         appointments: [{ data: existingAppt() }, { error: null }],
       });
@@ -129,24 +131,26 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
 
   for (const [label, row] of RESTRICTED_STATES) {
     test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero reads/writes, zero provider calls`, async () => {
-      resetFixtures({ subscriptions: [{ data: row }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: row }] });
       sessionToReturn = OWNER_SESSION;
       const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", notify_channel: "both" }));
       assert.equal(res.status, 403, label);
       assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY, label);
-      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), [], label);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), [], label);
       assert.equal(currentNotify.emailCalls.length, 0, label);
       assert.equal(currentNotify.smsCalls.length, 0, label);
     });
   }
 
   test("query_error on the subscriptions read denies, zero reads/writes, zero provider calls", async () => {
-    resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", notify_channel: "both" }));
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions"), []);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), []);
     assert.equal(currentNotify.emailCalls.length, 0);
     assert.equal(currentNotify.smsCalls.length, 0);
   });
@@ -184,7 +188,8 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
   });
 
   test("a non-demo workspace cannot manufacture demo access via any request-supplied value", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", workspace_id: DEMO_WORKSPACE_ID }));
     assert.equal(res.status, 403);
@@ -192,7 +197,8 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
   });
 
   test("a spoofed workspace_id/query-string value does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", workspace_id: "attacker-ws" }, "http://localhost/api/appointments/update?workspace_id=attacker-ws-2"));
     assert.equal(res.status, 403);
@@ -209,7 +215,8 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
     });
 
     test("missing appointment_id + restricted workspace -> the exact SUBSCRIPTION_RESTRICTED 403, not 400", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await PATCH(req({ service_type: "New Service" }));
       assert.equal(res.status, 403);
@@ -217,7 +224,8 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
     });
 
     test("missing appointment_id + entitled workspace -> the existing 400 'Missing appointment_id' response", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await PATCH(req({ service_type: "New Service" }));
       assert.equal(res.status, 400);
@@ -230,6 +238,7 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
 describe("notification behavior is preserved exactly once entitled", () => {
   test("entitled + notify_channel requested + opted in -> existing provider send + messages_sent behavior occurs", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt() }, // fetch existing
@@ -250,6 +259,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
 
   test("client opted out (auto_email/auto_sms false) -> notification remains suppressed, zero provider calls", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt() },
@@ -267,6 +277,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
 
   test("notify_channel = 'none' (default) -> no re-fetch, no provider calls, no messages_sent writes", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt() }, { error: null }],
     });
@@ -282,6 +293,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
       throw new Error("simulated Resend outage");
     });
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt() },
@@ -306,6 +318,7 @@ describe("notification behavior is preserved exactly once entitled", () => {
 describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notification, independent of canMutateOperationalData", () => {
   test("mutation allowed, notification denied -> update succeeds unchanged, zero provider calls, zero messages_sent, appt/client re-fetch skipped", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData: allowed
         { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
@@ -328,6 +341,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notificat
 
   test("mutation allowed, notification entitlement check query_error -> fails closed, update still succeeds, zero provider calls", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) },
         { error: { message: "simulated DB error" } },
@@ -344,6 +358,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notificat
 
   test("a spoofed workspace_id in the body does not change which workspace's notification capability is checked", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) },
         { data: subscriptionRow({ stripe_status: "canceled" }) },
@@ -361,6 +376,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notificat
 describe("existing appointment-editing business rules remain unchanged once entitled", () => {
   test("mode = 'future' with a series_id updates future siblings' time-of-day", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt({ series_id: "series-1" }) }, // fetch existing
@@ -380,6 +396,7 @@ describe("existing appointment-editing business rules remain unchanged once enti
 
   test("client fields in the body also update the linked client row", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt() }], // no appointment-field changes in the body -> no appointments UPDATE
       clients: [{ error: null }],
@@ -392,6 +409,7 @@ describe("existing appointment-editing business rules remain unchanged once enti
 
   test("appointment not found still 404s with the existing message, after entitlement passes", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: null }],
     });
@@ -413,6 +431,7 @@ describe("existing appointment-editing business rules remain unchanged once enti
 
   test("reassigning to an employee outside the workspace still 404s, after entitlement passes", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt() }, { error: null }], // fetch existing, then hasColumn("employee_id") probe
       employees: [{ data: null }],

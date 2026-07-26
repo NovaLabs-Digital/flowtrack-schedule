@@ -24,3 +24,21 @@ describe("app/login/page.tsx -- Phase 5.6D legal links", () => {
     assert.ok(source.includes("Please enter your email and password."));
   });
 });
+
+describe("app/login/page.tsx -- Phase 5.7D signup link and MFA hand-off", () => {
+  test('links to /signup with the exact approved "Create an account" copy', () => {
+    assert.ok(source.includes('href="/signup"'));
+    assert.ok(source.includes("New to ScheduleFlowTrack?"));
+    assert.ok(source.includes("Create an account"));
+  });
+
+  test("a correct owner password response (data.next) redirects to /mfa/enroll or /mfa/challenge instead of /dashboard, before the old unconditional redirect", () => {
+    const enrollIdx = source.indexOf('data.next === "enroll"');
+    const challengeIdx = source.indexOf('data.next === "challenge"');
+    const oldRedirectIdx = source.indexOf('router.push(data.redirect ||');
+    assert.ok(enrollIdx > -1 && challengeIdx > -1 && oldRedirectIdx > -1);
+    assert.ok(enrollIdx < oldRedirectIdx && challengeIdx < oldRedirectIdx);
+    assert.ok(source.includes('router.push("/mfa/enroll")'));
+    assert.ok(source.includes("/mfa/challenge"));
+  });
+});

@@ -34,11 +34,13 @@ function req(method: string, body?: unknown) {
   });
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 
 describe("POST /api/employees -- entitlement gate", () => {
   test("active permits creating an employee, response unchanged", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       employees: [{ data: { id: "emp-1", name: "Bob", phone: null, color: "#3B82F6", active: true, email: null, position: null } }],
     });
@@ -52,7 +54,8 @@ describe("POST /api/employees -- entitlement gate", () => {
   });
 
   test("canceled denies with the exact SUBSCRIPTION_RESTRICTED 403, zero writes, zero employees-table reads", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { name: "Bob" }));
     assert.equal(res.status, 403);
@@ -62,6 +65,7 @@ describe("POST /api/employees -- entitlement gate", () => {
 
   test("internal permits creation without Stripe dependence", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ billing_mode: "internal", stripe_status: null }) }],
       employees: [{ data: { id: "emp-2", name: "Ann" } }],
     });
@@ -71,14 +75,18 @@ describe("POST /api/employees -- entitlement gate", () => {
   });
 
   test("exact trusted demo workspace permits creation with zero subscriptions-table queries", async () => {
-    resetFixtures({ employees: [{ data: { id: "emp-3", name: "Demo Emp" } }] });
-    sessionToReturn = { role: "owner", workspaceId: DEMO_WORKSPACE_ID };
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }],
+      employees: [{ data: { id: "emp-3", name: "Demo Emp" } }],
+    });
+    sessionToReturn = { role: "owner", workspaceId: DEMO_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
     const res = await POST(req("POST", { name: "Demo Emp" }));
     assert.equal(res.status, 201);
   });
 
   test("query_error on the subscriptions read denies, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { name: "Bob" }));
     assert.equal(res.status, 503);
@@ -97,7 +105,8 @@ describe("POST /api/employees -- entitlement gate", () => {
   });
 
   test("a spoofed workspace_id in the request body does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req("POST", { name: "Bob", workspace_id: "attacker-ws" }));
     assert.equal(res.status, 403);
@@ -108,6 +117,7 @@ describe("POST /api/employees -- entitlement gate", () => {
 describe("PATCH /api/employees -- entitlement gate", () => {
   test("active permits updating an employee, response unchanged", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       employees: [{ data: { is_demo: false } }, { error: null }],
     });
@@ -120,6 +130,7 @@ describe("PATCH /api/employees -- entitlement gate", () => {
 
   test("trialing permits updating an employee", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "trialing" }) }],
       employees: [{ data: { is_demo: false } }, { error: null }],
     });
@@ -130,6 +141,7 @@ describe("PATCH /api/employees -- entitlement gate", () => {
 
   test("past_due_grace (valid) permits updating an employee", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() + 1000).toISOString() }) }],
       employees: [{ data: { is_demo: false } }, { error: null }],
     });
@@ -140,6 +152,7 @@ describe("PATCH /api/employees -- entitlement gate", () => {
 
   test("past_due_grace expired denies with the exact SUBSCRIPTION_RESTRICTED 403, zero writes", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() - 1000).toISOString() }) }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -150,7 +163,8 @@ describe("PATCH /api/employees -- entitlement gate", () => {
   });
 
   test("malformed entitlement data denies, zero writes", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "not_a_real_status" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "not_a_real_status" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req("PATCH", { id: "emp-1", name: "New Name" }));
     assert.equal(res.status, 403);
@@ -162,6 +176,7 @@ describe("PATCH /api/employees -- entitlement gate", () => {
 describe("GET /api/employees is governed by canViewExistingData (Phase 5.6E)", () => {
   test("succeeds for full access", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       employees: [{ data: [{ id: "emp-1", name: "Bob" }] }],
     });
@@ -174,6 +189,7 @@ describe("GET /api/employees is governed by canViewExistingData (Phase 5.6E)", (
 
   test("still succeeds during canceled_read_only -- viewing existing data remains available", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "canceled", canceled_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString() }) },
       ],
@@ -186,6 +202,7 @@ describe("GET /api/employees is governed by canViewExistingData (Phase 5.6E)", (
 
   test("denied once canceled_locked (30+ days after canceled_at)", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [
         {
           data: subscriptionRow({
@@ -203,6 +220,7 @@ describe("GET /api/employees is governed by canViewExistingData (Phase 5.6E)", (
 
   test("Phase 5.6F-R1: a transient subscription-query failure rejects with 503, not the 403 subscription body, before any employees-table read", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ error: { message: "simulated Supabase outage" } }],
     });
     sessionToReturn = OWNER_SESSION;

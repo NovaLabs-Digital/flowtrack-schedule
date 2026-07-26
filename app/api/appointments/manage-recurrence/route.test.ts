@@ -38,7 +38,8 @@ function req(body?: unknown, url = "http://localhost/api/appointments/manage-rec
   });
 }
 
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID };
+const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 
 function oneTimeAppt() {
   return {
@@ -69,6 +70,7 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
   for (const [label, row] of FULL_STATES) {
     test(`${label} permits converting a one-time appointment to weekly recurrence, response unchanged`, async () => {
       resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }],
         appointments: [
           { data: oneTimeAppt() }, // fetch existing
@@ -106,7 +108,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
 
   for (const [label, row] of RESTRICTED_STATES) {
     test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero appointment reads/writes`, async () => {
-      resetFixtures({ subscriptions: [{ data: row }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: row }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
       assert.equal(res.status, 403, label);
@@ -116,7 +119,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
   }
 
   test("query_error on the subscriptions read denies, zero appointment access", async () => {
-    resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
     assert.equal(res.status, 503);
@@ -157,7 +161,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
   });
 
   test("a non-demo workspace cannot manufacture demo access via any request-supplied value", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", workspace_id: DEMO_WORKSPACE_ID }));
     assert.equal(res.status, 403);
@@ -165,7 +170,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
   });
 
   test("a spoofed workspace_id/query-string value does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", workspace_id: "attacker-ws" }, "http://localhost/api/appointments/manage-recurrence?workspace_id=attacker-ws-2"));
     assert.equal(res.status, 403);
@@ -182,7 +188,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
     });
 
     test("missing appointment_id + restricted workspace -> the exact SUBSCRIPTION_RESTRICTED 403, not 400", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ frequency_type: "weekly" }));
       assert.equal(res.status, 403);
@@ -190,7 +197,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
     });
 
     test("missing appointment_id + entitled workspace -> the existing 400 'Missing appointment_id' response", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ frequency_type: "weekly" }));
       assert.equal(res.status, 400);
@@ -199,7 +207,8 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
     });
 
     test("invalid frequency_type + entitled workspace -> the existing 400 response, after entitlement passes", async () => {
-      resetFixtures({ subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ appointment_id: "appt-1", frequency_type: "bogus" }));
       assert.equal(res.status, 400);
@@ -211,6 +220,7 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
 describe("existing recurrence business rules remain unchanged once entitled", () => {
   test("an appointment already in a series cancels future siblings before creating the new series", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: { ...oneTimeAppt(), series_id: "series-1" } }, // fetch existing
@@ -230,6 +240,7 @@ describe("existing recurrence business rules remain unchanged once entitled", ()
 
   test("converting to one_time cancels siblings and creates no new rows", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "weekly" } },
@@ -249,6 +260,7 @@ describe("existing recurrence business rules remain unchanged once entitled", ()
 
   test("appointment not found still 404s with the existing message, after entitlement passes", async () => {
     resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: null }],
     });

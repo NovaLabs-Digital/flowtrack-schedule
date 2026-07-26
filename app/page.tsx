@@ -21,7 +21,7 @@ export default function LandingPage() {
               Login
             </Link>
             <Link
-              href="/login"
+              href="/signup"
               className="rounded-lg bg-[#0f172a] px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 transition-colors"
             >
               Get Started
