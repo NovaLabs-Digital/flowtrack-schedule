@@ -31,15 +31,21 @@ describe("resolvePostLoginNavigation -- next:'enroll'", () => {
 });
 
 describe("resolvePostLoginNavigation -- next:'challenge'", () => {
-  test("produces exactly one navigation decision, of type 'mfa', to exactly /mfa/challenge with no query when zero or one factorIds", () => {
+  test("produces exactly one navigation decision, of type 'mfa', to exactly /mfa/challenge with no query when zero factorIds", () => {
     assert.deepEqual(resolvePostLoginNavigation({ ok: true, next: "challenge" }, "owner"), { type: "mfa", path: "/mfa/challenge" });
-    assert.deepEqual(resolvePostLoginNavigation({ ok: true, next: "challenge", factorIds: ["f1"] }, "owner"), {
-      type: "mfa",
-      path: "/mfa/challenge",
-    });
   });
 
-  test("appends a factors query only when more than one factorId is present", () => {
+  // Phase 5.7D-R12 regression proof: this was previously "no query" for
+  // exactly one factorId (threshold was `> 1`), which meant a single-
+  // factor login's /mfa/challenge page never received the factor id at
+  // all -- see lib/mfaFlow.ts's beginMfaFlow for the paired server-side
+  // fix and lib/mfaFlow.test.ts for the root-cause regression proof.
+  test("appends a factors query when exactly one factorId is present", () => {
+    const decision = resolvePostLoginNavigation({ ok: true, next: "challenge", factorIds: ["f1"] }, "owner");
+    assert.deepEqual(decision, { type: "mfa", path: "/mfa/challenge?factors=f1" });
+  });
+
+  test("appends a factors query when more than one factorId is present", () => {
     const decision = resolvePostLoginNavigation({ ok: true, next: "challenge", factorIds: ["f1", "f2"] }, "owner");
     assert.deepEqual(decision, { type: "mfa", path: "/mfa/challenge?factors=f1,f2" });
   });

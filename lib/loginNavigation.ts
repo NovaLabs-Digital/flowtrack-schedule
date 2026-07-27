@@ -54,7 +54,15 @@ export function resolvePostLoginNavigation(data: LoginApiResponse, role: LoginRo
   const mfaPath = typeof data.next === "string" ? MFA_STEP_DESTINATIONS.get(data.next) : undefined;
   if (mfaPath) {
     if (data.next === "challenge") {
-      const query = Array.isArray(data.factorIds) && data.factorIds.length > 1 ? `?factors=${data.factorIds.join(",")}` : "";
+      // Phase 5.7D-R12: was `> 1`, so a single verified factor never
+      // appeared in this URL at all -- app/mfa/challenge/page.tsx's
+      // selectedFactorId then stayed "", and the verify POST omitted
+      // factorId entirely. The server-side pending row now records the
+      // sole factor id itself (lib/mfaFlow.ts), which is the actual fix;
+      // this `> 0` change is defense-in-depth so the challenge page's own
+      // state is populated too, not because the page's value is what
+      // makes verification succeed.
+      const query = Array.isArray(data.factorIds) && data.factorIds.length > 0 ? `?factors=${data.factorIds.join(",")}` : "";
       return { type: "mfa", path: `${mfaPath}${query}` };
     }
     return { type: "mfa", path: mfaPath };

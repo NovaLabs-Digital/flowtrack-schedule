@@ -227,6 +227,39 @@ describe("POST /api/auth/mfa/verify -- incorrect/expired code and attempt lockou
   });
 });
 
+describe("POST /api/auth/mfa/verify -- single-factor login, server-side factorId is authoritative (Phase 5.7D-R12 regression proof)", () => {
+  // Reproduces the exact production shape that previously failed: a
+  // login-originated pending challenge for an Auth user with exactly one
+  // verified TOTP factor. Before the Phase 5.7D-R12 fix, lib/mfaFlow.ts's
+  // beginMfaFlow never wrote factorId onto this row at all (it was always
+  // null for a login-originated challenge), so this exact request --  a
+  // correct code, no client-supplied body.factorId -- fell into this
+  // route's client-supplied-factorId fallback branch and was rejected
+  // with a generic 400 before Supabase's real challenge/verify endpoints
+  // were ever called. See lib/mfaFlow.test.ts for the paired server-side
+  // proof that beginMfaFlow now writes this factorId at pending-row
+  // creation time.
+  test("a correct code succeeds with no body.factorId at all, using the factorId already recorded on the pending row at creation time", async () => {
+    resetState();
+    challenge = { ...challenge!, factorId: "factor-1" };
+    listFactorsResult = { data: { totp: [{ id: "factor-1", status: "verified" }] } };
+    const res = await POST(req({ code: "123456" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.ok(createdSessionParams);
+  });
+
+  test("this exact same request shape, with factorId reverted to null on the pending row (the pre-fix production bug), is rejected with 400 before Supabase is ever reached", async () => {
+    resetState();
+    challenge = { ...challenge!, factorId: null };
+    listFactorsResult = { data: { totp: [{ id: "factor-1", status: "verified" }] } };
+    const res = await POST(req({ code: "123456" }));
+    assert.equal(res.status, 400);
+    assert.equal(createdSessionParams, null);
+  });
+});
+
 describe("POST /api/auth/mfa/verify -- multiple verified factors require a legitimate factorId selection", () => {
   test("when the pending row has no recorded factorId, a client-supplied factorId is only honored if it matches a currently verified factor", async () => {
     resetState();
