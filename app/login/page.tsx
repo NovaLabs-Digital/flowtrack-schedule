@@ -1,10 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-
-type LoginRole = "owner" | "employee";
+import { resolvePostLoginNavigation, type LoginRole } from "@/lib/loginNavigation";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -13,9 +12,21 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Phase 5.7D-R10-R2: a synchronous guard, not React state. `loading`
+  // (state) only disables the submit button after a re-render commits --
+  // two events dispatched within the same tick (a very fast double-click,
+  // or an Enter-key press racing a click) can both enter handleSubmit
+  // before that re-render happens. A ref is read/written synchronously,
+  // with no dependency on the render cycle, so it blocks a second
+  // concurrent invocation immediately, guaranteeing at most one in-flight
+  // login request no matter how the two triggering events are timed.
+  const submittingRef = useRef(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    if (submittingRef.current) return;
+
     setError("");
 
     if (!email.trim() || !password.trim()) {
@@ -23,6 +34,7 @@ export default function LoginPage() {
       return;
     }
 
+    submittingRef.current = true;
     setLoading(true);
     try {
       const res = await fetch("/api/auth/login", {
@@ -44,21 +56,24 @@ export default function LoginPage() {
       // Phase 5.7D: a correct owner password now only advances to an MFA
       // step — sft_session is never issued from this request. Employee
       // login is unaffected (data.next is never present on that response).
-      if (data.next === "enroll") {
-        router.push("/mfa/enroll");
+      //
+      // Phase 5.7D-R10-R2: the dispatch decision itself now lives in
+      // lib/loginNavigation.ts (a plain, non-JSX module the test runner
+      // can import and call directly with real inputs) — this is the
+      // single call site that acts on it. See that module for the full
+      // allowlist/fail-closed reasoning.
+      const decision = resolvePostLoginNavigation(data, role);
+      if (decision.type === "fail-closed") {
+        setError("Something went wrong finishing sign-in. Please try again.");
         return;
       }
-      if (data.next === "challenge") {
-        const query = data.factorIds && data.factorIds.length > 1 ? `?factors=${data.factorIds.join(",")}` : "";
-        router.push(`/mfa/challenge${query}`);
-        return;
-      }
-
-      router.push(data.redirect || (role === "employee" ? "/schedule" : "/dashboard"));
+      router.push(decision.path);
+      return;
     } catch {
       setError("Network error. Please try again.");
     } finally {
       setLoading(false);
+      submittingRef.current = false;
     }
   }
 

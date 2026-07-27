@@ -61,3 +61,37 @@ describe("app/mfa/enroll/page.tsx -- never stores or logs the QR code or TOTP se
     assert.ok(!verifyBodyMatch![1].includes("qrCode"));
   });
 });
+
+// Phase 5.7D-R10-R2: traced whether this page can navigate away from
+// itself (to /dashboard or anywhere else) purely as a result of its
+// mount-time fetch, before the owner ever submits a code. It cannot --
+// the mount effect's only actions are setQrCode/setSecret/setError/
+// setLoading; router.push appears exactly once in this whole file, inside
+// handleVerify, which only runs in response to the form's onSubmit (an
+// explicit later user action, gated on the six-digit code). This also
+// confirms middleware.ts is not what gates this page at all (see
+// middleware.test.ts's matcher-scope test) -- the actual gate is GET
+// /api/auth/mfa/enroll's own getMfaPendingToken() check (see
+// app/api/auth/mfa/enroll/route.test.ts), which this page surfaces as an
+// in-place setError, never a redirect.
+describe("app/mfa/enroll/page.tsx -- stays rendered on this page; never auto-navigates on mount (Phase 5.7D-R10-R2)", () => {
+  test("the mount useEffect never calls router.push -- router.push appears exactly once in the whole file, inside handleVerify only", () => {
+    const useEffectStart = source.indexOf("useEffect(() => {");
+    const useEffectEnd = source.indexOf("}, []);") + "}, []);".length;
+    const mountEffectBody = source.slice(useEffectStart, useEffectEnd);
+    assert.ok(!mountEffectBody.includes("router.push"), "the mount effect must never navigate anywhere on its own");
+
+    const allPushCalls = [...source.matchAll(/router\.push\(/g)];
+    assert.equal(allPushCalls.length, 1, "router.push must appear exactly once in this file");
+    const handleVerifyStart = source.indexOf("async function handleVerify");
+    const pushIdx = source.indexOf("router.push(");
+    assert.ok(pushIdx > handleVerifyStart, "the one router.push call must be inside handleVerify, not the mount effect");
+  });
+
+  test("a failed mount fetch (missing/expired pending cookie) sets an in-place error, never a redirect or navigation", () => {
+    const useEffectStart = source.indexOf("useEffect(() => {");
+    const useEffectEnd = source.indexOf("}, []);") + "}, []);".length;
+    const mountEffectBody = source.slice(useEffectStart, useEffectEnd);
+    assert.ok(mountEffectBody.includes("setError(data?.error"));
+  });
+});

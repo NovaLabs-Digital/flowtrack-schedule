@@ -25,7 +25,7 @@ order by table_name, ordinal_position;
 
 **Known columns, from verified code evidence only:**
 - `workspaces` — has at least `id` (uuid). Referenced only as a foreign-key target (`subscriptions.workspace_id references workspaces(id)`, `migrations/015_create_billing_schema.sql:41`). No application code ever `SELECT`s or `INSERT`s into `workspaces` directly — its full column list is unverified. **Confirm via the preflight query above before inserting anything beyond `id`.**
-- `profiles` — existence confirmed only by `migrations/014_enable_rls_no_policies.sql:63` (RLS enablement) and `docs/SECURITY.md:282` (prose reference). **No code path in this repository ever queries or writes `profiles`.** Whether Supabase Auth auto-populates a row here on user creation (a common Supabase convention, via a database trigger) is **not verified** from this repository. This runbook does not require a `profiles` row to exist for login to work — see §5.
+- `profiles` — **correction (Phase 5.7D-R9):** this was previously (incorrectly) documented as unused. A real production self-service signup proved otherwise: `workspace_memberships.profile_id` carries a foreign key (`workspace_memberships_profile_id_fkey`) to `profiles.id`, which itself references `auth.users.id` with `ON DELETE CASCADE`. Supabase Auth does **not** auto-populate a `profiles` row on user creation in this project — inserting into `workspace_memberships` for an Auth user with no `profiles` row fails outright (`ERROR 23503`, foreign key violation). `migrations/018_fix_owner_profile_provisioning.sql` fixed the self-service path (`provision_owner_workspace`) by inserting `profiles (id, email)` immediately before the `workspace_memberships` insert. **This manual runbook has the identical bug** — §5's insert below now creates the required `profiles` row first, for the same reason. Confirmed columns from `migrations/018_preflight.sql`: `id uuid primary key`, `email text not null`, `created_at timestamptz not null default now()`.
 - `workspace_memberships` — confirmed columns, from the one query that reads it (`app/api/auth/login/route.ts:125-130`): `profile_id`, `workspace_id`, `role`. Whether `role` is a free-text column or a constrained enum, and whether any other column is `NOT NULL` without a default, is **not verified**. Confirm via the preflight query before inserting.
 - `company_settings` — confirmed columns, from `app/api/settings/company/route.ts`: `id`, `workspace_id`, `company_name`, `phone`, `email`, `address`, `city`, `state`, `zip`, `booking_enabled`, `notifications_enabled`, `updated_at`.
 - `subscriptions` — fully defined in `migrations/015_create_billing_schema.sql:39-80` and widened by `migrations/016_add_trial_and_access_lifecycle.sql`. Full column list: `id`, `workspace_id` (unique), `billing_mode`, `stripe_customer_id`, `stripe_subscription_id`, `stripe_status`, `trial_start`, `trial_end`, `current_period_end`, `grace_until`, `cancel_at_period_end`, `canceled_at`, `last_event_created_at`, `created_at`, `updated_at`, `trial_consumed_at`, `access_ended_at`.
@@ -138,7 +138,7 @@ Expect exactly one row.
 **Table:** `workspace_memberships`
 **Fields supplied:** `profile_id = <OWNER_AUTH_USER_ID>`, `workspace_id = <NEW_WORKSPACE_ID>`, `role = 'owner'`.
 **Which role value is valid:** the only role value this repository's code ever checks for is the literal string `'owner'` (`app/api/auth/login/route.ts:129`). No other role value has any verified meaning to the login route.
-**Which ID connects the Auth user to this table:** `profile_id`, compared directly against `authData.user.id` from Supabase Auth's own `signInWithPassword` response (`route.ts:124,128`) — **not** a separate `profiles.id` lookup; no code path queries `profiles` at all (see §0). Use the Auth user's own UUID as `profile_id` directly.
+**Which ID connects the Auth user to this table:** `profile_id`, compared directly against `authData.user.id` from Supabase Auth's own `signInWithPassword` response (`route.ts:124,128`) — the Auth user's own UUID, used directly as `profile_id`. **Correction (Phase 5.7D-R9):** `profile_id` carries a foreign key to `profiles.id` (`workspace_memberships_profile_id_fkey`), so a `profiles` row for this same UUID must exist *before* this insert — see the required first statement below.
 **Fields left null/untouched:** any column not required by §0's preflight.
 
 **Before inserting, check for an existing membership for this Auth user** (avoids creating a second `role='owner'` row for the same person, which would break the login route's `.maybeSingle()` call — see §11):
@@ -149,6 +149,15 @@ Expect zero rows before your first insert for this person.
 
 ```sql
 begin;
+-- Required first (Phase 5.7D-R9 correction) — workspace_memberships.profile_id
+-- has a foreign key to profiles.id; this insert must land before the
+-- workspace_memberships insert below, or that insert fails with error 23503.
+-- ON CONFLICT DO NOTHING: safe to re-run, and never overwrites a profiles
+-- row that already exists for another reason.
+insert into profiles (id, email)
+values ('<OWNER_AUTH_USER_ID>', '<OWNER_EMAIL_LOWERCASE>')
+on conflict (id) do nothing;
+
 insert into workspace_memberships (profile_id, workspace_id, role)
 values ('<OWNER_AUTH_USER_ID>', '<NEW_WORKSPACE_ID>', 'owner');
 -- If §0's preflight revealed additional NOT NULL columns with no default,

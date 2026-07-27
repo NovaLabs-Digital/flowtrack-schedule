@@ -52,6 +52,13 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
     cancelAtPeriodEnd: false,
     canceledAt: null,
     accessEndedAt: null,
+    // Phase 5.7D-R11: defaults represent "a row that has had real Stripe
+    // activity" -- this file's fixtures never exercise the null-status
+    // branch at all (every fixture here sets an explicit stripeStatus), so
+    // these two fields' values are inert for every existing test; kept
+    // consistent with lib/entitlement.test.ts's own stripeRecord() default.
+    trialConsumedAt: null,
+    hasStripeIdentity: true,
     ...overrides,
   };
 }

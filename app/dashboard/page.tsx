@@ -4,6 +4,7 @@ import { getSession } from "@/lib/session";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 import LockedReactivationScreen from "@/app/components/dashboard/LockedReactivationScreen";
 import TemporaryUnavailableScreen from "@/app/components/dashboard/TemporaryUnavailableScreen";
+import TrialActivationScreen from "@/app/components/dashboard/TrialActivationScreen";
 import { fetchAllPages } from "@/lib/paginate";
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForOwner } from "@/lib/entitlementView";
@@ -53,6 +54,17 @@ export default async function DashboardPage() {
   // messaging, never cancellation/lock wording.
   if (entitlementResult.state === "service_unavailable") {
     return <TemporaryUnavailableScreen />;
+  }
+
+  // Phase 5.7D-R11: checked before the generic canViewExistingData gate
+  // below, for the identical structural reason service_unavailable is --
+  // "trial_not_started"'s capability profile also denies
+  // canViewExistingData (there is no data yet), but it is not a lifecycle
+  // restriction and must never render LockedReactivationScreen's
+  // "reactivate"/"read-only period ended" copy. A workspace that has
+  // never been to Checkout gets the first-time trial invitation instead.
+  if (entitlementResult.state === "trial_not_started") {
+    return <TrialActivationScreen />;
   }
 
   if (!entitlementResult.canViewExistingData) {

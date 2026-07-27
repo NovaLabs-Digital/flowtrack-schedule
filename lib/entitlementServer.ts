@@ -21,8 +21,9 @@ export { SERVICE_UNAVAILABLE_BODY, serviceUnavailableDenial };
 
 // Raw shape of a subscriptions row as Postgres/PostgREST returns it
 // (migration 015). Deliberately narrower than the full table — this route
-// never reads stripe_customer_id/stripe_subscription_id, so there's no risk
-// of accidentally threading them into an EntitlementResult later.
+// never reads the raw stripe_customer_id/stripe_subscription_id VALUES
+// into an EntitlementResult; see toRecord below, which reduces them to a
+// single derived boolean before they ever reach the pure resolver.
 interface SubscriptionRow {
   billing_mode: "internal" | "stripe";
   stripe_status: string | null;
@@ -31,11 +32,17 @@ interface SubscriptionRow {
   grace_until: string | null;
   cancel_at_period_end: boolean;
   canceled_at: string | null;
-  // Phase 5.6F (migrations/016). Not trial_consumed_at -- that column is
-  // only ever read at Stripe Checkout creation time
-  // (lib/stripeCheckout.ts), never by the entitlement resolver, so it is
-  // deliberately not selected here.
   access_ended_at: string | null;
+  // Phase 5.7D-R11: now read here specifically to let the resolver
+  // distinguish a genuinely pristine, never-checked-out workspace
+  // (billing_mode='stripe', stripe_status still null) from every other
+  // "malformed" case -- see lib/entitlement.ts's "trial_not_started"
+  // state. Still never read by anything else here; Checkout eligibility
+  // itself remains lib/stripeCheckout.ts's own independent, server-side
+  // decision (see that file and app/api/stripe/checkout/route.ts).
+  trial_consumed_at: string | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
 }
 
 function toRecord(row: SubscriptionRow): SubscriptionRecord {
@@ -48,6 +55,8 @@ function toRecord(row: SubscriptionRow): SubscriptionRecord {
     cancelAtPeriodEnd: row.cancel_at_period_end,
     canceledAt: row.canceled_at ? new Date(row.canceled_at) : null,
     accessEndedAt: row.access_ended_at ? new Date(row.access_ended_at) : null,
+    trialConsumedAt: row.trial_consumed_at ? new Date(row.trial_consumed_at) : null,
+    hasStripeIdentity: !!(row.stripe_customer_id || row.stripe_subscription_id),
   };
 }
 
@@ -68,7 +77,9 @@ export async function fetchEntitlementForWorkspace(workspaceId: string): Promise
 
   const { data, error } = await supabaseAdmin
     .from("subscriptions")
-    .select("billing_mode, stripe_status, trial_end, current_period_end, grace_until, cancel_at_period_end, canceled_at, access_ended_at")
+    .select(
+      "billing_mode, stripe_status, trial_end, current_period_end, grace_until, cancel_at_period_end, canceled_at, access_ended_at, trial_consumed_at, stripe_customer_id, stripe_subscription_id"
+    )
     .eq("workspace_id", workspaceId)
     .maybeSingle();
 

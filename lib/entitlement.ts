@@ -73,13 +73,39 @@
 //   profiles hide existing data from the API/UI layer; neither changes
 //   anything about what's actually stored.
 //
-// Trial-eligibility (one 30-day trial per workspace, ever) is NOT decided
-// by this module at all -- it is a Stripe-Checkout-time decision made in
-// lib/stripeCheckout.ts from the same subscriptions row's
-// trial_consumed_at column, before a subscription (and therefore a
-// SubscriptionRecord) exists. This resolver only interprets the
-// subscription that already exists; it has no opinion on whether a NEW
-// one should include a trial.
+// Trial-eligibility for what Stripe Checkout SESSION to create (whether to
+// pass trial_period_days) is NOT decided by this module at all -- it is a
+// Stripe-Checkout-time decision made independently in lib/stripeCheckout.ts
+// (and revalidated server-side in app/api/stripe/checkout/route.ts) from
+// the same subscriptions row's trial_consumed_at column, every time
+// Checkout is invoked. That route is the actual security boundary for
+// starting a trial-bearing subscription; it never trusts anything this
+// resolver or the UI layer computes.
+//
+// Phase 5.7D-R11: this module DOES now distinguish one narrow case in its
+// own right -- "trial_not_started" -- purely so the UI can show the
+// correct FIRST-TIME invitation ("Start your 30-day free trial") instead
+// of the "reactivate/read-only period ended" copy that a genuinely
+// billing_mode='stripe' row with stripe_status still NULL was previously
+// (and wrongly) resolving to via the "malformed" branch. A real production
+// signup exposed this: a brand-new workspace, provisioned moments earlier,
+// with no Stripe customer/subscription ever created, no trial ever
+// consumed, and no cancellation/access-ended history, reached the
+// dashboard and was shown "Your read-only period has ended... your data
+// has been preserved" -- both false for an account that never had
+// anything to lose. See resolveEntitlement's `case null/undefined/""`
+// branch below for the exact, conservative distinguishing evidence
+// required (trialConsumedAt IS NULL, no Stripe identity attached, no
+// canceledAt/accessEndedAt/currentPeriodEnd) -- ANY of those being set
+// still falls back to "malformed" exactly as before, unchanged and
+// equally fail-closed.
+//
+// This new state grants NO operational access and NO viewing of existing
+// data (there is none) -- only canManageBilling, the minimum needed to
+// reach Stripe Checkout. It is not itself a trial-eligibility DECISION;
+// Checkout's own server-side trial_consumed_at check remains the sole
+// authority for whether the resulting subscription actually includes a
+// trial period.
 
 // Explicit relative specifier with its literal extension (rather than the
 // "@/lib/workspace" alias used everywhere else in this codebase) so this
@@ -95,6 +121,7 @@ import { DEMO_WORKSPACE_ID } from "./workspace.ts";
 export type EntitlementState =
   | "internal"
   | "demo"
+  | "trial_not_started"
   | "trialing"
   | "active"
   | "past_due_grace"
@@ -129,6 +156,7 @@ export type EntitlementState =
 export type EntitlementReason =
   | "internal"
   | "demo_workspace"
+  | "trial_not_started"
   | "trialing"
   | "active"
   | "past_due_in_grace"
@@ -219,6 +247,22 @@ export interface SubscriptionRecord {
   // event observes one of those statuses. See lib/stripeWebhook.ts's
   // computeAccessEndedPatchField for exactly how/when this is written.
   accessEndedAt: Date | null;
+  // Phase 5.7D-R11 (migrations/016): set exactly once, the first time
+  // Stripe confirms this workspace's subscription actually entered a
+  // trial -- never cleared by cancellation or reactivation. Read here
+  // ONLY to distinguish a genuinely pristine, never-checked-out workspace
+  // (this field null, alongside no Stripe identity and no prior-access
+  // history) from every other stripe_status-is-null case, which stays
+  // "malformed" exactly as before. This module still makes no trial
+  // ELIGIBILITY decision of its own -- see the module header comment.
+  trialConsumedAt: Date | null;
+  // Phase 5.7D-R11: true if either stripe_customer_id or
+  // stripe_subscription_id is present on the row. The raw IDs themselves
+  // are never passed into this pure resolver (they never leave the
+  // server at all -- see lib/entitlementServer.ts) -- only this derived
+  // boolean, which is all resolveEntitlement needs to help confirm a row
+  // is genuinely untouched.
+  hasStripeIdentity: boolean;
 }
 
 const FULL_CAPABILITIES: EntitlementCapabilities = {
@@ -284,6 +328,30 @@ const LOCKED_CAPABILITIES: EntitlementCapabilities = {
 const SERVICE_UNAVAILABLE_CAPABILITIES: EntitlementCapabilities = {
   hasOperationalAccess: false,
   isReadOnly: true,
+  canManageBilling: true,
+  canViewExistingData: false,
+  canExportData: false,
+  canMutateOperationalData: false,
+  canUseJobTracking: false,
+  canUsePublicBooking: false,
+  canSendNotifications: false,
+};
+
+// Phase 5.7D-R11: the ONE profile for "trial_not_started" -- a genuinely
+// pristine, never-checked-out workspace. Deliberately its own named
+// constant rather than reusing LOCKED_CAPABILITIES, even though every
+// boolean below happens to match it today (same reasoning as
+// SERVICE_UNAVAILABLE_CAPABILITIES above: conceptually distinct outcomes
+// that currently warrant the same denial). No operational, mutation,
+// notification, public-booking, job-tracking, or data-export capability
+// (there is no data yet to export or view) -- canManageBilling is the
+// ONLY true flag, the minimum needed to reach Stripe Checkout.
+// isReadOnly is false (not true, unlike LOCKED_CAPABILITIES): this is not
+// a restriction on previously-had access, there was never any access to
+// restrict.
+const TRIAL_NOT_STARTED_CAPABILITIES: EntitlementCapabilities = {
+  hasOperationalAccess: false,
+  isReadOnly: false,
   canManageBilling: true,
   canViewExistingData: false,
   canExportData: false,
@@ -380,7 +448,8 @@ export function resolveEntitlement(subscription: SubscriptionRecord | null, now:
     return noDataResult("no_subscription");
   }
 
-  const { billingMode, stripeStatus, trialEnd, currentPeriodEnd, graceUntil, cancelAtPeriodEnd, canceledAt, accessEndedAt } = subscription;
+  const { billingMode, stripeStatus, trialEnd, currentPeriodEnd, graceUntil, cancelAtPeriodEnd, canceledAt, accessEndedAt, trialConsumedAt, hasStripeIdentity } =
+    subscription;
 
   if (billingMode === "internal") {
     return buildResult("internal", "internal", FULL_CAPABILITIES, { billingMode });
@@ -497,13 +566,38 @@ export function resolveEntitlement(subscription: SubscriptionRecord | null, now:
 
     case null:
     case undefined:
-    case "":
-      // A 'stripe'-mode row before its first webhook has landed (e.g.
-      // immediately after checkout-session creation, before
-      // checkout.session.completed arrives) — a real, expected transient
-      // state, not corruption, but there is no usable status yet, so it
-      // fails closed the same as any other incomplete billing state.
+    case "": {
+      // A 'stripe'-mode row with no usable status yet splits into two
+      // genuinely different cases (Phase 5.7D-R11):
+      //
+      //   1. A brand-new workspace that has never been to Checkout at
+      //      all -- provision_owner_workspace (migrations/017-018)
+      //      inserts the subscriptions row with billing_mode='stripe'
+      //      and every other column left at its default/null. This is
+      //      NOT corruption; it's the normal, expected shape of a
+      //      first-time customer who hasn't started Checkout yet, and
+      //      must be offered the trial invitation, not "reactivate."
+      //
+      //   2. Every other reason a status could be missing (a webhook
+      //      race immediately after Checkout-session creation but before
+      //      checkout.session.completed arrives, a row that once had
+      //      real Stripe activity now in an unexpected state, etc.) --
+      //      still fails closed to "malformed" exactly as before.
+      //
+      // The distinguishing evidence required is deliberately narrow and
+      // conservative: ALL of trialConsumedAt/hasStripeIdentity/
+      // canceledAt/accessEndedAt/currentPeriodEnd must confirm "nothing
+      // has ever happened to this row." Any single one of them
+      // indicating prior activity falls back to "malformed" -- this
+      // never widens what already fails closed, it only narrows the one
+      // specific case that was being MISCLASSIFIED as malformed.
+      const neverWentToCheckout = trialConsumedAt === null && !hasStripeIdentity;
+      const neverHadAccessBefore = !isValidDate(canceledAt) && !isValidDate(accessEndedAt) && !isValidDate(currentPeriodEnd);
+      if (neverWentToCheckout && neverHadAccessBefore) {
+        return buildResult("trial_not_started", "trial_not_started", TRIAL_NOT_STARTED_CAPABILITIES, diagnostics);
+      }
       return buildResult("malformed", "malformed_missing_status", LOCKED_CAPABILITIES, diagnostics);
+    }
 
     default:
       // Any Stripe status string this resolver doesn't yet recognize

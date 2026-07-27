@@ -30,8 +30,19 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
     cancelAtPeriodEnd: false,
     canceledAt: null,
     accessEndedAt: null,
+    // Phase 5.7D-R11: see lib/entitlement.test.ts's identical helper for
+    // why these default to "a row with real Stripe activity" -- inert for
+    // every fixture here except the dedicated pristineStripeRecord below.
+    trialConsumedAt: null,
+    hasStripeIdentity: true,
     ...overrides,
   };
+}
+
+// Phase 5.7D-R11: the exact shape provision_owner_workspace leaves a
+// brand-new workspace's subscriptions row in.
+function pristineStripeRecord(): SubscriptionRecord {
+  return stripeRecord({ stripeStatus: null, trialConsumedAt: null, hasStripeIdentity: false });
 }
 
 describe("projectEntitlementForOwner -- approved state-to-projection mapping", () => {
@@ -218,6 +229,26 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canSendNotifications: false,
       bannerVariant: "verification_error",
       recoveryAction: "support",
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
+    });
+  });
+
+  // Phase 5.7D-R11: a real production signup was shown "reactivate your
+  // subscription... your data has been preserved" for a workspace that
+  // never had a subscription -- see lib/entitlement.test.ts's matching
+  // describe block for the resolver-level proof. This proves the
+  // projection layer maps the corrected state to the correct, distinct
+  // banner/recovery pair, never reusing "locked"/"verification_error".
+  test("trial_not_started: no operational capabilities, trial_available banner, checkout recovery -- never locked/verification_error/support", () => {
+    const result = resolveEntitlement(pristineStripeRecord(), NOW);
+    assert.equal(result.state, "trial_not_started");
+    assert.deepEqual(projectEntitlementForOwner(result), {
+      canMutateOperationalData: false,
+      canUseJobTracking: false,
+      canSendNotifications: false,
+      bannerVariant: "trial_available",
+      recoveryAction: "checkout",
       finalAccessDate: null,
       readOnlyEndsAt: null,
     });
@@ -443,6 +474,30 @@ describe("owner/employee page wiring is source-correctly scoped (source-level pr
     const beforeCheck = dashboardSource.slice(0, serviceUnavailableCheckIndex);
     for (const forbidden of ['.from("clients")', '.from("appointments")', '.from("services")', '.from("employees")']) {
       assert.ok(!beforeCheck.includes(forbidden), `must not query ${forbidden} before the service_unavailable check`);
+    }
+  });
+
+  // Phase 5.7D-R11: identical structural proof to the service_unavailable
+  // tests above, for the new trial_not_started branch -- it must be
+  // checked before the generic canViewExistingData gate (since its
+  // capability profile also denies canViewExistingData, it would
+  // otherwise be swallowed by the LockedReactivationScreen branch), and
+  // no business-data query may run before it either.
+  test("app/dashboard/page.tsx checks state === 'trial_not_started' BEFORE the canViewExistingData gate, and renders TrialActivationScreen there -- never LockedReactivationScreen", () => {
+    assert.ok(dashboardSource.includes('import TrialActivationScreen from "@/app/components/dashboard/TrialActivationScreen"'));
+    const trialCheckIndex = dashboardSource.indexOf('entitlementResult.state === "trial_not_started"');
+    const canViewCheckIndex = dashboardSource.indexOf("!entitlementResult.canViewExistingData");
+    assert.ok(trialCheckIndex > -1 && canViewCheckIndex > -1);
+    assert.ok(trialCheckIndex < canViewCheckIndex, "the trial_not_started branch must be checked before the generic locked gate");
+    const trialScreenIndex = dashboardSource.indexOf("<TrialActivationScreen", trialCheckIndex);
+    assert.ok(trialScreenIndex > trialCheckIndex && trialScreenIndex < canViewCheckIndex);
+  });
+
+  test("no business-data query appears before the trial_not_started branch in app/dashboard/page.tsx", () => {
+    const trialCheckIndex = dashboardSource.indexOf('entitlementResult.state === "trial_not_started"');
+    const beforeCheck = dashboardSource.slice(0, trialCheckIndex);
+    for (const forbidden of ['.from("clients")', '.from("appointments")', '.from("services")', '.from("employees")']) {
+      assert.ok(!beforeCheck.includes(forbidden), `must not query ${forbidden} before the trial_not_started check`);
     }
   });
 

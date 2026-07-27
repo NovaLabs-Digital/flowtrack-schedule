@@ -118,6 +118,8 @@ describe("buildSubscriptionPatchFromStripeSubscription: grace episode logic", ()
         cancelAtPeriodEnd: false,
         canceledAt: null,
         accessEndedAt: null,
+        trialConsumedAt: null,
+        hasStripeIdentity: true,
       },
       now
     );

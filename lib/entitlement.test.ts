@@ -33,8 +33,45 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
     cancelAtPeriodEnd: false,
     canceledAt: null,
     accessEndedAt: null,
+    // Phase 5.7D-R11: defaults represent "a row that has had real Stripe
+    // activity at some point" (hasStripeIdentity: true) -- deliberately
+    // NOT the genuinely pristine, never-checked-out shape, so every
+    // existing fixture in this file that overrides only stripeStatus
+    // keeps its exact prior meaning/labeling unchanged. Tests for the new
+    // "trial_not_started" state explicitly override both fields to
+    // construct a truly pristine record -- see that describe block below.
+    trialConsumedAt: null,
+    hasStripeIdentity: true,
     ...overrides,
   };
+}
+
+// Phase 5.7D-R11: the exact shape provision_owner_workspace (migrations/
+// 017-018) leaves a brand-new workspace's subscriptions row in --
+// billing_mode='stripe' and every other column at its column default
+// (null/false). Used only by the "trial_not_started" describe block below.
+function pristineStripeRecord(overrides: Partial<SubscriptionRecord> = {}): SubscriptionRecord {
+  return stripeRecord({
+    stripeStatus: null,
+    trialConsumedAt: null,
+    hasStripeIdentity: false,
+    canceledAt: null,
+    accessEndedAt: null,
+    currentPeriodEnd: null,
+    ...overrides,
+  });
+}
+
+function assertTrialNotStarted(result: ReturnType<typeof resolveEntitlement>) {
+  assert.equal(result.hasOperationalAccess, false);
+  assert.equal(result.isReadOnly, false);
+  assert.equal(result.canManageBilling, true, "billing/checkout must remain reachable");
+  assert.equal(result.canViewExistingData, false);
+  assert.equal(result.canExportData, false);
+  assert.equal(result.canMutateOperationalData, false);
+  assert.equal(result.canUseJobTracking, false);
+  assert.equal(result.canUsePublicBooking, false);
+  assert.equal(result.canSendNotifications, false);
 }
 
 function assertFullAccess(result: ReturnType<typeof resolveEntitlement>) {
@@ -322,14 +359,19 @@ describe("Phase 5.6F-R1: service_unavailable is its own state, never no_subscrip
 });
 
 describe("malformed billing state -> locked, never full, never a guessed read-only window", () => {
-  test("stripe-mode row with null status (pending, before first webhook) -> locked", () => {
+  // Phase 5.7D-R11: these two use stripeRecord()'s default
+  // hasStripeIdentity: true -- a row with a null/empty status that HAS a
+  // Stripe customer/subscription attached is never the pristine
+  // first-time case (see pristineStripeRecord below); it stays malformed
+  // exactly as before.
+  test("stripe-mode row with null status but an attached Stripe identity (pending, before first webhook) -> locked, not the first-time trial state", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: null }), NOW);
     assertLocked(result);
     assert.equal(result.state, "malformed");
     assert.equal(result.reason, "malformed_missing_status");
   });
 
-  test("stripe-mode row with empty-string status -> locked", () => {
+  test("stripe-mode row with empty-string status and an attached Stripe identity -> locked", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: "" }), NOW);
     assertLocked(result);
     assert.equal(result.state, "malformed");
@@ -408,6 +450,116 @@ describe("malformed billing state -> locked, never full, never a guessed read-on
     assertLocked(result);
     assert.equal(result.state, "malformed");
     assert.equal(result.reason, "malformed_access_ended_date");
+  });
+});
+
+// Phase 5.7D-R11: a real production signup exposed this exact gap -- a
+// brand-new workspace (billing_mode='stripe', stripe_status still null,
+// never been to Checkout) was resolving to "malformed" and shown
+// "reactivate your subscription... your data has been preserved," both
+// false for an account that never had anything. These tests prove the
+// corrected, narrowly-scoped distinction.
+describe("trial_not_started -- a genuinely pristine, never-checked-out workspace (Phase 5.7D-R11)", () => {
+  test("billing_mode='stripe', stripe_status=null, trial_consumed_at=null, no Stripe identity, no prior-access history -> trial_not_started, not malformed", () => {
+    const result = resolveEntitlement(pristineStripeRecord(), NOW);
+    assertTrialNotStarted(result);
+    assert.equal(result.state, "trial_not_started");
+    assert.equal(result.reason, "trial_not_started");
+  });
+
+  test("the exact same pristine shape with an empty-string status (not just null) also resolves to trial_not_started", () => {
+    const result = resolveEntitlement(pristineStripeRecord({ stripeStatus: "" }), NOW);
+    assertTrialNotStarted(result);
+    assert.equal(result.state, "trial_not_started");
+  });
+
+  test("grants zero operational, mutation, notification, public-booking, job-tracking, or export capability -- only canManageBilling", () => {
+    const result = resolveEntitlement(pristineStripeRecord(), NOW);
+    assert.equal(result.hasOperationalAccess, false);
+    assert.equal(result.canMutateOperationalData, false);
+    assert.equal(result.canSendNotifications, false);
+    assert.equal(result.canUsePublicBooking, false);
+    assert.equal(result.canUseJobTracking, false);
+    assert.equal(result.canExportData, false);
+    assert.equal(result.canViewExistingData, false);
+    assert.equal(result.canManageBilling, true);
+  });
+
+  test("trial_consumed_at set (a workspace that has consumed a trial before, however its status went null) -> stays malformed, never offered a second trial invitation", () => {
+    const result = resolveEntitlement(pristineStripeRecord({ trialConsumedAt: new Date("2026-01-01T00:00:00.000Z") }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+    assert.equal(result.reason, "malformed_missing_status");
+  });
+
+  test("a Stripe customer or subscription id already attached -> stays malformed, not treated as pristine", () => {
+    const result = resolveEntitlement(pristineStripeRecord({ hasStripeIdentity: true }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+  });
+
+  test("a prior canceled_at -> stays malformed (this workspace had access before; a null status now is suspicious, not a first-time signal)", () => {
+    const result = resolveEntitlement(pristineStripeRecord({ canceledAt: new Date("2026-01-01T00:00:00.000Z") }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+  });
+
+  test("a prior access_ended_at -> stays malformed", () => {
+    const result = resolveEntitlement(pristineStripeRecord({ accessEndedAt: new Date("2026-01-01T00:00:00.000Z") }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+  });
+
+  test("a prior current_period_end -> stays malformed (evidence of a once-real billing period)", () => {
+    const result = resolveEntitlement(pristineStripeRecord({ currentPeriodEnd: new Date("2026-01-01T00:00:00.000Z") }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "malformed");
+  });
+
+  test("a formerly canceled-and-now-locked workspace (real lifecycle, real canceled_at, status still 'canceled' -- not null) is completely unaffected by this change", () => {
+    const result = resolveEntitlement(
+      stripeRecord({ stripeStatus: "canceled", canceledAt: new Date(NOW.getTime() - READ_ONLY_PERIOD_MS - 1) }),
+      NOW
+    );
+    assertLocked(result);
+    assert.equal(result.state, "canceled_locked");
+    assert.notEqual(result.state, "trial_not_started");
+  });
+
+  test("incomplete and incomplete_expired are unaffected -- they have a real, non-null status and never match the null/undefined/empty branch at all", () => {
+    const incomplete = resolveEntitlement(stripeRecord({ stripeStatus: "incomplete" }), NOW);
+    assertLocked(incomplete);
+    assert.equal(incomplete.state, "incomplete");
+
+    const expired = resolveEntitlement(stripeRecord({ stripeStatus: "incomplete_expired" }), NOW);
+    assertLocked(expired);
+    assert.equal(expired.state, "incomplete_expired");
+  });
+
+  test("no client-controlled field can force this state -- resolveEntitlement takes only a SubscriptionRecord already read server-side from the database, never a request body/query param/header", () => {
+    // Structural proof, not a runtime one: resolveEntitlement's signature
+    // is (subscription: SubscriptionRecord | null, now: Date) -- there is
+    // no third "trust me" parameter, and every field on SubscriptionRecord
+    // is populated exclusively by lib/entitlementServer.ts's toRecord()
+    // from a service-role Supabase read (see that file), never from
+    // anything a browser supplies.
+    const result = resolveEntitlement(pristineStripeRecord(), NOW);
+    assert.equal(result.state, "trial_not_started");
+    // Reusing the exact same fixture is itself the point: the ONLY way to
+    // reach this state is for the underlying stored row to genuinely be
+    // pristine -- there is no flag on the input shape a caller could set
+    // to fake it that isn't itself one of the four checked fields, all of
+    // which come from the database, not a request.
+  });
+
+  test("demo/internal workspaces are unaffected -- they never reach this branch of resolveEntitlement at all", () => {
+    const demo = resolveWorkspaceEntitlement(DEMO_WORKSPACE_ID, pristineStripeRecord(), NOW);
+    assert.equal(demo.state, "demo");
+    assert.notEqual(demo.state, "trial_not_started");
+
+    const internal = resolveEntitlement({ ...pristineStripeRecord(), billingMode: "internal" }, NOW);
+    assert.equal(internal.state, "internal");
+    assert.notEqual(internal.state, "trial_not_started");
   });
 });
 

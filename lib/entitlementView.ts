@@ -33,6 +33,15 @@ import type { EntitlementResult } from "@/lib/entitlement";
 // TemporaryUnavailableScreen directly, before DashboardShell/
 // OwnerBillingBanner would ever mount), but the mapping stays correct here
 // for any other consumer and for exhaustiveness.
+// Phase 5.7D-R11: "trial_available" is its own variant, never reused from
+// "locked" -- a workspace that has never been to Checkout at all must
+// never be worded as a lifecycle determination (cancelled/unpaid/
+// permanently locked) that never happened to it. In practice this variant
+// is never rendered by OwnerBillingBanner (app/dashboard/page.tsx shows
+// TrialActivationScreen directly, before DashboardShell/OwnerBillingBanner
+// would ever mount, exactly like "locked"/"temporarily_unavailable"
+// already do), but the mapping stays correct here for any other consumer
+// and for exhaustiveness.
 export type BannerVariant =
   | "none"
   | "grace_warning"
@@ -42,7 +51,8 @@ export type BannerVariant =
   | "locked"
   | "restricted"
   | "verification_error"
-  | "temporarily_unavailable";
+  | "temporarily_unavailable"
+  | "trial_available";
 export type RecoveryAction = "checkout" | "portal" | "support" | null;
 
 export type EntitlementView = {
@@ -98,6 +108,15 @@ function presentationFor(result: EntitlementResult): { bannerVariant: BannerVari
     case "internal":
     case "demo":
       return { bannerVariant: "none", recoveryAction: null };
+
+    // Phase 5.7D-R11: a genuinely pristine, never-checked-out workspace
+    // (lib/entitlement.ts's "trial_not_started"). "checkout" is the exact
+    // same recoveryAction already used for canceled_read_only/
+    // canceled_locked/no_subscription -- it invokes the identical,
+    // already-server-revalidated POST /api/stripe/checkout route via
+    // beginBillingRecovery; no new recovery action or route is needed.
+    case "trial_not_started":
+      return { bannerVariant: "trial_available", recoveryAction: "checkout" };
 
     case "past_due_grace":
       // Fully operational (Phase 5.5A policy decision #2) -- this is a

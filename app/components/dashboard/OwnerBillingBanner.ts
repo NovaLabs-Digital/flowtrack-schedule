@@ -90,6 +90,17 @@ function contentFor(variant: NonNoneVariant, finalAccessDate: Date | null, readO
         title: "Temporarily unavailable",
         body: "We're having trouble loading your account right now. Your data is safe. Please try again in a moment.",
       };
+    case "trial_available":
+      // Phase 5.7D-R11: defensive-only, same reasoning as
+      // temporarily_unavailable above -- app/dashboard/page.tsx renders
+      // TrialActivationScreen directly for "trial_not_started" and never
+      // mounts this banner at all. Kept accurate (the true first-time
+      // invitation, never "reactivate"/"read-only period ended") for
+      // exhaustiveness and for any future consumer.
+      return {
+        title: "Start your 30-day free trial",
+        body: "No charge today. $24.99/month after the trial unless canceled.",
+      };
   }
 }
 
@@ -122,6 +133,7 @@ const VARIANT_STYLE: Record<NonNoneVariant, { wrap: string; title: string; body:
   restricted: { wrap: "border-amber-200 bg-amber-50", title: "text-amber-900", body: "text-amber-800" },
   verification_error: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
   temporarily_unavailable: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
+  trial_available: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
 };
 
 export default function OwnerBillingBanner({ bannerVariant, recoveryAction, finalAccessDate, readOnlyEndsAt }: OwnerBillingBannerProps) {
