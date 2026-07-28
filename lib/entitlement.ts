@@ -17,7 +17,14 @@
 //
 //   Read-only access, for 30 calendar days starting from a reliable,
 //   status-specific boundary timestamp:
-//     - canceled:  30 days from canceled_at (Phase 5.6E, unchanged)
+//     - canceled:  30 days from canceled_at (Phase 5.6E) -- Phase 5.6D
+//                  narrows this to genuinely PAID cancellations only. A
+//                  subscription canceled at or before its own trial_end
+//                  (a voluntary trial cancellation) instead gets NO
+//                  read-only period at all -- immediate canceled_locked.
+//                  See the "canceled" branch below for the exact boundary
+//                  check and why it stays reliable across reconciliation,
+//                  delayed webhooks, and reactivation.
 //     - past_due:  30 days from the exact instant the 3-day grace expired
 //                  (graceUntil) -- previously indefinite; Phase 5.6F fixes
 //                  this to match the approved "do not allow indefinite
@@ -501,14 +508,39 @@ export function resolveEntitlement(subscription: SubscriptionRecord | null, now:
     }
 
     case "canceled": {
-      // Phase 5.6E, unchanged: the boundary is canceled_at -- Stripe sets
-      // it at the exact instant the subscription actually stops, which is
-      // what "trial or paid access ends" means for both the trial-expiry
-      // and paid-cancellation approved scenarios.
-      const timed = resolveTimedRestriction(now, canceledAt);
-      if (!timed) {
+      if (!isValidDate(canceledAt)) {
         return buildResult("malformed", "malformed_canceled_date", LOCKED_CAPABILITIES, diagnostics);
       }
+      // Phase 5.6D: the approved policy ties the 30-day owner read-only
+      // grace exclusively to PAID access ending -- a subscription
+      // voluntarily canceled while still within its trial gets NO
+      // read-only period, immediate locked access instead. trial_end is
+      // never touched by this branch for a genuine paid cancellation (it
+      // stays in the past, from the trial that already converted), so this
+      // check only ever fires for a real trial-time cancellation: trial_end
+      // is always (re)written alongside canceled_at from the same live
+      // Stripe subscription object (buildSubscriptionPatchFromStripeSubscription
+      // in lib/stripeWebhook.ts), so the two are always mutually consistent
+      // for whichever subscription id is currently stored -- including
+      // across reconciliation, delayed webhook delivery, and reactivation
+      // (a reactivated, no-longer-trial-eligible resubscription is a NEW
+      // Stripe subscription object with its own null trial_end, which never
+      // matches this branch). A workspace with no trial at all (trial_end
+      // null) never matches this branch either, correctly falling through
+      // to the standard 30-day read-only path below.
+      if (isValidDate(trialEnd) && canceledAt.getTime() <= trialEnd.getTime()) {
+        return buildResult("canceled_locked", "canceled_locked", LOCKED_CAPABILITIES, {
+          ...diagnostics,
+          restrictedSince: canceledAt,
+          // Zero-length read-only window -- locked from the same instant
+          // access ended, not merely "already past" a real 30-day window.
+          readOnlyEndsAt: canceledAt,
+        });
+      }
+      // Phase 5.6E, unchanged for every genuinely paid cancellation: the
+      // boundary is canceled_at -- Stripe sets it at the exact instant the
+      // subscription actually stops.
+      const timed = resolveTimedRestriction(now, canceledAt)!;
       return buildResult(
         timed.locked ? "canceled_locked" : "canceled_read_only",
         timed.locked ? "canceled_locked" : "canceled_read_only",

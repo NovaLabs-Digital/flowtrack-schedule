@@ -25,7 +25,7 @@ export default function TermsPage() {
 
       <main className="max-w-3xl mx-auto px-6 py-12">
         <h1 className="text-2xl font-bold text-slate-900">ScheduleFlowTrack Terms of Service</h1>
-        <p className="mt-2 text-sm text-slate-500">Effective Date: July 25, 2026</p>
+        <p className="mt-2 text-sm text-slate-500">Effective Date: July 26, 2026</p>
 
         <div className="mt-8 space-y-8 text-sm leading-relaxed text-slate-700">
           <section>
@@ -140,9 +140,9 @@ export default function TermsPage() {
             <p className="mt-2">
               ScheduleFlowTrack Pro includes a 30-day free trial. A payment method is collected when you sign up, and
               you receive full Pro access during the trial. If you cancel during the trial, no subscription charge
-              will occur. Cancellation during the trial takes effect when the 30-day trial expires, not immediately —
-              you retain full access through the exact end of the trial period. If you do not cancel, billing begins
-              automatically at $24.99 USD per month once the trial ends.
+              will occur, and your access ends immediately — trial cancellation does not include the 30-day
+              read-only period described in Section 16. If you do not cancel, billing begins automatically at $24.99
+              USD per month once the trial ends.
             </p>
             <p className="mt-2">
               The 30-day free trial is available once per customer business. It belongs to your business account, not
@@ -176,25 +176,30 @@ export default function TermsPage() {
             <p className="mt-2">
               You may cancel at any time. If you are on a paid subscription, cancellation takes effect at the end of
               your current paid billing period, and you will continue to have access to the Service through the end
-              of that period. If you are still within your free trial, see Section 12 above — cancellation takes
-              effect at the end of the trial, not immediately.
+              of that period; see Section 16 for what happens next. If you are still within your free trial, see
+              Section 12 above — cancellation takes effect immediately, and you do not receive the read-only period
+              described in Section 16.
             </p>
           </section>
 
           <section>
             <h2 className="text-base font-semibold text-slate-900">16. Read-Only Access and Data After Cancellation</h2>
             <p className="mt-2">
-              After your trial or paid access ends, you (the business owner) receive 30 calendar days of read-only
-              access. During this period you can log in, view your existing business data, and use any export or
-              copy capability the Service makes available at that time — but you cannot create, edit, delete,
-              schedule, reschedule, or send messages, and scheduled reminder notifications are turned off. Employees
-              lose access as soon as your trial or paid access ends — employees do not receive this read-only period.
+              After access under an eligible paid subscription ends (Section 15), you (the business owner) receive
+              30 calendar days of read-only access. During this period you can log in, view your existing business
+              data, and use any export or copy capability the Service makes available at that time — but you cannot
+              create, edit, delete, schedule, reschedule, or send messages, and scheduled reminder notifications are
+              turned off. If you cancel during your free trial instead (Section 12), you do not receive this
+              read-only period — your access, and scheduled reminder notifications, end immediately. Employees lose
+              access as soon as your trial or paid access ends — employees do not receive this read-only period,
+              regardless of how your access ended.
             </p>
             <p className="mt-2">
-              After the 30-day read-only period, operational access to the Service is locked. You will still be able
-              to log in and reach billing so you can reactivate. Reactivating your subscription restores full access
-              with your existing business data intact — nothing is deleted, altered, or lost during the read-only or
-              locked periods.
+              After the 30-day read-only period — or immediately, if your free trial was canceled — operational
+              access to the Service is locked. You will still be able to log in and reach billing so you can
+              reactivate. Reactivating your subscription restores full access with your existing business data
+              intact — nothing is deleted, altered, or lost during the read-only or locked periods — and does not
+              grant another free trial (Section 12).
             </p>
             <p className="mt-2">
               We do not promise that your data will be retained indefinitely. Any future deletion of a long-inactive,

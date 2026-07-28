@@ -25,7 +25,7 @@ export default function PrivacyPage() {
 
       <main className="max-w-3xl mx-auto px-6 py-12">
         <h1 className="text-2xl font-bold text-slate-900">ScheduleFlowTrack Privacy Policy</h1>
-        <p className="mt-2 text-sm text-slate-500">Effective Date: July 25, 2026</p>
+        <p className="mt-2 text-sm text-slate-500">Effective Date: July 26, 2026</p>
 
         <div className="mt-8 space-y-8 text-sm leading-relaxed text-slate-700">
           <section>
@@ -157,9 +157,11 @@ export default function PrivacyPage() {
             <h2 className="text-base font-semibold text-slate-900">14. Read-Only Access and Retention After Cancellation</h2>
             <p className="mt-2">
               Your business data is retained after your trial or paid access ends so that you can return and
-              reactivate. For 30 days after access ends, the account owner has read-only access to existing data; the
-              underlying business data remains stored after operational access is locked at the end of that period,
-              and reactivating restores full access to it.
+              reactivate. If you cancel during your free trial, operational access is locked immediately, with no
+              read-only period; if a paid subscription&apos;s access ends, the account owner instead has 30 days of
+              read-only access to existing data before operational access is locked. In either case, the underlying
+              business data remains stored once operational access is locked, and reactivating restores full access
+              to it.
             </p>
             <p className="mt-2">
               As a matter of current business policy, we may periodically review accounts that remain non-paying and

@@ -32,11 +32,15 @@ describe("prop wiring", () => {
     assert.match(source, /canMutateOperationalData:\s*boolean/);
   });
 
-  test("SettingsPanel forwards canMutateOperationalData to CompanyInfoPanel", () => {
+  test("Props includes isTrialing: boolean (Phase 5.6D)", () => {
+    assert.match(source, /isTrialing:\s*boolean/);
+  });
+
+  test("SettingsPanel forwards canMutateOperationalData and isTrialing to CompanyInfoPanel", () => {
     const idx = settingsPanelSource.indexOf('if (section === "company")');
     assert.notEqual(idx, -1);
-    const line = settingsPanelSource.slice(idx, idx + 120);
-    assert.match(line, /<CompanyInfoPanel canMutateOperationalData=\{canMutateOperationalData\} \/>/);
+    const line = settingsPanelSource.slice(idx, idx + 160);
+    assert.match(line, /<CompanyInfoPanel canMutateOperationalData=\{canMutateOperationalData\} isTrialing=\{isTrialing\} \/>/);
   });
 });
 
@@ -165,6 +169,84 @@ describe("preview-only and coming-soon controls remain fully ungoverned (no real
   });
 });
 
+describe("Phase 5.6D: Cancel Free Trial action, gated on isTrialing", () => {
+  // The button's own render site, not this file's earlier prose comment
+  // that also happens to mention "Cancel Free Trial" by name.
+  const cancelButtonBlockStart = source.indexOf("{isTrialing && !confirmingCancel && (");
+
+  test("the Cancel Free Trial button only renders when isTrialing is true, and Manage Subscription only when it's false -- never both", () => {
+    assert.ok(source.includes("{!isTrialing && ("));
+    assert.notEqual(cancelButtonBlockStart, -1);
+    const cancelBtnIdx = source.indexOf("Cancel Free Trial", cancelButtonBlockStart);
+    assert.notEqual(cancelBtnIdx, -1);
+  });
+
+  test("clicking Cancel Free Trial shows a confirmation step -- no network call happens on the first click", () => {
+    const idx = source.indexOf("Cancel Free Trial", cancelButtonBlockStart);
+    const before = source.slice(cancelButtonBlockStart, idx);
+    assert.ok(before.includes("setConfirmingCancel(true)"));
+    assert.ok(!before.includes('fetch("/api/stripe/cancel-trial"'));
+  });
+
+  test("the confirmation step clearly warns that canceling ends access immediately, with no read-only period", () => {
+    const idx = source.indexOf("Cancel your free trial?");
+    assert.notEqual(idx, -1);
+    // JSX text wraps across source lines; collapsing whitespace mirrors how
+    // the browser actually renders it (matching app/terms/page.test.ts's
+    // own established convention for the same reason).
+    const block = source.slice(idx, idx + 400).replace(/\s+/g, " ");
+    assert.ok(block.toLowerCase().includes("immediately"));
+    assert.ok(block.toLowerCase().includes("no read-only period"));
+  });
+
+  test("the confirmation step offers an explicit cancel-out (\"Never mind\") that never calls the network", () => {
+    const idx = source.indexOf("Never mind");
+    assert.notEqual(idx, -1);
+    const before = source.slice(Math.max(0, idx - 400), idx);
+    assert.ok(before.includes("setConfirmingCancel(false)"));
+    assert.ok(!before.includes("fetch("));
+  });
+
+  test("handleCancelTrial guards synchronously on cancelInFlightRef before any network call, matching the OwnerBillingBanner/TrialActivationScreen double-click precedent", () => {
+    const fnStart = source.indexOf("async function handleCancelTrial()");
+    assert.notEqual(fnStart, -1);
+    const braceIdx = source.indexOf("{", fnStart);
+    const afterBrace = source.slice(braceIdx + 1, braceIdx + 200);
+    const firstNonBlank = afterBrace.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+    assert.equal(firstNonBlank, "if (cancelInFlightRef.current) return;");
+    const guardIdx = source.indexOf("if (cancelInFlightRef.current) return;", fnStart);
+    const fetchIdx = source.indexOf('fetch("/api/stripe/cancel-trial"', fnStart);
+    assert.ok(guardIdx < fetchIdx);
+  });
+
+  test("the Confirm Cancellation button is disabled and aria-busy while a request is in flight -- a second click cannot fire during the request", () => {
+    const idx = source.indexOf("Confirm Cancellation");
+    const before = source.slice(Math.max(0, idx - 400), idx);
+    assert.ok(before.includes("disabled={cancelling}"));
+    assert.ok(before.includes('aria-busy={cancelling}'));
+    assert.ok(before.includes("onClick={handleCancelTrial}"));
+  });
+
+  test("calls POST /api/stripe/cancel-trial with no request body -- workspace identity is never supplied client-side", () => {
+    assert.match(source, /fetch\("\/api\/stripe\/cancel-trial",\s*\{\s*method:\s*"POST"\s*\}\)/);
+  });
+
+  test("a successful cancellation closes the confirmation step and shows a success message; a failure keeps confirming false and shows the server's error text", () => {
+    const fnStart = source.indexOf("async function handleCancelTrial()");
+    const fnBody = source.slice(fnStart, fnStart + 900);
+    assert.ok(fnBody.includes("setConfirmingCancel(false)"));
+    assert.ok(fnBody.includes('type: "success"'));
+    assert.ok(fnBody.includes('type: "error"'));
+    assert.ok(fnBody.includes("data.error ||"));
+  });
+
+  test("Cancel Free Trial and its confirmation step carry no canMutateOperationalData guard -- trial cancellation is independent of that capability (a trialing subscription always has full capabilities anyway; the server route is the actual authority)", () => {
+    const idx = source.indexOf("Cancel Free Trial", cancelButtonBlockStart);
+    const block = source.slice(cancelButtonBlockStart, idx + 50);
+    assert.ok(!block.includes("CapabilityGatedButton"));
+  });
+});
+
 describe("form input fields remain interactive (not individually gated)", () => {
   test("Company Name / Address / Phone / Email input onChange handlers carry no capability guard -- only the Save actions are gated, matching the ClientPanel precedent", () => {
     for (const handler of [
@@ -187,7 +269,7 @@ describe("no duplicated billing surface, no leaked internal detail", () => {
     assert.ok(!source.includes("OwnerBillingBanner"));
   });
 
-  test("no billing/subscription-identifier/Stripe/entitlement-reason/workspace-identifier vocabulary appears in this file", () => {
+  test("no billing/subscription-identifier/Stripe/entitlement-reason/workspace-identifier vocabulary appears in this file, beyond the one approved cancel-trial route call", () => {
     // "subscription"/"Subscription" and "workspace" deliberately excluded:
     // this file legitimately renders a "Subscription & Plan" preview card
     // (pre-existing, unrelated to this phase) and this component's own new
@@ -198,11 +280,21 @@ describe("no duplicated billing surface, no leaked internal detail", () => {
     // result's `.state` field, which this file never imports or reads. The
     // precise identifiers that would matter (workspaceId, a raw entitlement
     // reason) are checked instead.
+    //
+    // Phase 5.6D: the literal route path "/api/stripe/cancel-trial" is the
+    // ONE deliberate exception -- checked separately, and this test
+    // operates on the source with that one literal string stripped out
+    // first, so every OTHER Stripe/billing-detail leak this test guards
+    // against is still caught. No entitlement reason/status/id ever
+    // appears -- the component only ever fires a plain authenticated POST
+    // and reads back {ok}/{error}, exactly like its existing
+    // fetch("/api/settings/company", ...) call.
+    const withoutApprovedRoute = source.replaceAll("/api/stripe/cancel-trial", "");
     for (const forbidden of [
       "Stripe", "stripe", "workspaceId", "workspace_id",
       "past_due", "canceled", "malformed", "billingMode", ".reason",
     ]) {
-      assert.ok(!source.includes(forbidden), `CompanyInfoPanel.tsx must not contain "${forbidden}"`);
+      assert.ok(!withoutApprovedRoute.includes(forbidden), `CompanyInfoPanel.tsx must not contain "${forbidden}"`);
     }
   });
 

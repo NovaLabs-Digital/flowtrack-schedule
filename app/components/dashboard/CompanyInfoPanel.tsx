@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import SettingsCard, { DirtyHint, PreviewPill } from "@/app/components/dashboard/SettingsCard";
 import SettingsToggle from "@/app/components/dashboard/SettingsToggle";
 import CompanyStatusStrip from "@/app/components/dashboard/CompanyStatusStrip";
@@ -41,7 +41,16 @@ function initials(name: string): string {
   return words.slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
 }
 
-export default function CompanyInfoPanel({ canMutateOperationalData }: { canMutateOperationalData: boolean }) {
+export default function CompanyInfoPanel({
+  canMutateOperationalData,
+  isTrialing,
+}: {
+  canMutateOperationalData: boolean;
+  // Phase 5.6D: true only for a plain trialing subscription with no
+  // cancellation already scheduled -- see lib/entitlementView.ts. The one
+  // condition under which the Cancel Free Trial action below is offered.
+  isTrialing: boolean;
+}) {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status | null>(null);
 
@@ -65,6 +74,42 @@ export default function CompanyInfoPanel({ canMutateOperationalData }: { canMuta
   function showComingSoon(text: string) {
     setToast(text);
     window.setTimeout(() => setToast(null), 2500);
+  }
+
+  // Phase 5.6D — Cancel Free Trial: a two-step confirm (never a single
+  // click) that ends TRIAL access immediately via POST
+  // /api/stripe/cancel-trial. Separate from `msg`/`toast` above -- this is
+  // its own real network action, not a Company Information save result or a
+  // decorative "coming soon" notice. `confirming` gates the inline warning;
+  // `cancelling` plus the synchronous `cancelInFlightRef` guard (the same
+  // double-click protection pattern already established elsewhere in this
+  // codebase's billing-action components) prevents a duplicate request
+  // from one rapid double-click.
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelResult, setCancelResult] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const cancelInFlightRef = useRef(false);
+
+  async function handleCancelTrial() {
+    if (cancelInFlightRef.current) return;
+    cancelInFlightRef.current = true;
+    setCancelling(true);
+    setCancelResult(null);
+    try {
+      const res = await fetch("/api/stripe/cancel-trial", { method: "POST" });
+      const data = await res.json().catch(() => ({}) as { error?: string });
+      if (res.ok) {
+        setConfirmingCancel(false);
+        setCancelResult({ type: "success", text: "Your free trial has ended immediately, as requested." });
+      } else {
+        setCancelResult({ type: "error", text: data.error || "Unable to cancel your trial right now. Please try again." });
+      }
+    } catch {
+      setCancelResult({ type: "error", text: "Unable to cancel your trial right now. Please try again." });
+    } finally {
+      cancelInFlightRef.current = false;
+      setCancelling(false);
+    }
   }
 
   // Automation toggles — real, persisted columns, live together in their
@@ -579,14 +624,64 @@ export default function CompanyInfoPanel({ canMutateOperationalData }: { canMuta
               <div className="mt-1 text-sm font-semibold text-slate-900">Managed by Nova Labs Digital</div>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => showComingSoon("Subscription management is coming soon.")}
-            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            Manage Subscription
-          </button>
+          {!isTrialing && (
+            <button
+              type="button"
+              onClick={() => showComingSoon("Subscription management is coming soon.")}
+              className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Manage Subscription
+            </button>
+          )}
+          {isTrialing && !confirmingCancel && (
+            <button
+              type="button"
+              onClick={() => {
+                setCancelResult(null);
+                setConfirmingCancel(true);
+              }}
+              className="rounded-xl border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50 transition-colors"
+            >
+              Cancel Free Trial
+            </button>
+          )}
         </div>
+        {isTrialing && confirmingCancel && (
+          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4">
+            <div className="text-sm font-semibold text-rose-900">Cancel your free trial?</div>
+            <div className="mt-1 text-xs text-rose-800">
+              Canceling now ends access immediately — you will not keep access for the remainder of the trial, and there is no
+              read-only period afterward.
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={handleCancelTrial}
+                disabled={cancelling}
+                aria-busy={cancelling}
+                className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50 transition-colors"
+              >
+                {cancelling ? "Cancelling..." : "Confirm Cancellation"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingCancel(false)}
+                disabled={cancelling}
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors"
+              >
+                Never mind
+              </button>
+            </div>
+          </div>
+        )}
+        {cancelResult && (
+          <div
+            role={cancelResult.type === "error" ? "alert" : "status"}
+            className={`mt-3 text-xs ${cancelResult.type === "error" ? "text-rose-700" : "text-emerald-700"}`}
+          >
+            {cancelResult.text}
+          </div>
+        )}
       </SettingsCard>
     </div>
   );

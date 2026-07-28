@@ -59,6 +59,19 @@ export type EntitlementView = {
   canMutateOperationalData: boolean;
   canUseJobTracking: boolean;
   canSendNotifications: boolean;
+  // Phase 5.6D: true ONLY for a plain trialing subscription with no
+  // cancellation already scheduled -- the one condition under which the
+  // Subscription & Billing area's application-controlled "Cancel Free
+  // Trial" action (POST /api/stripe/cancel-trial) should be offered at all.
+  // Deliberately narrower than state === "trialing" alone: if
+  // cancelAtPeriodEnd is already true, bannerVariant is already
+  // "cancel_scheduled_trial" (see presentationFor below) and the owner
+  // manages that existing scheduled cancellation through the billing
+  // portal instead -- this flag and that banner are never both meant to
+  // offer a cancellation action at once. This is a derived boolean, not
+  // the raw canonical state -- still never billing_mode/stripeStatus/state
+  // itself, matching every other field on this projection.
+  isTrialing: boolean;
   bannerVariant: BannerVariant;
   recoveryAction: RecoveryAction;
   // Phase 5.6E: the two dates the approved owner-facing UX explicitly
@@ -194,6 +207,7 @@ export function projectEntitlementForOwner(result: EntitlementResult): Entitleme
     canMutateOperationalData: result.canMutateOperationalData,
     canUseJobTracking: result.canUseJobTracking,
     canSendNotifications: result.canSendNotifications,
+    isTrialing: result.state === "trialing" && !result.cancelAtPeriodEnd,
     bannerVariant,
     recoveryAction,
     // Only ever non-null for the exact banner variants that need to display

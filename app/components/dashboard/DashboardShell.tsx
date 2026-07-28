@@ -378,6 +378,7 @@ export default function DashboardShell({
               onSignOut={handleSignOut}
               signingOut={signingOut}
               canMutateOperationalData={entitlement.canMutateOperationalData}
+              isTrialing={entitlement.isTrialing}
             />
           )}
         </div>

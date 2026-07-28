@@ -52,6 +52,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: true,
       canUseJobTracking: true,
       canSendNotifications: true,
+      isTrialing: false,
       bannerVariant: "none",
       recoveryAction: null,
       finalAccessDate: null,
@@ -59,12 +60,13 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
     });
   });
 
-  test("trialing: full capabilities, no banner, no recovery action", () => {
+  test("trialing: full capabilities, no banner, no recovery action, isTrialing true", () => {
     const result = resolveEntitlement(stripeRecord({ stripeStatus: "trialing" }), NOW);
     assert.deepEqual(projectEntitlementForOwner(result), {
       canMutateOperationalData: true,
       canUseJobTracking: true,
       canSendNotifications: true,
+      isTrialing: true,
       bannerVariant: "none",
       recoveryAction: null,
       finalAccessDate: null,
@@ -78,6 +80,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: true,
       canUseJobTracking: true,
       canSendNotifications: true,
+      isTrialing: false,
       bannerVariant: "grace_warning",
       recoveryAction: "portal",
       finalAccessDate: null,
@@ -91,6 +94,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "read_only",
       recoveryAction: "portal",
       finalAccessDate: null,
@@ -109,6 +113,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "locked",
       recoveryAction: "portal",
       finalAccessDate: null,
@@ -122,6 +127,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "read_only",
       recoveryAction: "portal",
       finalAccessDate: null,
@@ -136,6 +142,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "read_only",
       recoveryAction: "portal",
       finalAccessDate: null,
@@ -150,6 +157,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "read_only",
       recoveryAction: "checkout",
       finalAccessDate: null,
@@ -166,6 +174,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "locked",
       recoveryAction: "checkout",
       finalAccessDate: null,
@@ -173,13 +182,38 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
     });
   });
 
-  test("cancel_scheduled_trial: FULL capabilities (still trialing), cancel_scheduled_trial banner with the exact trial-end date, portal recovery", () => {
+  // Phase 5.6D regression proof: a subscription canceled while still
+  // within its trial window resolves to canceled_locked (see
+  // lib/entitlement.test.ts's matching resolver-level proof) -- this
+  // confirms the projection layer maps that outcome the exact same way an
+  // ordinary paid canceled_locked already is, with isTrialing false (the
+  // subscription is no longer trialing -- it's canceled) and no
+  // Cancel-Free-Trial action offered for an already-canceled subscription.
+  test("canceled_locked reached via an in-trial cancellation: identical projection shape to a paid canceled_locked, isTrialing false", () => {
+    const trialEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 20);
+    const canceledAt = new Date(NOW.getTime() - 1000);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt, trialEnd }), NOW);
+    assert.equal(result.state, "canceled_locked");
+    assert.deepEqual(projectEntitlementForOwner(result), {
+      canMutateOperationalData: false,
+      canUseJobTracking: false,
+      canSendNotifications: false,
+      isTrialing: false,
+      bannerVariant: "locked",
+      recoveryAction: "checkout",
+      finalAccessDate: null,
+      readOnlyEndsAt: null,
+    });
+  });
+
+  test("cancel_scheduled_trial: FULL capabilities (still trialing), cancel_scheduled_trial banner with the exact trial-end date, portal recovery, isTrialing FALSE (already scheduled -- managed via the portal, not the Cancel Free Trial action)", () => {
     const trialEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 10);
     const result = resolveEntitlement(stripeRecord({ stripeStatus: "trialing", trialEnd, cancelAtPeriodEnd: true }), NOW);
     assert.deepEqual(projectEntitlementForOwner(result), {
       canMutateOperationalData: true,
       canUseJobTracking: true,
       canSendNotifications: true,
+      isTrialing: false,
       bannerVariant: "cancel_scheduled_trial",
       recoveryAction: "portal",
       finalAccessDate: trialEnd,
@@ -194,6 +228,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: true,
       canUseJobTracking: true,
       canSendNotifications: true,
+      isTrialing: false,
       bannerVariant: "cancel_scheduled_paid",
       recoveryAction: "portal",
       finalAccessDate: currentPeriodEnd,
@@ -214,6 +249,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "locked",
       recoveryAction: "checkout",
       finalAccessDate: null,
@@ -227,6 +263,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "verification_error",
       recoveryAction: "support",
       finalAccessDate: null,
@@ -247,6 +284,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "trial_available",
       recoveryAction: "checkout",
       finalAccessDate: null,
@@ -262,6 +300,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: false,
       canUseJobTracking: false,
       canSendNotifications: false,
+      isTrialing: false,
       bannerVariant: "temporarily_unavailable",
       recoveryAction: null,
       finalAccessDate: null,
@@ -283,6 +322,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: true,
       canUseJobTracking: true,
       canSendNotifications: true,
+      isTrialing: false,
       bannerVariant: "none",
       recoveryAction: null,
       finalAccessDate: null,
@@ -296,6 +336,7 @@ describe("projectEntitlementForOwner -- approved state-to-projection mapping", (
       canMutateOperationalData: true,
       canUseJobTracking: true,
       canSendNotifications: true,
+      isTrialing: false,
       bannerVariant: "none",
       recoveryAction: null,
       finalAccessDate: null,
@@ -363,7 +404,7 @@ describe("the owner projection never leaks raw entitlement/billing fields", () =
     resolveEntitlement({ ...stripeRecord(), billingMode: "internal", stripeStatus: null }, NOW),
   ];
 
-  test("contains exactly the seven approved keys, nothing else, for every fixture", () => {
+  test("contains exactly the eight approved keys, nothing else, for every fixture", () => {
     for (const result of FIXTURES) {
       const view = projectEntitlementForOwner(result);
       assert.deepEqual(
@@ -374,6 +415,7 @@ describe("the owner projection never leaks raw entitlement/billing fields", () =
           "canSendNotifications",
           "canUseJobTracking",
           "finalAccessDate",
+          "isTrialing",
           "readOnlyEndsAt",
           "recoveryAction",
         ]

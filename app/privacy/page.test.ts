@@ -18,8 +18,9 @@ describe("app/privacy/page.tsx", () => {
     assert.ok(source.includes("Nova Labs Digital LLC"));
   });
 
-  test("effective date is exactly July 25, 2026", () => {
-    assert.ok(source.includes("Effective Date: July 25, 2026"));
+  test("effective date is exactly July 26, 2026 (Phase 5.6D: updated for the material Section 14 correction resolving a direct contradiction with the corrected Terms)", () => {
+    assert.ok(source.includes("Effective Date: July 26, 2026"));
+    assert.ok(!source.includes("Effective Date: July 25, 2026"));
   });
 
   test("does not claim ScheduleFlowTrack stores raw payment-card details -- states Stripe processes them instead", () => {
@@ -38,11 +39,15 @@ describe("app/privacy/page.tsx", () => {
     assert.ok(normalized.includes("do not currently apply a single fixed retention period"));
   });
 
-  test("Phase 5.6E: states data is retained after cancellation to support reactivation, with the exact 30-day read-only window", () => {
+  test("Phase 5.6D: states data is retained after cancellation to support reactivation -- the 30-day read-only window applies ONLY to paid access ending; a canceled trial locks immediately with no read-only period", () => {
     assert.ok(normalized.includes("Your business data is retained after your trial or paid access ends so that you can return and reactivate"));
-    assert.ok(normalized.includes("For 30 days after access ends, the account owner has read-only access to existing data"));
-    assert.ok(normalized.includes("the underlying business data remains stored after operational access is locked"));
+    assert.ok(normalized.includes("If you cancel during your free trial, operational access is locked immediately, with no read-only period"));
+    assert.ok(normalized.includes("if a paid subscription&apos;s access ends, the account owner instead has 30 days of read-only access to existing data before operational access is locked"));
+    assert.ok(normalized.includes("the underlying business data remains stored once operational access is locked"));
     assert.ok(normalized.includes("reactivating restores full access to it"));
+    // The old, superseded universal-30-days wording (which contradicted the
+    // Phase 5.6D Terms correction) must not reappear.
+    assert.ok(!normalized.includes("For 30 days after access ends, the account owner has read-only access to existing data"));
   });
 
   test("Phase 5.6E: states the annual-review / 12-month / 30-day-notice future deletion policy accurately, without promising an automated system", () => {

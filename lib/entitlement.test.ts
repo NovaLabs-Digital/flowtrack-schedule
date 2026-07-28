@@ -270,6 +270,67 @@ describe("canceled -> currentPeriodEnd is irrelevant to the boundary (canceled_a
   });
 });
 
+describe("canceled during trial (Phase 5.6D) -- immediate lock, no read-only grace", () => {
+  test("canceled_at before trial_end -> canceled_locked immediately, not canceled_read_only", () => {
+    const trialEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 25); // 25 days still remaining
+    const canceledAt = new Date(NOW.getTime() - 1000); // canceled a moment ago
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt, trialEnd }), NOW);
+    assertLocked(result);
+    assert.equal(result.state, "canceled_locked");
+    assert.equal(result.reason, "canceled_locked");
+    assert.equal(result.restrictedSince?.getTime(), canceledAt.getTime());
+    assert.equal(result.readOnlyEndsAt?.getTime(), canceledAt.getTime(), "zero-length read-only window -- locked from the same instant");
+  });
+
+  test("canceled_at exactly equal to trial_end (a scheduled cancel-at-period-end that ran the full trial) -> still no read-only grace", () => {
+    const trialEnd = new Date(NOW.getTime() - 1000);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: trialEnd, trialEnd }), NOW);
+    assert.equal(result.state, "canceled_locked");
+  });
+
+  test("canceled_at after trial_end -> unaffected, follows the normal 30-day paid-cancellation path", () => {
+    const trialEnd = new Date(NOW.getTime() - 1000 * 60 * 60 * 24 * 60); // trial ended 60 days ago
+    const canceledAt = new Date(NOW.getTime() - 1000); // canceled just now, long after converting to paid
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt, trialEnd }), NOW);
+    assertRestricted(result);
+    assert.equal(result.state, "canceled_read_only");
+    assert.equal(result.readOnlyEndsAt?.getTime(), canceledAt.getTime() + READ_ONLY_PERIOD_MS);
+  });
+
+  test("trial_end null (no trial ever granted, e.g. a reactivated resubscription) -> unaffected, normal 30-day path", () => {
+    const canceledAt = new Date(NOW.getTime() - 1000);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt, trialEnd: null }), NOW);
+    assert.equal(result.state, "canceled_read_only");
+  });
+
+  test("a trial cancellation has no operational access, cannot view/export existing data, and cannot send notifications -- same as any other locked state", () => {
+    const trialEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 25);
+    const canceledAt = new Date(NOW.getTime() - 1000);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt, trialEnd }), NOW);
+    assert.equal(result.hasOperationalAccess, false);
+    assert.equal(result.canViewExistingData, false);
+    assert.equal(result.canExportData, false);
+    assert.equal(result.canMutateOperationalData, false);
+    assert.equal(result.canUseJobTracking, false);
+    assert.equal(result.canUsePublicBooking, false);
+    assert.equal(result.canSendNotifications, false);
+  });
+
+  test("billing/reactivation remains reachable immediately after a trial cancellation", () => {
+    const trialEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 25);
+    const canceledAt = new Date(NOW.getTime() - 1000);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt, trialEnd }), NOW);
+    assert.equal(result.canManageBilling, true);
+  });
+
+  test("still fails closed to malformed when canceled_at itself is missing/invalid, even with a trial_end present", () => {
+    const trialEnd = new Date(NOW.getTime() + 1000 * 60 * 60 * 24 * 25);
+    const result = resolveEntitlement(stripeRecord({ stripeStatus: "canceled", canceledAt: null, trialEnd }), NOW);
+    assert.equal(result.state, "malformed");
+    assert.equal(result.reason, "malformed_canceled_date");
+  });
+});
+
 describe("a resubscribed workspace clears every timed restriction", () => {
   test("status active again, canceled_at cleared -> full access, no lingering read-only/locked state", () => {
     // Mirrors what the webhook handler actually writes on resubscription:
