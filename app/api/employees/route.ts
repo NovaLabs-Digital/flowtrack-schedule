@@ -61,7 +61,14 @@ export async function POST(req: Request) {
       active: body.active !== false,
       workspace_id: session.workspaceId,
     };
-    const email = (body.email || "").trim();
+    // Phase: normalized to lowercase, matching the existing convention for
+    // owner-account email at signup (app/api/auth/signup/route.ts). The
+    // uniqueness index (migrations/019) is workspace-scoped and computed
+    // on LOWER(email); storing the normalized value here keeps every write
+    // path consistent with what that index actually compares, and with
+    // what app/api/auth/login/route.ts's employee lookup now normalizes
+    // its own input to.
+    const email = (body.email || "").trim().toLowerCase();
     if (email) row.email = email;
     const position = (body.position || "").trim();
     if (position) row.position = position;
@@ -117,7 +124,7 @@ export async function PATCH(req: Request) {
     if (body.phone !== undefined) update.phone = body.phone.trim() || null;
     if (body.color !== undefined) update.color = body.color.trim();
     if (body.active !== undefined) update.active = body.active;
-    if (body.email !== undefined) update.email = body.email.trim() || null;
+    if (body.email !== undefined) update.email = body.email.trim().toLowerCase() || null;
     if (body.position !== undefined) update.position = body.position.trim() || null;
     const pw = (body.password || "").trim();
     if (pw) update.password_hash = await bcrypt.hash(pw, 10);

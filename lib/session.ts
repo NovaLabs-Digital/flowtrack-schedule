@@ -10,6 +10,10 @@ import {
   signMfaPendingPayload,
   verifyMfaPendingCookie,
   MFA_PENDING_MAX_AGE_SECONDS,
+  signEmployeeWorkspaceSelectionPayload,
+  verifyEmployeeWorkspaceSelectionCookie,
+  EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS,
+  type EmployeeWorkspaceSelectionCandidate,
 } from "@/lib/sessionCrypto";
 
 // workspaceId is present on every non-"none" role — Phase 2 tenant scoping
@@ -145,6 +149,50 @@ export async function getMfaPendingToken(): Promise<string | null> {
   const value = cookieStore.get("sft_mfa_pending")?.value ?? "";
   const payload = await verifyMfaPendingCookie(value);
   return payload?.token ?? null;
+}
+
+// Phase — sft_employee_workspace_pending: the short-lived, single-purpose
+// cookie covering the gap between a password verified against more than one
+// active employee row (same normalized email, different workspaces) and the
+// employee's explicit choice of which workspace to enter. Its payload is
+// only opaque selectionId/employeeId/workspaceId candidate identifiers (see
+// lib/sessionCrypto.ts's EmployeeWorkspaceSelectionPayload) — never a
+// password, password hash, or anything requireRole/requireOwner could
+// mistake for an application session.
+export async function setEmployeeWorkspaceSelectionCookie(
+  res: NextResponse,
+  candidates: EmployeeWorkspaceSelectionCandidate[]
+): Promise<void> {
+  const exp = newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS);
+  const value = await signEmployeeWorkspaceSelectionPayload({ purpose: "employee_workspace_selection", candidates, exp });
+  res.cookies.set("sft_employee_workspace_pending", value, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS,
+  });
+}
+
+export function clearEmployeeWorkspaceSelectionCookie(res: NextResponse): void {
+  res.cookies.set("sft_employee_workspace_pending", "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+  });
+}
+
+// Returns the verified candidate list, or null for anything missing,
+// malformed, tampered, or expired — callers treat null exactly like "no
+// pending selection at all," the same fail-closed convention
+// getMfaPendingToken already uses.
+export async function getEmployeeWorkspaceSelectionCandidates(): Promise<EmployeeWorkspaceSelectionCandidate[] | null> {
+  const cookieStore = await cookies();
+  const value = cookieStore.get("sft_employee_workspace_pending")?.value ?? "";
+  const payload = await verifyEmployeeWorkspaceSelectionCookie(value);
+  return payload?.candidates ?? null;
 }
 
 // Central role gate for API routes — every route in this codebase is

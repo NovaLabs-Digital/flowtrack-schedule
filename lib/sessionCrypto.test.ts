@@ -10,10 +10,13 @@ import {
   verifySessionCookie,
   signMfaPendingPayload,
   verifyMfaPendingCookie,
+  signEmployeeWorkspaceSelectionPayload,
+  verifyEmployeeWorkspaceSelectionCookie,
   newExpiry,
   OWNER_SESSION_SHORT_SECONDS,
   OWNER_SESSION_TRUSTED_SECONDS,
   MFA_PENDING_MAX_AGE_SECONDS,
+  EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS,
 } from "./sessionCrypto.ts";
 
 describe("owner session payload (Phase 5.7D)", () => {
@@ -174,5 +177,123 @@ describe("sft_mfa_pending payload (Phase 5.7D-R3)", () => {
 
     const pendingValue = await signMfaPendingPayload({ token: "x", exp: newExpiry(MFA_PENDING_MAX_AGE_SECONDS) });
     assert.equal(await verifySessionCookie(pendingValue), null);
+  });
+});
+
+describe("sft_employee_workspace_pending payload (multi-workspace employee login)", () => {
+  const twoCandidates = [
+    { selectionId: "sel-1", employeeId: "emp-admin", workspaceId: "ws-admin" },
+    { selectionId: "sel-2", employeeId: "emp-acs", workspaceId: "ws-acs" },
+  ];
+
+  test("round-trips a well-formed two-candidate payload, holding only opaque identifiers -- never a role, never anything requireRole could mistake for a session", async () => {
+    const value = await signEmployeeWorkspaceSelectionPayload({
+      purpose: "employee_workspace_selection",
+      candidates: twoCandidates,
+      exp: newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS),
+    });
+    const payload = await verifyEmployeeWorkspaceSelectionCookie(value);
+    assert.ok(payload);
+    assert.deepEqual(payload!.candidates, twoCandidates);
+    assert.equal("role" in payload!, false);
+  });
+
+  test("EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS is 5 minutes, matching the MFA-pending precedent", () => {
+    assert.equal(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS, 60 * 5);
+  });
+
+  test("three or more candidates round-trip correctly too -- not hardcoded to exactly two", async () => {
+    const three = [
+      ...twoCandidates,
+      { selectionId: "sel-3", employeeId: "emp-gna", workspaceId: "ws-gna" },
+    ];
+    const value = await signEmployeeWorkspaceSelectionPayload({
+      purpose: "employee_workspace_selection",
+      candidates: three,
+      exp: newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS),
+    });
+    const payload = await verifyEmployeeWorkspaceSelectionCookie(value);
+    assert.deepEqual(payload!.candidates, three);
+  });
+
+  test("an expired challenge is rejected", async () => {
+    const value = await signEmployeeWorkspaceSelectionPayload({
+      purpose: "employee_workspace_selection",
+      candidates: twoCandidates,
+      exp: Math.floor(Date.now() / 1000) - 1,
+    });
+    assert.equal(await verifyEmployeeWorkspaceSelectionCookie(value), null);
+  });
+
+  test("a tampered (altered signature) challenge is rejected", async () => {
+    const value = await signEmployeeWorkspaceSelectionPayload({
+      purpose: "employee_workspace_selection",
+      candidates: twoCandidates,
+      exp: newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS),
+    });
+    assert.equal(await verifyEmployeeWorkspaceSelectionCookie(value.slice(0, -4) + "zzzz"), null);
+  });
+
+  test("a forged payload with the wrong purpose string is rejected even if otherwise well-formed and signed with the real key", async () => {
+    const value = await signEmployeeWorkspaceSelectionPayload({
+      // @ts-expect-error -- deliberately wrong purpose to prove the
+      // discriminator is actually checked, not just present in the type.
+      purpose: "something_else",
+      candidates: twoCandidates,
+      exp: newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS),
+    });
+    assert.equal(await verifyEmployeeWorkspaceSelectionCookie(value), null);
+  });
+
+  test("a candidate list tampered down to fewer than two entries is rejected -- a legitimate challenge never has fewer than two", async () => {
+    const value = await signEmployeeWorkspaceSelectionPayload({
+      purpose: "employee_workspace_selection",
+      // A single candidate is type-valid (the type only requires an array
+      // of the right element shape, not a minimum length) but must still
+      // be rejected at runtime -- a legitimately-created challenge is
+      // never shorter than two.
+      candidates: [twoCandidates[0]],
+      exp: newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS),
+    });
+    assert.equal(await verifyEmployeeWorkspaceSelectionCookie(value), null);
+  });
+
+  test("a candidate missing a required field (selectionId/employeeId/workspaceId) is rejected", async () => {
+    for (const badCandidates of [
+      [{ employeeId: "emp-1", workspaceId: "ws-1" }, twoCandidates[1]],
+      [{ selectionId: "sel-1", workspaceId: "ws-1" }, twoCandidates[1]],
+      [{ selectionId: "sel-1", employeeId: "emp-1" }, twoCandidates[1]],
+    ]) {
+      const value = await signEmployeeWorkspaceSelectionPayload({
+        purpose: "employee_workspace_selection",
+        // @ts-expect-error -- deliberately malformed candidate shapes.
+        candidates: badCandidates,
+        exp: newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS),
+      });
+      assert.equal(await verifyEmployeeWorkspaceSelectionCookie(value), null);
+    }
+  });
+
+  test("an owner sft_session value and an sft_mfa_pending value are never accepted as a valid workspace-selection challenge, and vice versa", async () => {
+    const ownerSessionValue = await signSessionPayload({
+      role: "owner",
+      workspaceId: "ws-1",
+      authUserId: "user-1",
+      mfa: true,
+      sessionEpoch: 1,
+      exp: newExpiry(),
+    });
+    assert.equal(await verifyEmployeeWorkspaceSelectionCookie(ownerSessionValue), null);
+
+    const mfaPendingValue = await signMfaPendingPayload({ token: "x", exp: newExpiry(MFA_PENDING_MAX_AGE_SECONDS) });
+    assert.equal(await verifyEmployeeWorkspaceSelectionCookie(mfaPendingValue), null);
+
+    const selectionValue = await signEmployeeWorkspaceSelectionPayload({
+      purpose: "employee_workspace_selection",
+      candidates: twoCandidates,
+      exp: newExpiry(EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS),
+    });
+    assert.equal(await verifySessionCookie(selectionValue), null);
+    assert.equal(await verifyMfaPendingCookie(selectionValue), null);
   });
 });

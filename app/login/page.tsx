@@ -5,6 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { resolvePostLoginNavigation, type LoginRole } from "@/lib/loginNavigation";
 
+type WorkspaceChoice = { selectionId: string; companyName: string };
+
 export default function LoginPage() {
   const router = useRouter();
   const [role, setRole] = useState<LoginRole>("owner");
@@ -12,6 +14,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Set only when a single password matched more than one active employee
+  // row for the same normalized email (see app/api/auth/login/route.ts) --
+  // renders the workspace picker below in place of the normal form. Never
+  // holds a workspace/employee id, only what the login response itself
+  // returned: an opaque selectionId per choice and its company name.
+  const [workspaceChoices, setWorkspaceChoices] = useState<WorkspaceChoice[] | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const selectingRef = useRef(false);
   // Phase 5.7D-R10-R2: a synchronous guard, not React state. `loading`
   // (state) only disables the submit button after a re-render commits --
   // two events dispatched within the same tick (a very fast double-click,
@@ -53,6 +63,17 @@ export default function LoginPage() {
         return;
       }
 
+      // The password matched more than one active workspace's employee
+      // row -- stay on this page and let the employee pick which company
+      // to enter, rather than treating this as a normal navigable outcome.
+      // Checked before resolvePostLoginNavigation (which has no concept of
+      // this in-page step and is not modified to add one -- see that
+      // module's own scope).
+      if (data?.next === "select_workspace" && Array.isArray(data.choices)) {
+        setWorkspaceChoices(data.choices);
+        return;
+      }
+
       // Phase 5.7D: a correct owner password now only advances to an MFA
       // step — sft_session is never issued from this request. Employee
       // login is unaffected (data.next is never present on that response).
@@ -74,6 +95,32 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
       submittingRef.current = false;
+    }
+  }
+
+  async function handleSelectWorkspace(selectionId: string) {
+    if (selectingRef.current) return;
+    selectingRef.current = true;
+    setSelecting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/auth/employee/select-workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data?.error || "Unable to complete sign-in. Please log in again.");
+        setWorkspaceChoices(null);
+        return;
+      }
+      router.push(data?.redirect || "/schedule");
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setSelecting(false);
+      selectingRef.current = false;
     }
   }
 
@@ -111,66 +158,110 @@ export default function LoginPage() {
               <p className="mt-1 text-xs text-slate-500">Sign in to Schedule FlowTrack</p>
             </div>
 
-            {/* Role toggle */}
-            <div className="flex bg-slate-100 rounded-xl p-1 mb-6">
-              <button
-                type="button"
-                onClick={() => switchRole("owner")}
-                className={[
-                  "flex-1 rounded-lg py-2 text-sm font-medium transition-colors",
-                  role === "owner" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
-                ].join(" ")}
-              >
-                Owner
-              </button>
-              <button
-                type="button"
-                onClick={() => switchRole("employee")}
-                className={[
-                  "flex-1 rounded-lg py-2 text-sm font-medium transition-colors",
-                  role === "employee" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
-                ].join(" ")}
-              >
-                Employee
-              </button>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder={role === "employee" ? "your@email.com" : "you@company.com"}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Password</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  placeholder="Enter your password"
-                />
-              </div>
-
-              {error && (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                  {error}
+            {workspaceChoices ? (
+              // A single password matched more than one active workspace's
+              // employee row for this email -- no session exists yet. Each
+              // choice carries only an opaque selectionId and a company
+              // name (never a workspace/employee id); selecting one is the
+              // only way this screen can proceed.
+              <div className="space-y-3">
+                <p className="text-xs text-slate-500 text-center">
+                  This email is used by more than one company. Choose which one to sign in to.
+                </p>
+                <div className="space-y-2">
+                  {workspaceChoices.map((choice) => (
+                    <button
+                      key={choice.selectionId}
+                      type="button"
+                      disabled={selecting}
+                      onClick={() => handleSelectWorkspace(choice.selectionId)}
+                      className="w-full rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-900 text-left hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                    >
+                      {choice.companyName}
+                    </button>
+                  ))}
                 </div>
-              )}
+                {error && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                    {error}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  disabled={selecting}
+                  onClick={() => {
+                    setWorkspaceChoices(null);
+                    setError("");
+                  }}
+                  className="w-full text-center text-xs text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-50"
+                >
+                  ← Back to login
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Role toggle */}
+                <div className="flex bg-slate-100 rounded-xl p-1 mb-6">
+                  <button
+                    type="button"
+                    onClick={() => switchRole("owner")}
+                    className={[
+                      "flex-1 rounded-lg py-2 text-sm font-medium transition-colors",
+                      role === "owner" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+                    ].join(" ")}
+                  >
+                    Owner
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => switchRole("employee")}
+                    className={[
+                      "flex-1 rounded-lg py-2 text-sm font-medium transition-colors",
+                      role === "employee" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500",
+                    ].join(" ")}
+                  >
+                    Employee
+                  </button>
+                </div>
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full rounded-xl bg-[#0f172a] px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
-              >
-                {loading ? "Signing in..." : role === "employee" ? "Sign In as Employee" : "Sign In"}
-              </button>
-            </form>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder={role === "employee" ? "your@email.com" : "you@company.com"}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Password</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      placeholder="Enter your password"
+                    />
+                  </div>
+
+                  {error && (
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                      {error}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full rounded-xl bg-[#0f172a] px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                  >
+                    {loading ? "Signing in..." : role === "employee" ? "Sign In as Employee" : "Sign In"}
+                  </button>
+                </form>
+              </>
+            )}
           </div>
 
           <div className="mt-6 text-center text-xs text-slate-500 safe-area-bottom">

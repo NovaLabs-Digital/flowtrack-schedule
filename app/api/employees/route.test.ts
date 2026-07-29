@@ -173,6 +173,64 @@ describe("PATCH /api/employees -- entitlement gate", () => {
   });
 });
 
+// Phase (migration 019): employees.email uniqueness is now workspace-scoped
+// and case-insensitive (UNIQUE (workspace_id, LOWER(email))), matching the
+// existing owner-signup normalization convention
+// (app/api/auth/signup/route.ts's `.trim().toLowerCase()`). These tests
+// prove both write paths store the normalized value, not whatever case the
+// client submitted.
+describe("POST/PATCH /api/employees -- email is normalized to lowercase before every write (migration 019)", () => {
+  test("POST lowercases a mixed-case email before inserting", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ data: { id: "emp-1", name: "Bob", phone: null, color: "#3B82F6", active: true, email: "bob@example.com", position: null } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { name: "Bob", email: "Bob@Example.COM" }));
+    assert.equal(res.status, 201);
+    const insertCall = currentFake.calls.find((c) => c.table === "employees" && c.method === "insert");
+    assert.equal((insertCall?.args[0] as { email?: string })?.email, "bob@example.com");
+  });
+
+  test("POST with no email submits no email field at all -- never an empty string forced into the unique index", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ data: { id: "emp-1", name: "Bob" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await POST(req("POST", { name: "Bob" }));
+    const insertCall = currentFake.calls.find((c) => c.table === "employees" && c.method === "insert");
+    assert.equal("email" in (insertCall?.args[0] as object), false);
+  });
+
+  test("PATCH lowercases a mixed-case email before updating", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ data: { is_demo: false } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req("PATCH", { id: "emp-1", email: "Teresa@Gmail.COM" }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "employees" && c.method === "update");
+    assert.equal((updateCall?.args[0] as { email?: string })?.email, "teresa@gmail.com");
+  });
+
+  test("PATCH with an empty-string email clears it to null, not an empty string (unaffected by normalization)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ data: { is_demo: false } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req("PATCH", { id: "emp-1", email: "   " }));
+    const updateCall = currentFake.calls.find((c) => c.table === "employees" && c.method === "update");
+    assert.equal((updateCall?.args[0] as { email?: string | null })?.email, null);
+  });
+});
+
 describe("GET /api/employees is governed by canViewExistingData (Phase 5.6E)", () => {
   test("succeeds for full access", async () => {
     resetFixtures({

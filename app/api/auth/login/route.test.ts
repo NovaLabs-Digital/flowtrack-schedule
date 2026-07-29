@@ -146,11 +146,11 @@ describe("POST /api/auth/login -- owner branch (Phase 5.7D: password success onl
   });
 });
 
-describe("POST /api/auth/login -- employee branch remains completely unchanged", () => {
+describe("POST /api/auth/login -- employee branch, single-workspace case unchanged", () => {
   test("a correct employee password still issues sft_session directly -- no MFA hand-off, beginMfaFlow never called", async () => {
     resetState();
     resetFixtures({
-      employees: [{ data: { id: "emp-1", password_hash: await bcrypt.hash("emp-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID } }],
+      employees: [{ data: [{ id: "emp-1", password_hash: await bcrypt.hash("emp-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID }] }],
     });
     const res = await POST(req({ email: "emp@example.com", password: "emp-password", role: "employee" }, "10.0.1.1"));
     assert.equal(res.status, 200);
@@ -160,6 +160,281 @@ describe("POST /api/auth/login -- employee branch remains completely unchanged",
     const setCookieHeader = res.headers.get("set-cookie") || "";
     assert.ok(setCookieHeader.includes("sft_session="));
     assert.ok(!setCookieHeader.includes("sft_mfa_pending="));
+  });
+
+  test("a wrong password for a single-candidate email is rejected with the generic error", async () => {
+    resetState();
+    resetFixtures({
+      employees: [{ data: [{ id: "emp-1", password_hash: await bcrypt.hash("emp-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID }] }],
+    });
+    const res = await POST(req({ email: "emp@example.com", password: "wrong-password", role: "employee" }, "10.0.1.1"));
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).error, "Invalid email or password");
+  });
+
+  test("an email matching zero employees is rejected with the same generic error, never a distinct 'no such account' message", async () => {
+    resetState();
+    resetFixtures({ employees: [{ data: [] }] });
+    const res = await POST(req({ email: "nobody@example.com", password: "whatever", role: "employee" }, "10.0.1.1"));
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).error, "Invalid email or password");
+  });
+
+  test("an inactive employee cannot log in even with the correct password", async () => {
+    resetState();
+    resetFixtures({
+      employees: [{ data: [{ id: "emp-1", password_hash: await bcrypt.hash("emp-password", 10), active: false, workspace_id: REAL_WORKSPACE_ID }] }],
+    });
+    const res = await POST(req({ email: "emp@example.com", password: "emp-password", role: "employee" }, "10.0.1.1"));
+    assert.equal(res.status, 401);
+  });
+
+  test("an employee row with no password_hash set cannot log in even if a password is submitted", async () => {
+    resetState();
+    resetFixtures({
+      employees: [{ data: [{ id: "emp-1", password_hash: null, active: true, workspace_id: REAL_WORKSPACE_ID }] }],
+    });
+    const res = await POST(req({ email: "emp@example.com", password: "anything", role: "employee" }, "10.0.1.1"));
+    assert.equal(res.status, 401);
+  });
+
+  test("the email lookup is normalized to lowercase before querying -- a mixed-case submission still matches the stored lowercase value", async () => {
+    resetState();
+    resetFixtures({
+      employees: [{ data: [{ id: "emp-1", password_hash: await bcrypt.hash("emp-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID }] }],
+    });
+    const res = await POST(req({ email: "EMP@Example.COM", password: "emp-password", role: "employee" }, "10.0.1.1"));
+    assert.equal(res.status, 200);
+    const eqCall = currentFake.calls.find((c) => c.table === "employees" && c.method === "eq");
+    assert.deepEqual(eqCall?.args, ["email", "emp@example.com"]);
+  });
+});
+
+// Phase (migration 019): the same real person can now be an employee of
+// more than one workspace, using the same normalized email in each --
+// employees.email is unique per workspace, no longer globally. These tests
+// prove the login route safely resolves which workspace was intended using
+// the submitted password as the disambiguating signal, and never guesses.
+describe("POST /api/auth/login -- employee branch, same email in multiple workspaces (migration 019)", () => {
+  const ACS_WORKSPACE_ID = "3c7d1b2b-9d99-4eb5-80d3-5072ecd56d7a";
+
+  test("two workspaces share the email; the submitted password matches only the intended workspace's row -- login succeeds into that exact workspace", async () => {
+    resetState();
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-admin", password_hash: await bcrypt.hash("admin-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID },
+            { id: "emp-acs", password_hash: await bcrypt.hash("acs-password", 10), active: true, workspace_id: ACS_WORKSPACE_ID },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared@example.com", password: "acs-password", role: "employee" }, "10.0.1.2"));
+    assert.equal(res.status, 200);
+    // The session cookie is opaque by design; behavioral proof that the
+    // ACS-workspace row (not the admin one) was selected is that this
+    // exact request succeeds at all -- the admin row's hash does not match
+    // "acs-password", so only the ACS candidate could have produced a 200.
+  });
+
+  test("the same scenario, submitting the OTHER workspace's password, resolves into that other workspace instead", async () => {
+    resetState();
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-admin", password_hash: await bcrypt.hash("admin-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID },
+            { id: "emp-acs", password_hash: await bcrypt.hash("acs-password", 10), active: true, workspace_id: ACS_WORKSPACE_ID },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared@example.com", password: "admin-password", role: "employee" }, "10.0.1.2"));
+    assert.equal(res.status, 200);
+  });
+
+  test("if the SAME password matches both workspaces' rows, no session is issued yet -- a workspace-selection challenge is returned instead of a silent pick or a rejection", async () => {
+    resetState();
+    const sameHash = await bcrypt.hash("identical-password", 10);
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-admin", password_hash: sameHash, active: true, workspace_id: REAL_WORKSPACE_ID },
+            { id: "emp-acs", password_hash: sameHash, active: true, workspace_id: ACS_WORKSPACE_ID },
+          ],
+        },
+      ],
+      company_settings: [
+        {
+          data: [
+            { workspace_id: REAL_WORKSPACE_ID, company_name: "Alberto Cleaning Services" },
+            { workspace_id: ACS_WORKSPACE_ID, company_name: "ACS" },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared@example.com", password: "identical-password", role: "employee" }, "10.0.1.2"));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.next, "select_workspace");
+    assert.equal(body.choices.length, 2);
+    const names = body.choices.map((c: { companyName: string }) => c.companyName).sort();
+    assert.deepEqual(names, ["ACS", "Alberto Cleaning Services"]);
+  });
+
+  test("the select_workspace response never includes an employee id, workspace id, password, or password hash -- only selectionId and companyName per choice", async () => {
+    resetState();
+    const sameHash = await bcrypt.hash("identical-password", 10);
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-admin", password_hash: sameHash, active: true, workspace_id: REAL_WORKSPACE_ID },
+            { id: "emp-acs", password_hash: sameHash, active: true, workspace_id: ACS_WORKSPACE_ID },
+          ],
+        },
+      ],
+      company_settings: [
+        {
+          data: [
+            { workspace_id: REAL_WORKSPACE_ID, company_name: "Alberto Cleaning Services" },
+            { workspace_id: ACS_WORKSPACE_ID, company_name: "ACS" },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared@example.com", password: "identical-password", role: "employee" }, "10.0.1.2"));
+    const body = await res.json();
+    for (const choice of body.choices) {
+      assert.deepEqual(Object.keys(choice).sort(), ["companyName", "selectionId"]);
+    }
+    const raw = JSON.stringify(body);
+    assert.ok(!raw.includes(REAL_WORKSPACE_ID));
+    assert.ok(!raw.includes(ACS_WORKSPACE_ID));
+    assert.ok(!raw.includes("emp-admin"));
+    assert.ok(!raw.includes("emp-acs"));
+    assert.ok(!raw.toLowerCase().includes("password"));
+    assert.ok(!raw.includes(sameHash));
+  });
+
+  test("each choice's selectionId is unique, and no sft_session cookie is set -- only the short-lived selection-pending cookie", async () => {
+    resetState();
+    const sameHash = await bcrypt.hash("identical-password", 10);
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-admin", password_hash: sameHash, active: true, workspace_id: REAL_WORKSPACE_ID },
+            { id: "emp-acs", password_hash: sameHash, active: true, workspace_id: ACS_WORKSPACE_ID },
+          ],
+        },
+      ],
+      company_settings: [
+        {
+          data: [
+            { workspace_id: REAL_WORKSPACE_ID, company_name: "Alberto Cleaning Services" },
+            { workspace_id: ACS_WORKSPACE_ID, company_name: "ACS" },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared@example.com", password: "identical-password", role: "employee" }, "10.0.1.2"));
+    const body = await res.json();
+    const ids = body.choices.map((c: { selectionId: string }) => c.selectionId);
+    assert.equal(new Set(ids).size, ids.length);
+    const setCookieHeader = res.headers.get("set-cookie") || "";
+    assert.ok(setCookieHeader.includes("sft_employee_workspace_pending="));
+    assert.ok(!setCookieHeader.includes("sft_session="));
+  });
+
+  test("a successful password match producing a selection challenge still clears the login rate-limit bucket -- the password itself was correct", async () => {
+    resetState();
+    const sameHash = await bcrypt.hash("identical-password", 10);
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-admin", password_hash: sameHash, active: true, workspace_id: REAL_WORKSPACE_ID },
+            { id: "emp-acs", password_hash: sameHash, active: true, workspace_id: ACS_WORKSPACE_ID },
+          ],
+        },
+      ],
+      company_settings: [
+        {
+          data: [
+            { workspace_id: REAL_WORKSPACE_ID, company_name: "Alberto Cleaning Services" },
+            { workspace_id: ACS_WORKSPACE_ID, company_name: "ACS" },
+          ],
+        },
+      ],
+    });
+    await POST(req({ email: "shared@example.com", password: "identical-password", role: "employee" }, "10.0.1.5"));
+    assert.deepEqual(clearRateLimitCalls, [{ bucket: "login", key: "10.0.1.5" }]);
+  });
+
+  test("three workspaces sharing the same email AND the same password produces three choices, not an automatic pick or a rejection", async () => {
+    resetState();
+    const sameHash = await bcrypt.hash("shared-password", 10);
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-1", password_hash: sameHash, active: true, workspace_id: "ws-1" },
+            { id: "emp-2", password_hash: sameHash, active: true, workspace_id: "ws-2" },
+            { id: "emp-3", password_hash: sameHash, active: true, workspace_id: "ws-3" },
+          ],
+        },
+      ],
+      company_settings: [
+        {
+          data: [
+            { workspace_id: "ws-1", company_name: "Company One" },
+            { workspace_id: "ws-2", company_name: "Company Two" },
+            { workspace_id: "ws-3", company_name: "Company Three" },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared3@example.com", password: "shared-password", role: "employee" }, "10.0.1.2"));
+    const body = await res.json();
+    assert.equal(body.next, "select_workspace");
+    assert.equal(body.choices.length, 3);
+  });
+
+  test("an inactive row for one workspace is excluded from candidates -- only the active workspace's row can ever match", async () => {
+    resetState();
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-admin", password_hash: await bcrypt.hash("shared-password", 10), active: false, workspace_id: REAL_WORKSPACE_ID },
+            { id: "emp-acs", password_hash: await bcrypt.hash("shared-password", 10), active: true, workspace_id: ACS_WORKSPACE_ID },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared@example.com", password: "shared-password", role: "employee" }, "10.0.1.2"));
+    assert.equal(res.status, 200, "the inactive admin row must never block or get confused with the active ACS row");
+  });
+
+  test("three workspaces sharing the email is handled the same way -- exactly one password match still succeeds", async () => {
+    resetState();
+    resetFixtures({
+      employees: [
+        {
+          data: [
+            { id: "emp-1", password_hash: await bcrypt.hash("pw-1", 10), active: true, workspace_id: "ws-1" },
+            { id: "emp-2", password_hash: await bcrypt.hash("pw-2", 10), active: true, workspace_id: "ws-2" },
+            { id: "emp-3", password_hash: await bcrypt.hash("pw-3", 10), active: true, workspace_id: "ws-3" },
+          ],
+        },
+      ],
+    });
+    const res = await POST(req({ email: "shared3@example.com", password: "pw-2", role: "employee" }, "10.0.1.2"));
+    assert.equal(res.status, 200);
   });
 });
 
@@ -200,7 +475,7 @@ describe("POST /api/auth/login -- durable rate limiting (Phase 5.7D-R4)", () => 
   test("a successful employee login clears the login bucket (only-failures-count semantics preserved)", async () => {
     resetState();
     resetFixtures({
-      employees: [{ data: { id: "emp-1", password_hash: await bcrypt.hash("emp-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID } }],
+      employees: [{ data: [{ id: "emp-1", password_hash: await bcrypt.hash("emp-password", 10), active: true, workspace_id: REAL_WORKSPACE_ID }] }],
     });
     await POST(req({ email: "emp@example.com", password: "emp-password", role: "employee" }, "7.7.7.8"));
     assert.deepEqual(clearRateLimitCalls, [{ bucket: "login", key: "7.7.7.8" }]);

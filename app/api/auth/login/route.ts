@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createOwnerAuthClient } from "@/lib/supabaseAuthClient";
-import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS, setMfaPendingCookie } from "@/lib/session";
+import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS, setMfaPendingCookie, setEmployeeWorkspaceSelectionCookie } from "@/lib/session";
 import { beginMfaFlow } from "@/lib/mfaFlow";
 import { safeEqual } from "@/lib/safeEqual";
 import { checkAndRecordRateLimit, clearRateLimit } from "@/lib/durableRateLimit";
@@ -69,28 +69,92 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Email and password required" }, { status: 400 });
     }
 
-    // Employee and tester authentication: UNCHANGED by Phase 5.7D. MFA
-    // applies to owners only.
+    // Employee and tester authentication.
+    //
+    // Migration 019: employees.email is now unique only per workspace, not
+    // globally -- the same real person can be an employee of more than one
+    // business/workspace, deliberately using the SAME email and the SAME
+    // password in each (the approved product design; requiring a distinct
+    // password per workspace was explicitly rejected). A lookup that
+    // assumed at most one row could ever match -- this route previously
+    // used .maybeSingle(), which throws if more than one row matches -- is
+    // no longer safe on its own. There is no per-workspace login URL, so
+    // the submitted password is compared against every active,
+    // password-configured candidate row for this normalized email:
+    //   - exactly one match -> log in directly, unchanged from before.
+    //   - zero matches -> the same generic error as always.
+    //   - more than one match -> no session is issued yet. A short-lived,
+    //     signed, single-purpose challenge (sft_employee_workspace_pending
+    //     -- see lib/session.ts/lib/sessionCrypto.ts) is set, scoped to
+    //     exactly the matched candidates, and the response returns only an
+    //     opaque selectionId + company display name per choice -- never a
+    //     workspace/employee UUID. app/api/auth/employee/select-workspace
+    //     validates that challenge and the employee's explicit choice
+    //     before ever issuing the real sft_session.
+    // Never a "pick the first match" fallback in any case.
     if (role === "employee") {
-      const { data: emp, error } = await supabaseAdmin
+      const normalizedEmail = email.toLowerCase();
+      const { data: candidates, error } = await supabaseAdmin
         .from("employees")
         .select("id, password_hash, active, workspace_id")
-        .eq("email", email)
-        .maybeSingle();
+        .eq("email", normalizedEmail);
 
       if (error) throw error;
 
-      const hashToCheck = emp?.password_hash || DUMMY_PASSWORD_HASH;
-      const passwordMatches = await bcrypt.compare(password, hashToCheck);
-      const ok = !!emp && emp.active && !!emp.password_hash && passwordMatches;
+      const activeCandidates = (candidates ?? []).filter((c) => c.active && c.password_hash);
 
-      if (!ok) {
+      // Always compares against at least two hashes (real or dummy) so the
+      // response time for "this email doesn't exist at all" and "this
+      // email exists in exactly one workspace" stays close to identical --
+      // the same constant-time intent DUMMY_PASSWORD_HASH already served
+      // for the single-candidate case, extended to the new multi-candidate
+      // one. Real candidates are never padded away; only the shortfall
+      // below two is filled with the dummy hash.
+      const hashesToCheck = activeCandidates.map((c) => c.password_hash as string);
+      while (hashesToCheck.length < 2) hashesToCheck.push(DUMMY_PASSWORD_HASH);
+      const matchResults = await Promise.all(hashesToCheck.map((h) => bcrypt.compare(password, h)));
+      const matchedCandidates = activeCandidates.filter((_, i) => matchResults[i]);
+
+      if (matchedCandidates.length === 0) {
         return NextResponse.json({ error: GENERIC_AUTH_ERROR }, { status: 401 });
       }
 
+      // The password was genuinely correct for at least one workspace --
+      // matches the existing "only failures count" semantics regardless of
+      // whether this resolves directly or needs a workspace choice next.
       await clearRateLimit("login", clientIp);
-      const res = NextResponse.json({ ok: true, redirect: "/schedule" });
-      setCookie(res, await createSessionCookieValue("employee", emp!.id, emp!.workspace_id));
+
+      if (matchedCandidates.length === 1) {
+        const emp = matchedCandidates[0];
+        const res = NextResponse.json({ ok: true, redirect: "/schedule" });
+        setCookie(res, await createSessionCookieValue("employee", emp.id, emp.workspace_id));
+        return res;
+      }
+
+      // More than one workspace matched -- fetch each candidate's company
+      // display name (never the raw workspace id) for the selection
+      // screen, build an opaque per-candidate selectionId, and hand back
+      // only {selectionId, companyName} pairs.
+      const workspaceIds = Array.from(new Set(matchedCandidates.map((c) => c.workspace_id)));
+      const { data: companyRows, error: companyErr } = await supabaseAdmin
+        .from("company_settings")
+        .select("workspace_id, company_name")
+        .in("workspace_id", workspaceIds);
+      if (companyErr) throw companyErr;
+      const companyNameByWorkspace = new Map((companyRows ?? []).map((c) => [c.workspace_id, c.company_name as string]));
+
+      const selectionCandidates = matchedCandidates.map((c) => ({
+        selectionId: crypto.randomUUID(),
+        employeeId: c.id as string,
+        workspaceId: c.workspace_id as string,
+      }));
+      const choices = selectionCandidates.map((c) => ({
+        selectionId: c.selectionId,
+        companyName: companyNameByWorkspace.get(c.workspaceId) ?? "Unnamed company",
+      }));
+
+      const res = NextResponse.json({ ok: true, next: "select_workspace", choices });
+      await setEmployeeWorkspaceSelectionCookie(res, selectionCandidates);
       return res;
     }
 

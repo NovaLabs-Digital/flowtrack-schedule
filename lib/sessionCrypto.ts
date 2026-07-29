@@ -30,6 +30,13 @@ export const OWNER_SESSION_TRUSTED_SECONDS = 60 * 60 * 24 * 30; // 30 days
 // token pair never leaves the server (Phase 5.7D-R3 correction).
 export const MFA_PENDING_MAX_AGE_SECONDS = 60 * 5; // 5 minutes
 
+// Hard cap on the sft_employee_workspace_pending window — the gap between
+// a correctly-verified employee password (matching more than one active
+// workspace's employee row for the same normalized email) and the
+// employee's explicit workspace choice. Matches MFA_PENDING_MAX_AGE_SECONDS
+// exactly: same reasoning, same precedent, deliberately short.
+export const EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS = 60 * 5; // 5 minutes
+
 export type SessionRole = "owner" | "tester" | "employee";
 
 // workspaceId is required on every role as of the Phase 2 tenant-scoping
@@ -60,6 +67,40 @@ export type SessionPayload =
 // structurally rejected by requireRole/requireOwner/requireRole — there is
 // no application access reachable from this cookie on its own.
 export type MfaPendingPayload = { token: string; exp: number };
+
+// The multi-workspace employee login challenge — created only after a
+// submitted password has already been verified (via bcrypt.compare)
+// against every active, password-configured employees row sharing the same
+// normalized email, and matched more than one of them. Each candidate
+// carries a per-challenge random `selectionId` — the ONLY identifier ever
+// exposed to the browser (in the login response's `choices` array); the
+// real `employeeId`/`workspaceId` pair stay inside this signed, HttpOnly
+// cookie and are never sent to the client in plain form. This deliberately
+// mirrors MfaPendingPayload's own shape/isolation properties: it has no
+// `role` field either, so it can never satisfy SessionPayload and can never
+// be mistaken for (or upgraded into) a real application session by
+// requireRole/requireOwner/getSession. `purpose` is an explicit extra
+// discriminator (belt-and-suspenders on top of the already-distinct field
+// names) so this payload can never be confused with MfaPendingPayload even
+// if a future field is added to either shape.
+//
+// Not enforced as single-use at the database level (there is no server-side
+// row for this challenge to delete, unlike pending_mfa_challenges) — this is
+// a deliberate "smallest safe change" choice: the payload carries no
+// credential or provider secret, only workspace/employee identifiers already
+// established as legitimate for this exact login attempt, and the window is
+// capped at five minutes (EMPLOYEE_WORKSPACE_SELECTION_MAX_AGE_SECONDS). The
+// selection route also clears this cookie immediately on a successful
+// selection. A true single-use guarantee would require a new database table
+// mirroring lib/mfaPending.ts — flagged as follow-up technical debt, not
+// implemented here because it is not required for this payload's much lower
+// sensitivity (identifiers only, never a password/token).
+export type EmployeeWorkspaceSelectionCandidate = { selectionId: string; employeeId: string; workspaceId: string };
+export type EmployeeWorkspaceSelectionPayload = {
+  purpose: "employee_workspace_selection";
+  candidates: EmployeeWorkspaceSelectionCandidate[];
+  exp: number;
+};
 
 // SESSION_SECRET is the only key used to sign/verify both cookie kinds — it
 // must never fall back to a database or provider secret (a leak of one must
@@ -193,4 +234,33 @@ export async function verifyMfaPendingCookie(value: string): Promise<MfaPendingP
   // role is intentionally never checked/accepted here — this payload shape
   // has none, and must never be treated as satisfying SessionPayload.
   return { token: payload.token, exp: payload.exp };
+}
+
+export async function signEmployeeWorkspaceSelectionPayload(payload: EmployeeWorkspaceSelectionPayload): Promise<string> {
+  return signPayload(payload);
+}
+
+// Returns null for anything malformed, unsigned, tampered, expired, or
+// shaped wrong (including a genuine EmployeeWorkspaceSelectionPayload whose
+// candidate list was tampered with down to fewer than two entries — a
+// legitimately-created challenge never has fewer than two, since it only
+// exists when more than one password match occurred). Callers treat null
+// exactly like "no pending selection at all."
+export async function verifyEmployeeWorkspaceSelectionCookie(value: string): Promise<EmployeeWorkspaceSelectionPayload | null> {
+  const decoded = await verifySignedValue(value);
+  if (!decoded || typeof decoded !== "object") return null;
+  const payload = decoded as Partial<EmployeeWorkspaceSelectionPayload>;
+  if (payload.purpose !== "employee_workspace_selection") return null;
+  if (typeof payload.exp !== "number" || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  if (!Array.isArray(payload.candidates) || payload.candidates.length < 2) return null;
+
+  for (const c of payload.candidates) {
+    if (!c || typeof c !== "object") return null;
+    const cand = c as Partial<EmployeeWorkspaceSelectionCandidate>;
+    if (typeof cand.selectionId !== "string" || !cand.selectionId) return null;
+    if (typeof cand.employeeId !== "string" || !cand.employeeId) return null;
+    if (typeof cand.workspaceId !== "string" || !cand.workspaceId) return null;
+  }
+
+  return payload as EmployeeWorkspaceSelectionPayload;
 }
