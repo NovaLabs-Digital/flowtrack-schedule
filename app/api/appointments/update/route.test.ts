@@ -374,7 +374,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notificat
 });
 
 describe("existing appointment-editing business rules remain unchanged once entitled", () => {
-  test("mode = 'future' with a series_id updates future siblings' time-of-day", async () => {
+  test("mode = 'future' with a series_id updates future siblings' start time", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
@@ -440,6 +440,330 @@ describe("existing appointment-editing business rules remain unchanged once enti
     const res = await PATCH(req({ appointment_id: "appt-1", employee_id: "emp-outside" }));
     assert.equal(res.status, 404);
     assert.deepEqual(await res.json(), { error: "Employee not found" });
+  });
+});
+
+// Jennifer Gerry bug: an every-4-weeks Thursday series moved with "This &
+// future" left every future occurrence stuck on Thursday. Root cause: the
+// old sibling-shift logic only compared hour/minute-of-day between the old
+// and new selected start, so a pure calendar-date change (Thursday ->
+// Wednesday, same clock time) had a zero hour/minute delta and never
+// propagated -- future siblings' scheduled_for was left completely
+// untouched. The fix computes a full timestamp delta (old start -> new
+// start) and adds it to each future sibling's own stored scheduled_for/
+// scheduled_end, which is delta-based rather than recomputed from
+// frequency_type/repeat_weeks, so it works identically for daily, weekly,
+// and every-N-weeks series and preserves the original spacing between
+// occurrences exactly.
+describe("recurring 'This & future' rescheduling shifts every future occurrence by the same date/time delta", () => {
+  const OLD_SELECTED_START = "2026-08-06T14:00:00.000Z"; // Thursday
+  const OLD_SELECTED_END = "2026-08-06T15:00:00.000Z";
+  const NEW_SELECTED_START = "2026-08-05T14:00:00.000Z"; // Wednesday, same clock time -- delta is -1 day, zero hours/minutes
+  const NEW_SELECTED_END = "2026-08-05T15:00:00.000Z";
+
+  const SIB1_OLD_START = "2026-09-03T14:00:00.000Z"; // +28 days
+  const SIB1_OLD_END = "2026-09-03T15:00:00.000Z";
+  const SIB2_OLD_START = "2026-10-01T14:00:00.000Z"; // +28 more days
+  const SIB2_OLD_END = "2026-10-01T15:00:00.000Z";
+
+  const SIB1_NEW_START = "2026-09-02T14:00:00.000Z"; // -1 day
+  const SIB1_NEW_END = "2026-09-02T15:00:00.000Z";
+  const SIB2_NEW_START = "2026-09-30T14:00:00.000Z"; // -1 day
+  const SIB2_NEW_END = "2026-09-30T15:00:00.000Z";
+
+  test("1/2. selected + every future occurrence moves Thursday -> Wednesday, and the four-week spacing between them is unchanged", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START, scheduled_end: OLD_SELECTED_END }) }, // fetch existing
+        { error: null }, // hasColumn("scheduled_end")
+        { error: null }, // update source (cutoff)
+        {
+          data: [
+            { id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END },
+            { id: "sib-2", scheduled_for: SIB2_OLD_START, scheduled_end: SIB2_OLD_END },
+          ],
+        }, // siblings
+        { error: null }, // update sib-1
+        { error: null }, // update sib-2
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(
+      req({ appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START, scheduled_end: NEW_SELECTED_END })
+    );
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    assert.equal(updates.length, 3, "cutoff + 2 siblings");
+
+    // Cutoff (selected) occurrence itself moved to the new Wednesday date.
+    assert.deepEqual(updates[0].args[0], { scheduled_for: NEW_SELECTED_START, scheduled_end: NEW_SELECTED_END });
+
+    // Both future siblings shifted by the identical -1 day delta.
+    assert.deepEqual(updates[1].args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END });
+    assert.deepEqual(updates[2].args[0], { scheduled_for: SIB2_NEW_START, scheduled_end: SIB2_NEW_END });
+
+    // Four-week spacing between the two shifted siblings is preserved exactly.
+    const spacingMs = new Date(SIB2_NEW_START).getTime() - new Date(SIB1_NEW_START).getTime();
+    assert.equal(spacingMs, 28 * 24 * 60 * 60 * 1000);
+  });
+
+  test("3. 'Only this appointment' (mode: single) moves only the selected occurrence -- no sibling query at all", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) }, // fetch existing
+        { error: null }, // update source only
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(
+      req({ appointment_id: "appt-1", mode: "single", scheduled_for: NEW_SELECTED_START })
+    );
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
+    assert.equal(currentFake.calls.filter((c) => c.method === "gt").length, 0, "no future-siblings query is issued for mode: single");
+  });
+
+  test("4. past occurrences are structurally excluded -- the siblings query's gt() cutoff is the pre-update selected start", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { error: null }, // update source
+        { data: [] }, // no future siblings
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START }));
+    const gtCall = currentFake.calls.find((c) => c.method === "gt");
+    assert.deepEqual(gtCall?.args, ["scheduled_for", OLD_SELECTED_START]);
+  });
+
+  test("5. the cutoff (selected) occurrence itself is always included, via the primary update, independent of the siblings loop", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { error: null }, // update source
+        { data: [] }, // no future siblings -- proves the cutoff update doesn't depend on any sibling existing
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START }));
+    assert.equal(res.status, 200);
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    assert.equal(updates.length, 1);
+    assert.deepEqual(updates[0].args[0], { scheduled_for: NEW_SELECTED_START });
+  });
+
+  test("6. future occurrences from another recurring series are unaffected -- the siblings query is scoped to this exact series_id", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { error: null },
+        { data: [] },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START }));
+    const seriesEq = currentFake.calls.find((c) => c.method === "eq" && c.args[0] === "series_id");
+    assert.deepEqual(seriesEq?.args, ["series_id", "series-1"]);
+  });
+
+  test("7. another workspace's appointments are unaffected -- workspace_id is scoped on the siblings query and every sibling update", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { error: null },
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null }] },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START }));
+    const workspaceEqCalls = currentFake.calls.filter(
+      (c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "workspace_id"
+    );
+    // fetch existing, update source, siblings select, update sibling -- exactly four, all scoped
+    assert.equal(workspaceEqCalls.length, 4);
+    assert.ok(workspaceEqCalls.every((c) => c.args[1] === REAL_WORKSPACE_ID));
+  });
+
+  test("8a. a pure time-of-day change (no date shift) still shifts every future sibling's start and end by the same delta", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: "2026-08-06T14:00:00.000Z", scheduled_end: "2026-08-06T15:00:00.000Z" }) },
+        { error: null }, // hasColumn(scheduled_end)
+        { error: null }, // update source
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-13T14:00:00.000Z", scheduled_end: "2026-08-13T15:00:00.000Z" }] },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({
+      appointment_id: "appt-1", mode: "future",
+      scheduled_for: "2026-08-06T15:00:00.000Z", scheduled_end: "2026-08-06T16:00:00.000Z", // same day, +1 hour
+    }));
+    const sibUpdate = currentFake.calls.find(
+      (c) => c.table === "appointments" && c.method === "update"
+        && (c.args[0] as { scheduled_for?: string }).scheduled_for === "2026-08-13T15:00:00.000Z"
+    );
+    assert.ok(sibUpdate, "sibling shifted +1 hour");
+    assert.equal((sibUpdate!.args[0] as { scheduled_end?: string }).scheduled_end, "2026-08-13T16:00:00.000Z");
+  });
+
+  test("8b. a duration-only change (start unchanged, end extended) shifts only scheduled_end on future siblings, never scheduled_for", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: "2026-08-06T14:00:00.000Z", scheduled_end: "2026-08-06T15:00:00.000Z" }) },
+        { error: null }, // hasColumn(scheduled_end)
+        { error: null }, // update source
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-13T14:00:00.000Z", scheduled_end: "2026-08-13T15:00:00.000Z" }] },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({
+      appointment_id: "appt-1", mode: "future",
+      scheduled_for: "2026-08-06T14:00:00.000Z", scheduled_end: "2026-08-06T15:30:00.000Z", // same start, +30 min duration
+    }));
+    const sibUpdate = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update")[1];
+    assert.deepEqual(sibUpdate.args[0], { scheduled_end: "2026-08-13T15:30:00.000Z" });
+  });
+
+  test("9. cancelled/deleted exceptions are never recreated -- the siblings query is scoped to status: 'scheduled' and no row is ever inserted", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { error: null },
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null }] },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START }));
+    const statusEq = currentFake.calls.find((c) => c.method === "eq" && c.args[0] === "status");
+    assert.deepEqual(statusEq?.args, ["status", "scheduled"]);
+    assert.equal(currentFake.calls.filter((c) => c.method === "insert").length, 0);
+  });
+
+  test("10. notifications are sent exactly once per channel, never once per shifted sibling", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData
+        { data: subscriptionRow({ stripe_status: "active" }) }, // canSendNotifications
+      ],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { error: null }, // update source
+        {
+          data: [
+            { id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null },
+            { id: "sib-2", scheduled_for: SIB2_OLD_START, scheduled_end: null },
+          ],
+        },
+        { error: null }, // update sib-1
+        { error: null }, // update sib-2
+        { data: { service_type: "Haircut", scheduled_for: NEW_SELECTED_START } }, // notify re-fetch
+      ],
+      clients: [{ data: optedInClient() }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({
+      appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START, notify_channel: "both",
+    }));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 1);
+    assert.equal(currentNotify.smsCalls.length, 1);
+    assert.equal(currentFake.calls.filter((c) => c.table === "messages_sent" && c.method === "insert").length, 2);
+  });
+
+  test("11a. edit-modal payload shape (scheduled_for + scheduled_end always both present) shifts siblings correctly", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START, scheduled_end: OLD_SELECTED_END }) },
+        { error: null }, // hasColumn(scheduled_end)
+        { error: null }, // update source
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END }] },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({
+      appointment_id: "appt-1", mode: "future",
+      scheduled_for: NEW_SELECTED_START, scheduled_end: NEW_SELECTED_END, // AppointmentModal always sends both
+    }));
+    const sibUpdate = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update")[1];
+    assert.deepEqual(sibUpdate.args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END });
+  });
+
+  test("11b. drag-and-drop payload shape (scheduled_end omitted when the source appointment has none) still shifts sibling start, and shifts a sibling's own end by the same delta", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START, scheduled_end: null }) },
+        { error: null }, // update source (no hasColumn probe -- scheduled_end absent from body, matching MoveConfirmDialog when scheduledEnd is falsy)
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END }] },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({
+      appointment_id: "appt-1", mode: "future", scheduled_for: NEW_SELECTED_START, // MoveConfirmDialog: no scheduled_end key at all
+    }));
+    const sibUpdate = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update")[1];
+    // startDeltaMs (-1 day) is used as the end-delta fallback too, preserving this sibling's own duration.
+    assert.deepEqual(sibUpdate.args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END });
+  });
+
+  test("generalizes beyond weekly/every-4-weeks: a daily-spaced series shifts every sibling by the same delta and keeps 1-day spacing intact", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-daily", scheduled_for: "2026-08-06T09:00:00.000Z" }) },
+        { error: null }, // update source
+        {
+          data: [
+            { id: "sib-1", scheduled_for: "2026-08-07T09:00:00.000Z", scheduled_end: null },
+            { id: "sib-2", scheduled_for: "2026-08-08T09:00:00.000Z", scheduled_end: null },
+          ],
+        },
+        { error: null },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({
+      appointment_id: "appt-1", mode: "future", scheduled_for: "2026-08-06T10:00:00.000Z", // +1 hour, no date change
+    }));
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updates[1].args[0], { scheduled_for: "2026-08-07T10:00:00.000Z" });
+    assert.deepEqual(updates[2].args[0], { scheduled_for: "2026-08-08T10:00:00.000Z" });
+    const spacingMs = new Date("2026-08-08T10:00:00.000Z").getTime() - new Date("2026-08-07T10:00:00.000Z").getTime();
+    assert.equal(spacingMs, 24 * 60 * 60 * 1000);
   });
 });
 

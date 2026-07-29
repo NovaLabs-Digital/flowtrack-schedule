@@ -107,15 +107,20 @@ export async function PATCH(req: Request) {
         const newStart = body.scheduled_for ? new Date(body.scheduled_for) : null;
         const newEnd = body.scheduled_end ? new Date(body.scheduled_end) : null;
         const oldStart = new Date(existing.data.scheduled_for);
+        const oldEnd = existing.data.scheduled_end ? new Date(existing.data.scheduled_end) : null;
 
-        const newStartHours = newStart ? newStart.getHours() : null;
-        const newStartMins = newStart ? newStart.getMinutes() : null;
-        const newEndHours = newEnd ? newEnd.getHours() : null;
-        const newEndMins = newEnd ? newEnd.getMinutes() : null;
-
-        const timeChanged = newStart && (
-          newStartHours !== oldStart.getHours() || newStartMins !== oldStart.getMinutes()
-        );
+        // Full timestamp delta, not a same-day hour/minute comparison: moving
+        // the selected occurrence from Thursday to Wednesday at an unchanged
+        // clock time has zero hour/minute delta, so a time-of-day-only check
+        // never propagates it, leaving every future occurrence stuck on the
+        // old weekday. Each sibling is a materialized, independently-stored
+        // row (see manage-recurrence's generateFutureDates insert), so this
+        // delta must be added to each sibling's own scheduled_for/scheduled_end
+        // rather than recomputed from the recurrence rule -- that's also what
+        // keeps the interval between occurrences intact regardless of
+        // frequency_type (daily/weekdays/weekly/every-N-weeks).
+        const startDeltaMs = newStart ? newStart.getTime() - oldStart.getTime() : 0;
+        const endDeltaMs = newEnd && oldEnd ? newEnd.getTime() - oldEnd.getTime() : startDeltaMs;
 
         for (const sib of siblings) {
           const sibUpdate: Record<string, any> = {};
@@ -125,16 +130,11 @@ export async function PATCH(req: Request) {
           if (apptUpdate.duration_minutes !== undefined) sibUpdate.duration_minutes = apptUpdate.duration_minutes;
           if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
 
-          if (timeChanged && newStartHours !== null && newStartMins !== null) {
-            const sibDate = new Date(sib.scheduled_for);
-            sibDate.setHours(newStartHours, newStartMins, 0, 0);
-            sibUpdate.scheduled_for = sibDate.toISOString();
-
-            if (newEndHours !== null && newEndMins !== null) {
-              const sibEnd = new Date(sib.scheduled_for);
-              sibEnd.setHours(newEndHours, newEndMins, 0, 0);
-              sibUpdate.scheduled_end = sibEnd.toISOString();
-            }
+          if (startDeltaMs !== 0) {
+            sibUpdate.scheduled_for = new Date(new Date(sib.scheduled_for).getTime() + startDeltaMs).toISOString();
+          }
+          if (endDeltaMs !== 0 && sib.scheduled_end) {
+            sibUpdate.scheduled_end = new Date(new Date(sib.scheduled_end).getTime() + endDeltaMs).toISOString();
           }
 
           if (Object.keys(sibUpdate).length > 0) {
