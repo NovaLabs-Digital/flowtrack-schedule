@@ -270,3 +270,55 @@ describe("tester/demo and verification-error behavior are inherited by construct
     assert.ok(!source.includes("stripeStatus"));
   });
 });
+
+describe("Phase 5.7D-R17: appointment price snapshot (source-level proof)", () => {
+  test("editing shows the appointment's OWN price snapshot, never re-derived from the service's current default", () => {
+    const initPriceIdx = source.indexOf("function initPrice()");
+    assert.ok(initPriceIdx > -1);
+    const body = source.slice(initPriceIdx, source.indexOf("\n  }", initPriceIdx));
+    assert.ok(body.includes("editing.appointment.price_cents"));
+  });
+
+  test("creating proposes the initially-selected service's default price via serviceDefaultPriceCents", () => {
+    assert.ok(source.includes("serviceDefaultPriceCents[initialService]"));
+  });
+
+  test("priceTouched starts true only when the appointment being edited already has a real price on file -- protecting an intentionally-entered price from a later silent overwrite", () => {
+    assert.ok(source.includes("useState(isEdit && editing!.appointment.price_cents != null)"));
+  });
+
+  test("changing the service proposes its default price ONLY when the price field hasn't been touched yet", () => {
+    const setFnIdx = source.indexOf("function set(field: string, value: string | number)");
+    const setPriceIdx = source.indexOf("function setPrice(value: string)");
+    assert.ok(setFnIdx > -1 && setPriceIdx > -1 && setFnIdx < setPriceIdx);
+    const setBody = source.slice(setFnIdx, setPriceIdx);
+    assert.ok(setBody.includes("if (!priceTouched)"));
+    assert.ok(setBody.includes("serviceDefaultPriceCents[value]"));
+  });
+
+  test("typing directly into the Price field marks it touched, permanently protecting it from further auto-proposals this session", () => {
+    const setPriceIdx = source.indexOf("function setPrice(value: string)");
+    const body = source.slice(setPriceIdx, source.indexOf("\n  }", setPriceIdx));
+    assert.ok(body.includes("setPriceTouched(true)"));
+  });
+
+  test("a blank price is valid (no price set); a non-blank, unparseable price blocks submission with a clear error", () => {
+    assert.ok(source.includes('if (form.price.trim() !== "" && parsePriceToCents(form.price) === null)'));
+  });
+
+  test("both create and edit submit payloads include price_cents, derived once via parsePriceToCents, blank -> null", () => {
+    assert.ok(source.includes('const price_cents = form.price.trim() === "" ? null : parsePriceToCents(form.price);'));
+    // Appears in both the PATCH (edit) and POST (create) payload objects.
+    const occurrences = [...source.matchAll(/price_cents,/g)].length;
+    assert.ok(occurrences >= 2, `expected price_cents in both payloads, found ${occurrences} occurrence(s)`);
+  });
+
+  test("the Price input is rendered with a $ prefix and is optional (not required)", () => {
+    assert.ok(source.includes('placeholder="Optional"'));
+    assert.ok(source.includes("setPrice(e.target.value)"));
+  });
+
+  test("imports price helpers from the shared lib/money module -- no local reimplementation of cents<->dollars conversion", () => {
+    assert.ok(source.includes('import { centsToInputValue, parsePriceToCents } from "@/lib/money";'));
+  });
+});

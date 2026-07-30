@@ -767,6 +767,107 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
   });
 });
 
+describe("Phase 5.7D-R17: appointment price snapshot on edit", () => {
+  test("mode: single with a valid price updates only price_cents on the selected occurrence", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() }, // fetch existing
+        { error: null }, // hasColumn("price_cents")
+        { error: null }, // update source
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", price_cents: 8000 }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updateCall!.args[0], { price_cents: 8000 });
+  });
+
+  test("price_cents: null explicitly clears a previously-set price", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() },
+        { error: null }, // hasColumn("price_cents")
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", price_cents: null }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updateCall!.args[0], { price_cents: null });
+  });
+
+  test("an invalid price is rejected with 400, zero writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() },
+        { error: null }, // hasColumn("price_cents")
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", price_cents: -500 }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(writeCalls(currentFake.calls), []);
+  });
+
+  test("price_cents omitted entirely leaves the appointment's price untouched -- not part of the update payload", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "Deep Cleaning" }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.equal("price_cents" in (updateCall!.args[0] as object), false);
+  });
+
+  test("mode: future propagates the new price to every future sibling, as a plain value (not a delta)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null }, // hasColumn("price_cents")
+        { error: null }, // update source
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings
+        { error: null }, // update sib-1
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", price_cents: 9000 }));
+    assert.equal(res.status, 200);
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updates[0].args[0], { price_cents: 9000 });
+    assert.deepEqual(updates[1].args[0], { price_cents: 9000 });
+  });
+
+  test("mode: single never touches a sibling's price, even within a recurring series", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null }, // hasColumn("price_cents")
+        { error: null }, // update source only
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", price_cents: 9000 }));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
+    assert.equal(currentFake.calls.filter((c) => c.method === "gt").length, 0);
+  });
+});
+
 describe("Phase 5.5E-C: the notification gate is source-correctly placed and scoped (source-level proof)", () => {
   const routeSource = fs.readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
 

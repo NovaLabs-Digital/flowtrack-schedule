@@ -56,6 +56,7 @@ function oneTimeAppt() {
     repeat_weeks: 1,
     status: "scheduled",
     is_demo: false,
+    price_cents: 5000,
   };
 }
 
@@ -279,5 +280,44 @@ describe("existing recurrence business rules remain unchanged once entitled", ()
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
     assert.equal(res.status, 404);
     assert.deepEqual(await res.json(), { error: "Appointment not found" });
+  });
+});
+
+describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appointment's price snapshot", () => {
+  test("every generated future row copies the origin appointment's own price_cents, not the service's current default", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: oneTimeAppt() }, // price_cents: 5000
+        { error: null }, // update source appointment
+        { error: null }, // insert new series rows
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
+    assert.ok(rows.length > 0);
+    assert.ok(rows.every((r) => r.price_cents === 5000));
+  });
+
+  test("an origin appointment with no price generates rows with price_cents: null, never a fabricated value", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: { ...oneTimeAppt(), price_cents: null } },
+        { error: null },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
+    assert.ok(rows.every((r) => r.price_cents === null));
   });
 });

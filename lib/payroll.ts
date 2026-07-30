@@ -66,12 +66,42 @@ export function hasWorkedHours(appt: Appointment, employeeHours: EmployeeHours[]
   return !!findManualHoursEntry(appt, employeeHours);
 }
 
-// True when an appointment needs attention: in the past, not cancelled, and
-// has no worked-hours source yet (see hasWorkedHours above).
+// The instant an appointment is actually over: its own scheduled_end when
+// present, otherwise scheduled_for + duration_minutes, otherwise just
+// scheduled_for (no duration information at all). Mirrors scheduledHours()
+// below's identical fallback order. Absolute-instant arithmetic throughout
+// (new Date(iso).getTime() + milliseconds) -- never toBusinessLocal(), whose
+// synthesized Date is explicitly documented as unsafe for instant
+// comparisons (see lib/timezone.ts). This makes the result correct
+// regardless of DST or which timezone the server/browser happens to be in.
+function effectiveEndMs(appt: Pick<Appointment, "scheduled_for" | "scheduled_end" | "duration_minutes">): number {
+  if (appt.scheduled_end) {
+    const endMs = new Date(appt.scheduled_end).getTime();
+    if (Number.isFinite(endMs)) return endMs;
+  }
+  const startMs = new Date(appt.scheduled_for).getTime();
+  return startMs + (appt.duration_minutes ?? 0) * 60_000;
+}
+
+// True only once an appointment's scheduled end has actually passed --
+// never for a future appointment, and never for one still in progress
+// (started but not yet ended). This is the single eligibility gate for
+// "can this appointment even be flagged as missing worked hours yet,"
+// shared by needsWorkedHoursAttention (per-appointment icon,
+// DispatchPanel's "needs attention" state) and computePayrollRows
+// (missingHoursCount / the weekly warning banner) below, so the two
+// surfaces can never disagree about a not-yet-due appointment.
+export function isEligibleForWorkedHoursWarning(appt: Pick<Appointment, "scheduled_for" | "scheduled_end" | "duration_minutes">): boolean {
+  return effectiveEndMs(appt) < Date.now();
+}
+
+// True when an appointment needs attention: its scheduled end has already
+// passed, it isn't cancelled, and it has no worked-hours source yet (see
+// hasWorkedHours above).
 export function needsWorkedHoursAttention(appt: Appointment, employeeHours: EmployeeHours[]): boolean {
   return (
     appt.status !== "cancelled" &&
-    new Date(appt.scheduled_for).getTime() < Date.now() &&
+    isEligibleForWorkedHoursWarning(appt) &&
     !hasWorkedHours(appt, employeeHours)
   );
 }
@@ -243,7 +273,13 @@ export function computePayrollRows({
     }
 
     if (hours === null) {
-      missingHoursCount++;
+      // A future or currently-in-progress appointment simply hasn't
+      // happened yet -- it is never "missing" worked hours, only not due
+      // yet. Only an appointment whose scheduled end has already passed can
+      // be counted here (see isEligibleForWorkedHoursWarning above).
+      if (isEligibleForWorkedHoursWarning(appt)) {
+        missingHoursCount++;
+      }
       continue;
     }
 

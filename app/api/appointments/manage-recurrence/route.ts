@@ -37,7 +37,7 @@ export async function POST(req: Request) {
 
     const { data: appt, error: fetchErr } = await supabaseAdmin
       .from("appointments")
-      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status, is_demo")
+      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status, is_demo, price_cents")
       .eq("id", appointmentId)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
@@ -108,6 +108,10 @@ export async function POST(req: Request) {
         notes: appt.notes,
         duration_minutes: appt.duration_minutes,
         employee_id: appt.employee_id,
+        // Every newly generated occurrence gets the origin appointment's own
+        // current price snapshot -- not recomputed from the service's
+        // (possibly since-changed) default price.
+        price_cents: appt.price_cents,
         cancel_token: crypto.randomBytes(24).toString("hex"),
         status: "scheduled",
         series_id: newSeriesId,

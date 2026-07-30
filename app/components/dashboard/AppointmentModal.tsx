@@ -6,6 +6,7 @@ import { countFutureOccurrences } from "@/lib/recurrence";
 import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { centsToInputValue, parsePriceToCents } from "@/lib/money";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via
 // aria-describedby by every capability-gated mutation button below, rather
@@ -194,7 +195,11 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
   const serviceNames = services.length > 0 ? services.map((s) => s.name) : FALLBACK_SERVICES;
   const serviceDurations: Record<string, number> = {};
-  for (const s of services) serviceDurations[s.name] = s.duration_minutes;
+  const serviceDefaultPriceCents: Record<string, number | null> = {};
+  for (const s of services) {
+    serviceDurations[s.name] = s.duration_minutes;
+    serviceDefaultPriceCents[s.name] = s.default_price_cents ?? null;
+  }
   const initialService = editing?.appointment.service_type ?? serviceNames[0] ?? "";
   function defaultDuration(name: string) { return serviceDurations[name] ?? 60; }
 
@@ -206,6 +211,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   function initTimeOut(): string {
     if (editing?.appointment.scheduled_end) return snapTo15(toHHMM(editing.appointment.scheduled_end));
     return addMinsToHHMM(initTimeIn(), editing?.appointment.duration_minutes ?? defaultDuration(initialService));
+  }
+  // Editing an appointment always shows its OWN price snapshot, never the
+  // service's current default (see migrations/020 -- a service's default
+  // price never retroactively changes an existing appointment). Creating a
+  // new appointment proposes the initially-selected service's default price
+  // (or blank, if that service has none).
+  function initPrice(): string {
+    if (editing) return centsToInputValue(editing.appointment.price_cents);
+    return centsToInputValue(serviceDefaultPriceCents[initialService] ?? null);
   }
 
   // Client state
@@ -226,7 +240,16 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     status: editing?.appointment.status ?? "scheduled",
     frequency_type: "one_time" as string,
     repeat_weeks: 1,
+    price: initPrice(),
   });
+  // True once the owner has directly typed into the Price field themselves
+  // this session, OR (when editing) the appointment already had a real
+  // price snapshot on file when the modal opened -- in either case, a later
+  // service change must never silently overwrite it. Starts false when
+  // creating a new appointment (or editing one with no price yet), so a
+  // service change safely proposes that service's default price until the
+  // owner enters their own value.
+  const [priceTouched, setPriceTouched] = useState(isEdit && editing!.appointment.price_cents != null);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
@@ -254,6 +277,12 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       const next = { ...prev, [field]: value };
       if (field === "service_type" && typeof value === "string") {
         next.time_out = addMinsToHHMM(next.time_in, defaultDuration(value));
+        // Proposes the newly selected service's default price -- but never
+        // once the owner has entered/kept a price of their own (see
+        // priceTouched above).
+        if (!priceTouched) {
+          next.price = centsToInputValue(serviceDefaultPriceCents[value] ?? null);
+        }
       }
       if (field === "time_in" && typeof value === "string") {
         const dur = diffMins(prev.time_in, prev.time_out);
@@ -261,6 +290,11 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       }
       return next;
     });
+  }
+
+  function setPrice(value: string) {
+    setPriceTouched(true);
+    setForm((prev) => ({ ...prev, price: value }));
   }
 
   const computedDuration = diffMins(form.time_in, form.time_out);
@@ -316,6 +350,10 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     }
     if (!form.date || !form.time_in || !form.time_out) { setError("Date, Time In, and Time Out are required."); return false; }
     if (computedDuration <= 0) { setError("Time Out must be after Time In."); return false; }
+    if (form.price.trim() !== "" && parsePriceToCents(form.price) === null) {
+      setError("Enter a valid price (e.g. 45 or 45.00), or leave it blank.");
+      return false;
+    }
     return true;
   }
 
@@ -348,6 +386,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
     const scheduled_for = new Date(`${form.date}T${form.time_in}`).toISOString();
     const scheduled_end = new Date(`${form.date}T${form.time_out}`).toISOString();
+    const price_cents = form.price.trim() === "" ? null : parsePriceToCents(form.price);
 
     setSubmitting(true);
     setEditScope(null);
@@ -366,6 +405,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             status: form.status,
             duration_minutes: computedDuration,
             employee_id: selectedEmployeeId || null,
+            price_cents,
             mode,
             notify_channel: notifyChannel,
           }),
@@ -379,6 +419,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           frequency_type: form.frequency_type,
           repeat_weeks: form.repeat_weeks,
           employee_id: selectedEmployeeId || null,
+          price_cents,
           notify_channel: notifyChannel,
         };
         if (clientMode === "existing") payload.client_id = selectedClientId;
@@ -518,6 +559,25 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 </select>
               </div>
             )}
+          </div>
+
+          {/* Price -- an independent snapshot, not tied to the service's
+              current default once saved (see migrations/020). Proposed from
+              the selected service's default price above until the owner
+              types their own value; see setPrice/priceTouched. */}
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Price</label>
+            <div className="relative max-w-[10rem]">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-slate-400">$</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.price}
+                onChange={(e) => setPrice(e.target.value)}
+                className={inputCls + " pl-6"}
+                placeholder="Optional"
+              />
+            </div>
           </div>
 
           {/* Assigned Employee */}

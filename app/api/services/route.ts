@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
+import { isValidPriceCents } from "@/lib/money";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -24,7 +25,7 @@ export async function GET() {
 
     const { data, error } = await supabaseAdmin
       .from("services")
-      .select("id, name, description, duration_minutes, active, color, created_at, updated_at")
+      .select("id, name, description, duration_minutes, active, color, default_price_cents, created_at, updated_at")
       .eq("workspace_id", session.workspaceId)
       .eq("is_demo", isTester)
       .order("name", { ascending: true });
@@ -53,6 +54,20 @@ export async function POST(req: Request) {
     const name = (body.name || "").trim();
     if (!name) return json({ error: "Service name is required" }, 400);
 
+    // default_price_cents: optional. undefined/null both mean "no default
+    // price set" (stored as SQL NULL) — a service is fully valid with no
+    // price. Any other value must be a safe, storable integer-cents amount
+    // (see lib/money.ts); anything else (negative, non-integer, absurdly
+    // large, malformed) is rejected outright rather than silently clamped
+    // or ignored.
+    let default_price_cents: number | null = null;
+    if (body.default_price_cents !== undefined && body.default_price_cents !== null) {
+      if (!isValidPriceCents(body.default_price_cents)) {
+        return json({ error: "Price must be a valid, non-negative amount." }, 400);
+      }
+      default_price_cents = body.default_price_cents;
+    }
+
     const row: Record<string, any> = {
       name,
       description: (body.description || "").trim() || null,
@@ -60,6 +75,7 @@ export async function POST(req: Request) {
       active: true,
       is_demo: isTester,
       workspace_id: session.workspaceId,
+      default_price_cents,
     };
     if (body.color) row.color = body.color.trim();
 
@@ -111,6 +127,18 @@ export async function PATCH(req: Request) {
     if (typeof body.duration_minutes === "number") update.duration_minutes = body.duration_minutes;
     if (typeof body.active === "boolean") update.active = body.active;
     if (body.color !== undefined) update.color = body.color.trim();
+    // default_price_cents: undefined means "field not included in this
+    // request, leave unchanged" (distinct from PATCHing it to null, which
+    // explicitly clears an existing default price back to "no price set").
+    if (body.default_price_cents !== undefined) {
+      if (body.default_price_cents === null) {
+        update.default_price_cents = null;
+      } else if (isValidPriceCents(body.default_price_cents)) {
+        update.default_price_cents = body.default_price_cents;
+      } else {
+        return json({ error: "Price must be a valid, non-negative amount." }, 400);
+      }
+    }
 
     const { error } = await supabaseAdmin
       .from("services")

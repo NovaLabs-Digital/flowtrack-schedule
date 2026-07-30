@@ -230,3 +230,12 @@ describe("no duplicated billing surface, no leaked internal detail", () => {
     }
   });
 });
+
+describe("password visibility (Phase 5.7D-R17)", () => {
+  test("the employee-credential password field uses PasswordInput with autoComplete=new-password, and no raw <input type=\"password\"> remains", () => {
+    assert.ok(source.includes('import PasswordInput from "@/app/components/PasswordInput";'));
+    assert.equal([...source.matchAll(/<PasswordInput/g)].length, 1);
+    assert.ok(source.includes('autoComplete="new-password"'));
+    assert.ok(!source.includes('type="password"'));
+  });
+});

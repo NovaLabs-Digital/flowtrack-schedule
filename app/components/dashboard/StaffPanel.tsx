@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Employee } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import PasswordInput from "@/app/components/PasswordInput";
 
 // Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
 // Edit/Deactivate-Reactivate (active and inactive lists alike), and the
@@ -277,10 +278,10 @@ export default function StaffPanel({
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Password{editingId ? "" : " *"}</label>
-              <input
-                type="password"
+              <PasswordInput
                 value={form.password}
                 onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))}
+                autoComplete="new-password"
                 className={inputCls}
                 placeholder={editingId ? "Leave blank to keep current" : "Set password"}
               />

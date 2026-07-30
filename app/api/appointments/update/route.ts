@@ -6,6 +6,7 @@ import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSen
 import { changeTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
+import { isValidPriceCents } from "@/lib/money";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -64,6 +65,19 @@ export async function PATCH(req: Request) {
       apptUpdate.scheduled_end = body.scheduled_end;
     if (typeof body.duration_minutes === "number" && await hasColumn("duration_minutes"))
       apptUpdate.duration_minutes = body.duration_minutes;
+    // price_cents: undefined means "not part of this request, leave
+    // unchanged"; null explicitly clears a previously-set price back to "no
+    // price." Never re-derived from the appointment's service here -- the
+    // client already resolved whatever value it wants stored.
+    if (body.price_cents !== undefined && await hasColumn("price_cents")) {
+      if (body.price_cents === null) {
+        apptUpdate.price_cents = null;
+      } else if (isValidPriceCents(body.price_cents)) {
+        apptUpdate.price_cents = body.price_cents;
+      } else {
+        return json({ error: "Price must be a valid, non-negative amount." }, 400);
+      }
+    }
     if (body.employee_id !== undefined && await hasColumn("employee_id")) {
       const newEmployeeId = (body.employee_id || "").trim() || null;
       // employee_id is an assignment target, not the caller's own identity —
@@ -129,6 +143,7 @@ export async function PATCH(req: Request) {
           if (apptUpdate.notes !== undefined) sibUpdate.notes = apptUpdate.notes;
           if (apptUpdate.duration_minutes !== undefined) sibUpdate.duration_minutes = apptUpdate.duration_minutes;
           if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
+          if (apptUpdate.price_cents !== undefined) sibUpdate.price_cents = apptUpdate.price_cents;
 
           if (startDeltaMs !== 0) {
             sibUpdate.scheduled_for = new Date(new Date(sib.scheduled_for).getTime() + startDeltaMs).toISOString();

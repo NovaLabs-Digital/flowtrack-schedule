@@ -29,6 +29,10 @@ export type Appointment = {
   employee_id?: string | null;
   actual_started_at?: string | null;
   actual_completed_at?: string | null;
+  // Phase 5.7D-R17: an independent price snapshot taken at create/edit time
+  // (see migrations/020) -- never recomputed from the service's current
+  // default price. null means no price was ever set for this appointment.
+  price_cents?: number | null;
 };
 
 export type Service = {
@@ -38,6 +42,9 @@ export type Service = {
   duration_minutes: number;
   active: boolean;
   color: string;
+  // Phase 5.7D-R17: optional default price in integer cents (migrations/020).
+  // null means no default price has been set -- distinct from a real $0.00.
+  default_price_cents?: number | null;
 };
 
 export type Employee = {

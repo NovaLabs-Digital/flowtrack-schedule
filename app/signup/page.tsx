@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import PasswordInput from "@/app/components/PasswordInput";
 
 const MIN_PASSWORD_LENGTH = 12;
 
@@ -147,20 +148,20 @@ export default function SignupPage() {
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">Password</label>
-                    <input
-                      type="password"
+                    <PasswordInput
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="new-password"
                       className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
                     />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">Confirm Password</label>
-                    <input
-                      type="password"
+                    <PasswordInput
                       value={confirmPassword}
                       onChange={(e) => setConfirmPassword(e.target.value)}
+                      autoComplete="new-password"
                       className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       placeholder="Re-enter your password"
                     />

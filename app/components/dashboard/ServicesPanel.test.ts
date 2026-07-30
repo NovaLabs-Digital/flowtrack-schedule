@@ -222,3 +222,35 @@ describe("no duplicated billing surface, no leaked internal detail", () => {
     }
   });
 });
+
+describe("Phase 5.7D-R17: optional service default pricing (source-level proof)", () => {
+  test("the Price form field is blank by default and parses via the shared lib/money helpers, never a local reimplementation", () => {
+    assert.ok(source.includes('import { centsToInputValue, formatCents, parsePriceToCents } from "@/lib/money";'));
+    assert.ok(source.includes("price: \"\""));
+  });
+
+  test("editing populates the price field from the service's own default_price_cents via centsToInputValue", () => {
+    assert.ok(source.includes("price: centsToInputValue(s.default_price_cents)"));
+  });
+
+  test("a blank price saves as null; a non-blank, unparseable price blocks submission with a clear error, never silently sent to the server", () => {
+    assert.ok(source.includes('const priceTrimmed = form.price.trim();'));
+    assert.ok(source.includes('const default_price_cents = priceTrimmed === "" ? null : parsePriceToCents(priceTrimmed);'));
+    assert.ok(source.includes("if (priceTrimmed !== \"\" && default_price_cents === null)"));
+  });
+
+  test("both POST (create) and PATCH (edit) payloads send default_price_cents explicitly, never the raw form.price string", () => {
+    const occurrences = [...source.matchAll(/default_price_cents(?!:\s*number)/g)].length;
+    assert.ok(occurrences >= 2, `expected default_price_cents referenced in both payload branches, found ${occurrences}`);
+    assert.ok(!source.includes("...form }") && !source.includes("...form)"), "must not spread the raw form object (which contains the unparsed price string) into the request body");
+  });
+
+  test("the table displays the price via formatCents, distinguishing 'no price set' from a real $0.00", () => {
+    assert.ok(source.includes("{formatCents(s.default_price_cents)}"));
+  });
+
+  test("the price input uses a $ prefix and an explicit optional placeholder", () => {
+    assert.ok(source.includes("Default Price"));
+    assert.ok(source.includes('placeholder="Optional — leave blank for no default price"'));
+  });
+});

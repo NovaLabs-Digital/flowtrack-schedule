@@ -10,6 +10,7 @@ import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
 import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDateStringFromInstant, type BusyRange } from "@/lib/availability";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
+import { isValidPriceCents } from "@/lib/money";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -89,6 +90,19 @@ export async function POST(req: Request) {
     const employee_id: string | null = isPublic ? null : ((body.employee_id || "").trim() || null);
     // Defaults to "both" so the public /book self-booking page (no staff choice) keeps sending a confirmation.
     const notify_channel: NotifyChannel = body.notify_channel || "both";
+
+    // price_cents: an independent snapshot the client already resolved (from
+    // the selected service's default price, or a manually overridden
+    // amount) -- never re-derived from the service here. Public booking
+    // never sets a price at all (no pricing UI on that flow). null/absent
+    // means no price was set; anything else must be a valid, safe amount.
+    let price_cents: number | null = null;
+    if (!isPublic && body.price_cents !== undefined && body.price_cents !== null) {
+      if (!isValidPriceCents(body.price_cents)) {
+        return json({ error: "Price must be a valid, non-negative amount." }, 400);
+      }
+      price_cents = body.price_cents;
+    }
 
     if (!service_type || !scheduled_for) {
       return json({ error: "Missing required fields" }, 400);
@@ -220,6 +234,7 @@ export async function POST(req: Request) {
     const hasSeries = await hasColumn("series_id");
     const hasFrequency = await hasColumn("frequency_type");
     const hasEmployee = await hasColumn("employee_id");
+    const hasPrice = await hasColumn("price_cents");
 
     const startDate = new Date(scheduled_for);
     const dates: Date[] = [startDate, ...generateFutureDates(startDate, frequency_type, repeat_weeks)];
@@ -255,6 +270,10 @@ export async function POST(req: Request) {
       if (hasEmployee && employee_id) {
         row.employee_id = employee_id;
       }
+      // Every occurrence in a recurring series created together gets the
+      // exact same price snapshot -- not recomputed per-date, never derived
+      // from the service's (possibly since-changed) current default.
+      if (hasPrice) row.price_cents = price_cents;
       return row;
     });
 

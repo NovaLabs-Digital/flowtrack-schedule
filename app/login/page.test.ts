@@ -8,6 +8,15 @@ import { fileURLToPath } from "node:url";
 
 const source = fs.readFileSync(fileURLToPath(new URL("./page.tsx", import.meta.url)), "utf8");
 
+describe("app/login/page.tsx -- password visibility (Phase 5.7D-R17)", () => {
+  test("the password field uses PasswordInput with autoComplete=current-password, and no raw <input type=\"password\"> remains", () => {
+    assert.ok(source.includes('import PasswordInput from "@/app/components/PasswordInput";'));
+    assert.equal([...source.matchAll(/<PasswordInput/g)].length, 1);
+    assert.ok(source.includes('autoComplete="current-password"'));
+    assert.ok(!source.includes('type="password"'));
+  });
+});
+
 describe("app/login/page.tsx -- Phase 5.6D legal links", () => {
   test("links to /terms", () => {
     assert.ok(source.includes('href="/terms"'));

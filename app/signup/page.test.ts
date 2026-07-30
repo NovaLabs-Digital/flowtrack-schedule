@@ -15,7 +15,10 @@ describe("app/signup/page.tsx -- required fields", () => {
   test("collects company name, email, password, confirm password, and a terms-acceptance checkbox", () => {
     assert.ok(source.includes("companyName"));
     assert.ok(source.includes('type="email"'));
-    assert.ok(source.includes('type="password"'));
+    // Phase 5.7D-R17: password fields render via the shared PasswordInput
+    // show/hide component, not a raw <input type="password">.
+    assert.ok(source.includes('import PasswordInput from "@/app/components/PasswordInput";'));
+    assert.ok(source.includes("<PasswordInput"));
     assert.ok(source.includes("confirmPassword"));
     assert.ok(source.includes('type="checkbox"'));
     assert.ok(source.includes("termsAccepted"));
@@ -34,6 +37,18 @@ describe("app/signup/page.tsx -- required fields", () => {
     assert.ok(source.includes('href="/login"'));
     assert.ok(source.includes("Already have an account?"));
     assert.ok(source.includes("Sign in"));
+  });
+});
+
+describe("app/signup/page.tsx -- password visibility (Phase 5.7D-R17)", () => {
+  test("both the password and confirm-password fields use PasswordInput, with correct autoComplete hints", () => {
+    const occurrences = [...source.matchAll(/<PasswordInput/g)].length;
+    assert.equal(occurrences, 2, "expected exactly two PasswordInput usages: password and confirm password");
+    assert.equal([...source.matchAll(/autoComplete="new-password"/g)].length, 2);
+  });
+
+  test("no raw <input type=\"password\"> remains in this file -- both fields were migrated to the shared component", () => {
+    assert.ok(!source.includes('type="password"'));
   });
 });
 

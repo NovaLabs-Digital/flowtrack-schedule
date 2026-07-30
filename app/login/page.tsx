@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { resolvePostLoginNavigation, type LoginRole } from "@/lib/loginNavigation";
+import PasswordInput from "@/app/components/PasswordInput";
 
 type WorkspaceChoice = { selectionId: string; companyName: string };
 
@@ -237,10 +238,10 @@ export default function LoginPage() {
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">Password</label>
-                    <input
-                      type="password"
+                    <PasswordInput
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="current-password"
                       className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                       placeholder="Enter your password"
                     />

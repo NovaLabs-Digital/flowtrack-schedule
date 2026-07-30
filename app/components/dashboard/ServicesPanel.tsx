@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Service } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { centsToInputValue, formatCents, parsePriceToCents } from "@/lib/money";
 
 // Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
 // Edit/Enable-Disable/Delete, and the Add/Edit form's Save submit are all
@@ -38,8 +39,8 @@ const PRESET_COLORS = [
   { hex: "#475569", label: "Slate Gray" },
 ];
 
-type EditForm = { name: string; description: string; color: string };
-const EMPTY_FORM: EditForm = { name: "", description: "", color: PRESET_COLORS[0].hex };
+type EditForm = { name: string; description: string; color: string; price: string };
+const EMPTY_FORM: EditForm = { name: "", description: "", color: PRESET_COLORS[0].hex, price: "" };
 
 export default function ServicesPanel({
   isTester = false,
@@ -78,7 +79,12 @@ export default function ServicesPanel({
     if (!canMutateOperationalData) return;
     setEditingId(s.id);
     setShowAdd(false);
-    setForm({ name: s.name, description: s.description ?? "", color: s.color ?? PRESET_COLORS[0].hex });
+    setForm({
+      name: s.name,
+      description: s.description ?? "",
+      color: s.color ?? PRESET_COLORS[0].hex,
+      price: centsToInputValue(s.default_price_cents),
+    });
     setMessage(null);
   }
 
@@ -101,6 +107,17 @@ export default function ServicesPanel({
     if (!canMutateOperationalData) return;
     if (!form.name.trim()) { setMessage({ type: "error", text: "Service name is required." }); return; }
 
+    // Blank means no default price; anything else must parse to a valid
+    // non-negative amount (see lib/money.ts) -- an invalid value (letters,
+    // more than 2 decimal places, negative) is rejected here rather than
+    // silently dropped or sent to the server as garbage.
+    const priceTrimmed = form.price.trim();
+    const default_price_cents = priceTrimmed === "" ? null : parsePriceToCents(priceTrimmed);
+    if (priceTrimmed !== "" && default_price_cents === null) {
+      setMessage({ type: "error", text: "Enter a valid price (e.g. 45 or 45.00), or leave it blank." });
+      return;
+    }
+
     setSaving(true);
     setMessage(null);
 
@@ -109,7 +126,11 @@ export default function ServicesPanel({
       const res = await fetch("/api/services", {
         method: isEdit ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(isEdit ? { id: editingId, ...form } : form),
+        body: JSON.stringify(
+          isEdit
+            ? { id: editingId, name: form.name, description: form.description, color: form.color, default_price_cents }
+            : { name: form.name, description: form.description, color: form.color, default_price_cents }
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setMessage({ type: "error", text: data?.error || "Save failed." }); return; }
@@ -243,6 +264,20 @@ export default function ServicesPanel({
             />
           </div>
           <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Default Price</label>
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-slate-400">$</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.price}
+                onChange={(e) => setForm((p) => ({ ...p, price: e.target.value }))}
+                className={inputCls + " pl-6"}
+                placeholder="Optional — leave blank for no default price"
+              />
+            </div>
+          </div>
+          <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Color</label>
             <div className="flex items-center gap-2 flex-wrap">
               {PRESET_COLORS.map((c) => (
@@ -282,10 +317,11 @@ export default function ServicesPanel({
       )}
 
       {/* Table header */}
-      <div className="mt-5 grid grid-cols-[auto_1fr_1fr_80px_auto] gap-4 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
+      <div className="mt-5 grid grid-cols-[auto_1fr_1fr_90px_80px_auto] gap-4 px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200">
         <div>Color</div>
         <div>Service Name</div>
         <div>Description</div>
+        <div>Price</div>
         <div>Status</div>
         <div>Actions</div>
       </div>
@@ -299,7 +335,7 @@ export default function ServicesPanel({
             <div
               key={s.id}
               className={[
-                "grid grid-cols-[auto_1fr_1fr_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 transition-colors",
+                "grid grid-cols-[auto_1fr_1fr_90px_80px_auto] gap-4 items-center px-4 py-3 border-b border-slate-100 transition-colors",
                 s.active ? "" : "opacity-50",
               ].join(" ")}
             >
@@ -311,6 +347,9 @@ export default function ServicesPanel({
               </div>
               <div className="text-xs text-slate-500 truncate">
                 {s.description || "—"}
+              </div>
+              <div className="text-xs text-slate-700">
+                {formatCents(s.default_price_cents)}
               </div>
               <div>
                 <span className={[
