@@ -35,3 +35,40 @@ describe("app/dashboard/page.tsx -- services query includes default_price_cents 
     }
   });
 });
+
+// Phase 5.7D-R17B follow-up: the services fix alone was incomplete. The
+// price was correctly saved by app/api/appointments/create/route.ts, but
+// reopening that same appointment showed a blank Price field, because
+// apptFields (the primary appointments SELECT this file uses, feeding
+// AppointmentModal's `editing.appointment` on Edit) also never included
+// price_cents -- the exact same class of bug, in the same file, one query
+// over. Confirmed against real production data (create correctly proposed
+// $200.00; reopening the saved appointment showed blank) before this fix.
+describe("app/dashboard/page.tsx -- primary appointments query includes price_cents (Phase 5.7D-R17B follow-up)", () => {
+  test("apptFields' primary (non-fallback) value includes price_cents", () => {
+    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    assert.ok(fieldsMatch, "expected to find the apptFields primary field-list declaration");
+    assert.ok(
+      fieldsMatch![1].includes("price_cents"),
+      `apptFields is missing price_cents: "${fieldsMatch![1]}"`
+    );
+  });
+
+  test("apptFields still includes every previously-selected column -- additive, not a replacement", () => {
+    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    for (const col of [
+      "id", "client_id", "service_type", "scheduled_for", "status", "notes",
+      "duration_minutes", "scheduled_end", "series_id", "frequency_type",
+      "repeat_weeks", "employee_id", "actual_started_at", "actual_completed_at",
+    ]) {
+      assert.ok(fieldsMatch![1].includes(col), `must still select "${col}"`);
+    }
+  });
+
+  test("the minimal fallback field list (used only when the primary query errors) is deliberately left unchanged -- it never included duration_minutes/scheduled_end/etc. either", () => {
+    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
+    assert.ok(fallbackMatch);
+    assert.ok(!fallbackMatch![1].includes("price_cents"));
+    assert.ok(!fallbackMatch![1].includes("duration_minutes"));
+  });
+});

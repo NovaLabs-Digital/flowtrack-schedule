@@ -102,7 +102,7 @@ export default async function DashboardPage() {
   // scheduled_for with `id` as a tiebreaker so pages never overlap or skip
   // a row, and fails closed (returns the error) rather than silently
   // handing back a partial set if any page fails.
-  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id, actual_started_at, actual_completed_at";
+  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id, actual_started_at, actual_completed_at, price_cents";
   let apptsRes = await fetchAllPages(async (from, to) =>
     supabaseAdmin
       .from("appointments")
