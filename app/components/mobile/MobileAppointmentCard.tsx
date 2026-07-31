@@ -18,7 +18,8 @@ function mapsUrl(address: string) {
 type Props = {
   appointment: Appointment;
   client: Client | null;
-  employee: Employee | null;
+  // Phase 5.7D-R18: zero, one, or many assigned employees.
+  employees: Employee[];
   serviceColor: string | null;
   durationMinutes: number;
   onTap: () => void;
@@ -30,7 +31,7 @@ type Props = {
 // matches the one card in the approved mockup that shows Navigate instead of
 // Call, and mirrors the existing Call/Navigate fallback convention already
 // used in DispatchPanel.tsx and EmployeeSchedule.tsx.
-export default function MobileAppointmentCard({ appointment, client, employee, serviceColor, durationMinutes, onTap }: Props) {
+export default function MobileAppointmentCard({ appointment, client, employees, serviceColor, durationMinutes, onTap }: Props) {
   const start = toBusinessLocal(appointment.scheduled_for);
   const end = new Date(start.getTime() + durationMinutes * 60_000);
   const timeLabel = `${formatTime(start)} – ${formatTime(end)}`;
@@ -56,8 +57,8 @@ export default function MobileAppointmentCard({ appointment, client, employee, s
         <div className="text-xs font-medium text-slate-500">{timeLabel}</div>
         <div className="text-sm font-semibold text-slate-900 truncate mt-0.5">{appointment.service_type}</div>
         <div className="text-sm text-slate-700 truncate">{client?.name ?? "Client"}</div>
-        {employee && (
-          <div className="text-xs text-slate-400 truncate mt-0.5">{employee.name}</div>
+        {employees.length > 0 && (
+          <div className="text-xs text-slate-400 truncate mt-0.5">{employees.map((e) => e.name).join(", ")}</div>
         )}
       </div>
       <div className="flex items-center shrink-0">

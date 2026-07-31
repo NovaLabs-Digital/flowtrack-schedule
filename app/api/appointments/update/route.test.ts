@@ -429,17 +429,17 @@ describe("existing appointment-editing business rules remain unchanged once enti
     assert.deepEqual(await res.json(), { error: "Appointment not found" });
   });
 
-  test("reassigning to an employee outside the workspace still 404s, after entitlement passes", async () => {
+  test("assigning an employee outside the workspace still 404s, after entitlement passes", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: existingAppt() }, { error: null }], // fetch existing, then hasColumn("employee_id") probe
-      employees: [{ data: null }],
+      appointments: [{ data: existingAppt() }], // fetch existing only -- employee validation runs before any write
+      employees: [{ data: [] }], // "emp-outside" not found in this workspace
     });
     sessionToReturn = OWNER_SESSION;
-    const res = await PATCH(req({ appointment_id: "appt-1", employee_id: "emp-outside" }));
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["emp-outside"] }));
     assert.equal(res.status, 404);
-    assert.deepEqual(await res.json(), { error: "Employee not found" });
+    assert.deepEqual(await res.json(), { error: "One or more assigned employees were not found." });
   });
 });
 
@@ -865,6 +865,176 @@ describe("Phase 5.7D-R17: appointment price snapshot on edit", () => {
     assert.equal(res.status, 200);
     assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
     assert.equal(currentFake.calls.filter((c) => c.method === "gt").length, 0);
+  });
+});
+
+describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
+  test("adding a second employee (Roxana) while Teresa remains -- only an insert, no removal", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+      appointment_employee_hours: [{ data: [] }],
+      appointment_employees: [
+        { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
+        { data: null, error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["teresa", "roxana"] }));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "insert");
+    assert.ok(insertCall);
+    const rows = insertCall!.args[0] as Array<{ employee_id: string }>;
+    assert.deepEqual(rows.map((r) => r.employee_id), ["roxana"]);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "delete").length, 0);
+  });
+
+  test("removing Teresa while Alberto remains -- removes only Teresa's assignment, keeps Alberto", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+      employees: [{ data: [{ id: "alberto" }] }],
+      appointment_employee_hours: [{ data: [] }],
+      appointment_employees: [
+        {
+          data: [
+            { id: "ae-1", appointment_id: "appt-1", employee_id: "alberto", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+            { id: "ae-2", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+          ],
+        },
+        { data: null, error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["alberto"] }));
+    assert.equal(res.status, 200);
+    const deleteCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "delete");
+    assert.ok(deleteCall);
+    const inCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "in");
+    assert.deepEqual(inCall!.args, ["employee_id", ["teresa"]]);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert").length, 0);
+  });
+
+  test("removing the last employee is allowed at the API level -- last-employee confirmation is a client-side (AppointmentModal) concern", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+      appointment_employee_hours: [{ data: [] }],
+      appointment_employees: [
+        { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
+        { data: null, error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: [] }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.equal((updateCall!.args[0] as { employee_id?: string | null }).employee_id, null);
+    assert.ok(currentFake.calls.some((c) => c.table === "appointment_employees" && c.method === "delete"));
+  });
+
+  test("a blocked removal (recorded work) rejects the entire request with 409, zero mutation of any kind -- not even an unrelated field change", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }],
+      appointment_employee_hours: [{ data: [] }],
+      appointment_employees: [
+        { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: "2026-07-30T09:00:00.000Z", actual_completed_at: "2026-07-30T12:00:00.000Z", created_at: "x", updated_at: "x" }] },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: [], service_type: "Deep Cleaning" }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "ASSIGNMENT_REMOVAL_BLOCKED");
+    assert.deepEqual(body.blockedEmployeeIds, ["teresa"]);
+    assert.equal(writeCalls(currentFake.calls).length, 0, "no mutation anywhere -- not even the unrelated service_type change");
+  });
+
+  test("mode: future propagates a newly added employee to every future sibling, without duplicating the existing employee's assignment", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) }, // existing fetch
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings (fetched early for validation)
+        { error: null }, // hasColumn("employee_id")
+        { error: null }, // update origin
+        { error: null }, // update sibling
+      ],
+      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+      appointment_employee_hours: [{ data: [] }],
+      appointment_employees: [
+        { data: [{ id: "ae-o", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // fetchAssignments(origin)
+        { data: [{ id: "ae-s", appointment_id: "sib-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // fetchAssignments(sib-1)
+        { data: null, error: null }, // insertAssignments(origin, roxana)
+        { data: null, error: null }, // insertAssignments(sib-1, roxana)
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", employee_ids: ["teresa", "roxana"] }));
+    assert.equal(res.status, 200);
+    const insertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
+    assert.equal(insertCalls.length, 2);
+    for (const call of insertCalls) {
+      const rows = call.args[0] as Array<{ employee_id: string }>;
+      assert.deepEqual(rows.map((r) => r.employee_id), ["roxana"]);
+    }
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "delete").length, 0);
+  });
+
+  test("mode: future -- a blocked removal on ANY sibling aborts the whole request, including the origin's own (unblocked) change", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+      ],
+      employees: [{ data: [{ id: "teresa" }] }],
+      appointment_employee_hours: [{ data: [] }],
+      appointment_employees: [
+        {
+          data: [
+            { id: "ae-o1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+            { id: "ae-o2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+          ],
+        }, // fetchAssignments(origin) -- roxana unworked here, removal would be fine on its own
+        {
+          data: [
+            { id: "ae-s1", appointment_id: "sib-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+            { id: "ae-s2", appointment_id: "sib-1", employee_id: "roxana", actual_started_at: "2026-08-10T14:00:00.000Z", actual_completed_at: "2026-08-10T15:00:00.000Z", created_at: "x", updated_at: "x" },
+          ],
+        }, // fetchAssignments(sib-1) -- roxana IS worked here
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", employee_ids: ["teresa"] }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "ASSIGNMENT_REMOVAL_BLOCKED");
+    assert.deepEqual(body.blockedEmployeeIds, ["roxana"]);
+    assert.equal(writeCalls(currentFake.calls).length, 0, "the origin's own unblocked removal must not be applied either -- whole request aborts");
+  });
+
+  test("employee_ids omitted entirely leaves existing assignments untouched -- not part of the update payload", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "Deep Cleaning" }));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "employees").length, 0);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.equal("employee_id" in (updateCall!.args[0] as object), false);
   });
 });
 

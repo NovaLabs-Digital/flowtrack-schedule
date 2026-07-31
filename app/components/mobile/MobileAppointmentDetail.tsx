@@ -33,7 +33,8 @@ function durationLabel(mins: number) {
 type Props = {
   appointment: Appointment;
   client: Client | null;
-  employee: Employee | null;
+  // Phase 5.7D-R18: zero, one, or many assigned employees.
+  employees: Employee[];
   durationMinutes: number;
   onBack: () => void;
   onEdit: () => void;
@@ -49,7 +50,7 @@ type Props = {
 export default function MobileAppointmentDetail({
   appointment,
   client,
-  employee,
+  employees,
   durationMinutes,
   onBack,
   onEdit,
@@ -136,10 +137,10 @@ export default function MobileAppointmentDetail({
               <span>🕐</span>
               <span>{formatTime(start)} – {formatTime(end)} ({durationLabel(durationMinutes)})</span>
             </div>
-            {employee && (
+            {employees.length > 0 && (
               <div className="flex items-center gap-2">
                 <span>👤</span>
-                <span>{employee.name}</span>
+                <span>{employees.map((e) => e.name).join(", ")}</span>
               </div>
             )}
             {client?.address && (

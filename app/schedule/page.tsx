@@ -5,7 +5,7 @@ import { fetchAllPages } from "@/lib/paginate";
 import EmployeeSchedule from "@/app/components/schedule/EmployeeSchedule";
 import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
 import { nowInBusinessTz } from "@/lib/timezone";
-import type { Appointment, EmployeeHours } from "@/app/components/dashboard/types";
+import type { Appointment, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForEmployee } from "@/lib/entitlementView";
 
@@ -27,6 +27,14 @@ function mondayOfWeek(offsetWeeks: number): Date {
   d.setDate(d.getDate() - diff + offsetWeeks * 7);
   return d;
 }
+
+// PostgREST has previously failed outright (oversized query string, not a
+// graceful error) on a single .in() call with several hundred UUIDs -- see
+// the appointment_employee_hours fix in app/dashboard/page.tsx. Fetching
+// this employee's own assigned appointments in bounded chunks avoids that
+// failure mode regardless of how large one employee's own assignment
+// history grows over time.
+const APPOINTMENT_ID_CHUNK_SIZE = 150;
 
 export default async function SchedulePage() {
   const session = await getSession();
@@ -71,29 +79,70 @@ export default async function SchedulePage() {
     redirect("/login");
   }
 
-  // Paginated for the same reason as app/dashboard/page.tsx: an
-  // unbounded, long-tenured employee's "scheduled" (non-cancelled) history
-  // isn't date-windowed here and can grow past PostgREST's default
-  // 1000-row response cap over time (the busiest real employee is already
-  // at 200+). fetchAllPages (lib/paginate.ts) keeps paging until a short
-  // page confirms there's nothing left, ordered by scheduled_for with `id`
-  // as a tiebreaker, and fails closed rather than silently truncating.
-  const apptsRes = await fetchAllPages<Appointment>(async (from, to) =>
+  // Phase 5.7D-R18: appointment_employees (not appointments.employee_id) is
+  // the authoritative source for "which jobs are mine" -- a shared
+  // appointment with two or more assigned employees would otherwise never
+  // appear here at all, since appointments.employee_id is NULL for any
+  // appointment with anything other than exactly one assignment (see
+  // lib/appointmentEmployees.ts's deriveLegacyEmployeeId). Paginated for
+  // the same reason as app/dashboard/page.tsx: an unbounded, long-tenured
+  // employee's assignment history isn't date-windowed here and can grow
+  // past PostgREST's default 1000-row response cap over time.
+  const assignRes = await fetchAllPages<AppointmentEmployeeAssignment>(async (from, to) =>
     supabaseAdmin
-      .from("appointments")
-      .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at, employee_id")
+      .from("appointment_employees")
+      .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, created_at, updated_at")
       .eq("employee_id", employeeId)
       .eq("workspace_id", workspaceId)
-      .eq("status", "scheduled")
-      .order("scheduled_for", { ascending: true })
-      .order("id", { ascending: true })
+      .order("appointment_id", { ascending: true })
       .range(from, to)
   );
-  if (apptsRes.error) {
-    console.error("SCHEDULE_APPOINTMENTS_FETCH_ERROR", apptsRes.error.message);
+  if (assignRes.error) {
+    console.error("SCHEDULE_ASSIGNMENTS_FETCH_ERROR", assignRes.error.message);
   }
+  const myAssignments = assignRes.data ?? [];
+  const assignmentByApptId = new Map(myAssignments.map((a) => [a.appointment_id, a]));
+  const assignedApptIds = myAssignments.map((a) => a.appointment_id);
 
-  const appts = apptsRes.data ?? [];
+  let appts: Appointment[] = [];
+  let apptsFetchFailed = false;
+  for (let i = 0; i < assignedApptIds.length; i += APPOINTMENT_ID_CHUNK_SIZE) {
+    const chunk = assignedApptIds.slice(i, i + APPOINTMENT_ID_CHUNK_SIZE);
+    const { data, error } = await supabaseAdmin
+      .from("appointments")
+      .select("id, client_id, service_type, scheduled_for, scheduled_end, status, notes, duration_minutes, actual_started_at, actual_completed_at, employee_id")
+      .in("id", chunk)
+      .eq("workspace_id", workspaceId)
+      .eq("status", "scheduled");
+    if (error) {
+      console.error("SCHEDULE_APPOINTMENTS_FETCH_ERROR", error.message);
+      apptsFetchFailed = true;
+      continue;
+    }
+    appts.push(...((data ?? []) as Appointment[]));
+  }
+  if (apptsFetchFailed) appts = [];
+
+  // Each appointment's actual_started_at/actual_completed_at is overwritten
+  // here with THIS employee's own assignment timestamps -- never the
+  // appointment-level (legacy, frozen as of this phase) columns, and never
+  // another assigned employee's. EmployeeSchedule.tsx already treats these
+  // two fields purely as "my own job-tracking state" (it seeds its local
+  // jobTimes state from them once, then only ever updates from the job
+  // route's own response) -- populating them from the correct per-employee
+  // source here is the only change needed to make that existing logic
+  // correct for a shared, multi-employee appointment.
+  appts = appts
+    .map((a) => {
+      const mine = assignmentByApptId.get(a.id);
+      return {
+        ...a,
+        actual_started_at: mine?.actual_started_at ?? null,
+        actual_completed_at: mine?.actual_completed_at ?? null,
+      };
+    })
+    .sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime());
+
   const clientIds = [...new Set(appts.map((a) => a.client_id))];
   // Client phone is intentionally not selected here — employees call the
   // office (see officePhone below), not the client, by default.
@@ -158,6 +207,7 @@ export default async function SchedulePage() {
     appointments: appts,
     employees: employeesForCalc,
     employeeHours,
+    assignments: myAssignments,
     rangeStart: toDateInputValue(thisWeekStart),
     rangeEnd: toDateInputValue(thisWeekEnd),
   });
@@ -165,6 +215,7 @@ export default async function SchedulePage() {
     appointments: appts,
     employees: employeesForCalc,
     employeeHours,
+    assignments: myAssignments,
     rangeStart: toDateInputValue(lastWeekStart),
     rangeEnd: toDateInputValue(lastWeekEnd),
   });

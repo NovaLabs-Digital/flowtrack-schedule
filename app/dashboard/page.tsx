@@ -9,6 +9,7 @@ import { fetchAllPages } from "@/lib/paginate";
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForOwner } from "@/lib/entitlementView";
 import { requireCurrentOwnerSession } from "@/lib/sessionEpoch";
+import type { AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -180,6 +181,22 @@ export default async function DashboardPage() {
     // appointment_employee_hours table may not exist yet
   }
 
+  let assignments: AppointmentEmployeeAssignment[] = [];
+  try {
+    // Phase 5.7D-R18: every appointment_employees row for the workspace --
+    // the authoritative "who is assigned" source. Same optional-existence
+    // pattern as services/employees/employeeHours above (this table is not
+    // yet applied in production as of this phase): a missing/errored table
+    // is treated as "no assignments yet," never a hard failure.
+    const assignRes = await supabaseAdmin
+      .from("appointment_employees")
+      .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, created_at, updated_at")
+      .eq("workspace_id", workspaceId);
+    if (!assignRes.error) assignments = (assignRes.data ?? []) as AppointmentEmployeeAssignment[];
+  } catch {
+    // appointment_employees table may not exist yet
+  }
+
   if (clientsErr || apptsErr) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -205,6 +222,7 @@ export default async function DashboardPage() {
       services={services ?? []}
       employees={employees ?? []}
       employeeHours={employeeHours}
+      assignments={assignments}
       isTester={isTester}
       entitlement={entitlement}
     />

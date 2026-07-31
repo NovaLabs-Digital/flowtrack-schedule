@@ -7,6 +7,14 @@ import { changeTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { isValidPriceCents } from "@/lib/money";
+import {
+  dedupeEmployeeIds,
+  deriveLegacyEmployeeId,
+  validateEmployeeIdsInWorkspace,
+  planAssignmentSync,
+  applyAssignmentSync,
+  fetchEmployeeHoursForAppointments,
+} from "@/lib/appointmentEmployees";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -53,6 +61,111 @@ export async function PATCH(req: Request) {
     if (isTester && !existing.data.is_demo) {
       return json({ error: "Appointment not found" }, 404);
     }
+    // Narrowed into its own const: existing.data's null-check above doesn't
+    // persist into the fetchSiblings() closure below (a nested function
+    // reading a property off an outer `const` object isn't narrowed across
+    // the function boundary) -- existingData carries the non-null type
+    // through every reference in this handler instead.
+    const existingData = existing.data;
+
+    // Phase 5.7D-R18: undefined means "assignments not part of this
+    // request, leave unchanged" -- same convention as price_cents/
+    // scheduled_end below. An explicit [] means "unassign everyone," which
+    // the caller (AppointmentModal) is expected to have already confirmed
+    // with the owner before sending.
+    const employee_ids: string[] | undefined =
+      body.employee_ids !== undefined ? dedupeEmployeeIds(Array.isArray(body.employee_ids) ? body.employee_ids : []) : undefined;
+
+    if (employee_ids !== undefined) {
+      const employeeValidation = await validateEmployeeIdsInWorkspace(employee_ids, workspaceId);
+      if (!employeeValidation.ok) return json({ error: employeeValidation.error }, 404);
+    }
+
+    // Siblings (for "future" mode) are needed both for the pre-R18
+    // time-shift logic below (unchanged) and, when employee_ids is part of
+    // this request, for assignment-removal safety validation that must run
+    // BEFORE any mutation. fetchSiblings() is memoized so it issues exactly
+    // one query regardless of how many times it's called -- when
+    // employee_ids is absent (the common case: rescheduling, renaming,
+    // etc.), it's still only ever called once, at the original point in the
+    // flow, preserving the exact pre-R18 call order/count for every request
+    // that doesn't touch assignments.
+    type Sibling = { id: string; scheduled_for: string; scheduled_end: string | null };
+    let siblingsCache: Sibling[] | null = null;
+    async function fetchSiblings(): Promise<Sibling[]> {
+      if (siblingsCache) return siblingsCache;
+      if (mode !== "future" || !existingData.series_id) {
+        siblingsCache = [];
+        return siblingsCache;
+      }
+      const { data, error: sibErr } = await supabaseAdmin
+        .from("appointments")
+        .select("id, scheduled_for, scheduled_end")
+        .eq("series_id", existingData.series_id)
+        .eq("workspace_id", workspaceId)
+        .eq("status", "scheduled")
+        .gt("scheduled_for", existingData.scheduled_for)
+        .order("scheduled_for", { ascending: true });
+      if (sibErr) throw sibErr;
+      siblingsCache = data ?? [];
+      return siblingsCache;
+    }
+
+    // Phase 5.7D-R18: validate every assignment change (origin + every
+    // future sibling) BEFORE mutating anything. An assignment that already
+    // has recorded work (a Job Tracking timestamp or a saved manual
+    // appointment_employee_hours entry) must never be silently discarded by
+    // ordinary appointment editing -- if ANY removal anywhere in this
+    // request is blocked, the entire request is rejected with zero writes,
+    // rather than partially applying some changes and skipping others.
+    let originPlan: { toAdd: string[]; toRemove: string[] } | null = null;
+    const siblingPlans = new Map<string, { toAdd: string[]; toRemove: string[] }>();
+
+    if (employee_ids !== undefined) {
+      const siblingsForValidation = await fetchSiblings();
+      const appointmentIds = [appointment_id, ...siblingsForValidation.map((s) => s.id)];
+      const allEmployeeHours = await fetchEmployeeHoursForAppointments(appointmentIds, workspaceId);
+      const blockedEmployeeIds = new Set<string>();
+
+      const originResult = await planAssignmentSync(
+        appointment_id,
+        workspaceId,
+        employee_ids,
+        allEmployeeHours.filter((h) => h.appointment_id === appointment_id)
+      );
+      if (!originResult.ok) {
+        for (const id of originResult.blockedEmployeeIds) blockedEmployeeIds.add(id);
+      } else {
+        originPlan = originResult;
+      }
+
+      if (mode === "future") {
+        for (const sib of siblingsForValidation) {
+          const sibResult = await planAssignmentSync(
+            sib.id,
+            workspaceId,
+            employee_ids,
+            allEmployeeHours.filter((h) => h.appointment_id === sib.id)
+          );
+          if (!sibResult.ok) {
+            for (const id of sibResult.blockedEmployeeIds) blockedEmployeeIds.add(id);
+          } else {
+            siblingPlans.set(sib.id, sibResult);
+          }
+        }
+      }
+
+      if (blockedEmployeeIds.size > 0) {
+        return json(
+          {
+            error: "One or more employees being removed already have recorded worked hours and cannot be removed here. Use a dedicated historical correction instead.",
+            code: "ASSIGNMENT_REMOVAL_BLOCKED",
+            blockedEmployeeIds: Array.from(blockedEmployeeIds),
+          },
+          409
+        );
+      }
+    }
 
     const apptUpdate: Record<string, any> = {};
     if (body.service_type !== undefined)
@@ -78,22 +191,11 @@ export async function PATCH(req: Request) {
         return json({ error: "Price must be a valid, non-negative amount." }, 400);
       }
     }
-    if (body.employee_id !== undefined && await hasColumn("employee_id")) {
-      const newEmployeeId = (body.employee_id || "").trim() || null;
-      // employee_id is an assignment target, not the caller's own identity —
-      // never trust it alone. Confirm it belongs to this workspace before
-      // reassigning the appointment to it.
-      if (newEmployeeId) {
-        const empRes = await supabaseAdmin
-          .from("employees")
-          .select("id")
-          .eq("id", newEmployeeId)
-          .eq("workspace_id", workspaceId)
-          .maybeSingle();
-        if (empRes.error) throw empRes.error;
-        if (!empRes.data) return json({ error: "Employee not found" }, 404);
-      }
-      apptUpdate.employee_id = newEmployeeId;
+    // appointments.employee_id: read-only compatibility mirror (Phase
+    // 5.7D-R18), not the authoritative assignment list -- appointment_employees
+    // (synced below, after this row's own field update) is authoritative.
+    if (employee_ids !== undefined && await hasColumn("employee_id")) {
+      apptUpdate.employee_id = deriveLegacyEmployeeId(employee_ids);
     }
 
     if (Object.keys(apptUpdate).length > 0) {
@@ -105,61 +207,59 @@ export async function PATCH(req: Request) {
       if (error) throw error;
     }
 
-    if (mode === "future" && existing.data.series_id) {
-      const { data: siblings, error: sibErr } = await supabaseAdmin
-        .from("appointments")
-        .select("id, scheduled_for, scheduled_end")
-        .eq("series_id", existing.data.series_id)
-        .eq("workspace_id", workspaceId)
-        .eq("status", "scheduled")
-        .gt("scheduled_for", existing.data.scheduled_for)
-        .order("scheduled_for", { ascending: true });
+    if (originPlan) {
+      await applyAssignmentSync(appointment_id, workspaceId, originPlan.toAdd, originPlan.toRemove);
+    }
 
-      if (sibErr) throw sibErr;
+    const siblings = await fetchSiblings();
 
-      if (siblings && siblings.length > 0) {
-        const newStart = body.scheduled_for ? new Date(body.scheduled_for) : null;
-        const newEnd = body.scheduled_end ? new Date(body.scheduled_end) : null;
-        const oldStart = new Date(existing.data.scheduled_for);
-        const oldEnd = existing.data.scheduled_end ? new Date(existing.data.scheduled_end) : null;
+    if (mode === "future" && siblings.length > 0) {
+      const newStart = body.scheduled_for ? new Date(body.scheduled_for) : null;
+      const newEnd = body.scheduled_end ? new Date(body.scheduled_end) : null;
+      const oldStart = new Date(existingData.scheduled_for);
+      const oldEnd = existingData.scheduled_end ? new Date(existingData.scheduled_end) : null;
 
-        // Full timestamp delta, not a same-day hour/minute comparison: moving
-        // the selected occurrence from Thursday to Wednesday at an unchanged
-        // clock time has zero hour/minute delta, so a time-of-day-only check
-        // never propagates it, leaving every future occurrence stuck on the
-        // old weekday. Each sibling is a materialized, independently-stored
-        // row (see manage-recurrence's generateFutureDates insert), so this
-        // delta must be added to each sibling's own scheduled_for/scheduled_end
-        // rather than recomputed from the recurrence rule -- that's also what
-        // keeps the interval between occurrences intact regardless of
-        // frequency_type (daily/weekdays/weekly/every-N-weeks).
-        const startDeltaMs = newStart ? newStart.getTime() - oldStart.getTime() : 0;
-        const endDeltaMs = newEnd && oldEnd ? newEnd.getTime() - oldEnd.getTime() : startDeltaMs;
+      // Full timestamp delta, not a same-day hour/minute comparison: moving
+      // the selected occurrence from Thursday to Wednesday at an unchanged
+      // clock time has zero hour/minute delta, so a time-of-day-only check
+      // never propagates it, leaving every future occurrence stuck on the
+      // old weekday. Each sibling is a materialized, independently-stored
+      // row (see manage-recurrence's generateFutureDates insert), so this
+      // delta must be added to each sibling's own scheduled_for/scheduled_end
+      // rather than recomputed from the recurrence rule -- that's also what
+      // keeps the interval between occurrences intact regardless of
+      // frequency_type (daily/weekdays/weekly/every-N-weeks).
+      const startDeltaMs = newStart ? newStart.getTime() - oldStart.getTime() : 0;
+      const endDeltaMs = newEnd && oldEnd ? newEnd.getTime() - oldEnd.getTime() : startDeltaMs;
 
-        for (const sib of siblings) {
-          const sibUpdate: Record<string, any> = {};
+      for (const sib of siblings) {
+        const sibUpdate: Record<string, any> = {};
 
-          if (apptUpdate.service_type !== undefined) sibUpdate.service_type = apptUpdate.service_type;
-          if (apptUpdate.notes !== undefined) sibUpdate.notes = apptUpdate.notes;
-          if (apptUpdate.duration_minutes !== undefined) sibUpdate.duration_minutes = apptUpdate.duration_minutes;
-          if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
-          if (apptUpdate.price_cents !== undefined) sibUpdate.price_cents = apptUpdate.price_cents;
+        if (apptUpdate.service_type !== undefined) sibUpdate.service_type = apptUpdate.service_type;
+        if (apptUpdate.notes !== undefined) sibUpdate.notes = apptUpdate.notes;
+        if (apptUpdate.duration_minutes !== undefined) sibUpdate.duration_minutes = apptUpdate.duration_minutes;
+        if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
+        if (apptUpdate.price_cents !== undefined) sibUpdate.price_cents = apptUpdate.price_cents;
 
-          if (startDeltaMs !== 0) {
-            sibUpdate.scheduled_for = new Date(new Date(sib.scheduled_for).getTime() + startDeltaMs).toISOString();
-          }
-          if (endDeltaMs !== 0 && sib.scheduled_end) {
-            sibUpdate.scheduled_end = new Date(new Date(sib.scheduled_end).getTime() + endDeltaMs).toISOString();
-          }
+        if (startDeltaMs !== 0) {
+          sibUpdate.scheduled_for = new Date(new Date(sib.scheduled_for).getTime() + startDeltaMs).toISOString();
+        }
+        if (endDeltaMs !== 0 && sib.scheduled_end) {
+          sibUpdate.scheduled_end = new Date(new Date(sib.scheduled_end).getTime() + endDeltaMs).toISOString();
+        }
 
-          if (Object.keys(sibUpdate).length > 0) {
-            const { error } = await supabaseAdmin
-              .from("appointments")
-              .update(sibUpdate)
-              .eq("id", sib.id)
-              .eq("workspace_id", workspaceId);
-            if (error) throw error;
-          }
+        if (Object.keys(sibUpdate).length > 0) {
+          const { error } = await supabaseAdmin
+            .from("appointments")
+            .update(sibUpdate)
+            .eq("id", sib.id)
+            .eq("workspace_id", workspaceId);
+          if (error) throw error;
+        }
+
+        const sibPlan = siblingPlans.get(sib.id);
+        if (sibPlan) {
+          await applyAssignmentSync(sib.id, workspaceId, sibPlan.toAdd, sibPlan.toRemove);
         }
       }
     }
@@ -173,12 +273,12 @@ export async function PATCH(req: Request) {
       const { error } = await supabaseAdmin
         .from("clients")
         .update(clientUpdate)
-        .eq("id", existing.data.client_id)
+        .eq("id", existingData.client_id)
         .eq("workspace_id", workspaceId);
       if (error) throw error;
     }
 
-    if (notify_channel !== "none" && !existing.data.is_demo) {
+    if (notify_channel !== "none" && !existingData.is_demo) {
       // The appointment/client updates above have already completed and
       // succeeded regardless of what happens next -- canSendNotifications is
       // evaluated as an independent follow-up step, using the exact
@@ -197,7 +297,7 @@ export async function PATCH(req: Request) {
         const clientRes = await supabaseAdmin
           .from("clients")
           .select("name, email, phone, auto_email, auto_sms")
-          .eq("id", existing.data.client_id)
+          .eq("id", existingData.client_id)
           .eq("workspace_id", workspaceId)
           .single();
 

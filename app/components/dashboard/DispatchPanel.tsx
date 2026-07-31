@@ -1,10 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { Appointment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
+import { Appointment, Client, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
 import { startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
-import { hasInvalidJobTrackingDuration, hasWorkedHours, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes, formatMinutesAsDuration } from "@/lib/payroll";
+import {
+  hasInvalidJobTrackingDuration,
+  assignmentHasWorkedHours,
+  isJobTrackingComplete,
+  getMissingHoursEmployeeIds,
+  deriveAppointmentTrackingStatus,
+  resolveWorkedMinutes,
+  formatMinutesAsDuration,
+} from "@/lib/payroll";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 
 // Phase 5.5E-E1G: this control's own restricted notice, distinct from every
@@ -62,10 +70,14 @@ function formatDuration(mins: number) {
 // manual entry yet) — so this form is always the missing-hours exception,
 // never a way to edit an appointment's tracked duration.
 function EmployeeHoursSection({
-  appointment, employee, onSaved, canUseJobTracking,
+  appointment, employee, assignment, onSaved, canUseJobTracking,
 }: {
   appointment: Appointment;
   employee: Employee;
+  // Phase 5.7D-R18: this employee's own assignment row -- the source of
+  // the invalid-duration check below, never the appointment-level (legacy,
+  // frozen as of this phase) timestamps.
+  assignment: Pick<AppointmentEmployeeAssignment, "actual_started_at" | "actual_completed_at">;
   onSaved: (entry: EmployeeHours) => void;
   canUseJobTracking: boolean;
 }) {
@@ -120,7 +132,7 @@ function EmployeeHoursSection({
       </div>
 
       <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
-        &#9888; {hasInvalidJobTrackingDuration(appointment)
+        &#9888; {hasInvalidJobTrackingDuration(assignment)
           ? "Clock-in and clock-out produced no valid worked time."
           : "Employee did not complete Job Tracking."}
       </div>
@@ -180,6 +192,7 @@ export default function DispatchPanel({
   clients,
   employees,
   employeeHours,
+  assignments,
   selectedAppointmentId,
   onHoursSaved,
   canUseJobTracking,
@@ -188,10 +201,24 @@ export default function DispatchPanel({
   clients: Client[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
+  // Phase 5.7D-R18: every appointment_employees row for the workspace --
+  // the authoritative "who's assigned" and per-employee Job Tracking
+  // source, grouped internally below by appointment_id.
+  assignments: AppointmentEmployeeAssignment[];
   selectedAppointmentId: string | null;
   onHoursSaved: (entry: EmployeeHours) => void;
   canUseJobTracking: boolean;
 }) {
+  const employeeById: Record<string, Employee> = {};
+  for (const e of employees) employeeById[e.id] = e;
+
+  const assignmentsByApptId = new Map<string, AppointmentEmployeeAssignment[]>();
+  for (const a of assignments) {
+    const list = assignmentsByApptId.get(a.appointment_id);
+    if (list) list.push(a);
+    else assignmentsByApptId.set(a.appointment_id, [a]);
+  }
+
   const today = startOfBusinessDay(0);
   const tomorrow = startOfBusinessDay(1);
 
@@ -200,9 +227,14 @@ export default function DispatchPanel({
     return d >= today && d < tomorrow && a.status === "scheduled";
   });
 
-  const scheduled = todayAppts.filter((a) => !a.actual_started_at).length;
-  const inProgress = todayAppts.filter((a) => a.actual_started_at && !a.actual_completed_at).length;
-  const completed = todayAppts.filter((a) => a.actual_completed_at).length;
+  // Phase 5.7D-R18: derived from each appointment's own assignment rows
+  // (deriveAppointmentTrackingStatus), never the legacy appointment-level
+  // actual_started_at/actual_completed_at columns, which stop being
+  // written to once any assignment exists.
+  const todayStatuses = todayAppts.map((a) => deriveAppointmentTrackingStatus(assignmentsByApptId.get(a.id) ?? []));
+  const scheduled = todayStatuses.filter((s) => s === "scheduled").length;
+  const inProgress = todayStatuses.filter((s) => s === "in_progress").length;
+  const completed = todayStatuses.filter((s) => s === "completed").length;
 
   const selectedAppt = selectedAppointmentId
     ? appointments.find((a) => a.id === selectedAppointmentId) ?? null
@@ -212,9 +244,12 @@ export default function DispatchPanel({
     ? clients.find((c) => c.id === selectedAppt.client_id) ?? null
     : null;
 
-  const employee = selectedAppt?.employee_id
-    ? employees.find((e) => e.id === selectedAppt.employee_id) ?? null
-    : null;
+  const selectedApptAssignments = selectedAppt ? (assignmentsByApptId.get(selectedAppt.id) ?? []) : [];
+  const selectedApptEmployees = selectedApptAssignments
+    .map((a) => employeeById[a.employee_id])
+    .filter((e): e is Employee => !!e);
+  const selectedApptStatus = selectedAppt ? deriveAppointmentTrackingStatus(selectedApptAssignments) : "scheduled";
+  const missingHoursEmployeeIds = selectedAppt ? getMissingHoursEmployeeIds(selectedAppt, selectedApptAssignments, employeeHours) : [];
 
   return (
     <div className="flex flex-col h-full gap-2 overflow-y-auto">
@@ -248,13 +283,16 @@ export default function DispatchPanel({
               <InfoRow label="Client" value={client.name} />
               <InfoRow label="Address" value={client.address || "—"} />
               <InfoRow label="Phone" value={client.phone || "—"} />
-              <InfoRow label="Employee" value={employee ? employee.name : "Unassigned"} />
+              <InfoRow
+                label={selectedApptEmployees.length === 1 ? "Employee" : "Employees"}
+                value={selectedApptEmployees.length > 0 ? selectedApptEmployees.map((e) => e.name).join(", ") : "Unassigned"}
+              />
               <InfoRow label="Service" value={selectedAppt.service_type} />
               <InfoRow label="Date & Time" value={formatDateTime(selectedAppt.scheduled_for)} />
               <InfoRow label="Status" value={
-                selectedAppt.actual_completed_at ? "Completed"
-                : selectedAppt.actual_started_at ? "In Progress"
-                : selectedAppt.status === "cancelled" ? "Cancelled"
+                selectedAppt.status === "cancelled" ? "Cancelled"
+                : selectedApptStatus === "completed" ? "Completed"
+                : selectedApptStatus === "in_progress" ? "In Progress"
                 : "Scheduled"
               } />
               {selectedAppt.notes && (
@@ -301,37 +339,56 @@ export default function DispatchPanel({
       </div>
 
       {/* 3. Weekly Worked Hours — always visible, independent of selection */}
-      <PayrollSummary appointments={appointments} employees={employees} employeeHours={employeeHours} />
+      <PayrollSummary appointments={appointments} employees={employees} employeeHours={employeeHours} assignments={assignments} />
 
-      {/* 4. Employee Worked Hours — administrative task, lives at the bottom */}
+      {/* 4. Employee Worked Hours — administrative task, lives at the
+          bottom. Phase 5.7D-R18: one card per assigned employee (Section
+          E.7 -- Teresa may have valid tracked hours and no warning while
+          Roxana, on the same job, still needs attention) instead of a
+          single appointment-level card. */}
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">
         <div className="text-sm font-semibold text-slate-900 mb-3">Employee Worked Hours</div>
-        {selectedAppt && employee && hasWorkedHours(selectedAppt, employeeHours) ? (
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-medium text-slate-800">{employee.name}</span>
-              <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(selectedAppt))}</span>
-            </div>
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
-              <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">
-                Worked Time <span className="text-emerald-600">&#10003;</span>
-              </div>
-              <div className="text-sm font-semibold text-emerald-900 mt-0.5">
-                {formatMinutesAsDuration(resolveWorkedMinutes(selectedAppt, employeeHours, employee.id))}
-              </div>
-              <div className="text-[10px] text-emerald-700 mt-1">
-                {isJobTrackingComplete(selectedAppt) ? "Hours tracked automatically." : "Manually entered."}
-              </div>
-            </div>
+        {selectedAppt && selectedApptAssignments.length > 0 ? (
+          <div className="space-y-2">
+            {selectedApptAssignments.map((assignment) => {
+              const emp = employeeById[assignment.employee_id];
+              if (!emp) return null;
+              if (assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)) {
+                return (
+                  <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-slate-800">{emp.name}</span>
+                      <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(selectedAppt))}</span>
+                    </div>
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                      <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">
+                        Worked Time <span className="text-emerald-600">&#10003;</span>
+                      </div>
+                      <div className="text-sm font-semibold text-emerald-900 mt-0.5">
+                        {formatMinutesAsDuration(resolveWorkedMinutes(selectedAppt.id, emp.id, assignment, employeeHours))}
+                      </div>
+                      <div className="text-[10px] text-emerald-700 mt-1">
+                        {isJobTrackingComplete(assignment) ? "Hours tracked automatically." : "Manually entered."}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              if (missingHoursEmployeeIds.includes(emp.id)) {
+                return (
+                  <EmployeeHoursSection
+                    key={assignment.id}
+                    appointment={selectedAppt}
+                    employee={emp}
+                    assignment={assignment}
+                    onSaved={onHoursSaved}
+                    canUseJobTracking={canUseJobTracking}
+                  />
+                );
+              }
+              return null;
+            })}
           </div>
-        ) : selectedAppt && employee && needsWorkedHoursAttention(selectedAppt, employeeHours) ? (
-          <EmployeeHoursSection
-            key={selectedAppt.id}
-            appointment={selectedAppt}
-            employee={employee}
-            onSaved={onHoursSaved}
-            canUseJobTracking={canUseJobTracking}
-          />
         ) : (
           <div className="text-xs text-slate-400">
             Select an appointment to view/review worked hours.

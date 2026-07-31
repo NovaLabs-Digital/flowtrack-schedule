@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Appointment, Client, Service, Employee, EmployeeHours } from "@/app/components/dashboard/types";
+import { Appointment, Client, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
-import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, needsWorkedHoursAttention, resolveWorkedMinutes } from "@/lib/payroll";
+import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes } from "@/lib/payroll";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { centsToInputValue, parsePriceToCents } from "@/lib/money";
@@ -178,6 +178,11 @@ type Props = {
   services: Service[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
+  // Phase 5.7D-R18: every appointment_employees row for the workspace (not
+  // pre-filtered to this appointment) -- filtered internally below to the
+  // appointment being edited, for both the multi-employee selector's
+  // initial state and the per-employee Worked Hours cards.
+  assignments: AppointmentEmployeeAssignment[];
   editing?: { appointment: Appointment; client: Client };
   prefill?: { date: string; time: string };
   // Phase 5.5E-E1A: the one canonical EntitlementView field this modal's
@@ -190,8 +195,14 @@ type Props = {
   canMutateOperationalData: boolean;
 };
 
-export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, editing, prefill, canMutateOperationalData }: Props) {
+export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, assignments, editing, prefill, canMutateOperationalData }: Props) {
   const isEdit = !!editing;
+
+  // Phase 5.7D-R18: this appointment's own assignment rows (edit mode
+  // only) -- the source of truth for both the initial multi-employee
+  // selection and the per-employee Worked Hours cards below.
+  const apptAssignments = isEdit ? assignments.filter((a) => a.appointment_id === editing!.appointment.id) : [];
+  const initialEmployeeIds = apptAssignments.map((a) => a.employee_id);
 
   const serviceNames = services.length > 0 ? services.map((s) => s.name) : FALLBACK_SERVICES;
   const serviceDurations: Record<string, number> = {};
@@ -227,8 +238,18 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const [selectedClientId, setSelectedClientId] = useState(editing?.appointment.client_id ?? "");
   const [newClient, setNewClient] = useState({ name: "", email: "", phone: "" });
 
-  // Employee state
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState(editing?.appointment.employee_id ?? "");
+  // Employee state -- Phase 5.7D-R18: zero, one, or many assigned
+  // employees, initialized from this appointment's own assignment rows
+  // (never from the legacy single appointments.employee_id column).
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>(initialEmployeeIds);
+  const [confirmUnassign, setConfirmUnassign] = useState(false);
+
+  function addEmployee(id: string) {
+    setSelectedEmployeeIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }
+  function removeEmployee(id: string) {
+    setSelectedEmployeeIds((prev) => prev.filter((e) => e !== id));
+  }
 
   // Form state
   const [form, setForm] = useState({
@@ -309,26 +330,21 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const currentStartMs = form.date && form.time_in ? new Date(`${form.date}T${form.time_in}`).getTime() : null;
   const originalDurationMins = isEdit ? diffMins(initTimeIn(), initTimeOut()) : 0;
   const dateTimeChanged = isEdit && (currentStartMs !== originalStartMs || computedDuration !== originalDurationMins);
-  const employeeChanged = isEdit && selectedEmployeeId !== (editing!.appointment.employee_id ?? "");
+  // Phase 5.7D-R18: employee-assignment changes are staffing-only and must
+  // default to NO client notification (Section G.2) -- removing Teresa is
+  // not a cancellation and shouldn't read like one. Unlike date/time and
+  // service changes, an employee-assignment change is deliberately never
+  // added to importantFieldsChanged's smart-notify trigger below.
   const serviceChanged = isEdit && form.service_type !== editing!.appointment.service_type;
-  const importantFieldsChanged = dateTimeChanged || employeeChanged || serviceChanged;
+  const importantFieldsChanged = dateTimeChanged || serviceChanged;
 
-  // Job Tracking card — visible whenever there's anything to show: a real
-  // clock-in/clock-out timestamp, a saved manual-hours entry, or (when none
-  // of those exist yet) the appointment is one the schedule grid's warning
-  // triangle would already flag. needsWorkedHoursAttention is the exact
-  // same predicate driving that triangle (lib/payroll.ts), so this card and
-  // the triangle never disagree about whether an appointment is missing
-  // hours. Never fabricates a timestamp — Started/Completed only ever show
-  // a real actual_started_at/actual_completed_at value or "Not recorded."
+  // Missing-hours identification is now per assigned employee (Section
+  // E.7) -- getMissingHoursEmployeeIds (lib/payroll.ts) is the exact same
+  // predicate driving the schedule grid's warning triangle, so this modal
+  // and the triangle never disagree about which employee(s) need
+  // attention.
   const jobTrackingAppt = editing?.appointment ?? null;
-  const jobTrackingManualEntry = jobTrackingAppt ? findManualHoursEntry(jobTrackingAppt, employeeHours) : null;
-  const jobTrackingComplete = jobTrackingAppt ? isJobTrackingComplete(jobTrackingAppt) : false;
-  const jobTrackingNeedsAttention = jobTrackingAppt ? needsWorkedHoursAttention(jobTrackingAppt, employeeHours) : false;
-  const showJobTrackingCard =
-    isEdit &&
-    !!jobTrackingAppt &&
-    (!!jobTrackingAppt.actual_started_at || !!jobTrackingAppt.actual_completed_at || !!jobTrackingManualEntry || jobTrackingNeedsAttention);
+  const missingHoursEmployeeIds = jobTrackingAppt ? getMissingHoursEmployeeIds(jobTrackingAppt, apptAssignments, employeeHours) : [];
 
   // Smart default: preselect a notify channel once a meaningful field changes, but
   // never override a choice the staff member already made themselves.
@@ -367,13 +383,28 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     // what actually prevents a restricted Enter-submit.
     if (!canMutateOperationalData) return;
     if (!validateForm()) return;
+    proceedAfterValidation();
+  }
+
+  // Phase 5.7D-R18: removing the last assigned employee must not silently
+  // save an unassigned appointment (Section C.6) -- this gate runs BEFORE
+  // the recurring edit-scope gate, so an owner sees "this will become
+  // unassigned" before "apply to this occurrence or all future ones,"
+  // never the reverse. `unassignConfirmed` lets the confirmation button
+  // below continue synchronously without waiting on a state re-render.
+  function proceedAfterValidation(unassignConfirmed = confirmUnassign) {
+    const removingLastEmployee = isEdit && initialEmployeeIds.length > 0 && selectedEmployeeIds.length === 0;
+    if (removingLastEmployee && !unassignConfirmed) {
+      setConfirmUnassign(true);
+      return;
+    }
 
     if (isEdit && isRecurring && !editScope) {
       setEditScope("single");
       return;
     }
 
-    await executeEdit(editScope ?? "single");
+    executeEdit(editScope ?? "single");
   }
 
   async function executeEdit(mode: "single" | "future") {
@@ -404,7 +435,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             notes: form.notes.trim(),
             status: form.status,
             duration_minutes: computedDuration,
-            employee_id: selectedEmployeeId || null,
+            employee_ids: selectedEmployeeIds,
             price_cents,
             mode,
             notify_channel: notifyChannel,
@@ -418,7 +449,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           duration_minutes: computedDuration,
           frequency_type: form.frequency_type,
           repeat_weeks: form.repeat_weeks,
-          employee_id: selectedEmployeeId || null,
+          employee_ids: selectedEmployeeIds,
           price_cents,
           notify_channel: notifyChannel,
         };
@@ -561,45 +592,47 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             )}
           </div>
 
-          {/* Price -- an independent snapshot, not tied to the service's
-              current default once saved (see migrations/020). Proposed from
-              the selected service's default price above until the owner
-              types their own value; see setPrice/priceTouched. */}
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Price</label>
-            <div className="relative max-w-[10rem]">
-              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-slate-400">$</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={form.price}
-                onChange={(e) => setPrice(e.target.value)}
-                className={inputCls + " pl-6"}
-                placeholder="Optional"
-              />
-            </div>
-          </div>
-
-          {/* Assigned Employee */}
+          {/* Assigned Employees -- Phase 5.7D-R18: zero, one, or many. Each
+              selected employee is shown as its own removable chip (never
+              hidden behind a menu the owner has to reopen), and a plain
+              <select> below adds one more -- both work identically on
+              touch/mobile. */}
           {employees.length > 0 && (
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Assigned To</label>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Assigned Employees</label>
+              {selectedEmployeeIds.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {selectedEmployeeIds.map((id) => {
+                    const emp = employees.find((e) => e.id === id);
+                    return (
+                      <span key={id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-1 text-xs text-slate-700">
+                        {emp?.name ?? "Unknown"}
+                        <button
+                          type="button"
+                          onClick={() => removeEmployee(id)}
+                          aria-label={`Remove ${emp?.name ?? "employee"}`}
+                          className="rounded-full hover:bg-slate-200 w-4 h-4 flex items-center justify-center text-slate-500 leading-none"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-[11px] text-slate-400 mb-1.5">Unassigned</div>
+              )}
               <select
-                value={selectedEmployeeId}
-                onChange={(e) => setSelectedEmployeeId(e.target.value)}
+                value=""
+                onChange={(e) => { if (e.target.value) addEmployee(e.target.value); }}
                 className={inputCls}
               >
-                <option value="">— Unassigned —</option>
-                {employees.filter((emp) => emp.active).map((emp) => (
+                <option value="">+ Add employee…</option>
+                {employees.filter((emp) => emp.active && !selectedEmployeeIds.includes(emp.id)).map((emp) => (
                   <option key={emp.id} value={emp.id}>
                     {emp.name}
                   </option>
                 ))}
-                {selectedEmployeeId && !employees.find((emp) => emp.id === selectedEmployeeId)?.active && (
-                  <option value={selectedEmployeeId} disabled>
-                    {employees.find((emp) => emp.id === selectedEmployeeId)?.name ?? "Unknown"} (Inactive)
-                  </option>
-                )}
               </select>
             </div>
           )}
@@ -785,60 +818,100 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             </div>
           )}
 
-          {/* Job tracking info — edit mode only */}
-          {showJobTrackingCard && (() => {
-            const appt = jobTrackingAppt!;
-            const startedLabel = appt.actual_started_at
-              ? new Date(appt.actual_started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
-              : "Not recorded";
-            const completedLabel = appt.actual_completed_at
-              ? new Date(appt.actual_completed_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
-              : "Not recorded";
-            // Unresolved only — once a valid manual entry (or complete
-            // tracking) exists, jobTrackingNeedsAttention is already false,
-            // so the warning styling drops away on its own; no separate
-            // "dismiss" step needed.
-            const isWarning = jobTrackingNeedsAttention;
-            const workedMins = appt.employee_id ? resolveWorkedMinutes(appt, employeeHours, appt.employee_id) : 0;
+          {/* Job Tracking / Worked Hours — edit mode only, one card per
+              assigned employee (Phase 5.7D-R18, Section C.8: Worked Hours
+              are shown separately by employee, below the appointment's own
+              fields and above Price -- Price itself stays a single,
+              appointment-level value regardless of how many employees are
+              assigned, see the Price field above). Never fabricates a
+              timestamp — Started/Completed only ever show a real
+              actual_started_at/actual_completed_at value or "Not recorded." */}
+          {isEdit && apptAssignments.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-slate-600">Worked Hours</div>
+              {apptAssignments.map((assignment) => {
+                const emp = employees.find((e) => e.id === assignment.employee_id);
+                const manualEntry = findManualHoursEntry(editing!.appointment.id, assignment.employee_id, employeeHours);
+                const complete = isJobTrackingComplete(assignment);
+                const isWarning = missingHoursEmployeeIds.includes(assignment.employee_id);
+                // Unresolved only — once a valid manual entry (or complete
+                // tracking) exists, this employee no longer appears in
+                // missingHoursEmployeeIds, so the warning styling drops
+                // away on its own; no separate "dismiss" step needed.
+                if (!assignment.actual_started_at && !assignment.actual_completed_at && !manualEntry && !isWarning) return null;
 
-            return (
-              <div
-                className={[
-                  "rounded-xl border px-3 py-2 text-xs space-y-1",
-                  isWarning ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600",
-                ].join(" ")}
-              >
-                <div className={isWarning ? "font-medium text-amber-800" : "font-medium text-slate-700"}>Job Tracking</div>
-                <div>Started: <span className="font-medium text-slate-900">{startedLabel}</span></div>
-                <div>Completed: <span className="font-medium text-slate-900">{completedLabel}</span></div>
-                {jobTrackingComplete ? (
-                  <>
-                    <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
-                    <div className="text-emerald-700">Tracked automatically.</div>
-                  </>
-                ) : jobTrackingManualEntry ? (
-                  <>
-                    <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
-                    <div className="font-medium text-slate-700">Manually entered.</div>
-                    {jobTrackingManualEntry.note && (
-                      <div>Reason: <span className="italic">{jobTrackingManualEntry.note}</span></div>
+                const startedLabel = assignment.actual_started_at
+                  ? new Date(assignment.actual_started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                  : "Not recorded";
+                const completedLabel = assignment.actual_completed_at
+                  ? new Date(assignment.actual_completed_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                  : "Not recorded";
+                const workedMins = resolveWorkedMinutes(editing!.appointment.id, assignment.employee_id, assignment, employeeHours);
+
+                return (
+                  <div
+                    key={assignment.id}
+                    className={[
+                      "rounded-xl border px-3 py-2 text-xs space-y-1",
+                      isWarning ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600",
+                    ].join(" ")}
+                  >
+                    <div className={isWarning ? "font-medium text-amber-800" : "font-medium text-slate-700"}>{emp?.name ?? "Unknown employee"}</div>
+                    <div>Started: <span className="font-medium text-slate-900">{startedLabel}</span></div>
+                    <div>Completed: <span className="font-medium text-slate-900">{completedLabel}</span></div>
+                    {complete ? (
+                      <>
+                        <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                        <div className="text-emerald-700">Tracked automatically.</div>
+                      </>
+                    ) : manualEntry ? (
+                      <>
+                        <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                        <div className="font-medium text-slate-700">Manually entered.</div>
+                        {manualEntry.note && (
+                          <div>Reason: <span className="italic">{manualEntry.note}</span></div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <div>Worked duration: not yet available.</div>
+                        {isWarning && (
+                          <div className="text-amber-700">
+                            {hasInvalidJobTrackingDuration(assignment)
+                              ? "Clock-in and clock-out produced no valid worked time."
+                              : "Employee did not complete Job Tracking."}
+                          </div>
+                        )}
+                      </>
                     )}
-                  </>
-                ) : (
-                  <>
-                    <div>Worked duration: not yet available.</div>
-                    {isWarning && (
-                      <div className="text-amber-700">
-                        {hasInvalidJobTrackingDuration(appt)
-                          ? "Clock-in and clock-out produced no valid worked time."
-                          : "Employee did not complete Job Tracking."}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })()}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Price -- Phase 5.7D-R18, Section C.8: displayed below Worked
+              Hours, since Price belongs to the appointment as a whole, not
+              to any individual employee -- it is never duplicated or
+              divided because multiple employees are assigned (Section
+              C.9). An independent snapshot, not tied to the service's
+              current default once saved (see migrations/020). Proposed
+              from the selected service's default price above until the
+              owner types their own value; see setPrice/priceTouched. */}
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Price</label>
+            <div className="relative max-w-[10rem]">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-sm text-slate-400">$</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.price}
+                onChange={(e) => setPrice(e.target.value)}
+                className={inputCls + " pl-6"}
+                placeholder="Optional"
+              />
+            </div>
+          </div>
 
           {/* Notes */}
           <div>
@@ -870,8 +943,36 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             </div>
           )}
 
+          {/* Phase 5.7D-R18, Section C.6: removing the last assigned
+              employee must not silently save an unassigned appointment --
+              explicit confirmation is required first. Does not delete the
+              appointment; the client, service, date/time, notes, price,
+              and recurrence identity are all completely unaffected. */}
+          {confirmUnassign && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 space-y-2">
+              <div className="text-xs font-medium text-amber-800">
+                Removing the last assigned employee will leave this appointment unassigned. The appointment itself will not be deleted. Continue?
+              </div>
+              <div className="flex gap-2">
+                <CapabilityGatedButton
+                  type="button"
+                  allowed={canMutateOperationalData}
+                  disabled={submitting}
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                  onClick={() => proceedAfterValidation(true)}
+                  className="rounded-lg bg-amber-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
+                  Yes, Save Unassigned
+                </CapabilityGatedButton>
+                <button type="button" onClick={() => setConfirmUnassign(false)}
+                  className="rounded-lg border border-slate-300 px-4 py-1.5 text-xs text-slate-700 hover:bg-white">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Edit scope choice for recurring appointments */}
-          {editScope && isRecurring && (
+          {!confirmUnassign && editScope && isRecurring && (
             <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-2 space-y-1">
               <div className="text-[11px] font-medium text-slate-500 px-2 pb-1">Apply changes to:</div>
               <CapabilityGatedButton
@@ -902,7 +1003,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           )}
 
           {/* Actions */}
-          {!editScope && (
+          {!editScope && !confirmUnassign && (
             <div className="flex gap-2 pt-1">
               <CapabilityGatedButton
                 type="submit"

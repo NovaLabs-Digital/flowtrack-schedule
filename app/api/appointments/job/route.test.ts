@@ -1,12 +1,17 @@
-// Phase 5.4E2: route-level tests for app/api/appointments/job/route.ts
-// (POST only -- this file has no GET handler). Proves
-// requireCapability(session, "canUseJobTracking") is correctly wired before
-// any appointment read/write. @/lib/session and @/lib/supabaseAdmin are
-// mocked in-process; @/lib/entitlementServer is DELIBERATELY LEFT UNMOCKED
-// -- the real requireCapability/fetchEntitlementForWorkspace/
-// resolveWorkspaceEntitlement chain runs for real against a fake
-// "subscriptions" table. No real Supabase/Stripe/network call is
-// reachable. Run with --experimental-test-module-mocks (see package.json).
+// Phase 5.4E2 + Phase 5.7D-R18: route-level tests for
+// app/api/appointments/job/route.ts (POST only -- this file has no GET
+// handler). Proves requireCapability(session, "canUseJobTracking") is
+// correctly wired before any read/write, AND (Phase 5.7D-R18) that Job
+// Tracking now resolves and mutates the authenticated employee's own
+// appointment_employees ASSIGNMENT row -- never the appointments table's
+// legacy (frozen, no-longer-written) actual_started_at/actual_completed_at
+// columns, and never another employee's assignment. @/lib/session and
+// @/lib/supabaseAdmin are mocked in-process; @/lib/entitlementServer is
+// DELIBERATELY LEFT UNMOCKED -- the real requireCapability/
+// fetchEntitlementForWorkspace/resolveWorkspaceEntitlement chain runs for
+// real against a fake "subscriptions" table. No real Supabase/Stripe/
+// network call is reachable. Run with --experimental-test-module-mocks
+// (see package.json).
 process.env.SUPABASE_URL = "http://localhost:54321";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
@@ -40,11 +45,11 @@ function req(body?: unknown, url = "http://localhost/api/appointments/job") {
 const EMPLOYEE_ID = "emp-1";
 const EMPLOYEE_SESSION = { role: "employee", employeeId: EMPLOYEE_ID, workspaceId: REAL_WORKSPACE_ID };
 
-function notStartedAppt() {
-  return { id: "appt-1", employee_id: EMPLOYEE_ID, actual_started_at: null, actual_completed_at: null };
+function notStartedAssignment() {
+  return { id: "ae-1", actual_started_at: null, actual_completed_at: null };
 }
-function startedAppt() {
-  return { id: "appt-1", employee_id: EMPLOYEE_ID, actual_started_at: "2026-07-21T10:00:00.000Z", actual_completed_at: null };
+function startedAssignment() {
+  return { id: "ae-1", actual_started_at: "2026-07-21T10:00:00.000Z", actual_completed_at: null };
 }
 
 describe("POST /api/appointments/job -- entitlement gate", () => {
@@ -59,7 +64,7 @@ describe("POST /api/appointments/job -- entitlement gate", () => {
     test(`${label} permits "start", response unchanged`, async () => {
       resetFixtures({
         subscriptions: [{ data: row }],
-        appointments: [{ data: notStartedAppt() }, { error: null }],
+        appointment_employees: [{ data: notStartedAssignment() }, { error: null }],
       });
       sessionToReturn = EMPLOYEE_SESSION;
       const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
@@ -73,7 +78,7 @@ describe("POST /api/appointments/job -- entitlement gate", () => {
 
   test("exact trusted demo workspace permits the action with zero subscriptions-table queries (real short-circuit)", async () => {
     resetFixtures({
-      appointments: [{ data: notStartedAppt() }, { error: null }],
+      appointment_employees: [{ data: notStartedAssignment() }, { error: null }],
     });
     sessionToReturn = { role: "employee", employeeId: EMPLOYEE_ID, workspaceId: DEMO_WORKSPACE_ID };
     const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
@@ -90,23 +95,23 @@ describe("POST /api/appointments/job -- entitlement gate", () => {
   ];
 
   for (const [label, row] of RESTRICTED_STATES) {
-    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero appointment reads/writes`, async () => {
+    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero assignment reads/writes`, async () => {
       resetFixtures({ subscriptions: [{ data: row }] });
       sessionToReturn = EMPLOYEE_SESSION;
       const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
       assert.equal(res.status, 403, label);
       assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY, label);
-      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), [], label);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointment_employees"), [], label);
     });
   }
 
-  test("query_error on the subscriptions read denies, zero appointment access", async () => {
+  test("query_error on the subscriptions read denies, zero assignment access", async () => {
     resetFixtures({ subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = EMPLOYEE_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointment_employees"), []);
   });
 
   test("non-employee role (owner) retains the existing 401 role-denial, never reaches the entitlement check", async () => {
@@ -180,16 +185,16 @@ describe("POST /api/appointments/job -- entitlement gate", () => {
       const res = await POST(req({ action: "start" })); // no appointment_id
       assert.equal(res.status, 400);
       assert.deepEqual(await res.json(), { error: "Missing appointment_id" });
-      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointment_employees"), []);
     });
   });
 });
 
-describe("existing job-tracking business rules remain unchanged once entitled", () => {
+describe("existing job-tracking business rules remain unchanged once entitled (now operating on the per-employee assignment row)", () => {
   test("'complete' sets both actual_started_at and actual_completed_at when never started", async () => {
     resetFixtures({
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: notStartedAppt() }, { error: null }],
+      appointment_employees: [{ data: notStartedAssignment() }, { error: null }],
     });
     sessionToReturn = EMPLOYEE_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", action: "complete" }));
@@ -202,7 +207,7 @@ describe("existing job-tracking business rules remain unchanged once entitled", 
   test("'complete' after already started only sets actual_completed_at", async () => {
     resetFixtures({
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: startedAppt() }, { error: null }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
     });
     sessionToReturn = EMPLOYEE_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", action: "complete" }));
@@ -215,7 +220,7 @@ describe("existing job-tracking business rules remain unchanged once entitled", 
   test("'start' twice is rejected with the existing 'Job already started' 400, after entitlement passes", async () => {
     resetFixtures({
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: startedAppt() }],
+      appointment_employees: [{ data: startedAssignment() }],
     });
     sessionToReturn = EMPLOYEE_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
@@ -224,14 +229,57 @@ describe("existing job-tracking business rules remain unchanged once entitled", 
     assert.equal(writeCalls(currentFake.calls).length, 0);
   });
 
-  test("an appointment assigned to a different employee is rejected with the existing 403, after entitlement passes", async () => {
+  test("an appointment with no assignment row for this employee is rejected with the existing 403 -- never reveals whether it belongs to another employee or doesn't exist", async () => {
     resetFixtures({
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: { ...notStartedAppt(), employee_id: "someone-else" } }],
+      appointment_employees: [{ data: null }], // no row matches appointment_id + employee_id + workspace_id
     });
     sessionToReturn = EMPLOYEE_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
     assert.equal(res.status, 403);
     assert.deepEqual(await res.json(), { error: "Unauthorized" });
+  });
+});
+
+describe("Phase 5.7D-R18: per-assignment resolution never touches another employee's timestamps or the legacy appointments table", () => {
+  test("the assignment lookup is scoped by appointment_id, the AUTHENTICATED employee_id (never client-submitted), and workspace_id", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: notStartedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    // Even if the request body tried to smuggle a different employee_id, the
+    // route never reads body.employee_id at all -- session.employeeId is
+    // the only source used.
+    const res = await POST(req({ appointment_id: "appt-1", action: "start", employee_id: "someone-else" }));
+    assert.equal(res.status, 200);
+    const eqCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "eq");
+    assert.deepEqual(eqCalls[0].args, ["appointment_id", "appt-1"]);
+    assert.deepEqual(eqCalls[1].args, ["employee_id", EMPLOYEE_ID]);
+    assert.deepEqual(eqCalls[2].args, ["workspace_id", REAL_WORKSPACE_ID]);
+  });
+
+  test("this route never queries or writes the appointments table at all -- Job Tracking is fully per-assignment now", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: notStartedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+  });
+
+  test("the update targets the specific assignment row by its own id, not a broader appointment-wide update", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: notStartedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    await POST(req({ appointment_id: "appt-1", action: "start" }));
+    const updateCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "update");
+    assert.ok(updateCall);
+    const eqAfterUpdate = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "eq").slice(-2);
+    assert.deepEqual(eqAfterUpdate[0].args, ["id", "ae-1"]);
   });
 });

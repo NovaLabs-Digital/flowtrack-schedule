@@ -24,6 +24,7 @@ import {
   Service,
   Employee,
   EmployeeHours,
+  AppointmentEmployeeAssignment,
   ViewMode,
   CenterMode,
   SettingsSection,
@@ -40,6 +41,7 @@ export default function DashboardShell({
   services,
   employees,
   employeeHours,
+  assignments,
   isTester,
   entitlement,
 }: {
@@ -48,6 +50,12 @@ export default function DashboardShell({
   services: Service[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
+  // Phase 5.7D-R18: every appointment_employees row for the workspace --
+  // the authoritative "who is assigned" source, threaded through to every
+  // component that needs to know an appointment's assigned employee(s) or
+  // per-employee Job Tracking state (ScheduleGrid, DispatchPanel,
+  // AppointmentModal, AppointmentDetailPanel, MobileDashboard).
+  assignments: AppointmentEmployeeAssignment[];
   isTester: boolean;
   // Phase 5.5D: consumed by OwnerBillingBanner (desktop below, and passed
   // through to MobileDashboard for the mobile layout) -- only its
@@ -120,10 +128,22 @@ export default function DashboardShell({
     return appointments.find((a) => a.id === selectedApptId) ?? null;
   }, [selectedApptId, appointments]);
 
-  const selectedApptEmployee = useMemo(() => {
-    if (!selectedAppt?.employee_id) return null;
-    return employees.find((e) => e.id === selectedAppt.employee_id) ?? null;
-  }, [selectedAppt, employees]);
+  // Phase 5.7D-R18: every assignment row for the currently selected
+  // appointment, and the resolved Employee objects for them -- replaces the
+  // pre-R18 single selectedApptEmployee (appointments.employee_id could
+  // only ever represent zero or one employee).
+  const selectedApptAssignments = useMemo(() => {
+    if (!selectedApptId) return [];
+    return assignments.filter((a) => a.appointment_id === selectedApptId);
+  }, [selectedApptId, assignments]);
+
+  const selectedApptEmployees = useMemo(() => {
+    const byId: Record<string, Employee> = {};
+    for (const e of employees) byId[e.id] = e;
+    return selectedApptAssignments
+      .map((a) => byId[a.employee_id])
+      .filter((e): e is Employee => !!e);
+  }, [selectedApptAssignments, employees]);
 
   function handleSelectClient(clientId: string) {
     setSelectedClientId(clientId);
@@ -241,6 +261,7 @@ export default function DashboardShell({
       services={services}
       employees={employees}
       employeeHours={employeeHoursState}
+      assignments={assignments}
       editing={
         modal.mode === "edit"
           ? { appointment: modal.appointment, client: modal.client }
@@ -264,6 +285,7 @@ export default function DashboardShell({
           appointments={appointments}
           services={services}
           employees={employees}
+          assignments={assignments}
           onAdd={handleAdd}
           onEditAppointment={handleEditAppointment}
           onClientUpdated={() => router.refresh()}
@@ -336,6 +358,7 @@ export default function DashboardShell({
                   services={services}
                   employees={employees}
                   employeeHours={employeeHoursState}
+                  assignments={assignments}
                   selectedClientId={selectedClientId}
                   selectedAppointmentId={selectedApptId}
                   onSelectAppointment={handleSelectAppointment}
@@ -353,7 +376,7 @@ export default function DashboardShell({
                   <AppointmentDetailPanel
                     appointment={selectedAppt}
                     client={clients.find((c) => c.id === selectedAppt.client_id) ?? null}
-                    employee={selectedApptEmployee}
+                    employees={selectedApptEmployees}
                     services={services}
                     onEdit={() => handleEditAppointment(selectedAppt.id)}
                     onCancelled={handleAppointmentCancelled}
@@ -392,6 +415,7 @@ export default function DashboardShell({
             clients={clients}
             employees={employees}
             employeeHours={employeeHoursState}
+            assignments={assignments}
             selectedAppointmentId={selectedApptId}
             onHoursSaved={handleHoursSaved}
             canUseJobTracking={entitlement.canUseJobTracking}

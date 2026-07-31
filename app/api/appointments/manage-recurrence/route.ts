@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { generateFutureDates } from "@/lib/recurrence";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
+import { fetchAssignments, insertAssignments, deriveLegacyEmployeeId } from "@/lib/appointmentEmployees";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -47,6 +48,13 @@ export async function POST(req: Request) {
     if (isTester && !appt.is_demo) {
       return json({ error: "Appointment not found" }, 404);
     }
+
+    // Phase 5.7D-R18: the origin appointment's full current assignment set
+    // (not the legacy single employee_id column) is what every newly
+    // generated occurrence below inherits -- mirrors how price_cents is
+    // already copied from the origin's own current value, not recomputed.
+    const originAssignments = await fetchAssignments(appointmentId, workspaceId);
+    const employeeIds = originAssignments.map((a) => a.employee_id);
 
     let cancelled = 0;
 
@@ -107,7 +115,11 @@ export async function POST(req: Request) {
         scheduled_end: endOffsetMs ? new Date(d.getTime() + endOffsetMs).toISOString() : null,
         notes: appt.notes,
         duration_minutes: appt.duration_minutes,
-        employee_id: appt.employee_id,
+        // appointments.employee_id: read-only compatibility mirror (Phase
+        // 5.7D-R18) derived from the origin's current assignment set, not
+        // the authoritative assignment list itself -- see the
+        // appointment_employees propagation below.
+        employee_id: deriveLegacyEmployeeId(employeeIds),
         // Every newly generated occurrence gets the origin appointment's own
         // current price snapshot -- not recomputed from the service's
         // (possibly since-changed) default price.
@@ -122,11 +134,22 @@ export async function POST(req: Request) {
       }));
 
       if (rows.length > 0) {
-        const { error: insErr } = await supabaseAdmin
+        const { data: inserted, error: insErr } = await supabaseAdmin
           .from("appointments")
-          .insert(rows);
+          .insert(rows)
+          .select("id");
         if (insErr) throw insErr;
         created = rows.length;
+
+        // Phase 5.7D-R18: every newly generated occurrence gets the exact
+        // same set of assigned employees as the origin appointment -- not
+        // recomputed per-date, mirroring how price_cents is propagated
+        // identically above.
+        if (employeeIds.length > 0 && inserted) {
+          for (const row of inserted) {
+            await insertAssignments(row.id, workspaceId, employeeIds);
+          }
+        }
       }
     }
 

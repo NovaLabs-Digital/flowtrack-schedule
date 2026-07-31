@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Client, Appointment, Service, Employee, EmployeeHours, ViewMode } from "@/app/components/dashboard/types";
+import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import { needsWorkedHoursAttention } from "@/lib/payroll";
 
@@ -196,6 +196,7 @@ export default function ScheduleGrid({
   services,
   employees,
   employeeHours,
+  assignments,
   selectedClientId,
   selectedAppointmentId,
   onSelectAppointment,
@@ -211,6 +212,11 @@ export default function ScheduleGrid({
   services: Service[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
+  // Phase 5.7D-R18: every appointment_employees assignment row, grouped
+  // internally below by appointment_id -- the authoritative "who's
+  // assigned" source for both the card's employee color/name and the
+  // per-assignment missing-hours warning triangle.
+  assignments: AppointmentEmployeeAssignment[];
   selectedClientId: string | null;
   selectedAppointmentId: string | null;
   onSelectAppointment: (id: string) => void;
@@ -256,18 +262,38 @@ export default function ScheduleGrid({
   const employeeMap: Record<string, Employee> = {};
   for (const e of employees) employeeMap[e.id] = e;
 
+  const assignmentsByApptId = new Map<string, AppointmentEmployeeAssignment[]>();
+  for (const a of assignments) {
+    const list = assignmentsByApptId.get(a.appointment_id);
+    if (list) list.push(a);
+    else assignmentsByApptId.set(a.appointment_id, [a]);
+  }
+  function assignmentsFor(apptId: string): AppointmentEmployeeAssignment[] {
+    return assignmentsByApptId.get(apptId) ?? [];
+  }
+
   function clientName(id: string) {
     return clients.find((c) => c.id === id)?.name ?? "Client";
   }
 
-  function employeeName(id?: string | null) {
-    if (!id) return null;
-    return employeeMap[id]?.name ?? null;
+  // Phase 5.7D-R18: a comma-joined list of every assigned employee's name
+  // (null when unassigned), and the first assigned employee's color for
+  // the card's left-border accent -- replaces the pre-R18 single
+  // employee_id lookup, which could only ever represent zero or one
+  // employee.
+  function employeeNames(apptId: string): string | null {
+    const names = assignmentsFor(apptId)
+      .map((a) => employeeMap[a.employee_id]?.name)
+      .filter((n): n is string => !!n);
+    return names.length > 0 ? names.join(", ") : null;
   }
 
-  function employeeColor(id?: string | null) {
-    if (!id) return null;
-    return employeeMap[id]?.color ?? null;
+  function employeeAccentColor(apptId: string): string | null {
+    for (const a of assignmentsFor(apptId)) {
+      const color = employeeMap[a.employee_id]?.color;
+      if (color) return color;
+    }
+    return null;
   }
 
   function apptsForDay(d: Date) {
@@ -448,11 +474,11 @@ export default function ScheduleGrid({
                     const widthPct = 100 / layout.totalColumns;
                     const leftPct = layout.column * widthPct;
 
-                    const empColor = employeeColor(a.employee_id);
-                    const empName = employeeName(a.employee_id);
+                    const empColor = employeeAccentColor(a.id);
+                    const empName = employeeNames(a.id);
                     const svcColor = serviceColors[a.service_type] ?? null;
 
-                    const needsHoursWarning = needsWorkedHoursAttention(a, employeeHours);
+                    const needsHoursWarning = needsWorkedHoursAttention(a, assignmentsFor(a.id), employeeHours);
                     const hoursWarningIcon = needsHoursWarning ? (
                       <span
                         title="Employee work hours require attention because Job Tracking was not completed."

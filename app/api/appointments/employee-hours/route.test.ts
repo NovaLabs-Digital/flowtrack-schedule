@@ -1,8 +1,12 @@
-// Phase 5.4E2: route-level tests for
+// Phase 5.4E2 + Phase 5.7D-R18: route-level tests for
 // app/api/appointments/employee-hours/route.ts (POST only -- this file has
 // no GET handler). Proves requireCapability(session, "canUseJobTracking")
-// is correctly wired before any appointment/employee read or
-// appointment_employee_hours write. @/lib/session and @/lib/supabaseAdmin
+// is correctly wired before any read or appointment_employee_hours write,
+// AND (Phase 5.7D-R18) that manual hours can only be saved for an employee
+// who actually has an appointment_employees assignment row for this exact
+// appointment, with the override guard now checking THAT assignment's own
+// Job Tracking timestamps -- never another assignment's, and never the
+// appointment-level (frozen) columns. @/lib/session and @/lib/supabaseAdmin
 // are mocked in-process; @/lib/entitlementServer is DELIBERATELY LEFT
 // UNMOCKED -- the real requireCapability chain runs against a fake
 // "subscriptions" table. No real Supabase/Stripe/network call is
@@ -41,11 +45,11 @@ const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
 const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 const VALID_BODY = { appointment_id: "appt-1", employee_id: "emp-1", hours_worked: 2.5, note: "Forgot to clock in" };
 
-function incompleteAppt() {
-  return { actual_started_at: null, actual_completed_at: null };
+function incompleteAssignment() {
+  return { id: "ae-1", actual_started_at: null, actual_completed_at: null };
 }
-function completeAppt() {
-  return { actual_started_at: "2026-07-21T09:00:00.000Z", actual_completed_at: "2026-07-21T11:00:00.000Z" };
+function completeAssignment() {
+  return { id: "ae-1", actual_started_at: "2026-07-21T09:00:00.000Z", actual_completed_at: "2026-07-21T11:00:00.000Z" };
 }
 
 describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
@@ -61,8 +65,7 @@ describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
       resetFixtures({
         workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }],
-        appointments: [{ data: incompleteAppt() }],
-        employees: [{ data: { id: "emp-1" } }],
+        appointment_employees: [{ data: incompleteAssignment() }],
         appointment_employee_hours: [{ data: { id: "aeh-1", appointment_id: "appt-1", employee_id: "emp-1", hours_worked: 2.5, note: "Forgot to clock in" } }],
       });
       sessionToReturn = OWNER_SESSION;
@@ -78,8 +81,7 @@ describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
   test("exact trusted demo workspace permits saving manual hours with zero subscriptions-table queries", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }],
-      appointments: [{ data: incompleteAppt() }],
-      employees: [{ data: { id: "emp-1" } }],
+      appointment_employees: [{ data: incompleteAssignment() }],
       appointment_employee_hours: [{ data: { id: "aeh-1" } }],
     });
     sessionToReturn = { role: "owner", workspaceId: DEMO_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
@@ -95,7 +97,7 @@ describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
   ];
 
   for (const [label, row] of RESTRICTED_STATES) {
-    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero appointment/employee reads, zero writes`, async () => {
+    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero assignment reads, zero writes`, async () => {
       resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: row }] });
       sessionToReturn = OWNER_SESSION;
@@ -106,7 +108,7 @@ describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
     });
   }
 
-  test("query_error on the subscriptions read denies, zero appointment/employee access", async () => {
+  test("query_error on the subscriptions read denies, zero assignment access", async () => {
     resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
     subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
@@ -225,11 +227,11 @@ describe("existing manual-hours business rules remain unchanged once entitled", 
     assert.deepEqual(await res.json(), { error: "A reason is required (e.g. forgot to clock in/out)." });
   });
 
-  test("genuinely complete Job Tracking still blocks manual override with the existing 409, after entitlement passes", async () => {
+  test("genuinely complete Job Tracking on this assignment still blocks manual override with the existing 409, after entitlement passes", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: completeAppt() }],
+      appointment_employees: [{ data: completeAssignment() }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(VALID_BODY));
@@ -237,17 +239,48 @@ describe("existing manual-hours business rules remain unchanged once entitled", 
     assert.deepEqual(await res.json(), { error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." });
     assert.equal(writeCalls(currentFake.calls).length, 0);
   });
+});
 
-  test("an employee_id not belonging to this workspace still 404s with the existing message, after entitlement passes", async () => {
+describe("Phase 5.7D-R18: manual hours require an actual assignment, and never cross-contaminate between employees on a shared appointment", () => {
+  test("an employee with no appointment_employees row for this appointment 404s -- never allowed to log hours for a job they're not assigned to", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: incompleteAppt() }],
-      employees: [{ data: null }],
+      appointment_employees: [{ data: null }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(VALID_BODY));
     assert.equal(res.status, 404);
-    assert.deepEqual(await res.json(), { error: "Employee not found" });
+    assert.deepEqual(await res.json(), { error: "Employee is not assigned to this appointment." });
+  });
+
+  test("the assignment lookup is scoped by appointment_id, employee_id, AND workspace_id -- never trusts employee_id alone", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: incompleteAssignment() }],
+      appointment_employee_hours: [{ data: { id: "aeh-1" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await POST(req(VALID_BODY));
+    const eqCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "eq");
+    assert.deepEqual(eqCalls.map((c) => c.args[0]), ["appointment_id", "employee_id", "workspace_id"]);
+  });
+
+  test("Teresa's completed tracking on a shared appointment does not block Roxana's own manual entry on the same appointment", async () => {
+    // Same appointment_id, but the assignment fetch is scoped to Roxana's
+    // OWN employee_id -- her assignment row (queued below) is independently
+    // incomplete, regardless of Teresa's completed one on the same job.
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: { id: "ae-roxana", actual_started_at: null, actual_completed_at: null } }],
+      appointment_employee_hours: [{ data: { id: "aeh-roxana", appointment_id: "appt-1", employee_id: "roxana", hours_worked: 3, note: "Forgot to clock in" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", employee_id: "roxana", hours_worked: 3, note: "Forgot to clock in" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.entry.employee_id, "roxana");
   });
 });

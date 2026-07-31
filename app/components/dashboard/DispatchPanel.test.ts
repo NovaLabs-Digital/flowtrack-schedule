@@ -41,7 +41,7 @@ describe("prop wiring", () => {
     const paramsEnd = source.indexOf("}) {", fnStart);
     const params = source.slice(fnStart, paramsEnd);
     assert.match(params, /canUseJobTracking:\s*boolean;/);
-    assert.match(params, /^\s*appointment, employee, onSaved, canUseJobTracking,$/m);
+    assert.match(params, /^\s*appointment, employee, assignment, onSaved, canUseJobTracking,$/m);
   });
 
   test("DispatchPanel passes its own canUseJobTracking prop straight through to EmployeeHoursSection -- no re-derivation, no new resolution path", () => {
@@ -183,8 +183,12 @@ describe("notice block", () => {
 
 describe("read-only actions and navigation remain unconditional", () => {
   test("the already-tracked (Job Tracking complete) read-only display block is not wrapped in a canUseJobTracking check", () => {
-    const readOnlyStart = source.indexOf("hasWorkedHours(selectedAppt, employeeHours) ? (");
-    const readOnlyEnd = source.indexOf(") : selectedAppt && employee && needsWorkedHoursAttention", readOnlyStart);
+    // Phase 5.7D-R18: per-employee now -- one read-only block per assigned
+    // employee who already has worked hours, inside the
+    // selectedApptAssignments.map() loop, before the manual-entry
+    // (EmployeeHoursSection) branch for employees still missing hours.
+    const readOnlyStart = source.indexOf("if (assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)) {");
+    const readOnlyEnd = source.indexOf("if (missingHoursEmployeeIds.includes(emp.id)) {", readOnlyStart);
     assert.notEqual(readOnlyStart, -1);
     assert.notEqual(readOnlyEnd, -1);
     const block = source.slice(readOnlyStart, readOnlyEnd);
@@ -192,7 +196,7 @@ describe("read-only actions and navigation remain unconditional", () => {
   });
 
   test("PayrollSummary (Weekly Worked Hours date-range display) is rendered unconditionally -- it is pure read-only, no fetch, no mutation, out of this phase's scope", () => {
-    assert.ok(source.includes("<PayrollSummary appointments={appointments} employees={employees} employeeHours={employeeHours} />"));
+    assert.ok(source.includes("<PayrollSummary appointments={appointments} employees={employees} employeeHours={employeeHours} assignments={assignments} />"));
     const idx = source.indexOf("<PayrollSummary");
     const before = source.slice(Math.max(0, idx - 60), idx);
     assert.ok(!before.includes("canUseJobTracking"));
@@ -241,5 +245,22 @@ describe("no duplicated billing surface, no leaked internal detail", () => {
     for (const forbidden of ["getSession", "fetchEntitlementForWorkspace", "requireCapability", "localStorage", "sessionStorage"]) {
       assert.ok(!source.includes(forbidden), `DispatchPanel.tsx must not contain "${forbidden}"`);
     }
+  });
+});
+
+describe("Phase 5.7D-R18: per-employee dispatch summary, appointment details, and Worked Hours cards (source-level proof)", () => {
+  test("today's Scheduled/In Progress/Completed counts are derived per-appointment from assignment rows, never the legacy appointment-level timestamps", () => {
+    assert.ok(source.includes("const todayStatuses = todayAppts.map((a) => deriveAppointmentTrackingStatus(assignmentsByApptId.get(a.id) ?? []));"));
+    assert.ok(!source.includes("todayAppts.filter((a) => !a.actual_started_at)"));
+  });
+
+  test("the Appointment Details panel lists every assigned employee (comma-joined), not a single employee", () => {
+    assert.ok(source.includes("selectedApptEmployees.map((e) => e.name).join"));
+  });
+
+  test("Employee Worked Hours renders one entry per assigned employee, each independently resolved via assignmentHasWorkedHours / missingHoursEmployeeIds", () => {
+    assert.ok(source.includes("selectedApptAssignments.map((assignment) => {"));
+    assert.ok(source.includes("assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)"));
+    assert.ok(source.includes("missingHoursEmployeeIds.includes(emp.id)"));
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { Appointment, Client, Employee } from "@/app/components/dashboard/types";
+import { Appointment, Client, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { toBusinessLocal, nowInBusinessTz } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
 
@@ -28,6 +28,9 @@ type Props = {
   appointments: Appointment[];
   clientById: Record<string, Client>;
   employeeById: Record<string, Employee>;
+  // Phase 5.7D-R18: every appointment_employees row for the workspace --
+  // grouped internally below by appointment_id.
+  assignments: AppointmentEmployeeAssignment[];
   serviceColorByName: Record<string, string>;
   getDurationMinutes: (appt: Appointment) => number;
   onSelectAppointment: (id: string) => void;
@@ -43,6 +46,7 @@ export default function MobileSchedule({
   appointments,
   clientById,
   employeeById,
+  assignments,
   serviceColorByName,
   getDurationMinutes,
   onSelectAppointment,
@@ -50,6 +54,18 @@ export default function MobileSchedule({
   const today = nowInBusinessTz();
   today.setHours(0, 0, 0, 0);
   const windowEnd = addDays(today, WINDOW_DAYS);
+
+  const assignmentsByApptId = new Map<string, AppointmentEmployeeAssignment[]>();
+  for (const a of assignments) {
+    const list = assignmentsByApptId.get(a.appointment_id);
+    if (list) list.push(a);
+    else assignmentsByApptId.set(a.appointment_id, [a]);
+  }
+  function employeesFor(apptId: string): Employee[] {
+    return (assignmentsByApptId.get(apptId) ?? [])
+      .map((a) => employeeById[a.employee_id])
+      .filter((e): e is Employee => !!e);
+  }
 
   const upcoming = appointments
     .filter((a) => {
@@ -98,7 +114,7 @@ export default function MobileSchedule({
                     key={a.id}
                     appointment={a}
                     client={clientById[a.client_id] ?? null}
-                    employee={a.employee_id ? employeeById[a.employee_id] ?? null : null}
+                    employees={employeesFor(a.id)}
                     serviceColor={serviceColorByName[a.service_type] ?? null}
                     durationMinutes={getDurationMinutes(a)}
                     onTap={() => onSelectAppointment(a.id)}

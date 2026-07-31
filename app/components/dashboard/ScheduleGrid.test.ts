@@ -196,3 +196,21 @@ describe("no leaked internal detail", () => {
     }
   });
 });
+
+describe("Phase 5.7D-R18: multi-employee card rendering and per-assignment missing-hours warning (source-level proof)", () => {
+  test("assignments are grouped by appointment_id once, not re-filtered per card render", () => {
+    assert.ok(source.includes("const assignmentsByApptId = new Map<string, AppointmentEmployeeAssignment[]>();"));
+  });
+
+  test("a card's employee name list is every assigned employee, comma-joined -- not just the legacy single employee_id", () => {
+    const fnIdx = source.indexOf("function employeeNames(apptId: string): string | null {");
+    assert.ok(fnIdx > -1);
+    const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));
+    assert.ok(body.includes("assignmentsFor(apptId)"));
+    assert.ok(body.includes('names.join(", ")'));
+  });
+
+  test("the missing-hours warning triangle uses the per-assignment predicate, passing this card's own assignment rows -- not a bare employeeHours-only check", () => {
+    assert.ok(source.includes("needsWorkedHoursAttention(a, assignmentsFor(a.id), employeeHours)"));
+  });
+});

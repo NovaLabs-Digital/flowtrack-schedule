@@ -34,7 +34,11 @@ function formatTime(d: Date) {
 type Props = {
   appointment: Appointment;
   client: Client | null;
-  employee: Employee | null;
+  // Phase 5.7D-R18: zero, one, or many assigned employees, resolved by the
+  // parent from appointment_employees (never appointments.employee_id,
+  // which is only ever a compatibility mirror -- see
+  // lib/appointmentEmployees.ts).
+  employees: Employee[];
   services: Service[];
   onEdit: () => void;
   onCancelled: () => void;
@@ -46,7 +50,7 @@ type Props = {
 // just a client) is selected. Mirrors MobileAppointmentDetail.tsx's
 // Call/Text/Cancel pattern for parity with mobile, reusing the exact same
 // /api/appointments/delete endpoint — no new backend logic.
-export default function AppointmentDetailPanel({ appointment, client, employee, services, onEdit, onCancelled, canMutateOperationalData }: Props) {
+export default function AppointmentDetailPanel({ appointment, client, employees, services, onEdit, onCancelled, canMutateOperationalData }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
 
@@ -104,7 +108,13 @@ export default function AppointmentDetailPanel({ appointment, client, employee, 
           <div className="text-sm text-slate-600">
             {start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })} · {formatTime(start)} – {formatTime(end)}
           </div>
-          {employee && <div className="text-sm text-slate-600">Employee: {employee.name}</div>}
+          {employees.length > 0 ? (
+            <div className="text-sm text-slate-600">
+              {employees.length === 1 ? "Employee" : "Employees"}: {employees.map((e) => e.name).join(", ")}
+            </div>
+          ) : (
+            <div className="text-sm text-slate-400">Unassigned</div>
+          )}
           {appointment.notes && (
             <div className="text-sm text-slate-600 whitespace-pre-wrap">Notes: {appointment.notes}</div>
           )}

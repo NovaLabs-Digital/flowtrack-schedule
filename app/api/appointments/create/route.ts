@@ -11,6 +11,7 @@ import { generateFutureDates } from "@/lib/recurrence";
 import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDateStringFromInstant, type BusyRange } from "@/lib/availability";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 import { isValidPriceCents } from "@/lib/money";
+import { dedupeEmployeeIds, deriveLegacyEmployeeId, validateEmployeeIdsInWorkspace, insertAssignments } from "@/lib/appointmentEmployees";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -87,7 +88,13 @@ export async function POST(req: Request) {
     // owner triages staff assignment afterward.
     const frequency_type: string = isPublic ? "one_time" : (body.frequency_type || "one_time").trim();
     const repeat_weeks: number = isPublic ? 1 : (typeof body.repeat_weeks === "number" ? body.repeat_weeks : 1);
-    const employee_id: string | null = isPublic ? null : ((body.employee_id || "").trim() || null);
+    // Phase 5.7D-R18: zero, one, or many assigned employees. A public
+    // booking is always unassigned (no staff-selection UI on that flow) --
+    // the owner triages staff assignment afterward. employee_ids is the
+    // authoritative assignment list; appointments.employee_id (below) is
+    // only ever a read-only compatibility mirror derived from it, never a
+    // second source of truth.
+    const employee_ids: string[] = isPublic ? [] : dedupeEmployeeIds(Array.isArray(body.employee_ids) ? body.employee_ids : []);
     // Defaults to "both" so the public /book self-booking page (no staff choice) keeps sending a confirmation.
     const notify_channel: NotifyChannel = body.notify_channel || "both";
 
@@ -214,19 +221,11 @@ export async function POST(req: Request) {
       }
     }
 
-    // employee_id is an assignment target, not the caller's own identity —
-    // never trust it alone. Confirm it belongs to this workspace before
-    // attaching a new appointment to it.
-    if (employee_id) {
-      const empRes = await supabaseAdmin
-        .from("employees")
-        .select("id")
-        .eq("id", employee_id)
-        .eq("workspace_id", workspaceId)
-        .maybeSingle();
-      if (empRes.error) throw empRes.error;
-      if (!empRes.data) return json({ error: "Employee not found" }, 404);
-    }
+    // Assigned employee IDs are assignment targets, not the caller's own
+    // identity — never trust them alone. Every one of them must belong to
+    // this workspace before attaching a new appointment to it.
+    const employeeValidation = await validateEmployeeIdsInWorkspace(employee_ids, workspaceId);
+    if (!employeeValidation.ok) return json({ error: employeeValidation.error }, 404);
 
     // Check column support
     const hasDuration = await hasColumn("duration_minutes");
@@ -267,8 +266,11 @@ export async function POST(req: Request) {
         row.frequency_type = frequency_type;
         row.repeat_weeks = repeat_weeks;
       }
-      if (hasEmployee && employee_id) {
-        row.employee_id = employee_id;
+      // appointments.employee_id: read-only compatibility mirror, not the
+      // authoritative assignment list (see employee_ids above). The one
+      // employee's id when exactly one is assigned, otherwise NULL.
+      if (hasEmployee) {
+        row.employee_id = deriveLegacyEmployeeId(employee_ids);
       }
       // Every occurrence in a recurring series created together gets the
       // exact same price snapshot -- not recomputed per-date, never derived
@@ -283,6 +285,16 @@ export async function POST(req: Request) {
       .select("id");
 
     if (insErr) throw insErr;
+
+    // Phase 5.7D-R18: every generated occurrence in a recurring series gets
+    // the exact same set of assigned employees -- not recomputed per-date,
+    // mirroring how price_cents is already snapshotted identically across
+    // every occurrence above.
+    if (employee_ids.length > 0 && inserted) {
+      for (const row of inserted) {
+        await insertAssignments(row.id, workspaceId, employee_ids);
+      }
+    }
 
     const firstId = inserted?.[0]?.id;
 

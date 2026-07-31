@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Appointment, Employee, EmployeeHours } from "@/app/components/dashboard/types";
+import { Appointment, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
 import { nowInBusinessTz } from "@/lib/timezone";
 
@@ -24,16 +24,18 @@ export default function PayrollSummary({
   appointments,
   employees,
   employeeHours,
+  assignments,
 }: {
   appointments: Appointment[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
+  assignments: AppointmentEmployeeAssignment[];
 }) {
   const defaultMonday = mondayOfCurrentWeek();
   const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
   const [rangeEnd, setRangeEnd] = useState(toDateInputValue(addDays(defaultMonday, 4)));
 
-  const { rows, missingHoursCount } = computePayrollRows({ appointments, employees, employeeHours, rangeStart, rangeEnd });
+  const { rows, missingHoursCount } = computePayrollRows({ appointments, employees, employeeHours, assignments, rangeStart, rangeEnd });
   const totalHours = rows.reduce((sum, r) => sum + r.hoursWorked, 0);
 
   return (

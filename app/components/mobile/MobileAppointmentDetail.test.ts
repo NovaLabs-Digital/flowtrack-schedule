@@ -25,14 +25,19 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
+// Normalized to LF regardless of the file's on-disk line-ending style --
+// several tests below locate text via a fixed-size character window
+// relative to an anchor (e.g. "the first statement inside a function
+// body"), which must not depend on whether Windows/git checked this file
+// out with CRLF or LF line endings.
 const source = fs.readFileSync(
   fileURLToPath(new URL("./MobileAppointmentDetail.tsx", import.meta.url)),
   "utf8"
-);
+).replace(/\r\n/g, "\n");
 const mobileDashboardSource = fs.readFileSync(
   fileURLToPath(new URL("./MobileDashboard.tsx", import.meta.url)),
   "utf8"
-);
+).replace(/\r\n/g, "\n");
 
 const APPROVED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 

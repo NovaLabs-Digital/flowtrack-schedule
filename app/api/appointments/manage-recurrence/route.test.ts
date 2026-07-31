@@ -76,8 +76,9 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
         appointments: [
           { data: oneTimeAppt() }, // fetch existing
           { error: null }, // update source appointment
-          { error: null }, // insert new series rows
+          { data: [{ id: "new-1" }] }, // insert new series rows (.select("id"))
         ],
+        appointment_employees: [{ data: [] }], // fetchAssignments(origin) -- unassigned
       });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 4 }));
@@ -92,6 +93,7 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
   test("exact trusted demo workspace permits the mutation with zero subscriptions-table queries (real short-circuit)", async () => {
     resetFixtures({
       appointments: [{ data: { ...oneTimeAppt(), is_demo: true } }, { error: null }],
+      appointment_employees: [{ data: [] }],
     });
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
@@ -228,8 +230,9 @@ describe("existing recurrence business rules remain unchanged once entitled", ()
         { data: [{ id: "sib-1" }, { id: "sib-2" }] }, // sibling lookup
         { error: null }, // bulk-cancel siblings
         { error: null }, // update source appointment
-        { error: null }, // insert new series
+        { data: [{ id: "new-1" }] }, // insert new series (.select("id"))
       ],
+      appointment_employees: [{ data: [] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 2 }));
@@ -249,6 +252,7 @@ describe("existing recurrence business rules remain unchanged once entitled", ()
         { error: null },
         { error: null },
       ],
+      appointment_employees: [{ data: [] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
@@ -291,8 +295,9 @@ describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appo
       appointments: [
         { data: oneTimeAppt() }, // price_cents: 5000
         { error: null }, // update source appointment
-        { error: null }, // insert new series rows
+        { data: [{ id: "new-1" }] }, // insert new series rows (.select("id"))
       ],
+      appointment_employees: [{ data: [] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
@@ -310,8 +315,9 @@ describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appo
       appointments: [
         { data: { ...oneTimeAppt(), price_cents: null } },
         { error: null },
-        { error: null },
+        { data: [{ id: "new-1" }] },
       ],
+      appointment_employees: [{ data: [] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
@@ -319,5 +325,58 @@ describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appo
     const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
     const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
     assert.ok(rows.every((r) => r.price_cents === null));
+  });
+});
+
+describe("Phase 5.7D-R18: newly generated recurring rows receive the origin appointment's full assignment set", () => {
+  test("every generated future row gets the same set of assigned employees as the origin, and appointments.employee_id mirrors null for two employees", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: oneTimeAppt() },
+        { error: null }, // update source appointment
+        { data: [{ id: "new-1" }, { id: "new-2" }] }, // insert new series rows (.select("id"))
+      ],
+      appointment_employees: [
+        { data: [
+          { id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+        ] }, // fetchAssignments(origin)
+        { data: null, error: null }, // insertAssignments(new-1)
+        { data: null, error: null }, // insertAssignments(new-2)
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+    assert.equal(res.status, 200);
+
+    const insertApptCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const apptRows = insertApptCall!.args[0] as Array<{ employee_id?: string | null }>;
+    assert.ok(apptRows.every((r) => r.employee_id === null), "two assigned employees -> legacy mirror is null, never an arbitrary pick");
+
+    const assignmentInsertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
+    assert.equal(assignmentInsertCalls.length, 2, "one insertAssignments call per newly generated occurrence");
+    for (const call of assignmentInsertCalls) {
+      const rows = call.args[0] as Array<{ employee_id: string }>;
+      assert.deepEqual(rows.map((r) => r.employee_id), ["teresa", "roxana"]);
+    }
+  });
+
+  test("an unassigned origin generates rows with no assignment inserts at all", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: oneTimeAppt() },
+        { error: null },
+        { data: [{ id: "new-1" }] },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert").length, 0);
   });
 });

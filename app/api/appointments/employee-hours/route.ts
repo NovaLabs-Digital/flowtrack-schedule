@@ -35,38 +35,31 @@ export async function POST(req: Request) {
     }
     if (!note) return json({ error: "A reason is required (e.g. forgot to clock in/out)." }, 400);
 
-    // Job Tracking is the authoritative source of worked time — a manual entry
-    // must never override or reduce a genuinely COMPLETE tracked duration,
-    // even via a direct API call. isJobTrackingComplete (lib/payroll.ts) is
-    // the same predicate the warning triangle, payroll, and both UI cards
-    // use — a zero/negative/sub-one-minute gap between started and
-    // completed does NOT count as complete, so a manual correction is
-    // allowed even though both timestamp fields are present. This mirrors
-    // the DispatchPanel UI, which only hides the manual form once tracking
-    // is genuinely complete.
-    const apptRes = await supabaseAdmin
-      .from("appointments")
-      .select("actual_started_at, actual_completed_at")
-      .eq("id", appointment_id)
+    // Phase 5.7D-R18: a single lookup against the employee's own
+    // appointment_employees assignment row both (a) proves this exact
+    // employee is actually assigned to this exact appointment within this
+    // workspace -- never trusting a client-submitted employee_id alone --
+    // and (b) supplies that assignment's own Job Tracking timestamps for
+    // the override guard below. Job Tracking is the authoritative source of
+    // worked time for THIS employee's assignment -- a manual entry must
+    // never override or reduce a genuinely COMPLETE tracked duration, even
+    // via a direct API call. isJobTrackingComplete (lib/payroll.ts) is the
+    // same predicate the warning triangle, payroll, and both UI cards use
+    // -- a zero/negative/sub-one-minute gap between started and completed
+    // does NOT count as complete, so a manual correction is allowed even
+    // though both timestamp fields are present.
+    const assignmentRes = await supabaseAdmin
+      .from("appointment_employees")
+      .select("id, actual_started_at, actual_completed_at")
+      .eq("appointment_id", appointment_id)
+      .eq("employee_id", employee_id)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
-    if (apptRes.error) throw apptRes.error;
-    if (!apptRes.data) return json({ error: "Appointment not found" }, 404);
-    if (isJobTrackingComplete(apptRes.data)) {
+    if (assignmentRes.error) throw assignmentRes.error;
+    if (!assignmentRes.data) return json({ error: "Employee is not assigned to this appointment." }, 404);
+    if (isJobTrackingComplete(assignmentRes.data)) {
       return json({ error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." }, 409);
     }
-
-    // employee_id is an assignment target, not the caller's own identity —
-    // never trust it alone. Confirm it actually belongs to this workspace
-    // before attaching hours to it.
-    const empRes = await supabaseAdmin
-      .from("employees")
-      .select("id")
-      .eq("id", employee_id)
-      .eq("workspace_id", workspaceId)
-      .maybeSingle();
-    if (empRes.error) throw empRes.error;
-    if (!empRes.data) return json({ error: "Employee not found" }, 404);
 
     const { data, error } = await supabaseAdmin
       .from("appointment_employee_hours")

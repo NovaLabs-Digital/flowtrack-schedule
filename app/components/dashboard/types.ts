@@ -26,7 +26,17 @@ export type Appointment = {
   series_id?: string | null;
   frequency_type?: string | null;
   repeat_weeks?: number | null;
+  // Phase 5.7D-R18: read-only compatibility mirror, not the authoritative
+  // assignment -- null whenever zero or two-or-more employees are
+  // assigned (see AppointmentEmployeeAssignment below and
+  // lib/appointmentEmployees.ts's deriveLegacyEmployeeId). No application
+  // logic reads this field to decide "who is assigned" as of this phase.
   employee_id?: string | null;
+  // Phase 5.7D-R18: frozen historical data as of this phase -- Job
+  // Tracking Start/Complete no longer writes to these two fields at all
+  // (see app/api/appointments/job/route.ts). Per-employee tracking lives
+  // on AppointmentEmployeeAssignment.actual_started_at/actual_completed_at
+  // below instead.
   actual_started_at?: string | null;
   actual_completed_at?: string | null;
   // Phase 5.7D-R17: an independent price snapshot taken at create/edit time
@@ -62,6 +72,23 @@ export type EmployeeHours = {
   employee_id: string | null;
   hours_worked: number;
   note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// Phase 5.7D-R18: one row per employee assigned to an appointment
+// (migrations/021). appointments.employee_id remains as a read-only
+// compatibility mirror (see lib/appointmentEmployees.ts's
+// deriveLegacyEmployeeId) but this table is the authoritative source for
+// "who is assigned" and for per-employee Job Tracking timestamps --
+// actual_started_at/actual_completed_at here, NOT on Appointment, are what
+// each assigned employee's own Start/Complete actions read and write.
+export type AppointmentEmployeeAssignment = {
+  id: string;
+  appointment_id: string;
+  employee_id: string;
+  actual_started_at: string | null;
+  actual_completed_at: string | null;
   created_at: string;
   updated_at: string;
 };

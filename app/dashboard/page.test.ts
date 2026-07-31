@@ -72,3 +72,39 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
     assert.ok(!fallbackMatch![1].includes("duration_minutes"));
   });
 });
+
+// Phase 5.7D-R18: this file's own established defect pattern (see the two
+// describe blocks above) is exactly why this dedicated query is a source-
+// level, tested requirement, not an assumption -- app/dashboard/page.tsx's
+// independent server-side queries are the one place R17B was missed twice.
+// appointment_employees is the authoritative multi-employee assignment
+// source (migrations/021); DashboardShell/AppointmentModal/ScheduleGrid/
+// DispatchPanel all need every workspace assignment row, not just the ones
+// belonging to whichever appointment happens to be selected.
+describe("app/dashboard/page.tsx -- fetches appointment_employees assignments, workspace-scoped (Phase 5.7D-R18)", () => {
+  test("queries appointment_employees selecting id, appointment_id, employee_id, and both tracking timestamps", () => {
+    const selectMatch = source.match(/\.from\("appointment_employees"\)\s*\n\s*\.select\("([^"]*)"\)/);
+    assert.ok(selectMatch, "expected to find the appointment_employees .from(...).select(...) call");
+    for (const col of ["id", "appointment_id", "employee_id", "actual_started_at", "actual_completed_at"]) {
+      assert.ok(selectMatch![1].includes(col), `must select "${col}"`);
+    }
+  });
+
+  test("the assignments query is scoped by workspace_id, matching every other business-data query in this file", () => {
+    const block = source.match(/\.from\("appointment_employees"\)[\s\S]*?;/);
+    assert.ok(block);
+    assert.ok(block![0].includes('.eq("workspace_id", workspaceId)'));
+  });
+
+  test("a missing/erroring appointment_employees table degrades to an empty list, not a hard failure -- same optional-existence pattern as services/employees/employeeHours", () => {
+    const block = source.match(/let assignments[\s\S]*?catch \{[\s\S]*?\}/);
+    assert.ok(block, "expected the assignments fetch to be wrapped in try/catch");
+    assert.ok(block![0].includes("let assignments: AppointmentEmployeeAssignment[] = [];"));
+  });
+
+  test("assignments is passed to DashboardShell", () => {
+    const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
+    assert.ok(shellBlock);
+    assert.ok(shellBlock![0].includes("assignments={assignments}"));
+  });
+});

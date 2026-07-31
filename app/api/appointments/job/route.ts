@@ -32,23 +32,27 @@ export async function POST(req: Request) {
       return json({ error: "Action must be 'start' or 'complete'" }, 400);
     }
 
-    const { data: appt, error: fetchErr } = await supabaseAdmin
-      .from("appointments")
-      .select("id, employee_id, actual_started_at, actual_completed_at")
-      .eq("id", appointmentId)
+    // Phase 5.7D-R18: Job Tracking is now per-assignment, not per-appointment
+    // -- resolves the AUTHENTICATED employee's own assignment row directly
+    // (employee_id: session.employeeId, never a client-submitted value), so
+    // one employee's Start/Complete action can never reach or change
+    // another employee's timestamps on a shared appointment. A missing row
+    // means either the appointment doesn't exist, doesn't belong to this
+    // workspace, or (most commonly) simply isn't assigned to this employee
+    // -- all three fail closed identically, with no information disclosed
+    // about which case it was.
+    const { data: assignment, error: fetchErr } = await supabaseAdmin
+      .from("appointment_employees")
+      .select("id, actual_started_at, actual_completed_at")
+      .eq("appointment_id", appointmentId)
+      .eq("employee_id", employeeId)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
 
     if (fetchErr) throw fetchErr;
-    if (!appt) return json({ error: "Appointment not found" }, 404);
-    // Both checks required: the appointment must be assigned to this exact
-    // employee AND belong to their workspace — either alone isn't enough
-    // once employee IDs could ever collide or be guessed across workspaces.
-    if (appt.employee_id !== employeeId) {
-      return json({ error: "Unauthorized" }, 403);
-    }
+    if (!assignment) return json({ error: "Unauthorized" }, 403);
 
-    if (appt.actual_completed_at) {
+    if (assignment.actual_completed_at) {
       return json({ error: "Job already completed" }, 400);
     }
 
@@ -56,21 +60,21 @@ export async function POST(req: Request) {
     const update: Record<string, string> = {};
 
     if (action === "start") {
-      if (appt.actual_started_at) {
+      if (assignment.actual_started_at) {
         return json({ error: "Job already started" }, 400);
       }
       update.actual_started_at = now;
     } else {
-      if (!appt.actual_started_at) {
+      if (!assignment.actual_started_at) {
         update.actual_started_at = now;
       }
       update.actual_completed_at = now;
     }
 
     const { error: updateErr } = await supabaseAdmin
-      .from("appointments")
+      .from("appointment_employees")
       .update(update)
-      .eq("id", appointmentId)
+      .eq("id", assignment.id)
       .eq("workspace_id", workspaceId);
 
     if (updateErr) throw updateErr;

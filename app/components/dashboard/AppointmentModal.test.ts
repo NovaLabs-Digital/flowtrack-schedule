@@ -62,24 +62,26 @@ describe("prop wiring: canMutateOperationalData reaches this component and nowhe
   });
 });
 
-describe("all five mutation-triggering buttons are wired through CapabilityGatedButton with the canonical capability and the shared notice", () => {
+describe("all six mutation-triggering buttons are wired through CapabilityGatedButton with the canonical capability and the shared notice", () => {
   test("CapabilityGatedButton is imported from the dedicated extracted primitive, not defined inline", () => {
     assert.ok(source.includes('import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";'));
   });
 
-  test("exactly five <CapabilityGatedButton usages exist", () => {
+  // Phase 5.7D-R18 added a sixth: the "Yes, Save Unassigned" button in the
+  // last-employee-removal confirmation panel (Section C.6).
+  test("exactly six <CapabilityGatedButton usages exist", () => {
     const count = source.split("<CapabilityGatedButton").length - 1;
-    assert.equal(count, 5, `expected exactly 5 <CapabilityGatedButton usages, found ${count}`);
+    assert.equal(count, 6, `expected exactly 6 <CapabilityGatedButton usages, found ${count}`);
   });
 
-  test("allowed={canMutateOperationalData} appears exactly five times -- once per governed button, never a different/derived value", () => {
+  test("allowed={canMutateOperationalData} appears exactly six times -- once per governed button, never a different/derived value", () => {
     const count = source.split("allowed={canMutateOperationalData}").length - 1;
-    assert.equal(count, 5, `expected exactly 5, found ${count}`);
+    assert.equal(count, 6, `expected exactly 6, found ${count}`);
   });
 
   test("every CapabilityGatedButton usage is described by the one shared restricted-notice id", () => {
     const count = source.split("ariaDescribedBy={RESTRICTED_NOTICE_ID}").length - 1;
-    assert.equal(count, 5, `expected exactly 5, found ${count}`);
+    assert.equal(count, 6, `expected exactly 6, found ${count}`);
   });
 
   test("the main submit button (create + edit) is type=\"submit\", inside the <form>, governed by CapabilityGatedButton", () => {
@@ -324,5 +326,80 @@ describe("Phase 5.7D-R17: appointment price snapshot (source-level proof)", () =
 
   test("imports price helpers from the shared lib/money module -- no local reimplementation of cents<->dollars conversion", () => {
     assert.ok(source.includes('import { centsToInputValue, parsePriceToCents } from "@/lib/money";'));
+  });
+});
+
+describe("Phase 5.7D-R18: multi-employee editor (source-level proof)", () => {
+  test("selectedEmployeeIds is initialized from this appointment's own assignment rows, never from the legacy single employee_id column", () => {
+    assert.ok(source.includes("const apptAssignments = isEdit ? assignments.filter((a) => a.appointment_id === editing!.appointment.id) : [];"));
+    assert.ok(source.includes("const initialEmployeeIds = apptAssignments.map((a) => a.employee_id);"));
+    assert.ok(source.includes("useState<string[]>(initialEmployeeIds)"));
+    assert.ok(!source.includes("editing?.appointment.employee_id ?? \"\""), "must not seed from the legacy single employee_id field");
+  });
+
+  test("selected employees are shown as individually removable chips, never hidden behind a menu that must be reopened", () => {
+    assert.ok(source.includes("selectedEmployeeIds.map((id) => {"));
+    assert.ok(source.includes("onClick={() => removeEmployee(id)}"));
+    assert.ok(source.includes('aria-label={`Remove ${emp?.name ?? "employee"}`}'));
+  });
+
+  test("a plain <select> adds one more employee at a time, already excluding anyone already selected -- no duplicate-add path", () => {
+    const addSelectIdx = source.indexOf("onChange={(e) => { if (e.target.value) addEmployee(e.target.value); }}");
+    assert.ok(addSelectIdx > -1);
+    assert.ok(source.includes("employees.filter((emp) => emp.active && !selectedEmployeeIds.includes(emp.id))"));
+  });
+
+  test("both create and edit payloads send employee_ids (the full set), never a single employee_id", () => {
+    assert.ok(source.includes("employee_ids: selectedEmployeeIds,"));
+    assert.ok(!source.includes("employee_id: selectedEmployeeId"));
+  });
+
+  test("removing the last assigned employee requires explicit confirmation before saving, and does not delete the appointment", () => {
+    const gateIdx = source.indexOf("function proceedAfterValidation(unassignConfirmed = confirmUnassign)");
+    assert.ok(gateIdx > -1);
+    const gateBody = source.slice(gateIdx, source.indexOf("\n  }", gateIdx));
+    assert.ok(gateBody.includes("const removingLastEmployee = isEdit && initialEmployeeIds.length > 0 && selectedEmployeeIds.length === 0;"));
+    assert.ok(gateBody.includes("setConfirmUnassign(true)"));
+    assert.ok(source.includes("Removing the last assigned employee will leave this appointment unassigned. The appointment itself will not be deleted."));
+  });
+
+  test("the unassign-confirmation gate runs BEFORE the recurring edit-scope gate -- owner sees 'this will become unassigned' before 'apply to this or future occurrences'", () => {
+    const fnIdx = source.indexOf("function proceedAfterValidation");
+    const removingIdx = source.indexOf("removingLastEmployee", fnIdx);
+    const isRecurringIdx = source.indexOf("isEdit && isRecurring && !editScope", fnIdx);
+    assert.ok(removingIdx > -1 && isRecurringIdx > -1 && removingIdx < isRecurringIdx);
+  });
+
+  test("employee-assignment changes are excluded from the smart notify-channel trigger -- staffing-only edits default to no client notification (Section G.2)", () => {
+    const importantIdx = source.indexOf("const importantFieldsChanged = dateTimeChanged || serviceChanged;");
+    assert.ok(importantIdx > -1, "importantFieldsChanged must not include employeeChanged");
+    assert.ok(!/importantFieldsChanged = dateTimeChanged \|\| employeeChanged/.test(source));
+  });
+
+  test("Worked Hours is rendered per assigned employee (Section E.7), one card per assignment, each independently labeled with that employee's own name", () => {
+    assert.ok(source.includes("apptAssignments.map((assignment) => {"));
+    assert.ok(source.includes("const emp = employees.find((e) => e.id === assignment.employee_id);"));
+    assert.ok(source.includes("{emp?.name ?? \"Unknown employee\"}"));
+  });
+
+  test("missing-hours identification uses getMissingHoursEmployeeIds, the same per-employee predicate driving the schedule grid's warning triangle", () => {
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes } from "@/lib/payroll";'));
+    assert.ok(source.includes("const missingHoursEmployeeIds = jobTrackingAppt ? getMissingHoursEmployeeIds(jobTrackingAppt, apptAssignments, employeeHours) : [];"));
+  });
+
+  test("Section C.8/C.9 field order: Assigned Employees appears before Worked Hours, and Price appears after Worked Hours -- Price is never duplicated per employee", () => {
+    const assignedEmployeesIdx = source.indexOf("Assigned Employees</label>");
+    const workedHoursIdx = source.indexOf('<div className="text-xs font-medium text-slate-600">Worked Hours</div>');
+    const priceLabelIdx = source.lastIndexOf(">Price</label>");
+    assert.ok(assignedEmployeesIdx > -1 && workedHoursIdx > -1 && priceLabelIdx > -1);
+    assert.ok(assignedEmployeesIdx < workedHoursIdx, "Assigned Employees must render before Worked Hours");
+    assert.ok(workedHoursIdx < priceLabelIdx, "Price must render after Worked Hours");
+    // Exactly one Price input in the whole form -- never split per employee.
+    const priceInputCount = [...source.matchAll(/onChange=\{\(e\) => setPrice\(e\.target\.value\)\}/g)].length;
+    assert.equal(priceInputCount, 1);
+  });
+
+  test("assignments prop is documented as authoritative, filtered internally to this appointment -- never pre-filtered by the caller", () => {
+    assert.ok(source.includes("assignments: AppointmentEmployeeAssignment[];"));
   });
 });

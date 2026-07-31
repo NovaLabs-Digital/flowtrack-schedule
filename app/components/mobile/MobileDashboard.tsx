@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Client, Appointment, Service, Employee } from "@/app/components/dashboard/types";
+import { Client, Appointment, Service, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
 import MobileAppointmentDetail from "@/app/components/mobile/MobileAppointmentDetail";
@@ -24,6 +24,10 @@ type Props = {
   appointments: Appointment[];
   services: Service[];
   employees: Employee[];
+  // Phase 5.7D-R18: every appointment_employees row for the workspace --
+  // the authoritative "who's assigned" source, grouped internally below by
+  // appointment_id.
+  assignments: AppointmentEmployeeAssignment[];
   onAdd: () => void;
   onEditAppointment: (apptId: string) => void;
   onClientUpdated: () => void;
@@ -72,6 +76,7 @@ export default function MobileDashboard({
   appointments,
   services,
   employees,
+  assignments,
   onAdd,
   onEditAppointment,
   onClientUpdated,
@@ -109,6 +114,18 @@ export default function MobileDashboard({
   const serviceColorByName: Record<string, string> = {};
   for (const s of services) if (s.color) serviceColorByName[s.name] = s.color;
 
+  const assignmentsByApptId = new Map<string, string[]>();
+  for (const a of assignments) {
+    const list = assignmentsByApptId.get(a.appointment_id);
+    if (list) list.push(a.employee_id);
+    else assignmentsByApptId.set(a.appointment_id, [a.employee_id]);
+  }
+  function employeesFor(apptId: string): Employee[] {
+    return (assignmentsByApptId.get(apptId) ?? [])
+      .map((id) => employeeById[id])
+      .filter((e): e is Employee => !!e);
+  }
+
   const dayAppts = appointments
     .filter((a) => a.status !== "cancelled" && sameDay(toBusinessLocal(a.scheduled_for), selectedDate))
     .sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime());
@@ -136,7 +153,7 @@ export default function MobileDashboard({
           <MobileAppointmentDetail
             appointment={selectedAppt}
             client={clientById[selectedAppt.client_id] ?? null}
-            employee={selectedAppt.employee_id ? employeeById[selectedAppt.employee_id] ?? null : null}
+            employees={employeesFor(selectedAppt.id)}
             durationMinutes={scheduledMinutes(selectedAppt, services)}
             onBack={() => setSelectedApptId(null)}
             onEdit={() => onEditAppointment(selectedAppt.id)}
@@ -246,7 +263,7 @@ export default function MobileDashboard({
                         key={a.id}
                         appointment={a}
                         client={clientById[a.client_id] ?? null}
-                        employee={a.employee_id ? employeeById[a.employee_id] ?? null : null}
+                        employees={employeesFor(a.id)}
                         serviceColor={serviceColorByName[a.service_type] ?? null}
                         durationMinutes={scheduledMinutes(a, services)}
                         onTap={() => setSelectedApptId(a.id)}
@@ -283,6 +300,7 @@ export default function MobileDashboard({
                 appointments={appointments}
                 clientById={clientById}
                 employeeById={employeeById}
+                assignments={assignments}
                 serviceColorByName={serviceColorByName}
                 getDurationMinutes={(a) => scheduledMinutes(a, services)}
                 onSelectAppointment={setSelectedApptId}

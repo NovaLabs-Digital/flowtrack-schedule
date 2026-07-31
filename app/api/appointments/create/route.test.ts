@@ -349,6 +349,156 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   });
 });
 
+describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
+  test("creating with two employees inserts one appointment_employees row per employee, referencing the created appointment", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointment_employees: [{ data: null, error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ employee_ids: ["teresa", "roxana"], notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "insert");
+    assert.ok(insertCall);
+    const rows = insertCall!.args[0] as Array<{ appointment_id: string; employee_id: string; workspace_id: string }>;
+    assert.deepEqual(rows.map((r) => r.employee_id), ["teresa", "roxana"]);
+    assert.ok(rows.every((r) => r.appointment_id === "appt-new-1" && r.workspace_id === REAL_WORKSPACE_ID));
+  });
+
+  test("exactly one employee dual-writes appointments.employee_id to that employee's id", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      employees: [{ data: [{ id: "teresa" }] }],
+      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointment_employees: [{ data: null, error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ employee_ids: ["teresa"], notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ employee_id?: string | null }>;
+    assert.equal(rows[0].employee_id, "teresa");
+  });
+
+  test("two or more employees dual-write appointments.employee_id to null -- never an arbitrary 'primary' pick", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointment_employees: [{ data: null, error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ employee_ids: ["teresa", "roxana"], notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ employee_id?: string | null }>;
+    assert.equal(rows[0].employee_id, null);
+  });
+
+  test("zero employees -> no appointment_employees insert call at all, appointments.employee_id is null", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees").length, 0);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ employee_id?: string | null }>;
+    assert.equal(rows[0].employee_id, null);
+  });
+
+  test("an employee_id not belonging to this workspace is rejected with 404 before any appointment write", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }],
+      employees: [{ data: [] }], // neither ID found in this workspace
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ employee_ids: ["cross-workspace-emp"] })));
+    assert.equal(res.status, 404);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+  });
+
+  test("duplicate employee_ids in the request are deduped -- exactly one assignment row per unique employee", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      employees: [{ data: [{ id: "teresa" }] }],
+      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointment_employees: [{ data: null, error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ employee_ids: ["teresa", "teresa"], notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ employee_id: string }>;
+    assert.equal(rows.length, 1);
+  });
+
+  test("a recurring series assigns the same employees to every generated occurrence, not recomputed per date", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+      // repeat_weeks: 26 -> intervalDays 182, generateFutureDates yields
+      // exactly one future occurrence -- two rows total (matches the
+      // existing price-snapshot recurrence test's fixture shape).
+      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+      appointment_employees: [{ data: null, error: null }, { data: null, error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ employee_ids: ["teresa", "roxana"], frequency_type: "weekly", repeat_weeks: 26, notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
+    assert.equal(insertCalls.length, 2);
+    const apptIds = insertCalls.map((c) => (c.args[0] as Array<{ appointment_id: string }>)[0].appointment_id);
+    assert.deepEqual(apptIds, ["appt-new-1", "appt-new-2"]);
+    for (const call of insertCalls) {
+      const rows = call.args[0] as Array<{ employee_id: string }>;
+      assert.deepEqual(rows.map((r) => r.employee_id), ["teresa", "roxana"]);
+    }
+  });
+
+  test("public booking never assigns any employee even if employee_ids is included in the request body", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+      appointments: [{ data: [] }, ...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      clients: [
+        { data: null },
+        { data: null },
+        { data: { id: "new-client-1" } },
+        { data: { name: "Jane Public", email: "jane@public.example", phone: "+15559876543", auto_email: true, auto_sms: true } },
+      ],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody({ employee_ids: ["teresa"] })));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "employees").length, 0);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ employee_id?: string | null }>;
+    assert.equal(rows[0].employee_id, null);
+  });
+});
+
 describe("POST /api/appointments/create -- public booking branch entitlement gate (canUsePublicBooking)", () => {
   const FULL_STATES: Array<[string, ReturnType<typeof subscriptionRow>]> = [
     ["active", subscriptionRow({ stripe_status: "active" })],
