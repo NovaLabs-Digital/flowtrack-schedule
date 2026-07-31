@@ -283,6 +283,10 @@ describe("Phase 5.7D-R17: appointment price snapshot (source-level proof)", () =
     assert.ok(source.includes("serviceDefaultPriceCents[initialService]"));
   });
 
+  test("Phase 5.7D-R17B: serviceDefaultPriceCents is built directly from the `services` prop's own default_price_cents field -- reproduces/guards the exact production bug (a service correctly priced via Settings > Services still left the appointment Price field blank, because app/dashboard/page.tsx's separate server-side services query omitted default_price_cents from its own SELECT -- fixed there, not here; this test guards the AppointmentModal side of that chain)", () => {
+    assert.ok(source.includes("serviceDefaultPriceCents[s.name] = s.default_price_cents ?? null;"));
+  });
+
   test("priceTouched starts true only when the appointment being edited already has a real price on file -- protecting an intentionally-entered price from a later silent overwrite", () => {
     assert.ok(source.includes("useState(isEdit && editing!.appointment.price_cents != null)"));
   });

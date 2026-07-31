@@ -65,6 +65,10 @@ describe("centsToInputValue", () => {
     assert.equal(centsToInputValue(4505), "45.05");
   });
 
+  test("Phase 5.7D-R17B: reproduces the exact production value (Kitchen Renovation, $200.00 = 20000 cents)", () => {
+    assert.equal(centsToInputValue(20000), "200.00");
+  });
+
   test("round-trips through parsePriceToCents", () => {
     assert.equal(parsePriceToCents(centsToInputValue(4550)!), 4550);
     assert.equal(parsePriceToCents(centsToInputValue(0)!), 0);

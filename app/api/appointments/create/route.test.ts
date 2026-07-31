@@ -251,6 +251,21 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
     assert.equal(rows[0].price_cents, 4550);
   });
 
+  test("Phase 5.7D-R17B: reproduces the exact production scenario -- a $200.00 'Kitchen Renovation' selection sends price_cents: 20000", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ service_type: "Kitchen Renovation", price_cents: 20000, notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
+    assert.equal(rows[0].price_cents, 20000);
+  });
+
   test("no price provided stores null -- not zero, not omitted", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],

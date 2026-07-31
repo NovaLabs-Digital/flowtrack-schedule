@@ -135,7 +135,7 @@ export default async function DashboardPage() {
   try {
     const svcRes = await supabaseAdmin
       .from("services")
-      .select("id, name, description, duration_minutes, active, color")
+      .select("id, name, description, duration_minutes, active, color, default_price_cents")
       .eq("active", true)
       .eq("workspace_id", workspaceId)
       .eq("is_demo", isTester)
