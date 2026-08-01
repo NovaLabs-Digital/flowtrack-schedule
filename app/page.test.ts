@@ -32,3 +32,19 @@ describe("app/page.tsx -- landing page CTA links (Phase 5.7D)", () => {
     }
   });
 });
+
+describe("app/page.tsx -- footer Support link (post-launch correction)", () => {
+  test("uses the canonical SUPPORT_MAILTO_URL constant, never a literal address", () => {
+    assert.ok(source.includes('import { SUPPORT_MAILTO_URL } from "@/lib/support";'));
+    assert.ok(!source.includes("support@scheduleflowtrack.com"), "must not hardcode the address inline");
+  });
+
+  test("the footer renders a Support link using SUPPORT_MAILTO_URL", () => {
+    const footerStart = source.indexOf("{/* Footer */}");
+    assert.notEqual(footerStart, -1);
+    const footerBlock = source.slice(footerStart);
+    const hrefIdx = footerBlock.indexOf("href={SUPPORT_MAILTO_URL}");
+    assert.notEqual(hrefIdx, -1, "expected a footer link using SUPPORT_MAILTO_URL");
+    assert.ok(footerBlock.slice(hrefIdx, hrefIdx + 150).includes("Support"));
+  });
+});

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Client, ViewMode, CenterMode } from "@/app/components/dashboard/types";
+import { SUPPORT_MAILTO_URL } from "@/lib/support";
 
 function NavButton({
   active,
@@ -167,6 +168,13 @@ export default function LeftBar({
       {/* Bottom settings shortcut */}
       <div className="mx-3 border-t border-slate-700" />
       <div className="px-3 py-3">
+        <a
+          href={SUPPORT_MAILTO_URL}
+          className="flex items-center gap-2.5 text-sm transition-colors px-3 py-2 rounded-lg w-full text-left text-slate-400 hover:text-white hover:bg-slate-800 mb-1"
+        >
+          <span className="text-base leading-none">&#9993;</span>
+          <span>Contact / Need Help?</span>
+        </a>
         <button
           onClick={onToggleSettings}
           className={[

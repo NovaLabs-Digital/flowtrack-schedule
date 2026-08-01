@@ -94,3 +94,19 @@ describe("app/signup/page.tsx -- generic company-name placeholder (Phase 5.7D-R8
     }
   });
 });
+
+describe("app/signup/page.tsx -- footer Support link (post-launch correction)", () => {
+  test("uses the canonical SUPPORT_MAILTO_URL constant, never a literal address", () => {
+    assert.ok(source.includes('import { SUPPORT_MAILTO_URL } from "@/lib/support";'));
+    assert.ok(!source.includes("support@scheduleflowtrack.com"), "must not hardcode the address inline");
+  });
+
+  test("the footer renders a Support link beside Terms of Service / Privacy Policy", () => {
+    const footerIdx = source.lastIndexOf("Terms of Service");
+    assert.notEqual(footerIdx, -1);
+    const footerBlock = source.slice(footerIdx, footerIdx + 400);
+    const hrefIdx = footerBlock.indexOf("href={SUPPORT_MAILTO_URL}");
+    assert.notEqual(hrefIdx, -1, "expected a Support link near Terms of Service / Privacy Policy");
+    assert.ok(footerBlock.slice(hrefIdx, hrefIdx + 150).includes("Support"));
+  });
+});

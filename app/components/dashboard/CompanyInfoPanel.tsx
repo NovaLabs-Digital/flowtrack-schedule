@@ -67,20 +67,11 @@ export default function CompanyInfoPanel({
   // form, not reload it).
   const [loadFailed, setLoadFailed] = useState(false);
 
-  // Shared toast for the "coming soon" affordances scattered across cards
-  // (logo upload, cancellation policy, subscription management) — separate
-  // from `msg`, which is specifically the Company Information save result.
-  const [toast, setToast] = useState<string | null>(null);
-  function showComingSoon(text: string) {
-    setToast(text);
-    window.setTimeout(() => setToast(null), 2500);
-  }
-
   // Phase 5.6D — Cancel Free Trial: a two-step confirm (never a single
   // click) that ends TRIAL access immediately via POST
-  // /api/stripe/cancel-trial. Separate from `msg`/`toast` above -- this is
-  // its own real network action, not a Company Information save result or a
-  // decorative "coming soon" notice. `confirming` gates the inline warning;
+  // /api/stripe/cancel-trial. Separate from `msg` above -- this is its own
+  // real network action, not a Company Information save result. `confirming`
+  // gates the inline warning;
   // `cancelling` plus the synchronous `cancelInFlightRef` guard (the same
   // double-click protection pattern already established elsewhere in this
   // codebase's billing-action components) prevents a duplicate request
@@ -259,11 +250,6 @@ export default function CompanyInfoPanel({
 
   return (
     <div className="space-y-5 max-w-4xl relative">
-      {toast && (
-        <div className="fixed top-4 right-4 z-50 rounded-xl border border-slate-200 bg-slate-900 text-white px-4 py-2.5 text-xs font-medium shadow-lg">
-          {toast}
-        </div>
-      )}
       {status && (
         <CompanyStatusStrip
           emailConfigured={status.emailConfigured}
@@ -294,14 +280,6 @@ export default function CompanyInfoPanel({
             <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-blue-500 to-blue-700 text-white flex items-center justify-center text-2xl font-bold shadow-sm">
               {initials(form.company_name || "Your Company")}
             </div>
-            <button
-              type="button"
-              onClick={() => showComingSoon("Logo upload is coming soon.")}
-              className="text-xs font-medium text-blue-600 hover:text-blue-700"
-            >
-              Change Logo
-            </button>
-            <div className="text-[11px] text-slate-400 text-center leading-tight">Recommended: 300&times;300px</div>
           </div>
 
           <div className="flex-1 grid sm:grid-cols-2 gap-x-6 gap-y-4">
@@ -592,16 +570,6 @@ export default function CompanyInfoPanel({
                 <option>3 days after</option>
               </select>
             </div>
-            <div className="flex items-center justify-between py-2.5">
-              <span className="text-sm text-slate-700">Cancellation Policy</span>
-              <button
-                type="button"
-                onClick={() => showComingSoon("Cancellation policy editing is coming soon.")}
-                className="text-xs font-medium text-blue-600 hover:text-blue-700"
-              >
-                Edit Policy
-              </button>
-            </div>
           </div>
         </SettingsCard>
       </div>
@@ -624,15 +592,6 @@ export default function CompanyInfoPanel({
               <div className="mt-1 text-sm font-semibold text-slate-900">Managed by Nova Labs Digital</div>
             </div>
           </div>
-          {!isTrialing && (
-            <button
-              type="button"
-              onClick={() => showComingSoon("Subscription management is coming soon.")}
-              className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-            >
-              Manage Subscription
-            </button>
-          )}
           {isTrialing && !confirmingCancel && (
             <button
               type="button"

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PasswordInput from "@/app/components/PasswordInput";
+import { SUPPORT_MAILTO_URL } from "@/lib/support";
 
 const MIN_PASSWORD_LENGTH = 12;
 
@@ -220,6 +221,10 @@ export default function SignupPage() {
               <Link href="/privacy" className="hover:text-slate-700 transition-colors">
                 Privacy Policy
               </Link>
+              <span aria-hidden="true">·</span>
+              <a href={SUPPORT_MAILTO_URL} className="hover:text-slate-700 transition-colors">
+                Support
+              </a>
             </div>
             <div className="mt-2">Powered by Nova Labs Digital</div>
           </div>

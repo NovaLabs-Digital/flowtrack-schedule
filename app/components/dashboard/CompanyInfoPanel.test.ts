@@ -133,22 +133,34 @@ describe("Automation card: Save Changes governed independently", () => {
   });
 });
 
-describe("preview-only and coming-soon controls remain fully ungoverned (no real mutation exists behind them)", () => {
-  test("Change Logo, + Add hours, Edit Policy, and Manage Subscription carry no capability guard -- none of them reach the network", () => {
-    for (const handler of [
-      'onClick={() => showComingSoon("Logo upload is coming soon.")}',
-      'onClick={() => showComingSoon("Cancellation policy editing is coming soon.")}',
-      'onClick={() => showComingSoon("Subscription management is coming soon.")}',
-    ]) {
-      assert.ok(source.includes(handler), `expected to find ${handler}`);
-    }
-    // None of showComingSoon's call sites are wrapped in CapabilityGatedButton.
-    const comingSoonMatches = source.match(/showComingSoon\(/g) ?? [];
-    for (const idx of [...source.matchAll(/showComingSoon\(/g)].map((m) => m.index!)) {
-      const before = source.slice(Math.max(0, idx - 80), idx);
-      assert.ok(!before.includes("CapabilityGatedButton"), "coming-soon actions must remain plain, ungoverned buttons");
-    }
-    assert.ok(comingSoonMatches.length >= 3);
+describe("post-launch correction: the three 'coming soon' functions (Logo upload, Cancellation Policy editing, Subscription management) are hidden entirely, not shown as disabled/placeholder controls", () => {
+  test("no showComingSoon mechanism remains -- the function, its state, and its toast rendering were all removed, not just its three call sites", () => {
+    assert.ok(!source.includes("showComingSoon"));
+    assert.ok(!/\[toast,\s*setToast\]/.test(source));
+  });
+
+  test("no 'Change Logo' control or its upload hint remain", () => {
+    assert.ok(!source.includes("Change Logo"));
+    assert.ok(!source.includes("Recommended: 300"));
+  });
+
+  test("no 'Edit Policy' / Cancellation Policy row remains in Communication Preferences", () => {
+    assert.ok(!source.includes("Edit Policy"));
+    assert.ok(!source.includes("Cancellation Policy"));
+  });
+
+  test("no 'Manage Subscription' control remains, while the real, working Cancel Free Trial action is untouched", () => {
+    assert.ok(!source.includes("Manage Subscription"));
+    assert.ok(source.includes("Cancel Free Trial"), "the real Cancel Free Trial action must remain unaffected");
+    assert.ok(source.includes("isTrialing && !confirmingCancel"), "Cancel Free Trial's own gating logic must be untouched");
+  });
+
+  test("the company logo avatar (initials placeholder) itself remains -- only the non-functional upload affordance was removed", () => {
+    assert.ok(source.includes('{initials(form.company_name || "Your Company")}'));
+  });
+
+  test("no literal 'coming soon' text remains anywhere in this file", () => {
+    assert.ok(!/coming soon/i.test(source));
   });
 
   test("preview-only fields (Company/Communication Preferences selects and toggles) carry no capability guard -- nothing persists from them", () => {
@@ -174,11 +186,11 @@ describe("Phase 5.6D: Cancel Free Trial action, gated on isTrialing", () => {
   // that also happens to mention "Cancel Free Trial" by name.
   const cancelButtonBlockStart = source.indexOf("{isTrialing && !confirmingCancel && (");
 
-  test("the Cancel Free Trial button only renders when isTrialing is true, and Manage Subscription only when it's false -- never both", () => {
-    assert.ok(source.includes("{!isTrialing && ("));
+  test("the Cancel Free Trial button only renders when isTrialing is true -- the removed Manage Subscription control never comes back for the !isTrialing case", () => {
     assert.notEqual(cancelButtonBlockStart, -1);
     const cancelBtnIdx = source.indexOf("Cancel Free Trial", cancelButtonBlockStart);
     assert.notEqual(cancelBtnIdx, -1);
+    assert.ok(!source.includes("Manage Subscription"));
   });
 
   test("clicking Cancel Free Trial shows a confirmation step -- no network call happens on the first click", () => {
