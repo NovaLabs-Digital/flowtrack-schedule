@@ -57,6 +57,7 @@ function oneTimeAppt() {
     status: "scheduled",
     is_demo: false,
     price_cents: 5000,
+    team_color: "#2563EB",
   };
 }
 
@@ -325,6 +326,47 @@ describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appo
     const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
     const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
     assert.ok(rows.every((r) => r.price_cents === null));
+  });
+});
+
+describe("Phase 5.7D-R19: newly generated recurring rows receive the origin appointment's team_color snapshot", () => {
+  test("every generated future row copies the origin appointment's own team_color", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: oneTimeAppt() }, // team_color: "#2563EB"
+        { error: null }, // update source appointment
+        { data: [{ id: "new-1" }] }, // insert new series rows (.select("id"))
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
+    assert.ok(rows.length > 0);
+    assert.ok(rows.every((r) => r.team_color === "#2563EB"));
+  });
+
+  test("an origin appointment with no team color generates rows with team_color: null, never a fabricated value", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: { ...oneTimeAppt(), team_color: null } },
+        { error: null },
+        { data: [{ id: "new-1" }] },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
+    assert.ok(rows.every((r) => r.team_color === null));
   });
 });
 

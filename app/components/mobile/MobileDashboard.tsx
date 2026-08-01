@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Client, Appointment, Service, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
+import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { resolveTeamAccentColor } from "@/lib/teamColor";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
 import MobileAppointmentDetail from "@/app/components/mobile/MobileAppointmentDetail";
 import MobileClientDrawer from "@/app/components/mobile/MobileClientDrawer";
@@ -114,16 +116,29 @@ export default function MobileDashboard({
   const serviceColorByName: Record<string, string> = {};
   for (const s of services) if (s.color) serviceColorByName[s.name] = s.color;
 
-  const assignmentsByApptId = new Map<string, string[]>();
+  // Phase 5.7D-R19: full assignment rows (not just employee_ids) so stable
+  // order and the shared Team Color resolution rule are both available --
+  // both need each row's own id/created_at, which a bare employee_id list
+  // can't provide.
+  const assignmentsByApptId = new Map<string, AppointmentEmployeeAssignment[]>();
   for (const a of assignments) {
     const list = assignmentsByApptId.get(a.appointment_id);
-    if (list) list.push(a.employee_id);
-    else assignmentsByApptId.set(a.appointment_id, [a.employee_id]);
+    if (list) list.push(a);
+    else assignmentsByApptId.set(a.appointment_id, [a]);
+  }
+  function assignmentsFor(apptId: string): AppointmentEmployeeAssignment[] {
+    return assignmentsByApptId.get(apptId) ?? [];
   }
   function employeesFor(apptId: string): Employee[] {
-    return (assignmentsByApptId.get(apptId) ?? [])
-      .map((id) => employeeById[id])
+    return sortAssignmentsStable(assignmentsFor(apptId))
+      .map((a) => employeeById[a.employee_id])
       .filter((e): e is Employee => !!e);
+  }
+  // Phase 5.7D-R19: the shared card accent color -- same 0/1/2+ resolution
+  // rule as desktop's ScheduleGrid (lib/teamColor.ts), so mobile and
+  // desktop never disagree about which color an appointment shows.
+  function accentColorFor(appt: Appointment): string | null {
+    return resolveTeamAccentColor(assignmentsFor(appt.id), employeeById, appt.team_color);
   }
 
   const dayAppts = appointments
@@ -264,6 +279,7 @@ export default function MobileDashboard({
                         appointment={a}
                         client={clientById[a.client_id] ?? null}
                         employees={employeesFor(a.id)}
+                        accentColor={accentColorFor(a)}
                         serviceColor={serviceColorByName[a.service_type] ?? null}
                         durationMinutes={scheduledMinutes(a, services)}
                         onTap={() => setSelectedApptId(a.id)}

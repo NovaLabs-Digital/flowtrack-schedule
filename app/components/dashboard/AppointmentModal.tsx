@@ -7,6 +7,8 @@ import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDur
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { centsToInputValue, parsePriceToCents } from "@/lib/money";
+import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via
 // aria-describedby by every capability-gated mutation button below, rather
@@ -251,6 +253,39 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     setSelectedEmployeeIds((prev) => prev.filter((e) => e !== id));
   }
 
+  // Team Color state (Phase 5.7D-R19) -- initialized from the appointment's
+  // own stored value (null for a brand new appointment, or one that's never
+  // had an explicit selection). Only ever changed by clicking a swatch
+  // below -- adding/removing employees never reads or writes this state,
+  // which is exactly what preserves it across a temporary drop to one/zero
+  // employees (see resolveTeamAccentColor, which ignores it below 2
+  // assignments without this component ever having to clear it).
+  const [teamColor, setTeamColor] = useState<string | null>(editing?.appointment.team_color ?? null);
+
+  const employeeById: Record<string, Employee> = {};
+  for (const e of employees) employeeById[e.id] = e;
+
+  // A live preview of "assignment order" for the CURRENTLY selected
+  // employees, used only to resolve which color the card would show right
+  // now (before saving). selectedEmployeeIds already carries the correct
+  // order on its own -- it starts as apptAssignments' own stable order
+  // (see initialEmployeeIds above, itself derived from the assignments
+  // prop, which is now queried in stable order) and only ever grows by
+  // appending (addEmployee), exactly matching how a real new assignment row
+  // would sort after every existing one. Synthetic, strictly increasing
+  // per-index timestamps let this route through the exact same
+  // resolveTeamAccentColor/sortAssignmentsStable logic every other surface
+  // uses, rather than duplicating the resolution rule here.
+  const previewAssignments = selectedEmployeeIds.map((employee_id, index) => ({
+    id: `preview-${index}`,
+    employee_id,
+    created_at: new Date(index).toISOString(),
+  }));
+  const effectiveAccentColor = resolveTeamAccentColor(previewAssignments, employeeById, teamColor);
+  const teamColorChoices = buildTeamColorChoices(
+    selectedEmployeeIds.map((id) => employeeById[id]).filter((e): e is Employee => !!e)
+  );
+
   // Form state
   const [form, setForm] = useState({
     service_type: initialService,
@@ -437,6 +472,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             duration_minutes: computedDuration,
             employee_ids: selectedEmployeeIds,
             price_cents,
+            team_color: teamColor,
             mode,
             notify_channel: notifyChannel,
           }),
@@ -451,6 +487,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           repeat_weeks: form.repeat_weeks,
           employee_ids: selectedEmployeeIds,
           price_cents,
+          team_color: teamColor,
           notify_channel: notifyChannel,
         };
         if (clientMode === "existing") payload.client_id = selectedClientId;
@@ -634,6 +671,61 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Team Color -- Phase 5.7D-R19: only shown at two or more
+              assigned employees (a single employee's own color already
+              represents the card, and an unassigned appointment has no
+              color to choose). teamColor itself stays exactly as it was
+              when the modal opened until the owner clicks a swatch --
+              dropping to one/zero employees hides this section without
+              touching that state, so re-adding a second employee later
+              reveals the same preserved selection. The currently
+              "selected" swatch is effectiveAccentColor, which already
+              falls back to the deterministic first-assignment color when
+              teamColor is null -- so a never-explicitly-set team color
+              still visibly highlights the color the card is actually
+              showing right now. */}
+          {selectedEmployeeIds.length >= 2 && (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Team Color</label>
+              <div role="radiogroup" aria-label="Team Color" className="flex flex-wrap gap-1.5">
+                {teamColorChoices.map((choice) => {
+                  const isSelected = choice.hex === effectiveAccentColor;
+                  return (
+                    <button
+                      key={choice.hex}
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      title={choice.kind === "employee" ? `${choice.label}'s color` : choice.label}
+                      onClick={() => setTeamColor(choice.hex)}
+                      className={[
+                        "inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs transition-colors",
+                        isSelected ? "border-slate-900 bg-slate-50" : "border-slate-200 hover:bg-slate-50",
+                      ].join(" ")}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="w-4 h-4 rounded-full border border-black/10 shrink-0 flex items-center justify-center"
+                        style={{ backgroundColor: choice.hex }}
+                      >
+                        {isSelected && <span className="text-white text-[9px] leading-none">&#10003;</span>}
+                      </span>
+                      <span className={choice.kind === "employee" ? "text-slate-700" : "text-slate-500"}>
+                        {choice.label}
+                      </span>
+                      {isSelected && <span className="sr-only"> (selected)</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              {!teamColor && (
+                <div className="text-[11px] text-slate-400 mt-1">
+                  Using {employeeById[previewAssignments[0]?.employee_id]?.name ?? "the first"}&apos;s color by default — select a color to customize.
+                </div>
+              )}
             </div>
           )}
 
@@ -826,10 +918,16 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               assigned, see the Price field above). Never fabricates a
               timestamp — Started/Completed only ever show a real
               actual_started_at/actual_completed_at value or "Not recorded." */}
-          {isEdit && apptAssignments.length > 0 && (
+          {/* Phase 5.7D-R19: hidden entirely for a cancelled appointment --
+              matches computePayrollRows' unconditional cancelled-skip
+              (lib/payroll.ts) and ScheduleGrid's own cancelled-appointments-
+              never-shown convention. Rows are rendered in stable assignment
+              order (sortAssignmentsStable), the same order Team Color's
+              deterministic fallback and the Assigned Employees chips use. */}
+          {isEdit && editing!.appointment.status !== "cancelled" && apptAssignments.length > 0 && (
             <div className="space-y-2">
               <div className="text-xs font-medium text-slate-600">Worked Hours</div>
-              {apptAssignments.map((assignment) => {
+              {sortAssignmentsStable(apptAssignments).map((assignment) => {
                 const emp = employees.find((e) => e.id === assignment.employee_id);
                 const manualEntry = findManualHoursEntry(editing!.appointment.id, assignment.employee_id, employeeHours);
                 const complete = isJobTrackingComplete(assignment);
@@ -838,7 +936,26 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 // tracking) exists, this employee no longer appears in
                 // missingHoursEmployeeIds, so the warning styling drops
                 // away on its own; no separate "dismiss" step needed.
-                if (!assignment.actual_started_at && !assignment.actual_completed_at && !manualEntry && !isWarning) return null;
+                const hasAnyRecordedActivity = !!assignment.actual_started_at || !!assignment.actual_completed_at || !!manualEntry;
+
+                // Phase 5.7D-R19: an assigned employee with no recorded
+                // activity and no warning yet (a future appointment, or a
+                // same-day appointment that hasn't started -- both are
+                // exactly the appointments isEligibleForWorkedHoursWarning
+                // says are "not due yet") used to be silently omitted here.
+                // Every assigned employee must always appear -- this is
+                // purely informational: it never creates
+                // appointment_employee_hours, never touches assignment
+                // timestamps, and (being neither `complete` nor `isWarning`)
+                // never affects missingHoursCount or payroll.
+                if (!hasAnyRecordedActivity && !isWarning) {
+                  return (
+                    <div key={assignment.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-1">
+                      <div className="font-medium text-slate-700">{emp?.name ?? "Unknown employee"}</div>
+                      <div className="text-slate-500">Not tracked yet.</div>
+                    </div>
+                  );
+                }
 
                 const startedLabel = assignment.actual_started_at
                   ? new Date(assignment.actual_started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })

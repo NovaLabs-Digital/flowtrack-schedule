@@ -264,3 +264,38 @@ describe("Phase 5.7D-R18: per-employee dispatch summary, appointment details, an
     assert.ok(source.includes("missingHoursEmployeeIds.includes(emp.id)"));
   });
 });
+
+describe("Phase 5.7D-R19: Employee Worked Hours -- 'Not tracked yet' + cancelled guard + stable order (source-level proof)", () => {
+  test("selectedApptAssignments is built via the shared sortAssignmentsStable helper, not the raw assignmentsByApptId order", () => {
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
+    assert.ok(source.includes("sortAssignmentsStable(assignmentsByApptId.get(selectedAppt.id) ?? [])"));
+  });
+
+  test("Employee Worked Hours is hidden (no per-employee cards) when the selected appointment is cancelled", () => {
+    const cancelledIdx = source.indexOf('selectedAppt && selectedAppt.status === "cancelled"');
+    assert.ok(cancelledIdx > -1);
+    const cancelledMessageIdx = source.indexOf("cancelled — no worked hours to show", cancelledIdx);
+    assert.ok(cancelledMessageIdx > -1);
+  });
+
+  test("an assigned employee with neither worked hours nor a missing-hours warning renders 'Not tracked yet' instead of being silently omitted", () => {
+    const missingHoursIdx = source.indexOf("if (missingHoursEmployeeIds.includes(emp.id)) {");
+    assert.ok(missingHoursIdx > -1);
+    const notTrackedIdx = source.indexOf("Not tracked yet.", missingHoursIdx);
+    assert.ok(notTrackedIdx > -1);
+    // The old bare `return null;` fallback for this case is gone.
+    const fallbackRegion = source.slice(missingHoursIdx, source.indexOf("})}", missingHoursIdx));
+    assert.ok(!/\n\s*return null;\n\s*\}\)/.test(fallbackRegion) || fallbackRegion.includes("Not tracked yet"));
+  });
+
+  test("'Not tracked yet' never creates an appointment_employee_hours row, never sets a timestamp", () => {
+    const notTrackedBlockIdx = source.indexOf('<div className="text-slate-500 mt-0.5">Not tracked yet.</div>');
+    assert.ok(notTrackedBlockIdx > -1);
+    const blockStart = source.lastIndexOf("return (", notTrackedBlockIdx);
+    const blockEnd = source.indexOf(");", notTrackedBlockIdx);
+    const block = source.slice(blockStart, blockEnd);
+    assert.ok(!block.includes("appointment_employee_hours"));
+    assert.ok(!block.includes("actual_started_at:"));
+    assert.ok(!block.includes("EmployeeHoursSection"), "must not offer a manual-entry override for a not-yet-due assignment");
+  });
+});

@@ -103,7 +103,7 @@ export default async function DashboardPage() {
   // scheduled_for with `id` as a tiebreaker so pages never overlap or skip
   // a row, and fails closed (returns the error) rather than silently
   // handing back a partial set if any page fails.
-  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id, actual_started_at, actual_completed_at, price_cents";
+  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, employee_id, actual_started_at, actual_completed_at, price_cents, team_color";
   let apptsRes = await fetchAllPages(async (from, to) =>
     supabaseAdmin
       .from("appointments")
@@ -188,10 +188,18 @@ export default async function DashboardPage() {
     // pattern as services/employees/employeeHours above (this table is not
     // yet applied in production as of this phase): a missing/errored table
     // is treated as "no assignments yet," never a hard failure.
+    // Phase 5.7D-R19: ordered so every consumer (Team Color's deterministic
+    // fallback, employee names/indicators, Worked Hours rows) sees
+    // assignments in the same stable order without each having to re-sort
+    // -- see lib/appointmentEmployees.ts's sortAssignmentsStable, which
+    // consumers still apply defensively rather than trusting query order
+    // alone survives every intermediate grouping/filtering step.
     const assignRes = await supabaseAdmin
       .from("appointment_employees")
       .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, created_at, updated_at")
-      .eq("workspace_id", workspaceId);
+      .eq("workspace_id", workspaceId)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true });
     if (!assignRes.error) assignments = (assignRes.data ?? []) as AppointmentEmployeeAssignment[];
   } catch {
     // appointment_employees table may not exist yet

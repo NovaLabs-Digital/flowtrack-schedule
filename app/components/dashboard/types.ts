@@ -43,6 +43,14 @@ export type Appointment = {
   // (see migrations/020) -- never recomputed from the service's current
   // default price. null means no price was ever set for this appointment.
   price_cents?: number | null;
+  // Phase 5.7D-R19: the shared card accent color for an appointment with
+  // two or more assigned employees (see migrations/022 and
+  // lib/teamColor.ts). null means no explicit selection -- ignored
+  // entirely at 0 or 1 assignments, and resolved to a deterministic
+  // fallback (the first-assigned employee's own color) at 2+ assignments.
+  // Never read directly; always go through lib/teamColor.ts's
+  // resolveTeamAccentColor.
+  team_color?: string | null;
 };
 
 export type Service = {

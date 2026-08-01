@@ -14,6 +14,7 @@ import {
   formatMinutesAsDuration,
 } from "@/lib/payroll";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
 
 // Phase 5.5E-E1G: this control's own restricted notice, distinct from every
 // other component's. Gated on canUseJobTracking, not canMutateOperationalData
@@ -244,7 +245,10 @@ export default function DispatchPanel({
     ? clients.find((c) => c.id === selectedAppt.client_id) ?? null
     : null;
 
-  const selectedApptAssignments = selectedAppt ? (assignmentsByApptId.get(selectedAppt.id) ?? []) : [];
+  // Phase 5.7D-R19: stable order (sortAssignmentsStable) so this panel's
+  // Employee Worked Hours list always agrees with the appointment modal's
+  // own Worked Hours order and Team Color's deterministic fallback.
+  const selectedApptAssignments = selectedAppt ? sortAssignmentsStable(assignmentsByApptId.get(selectedAppt.id) ?? []) : [];
   const selectedApptEmployees = selectedApptAssignments
     .map((a) => employeeById[a.employee_id])
     .filter((e): e is Employee => !!e);
@@ -348,7 +352,14 @@ export default function DispatchPanel({
           single appointment-level card. */}
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">
         <div className="text-sm font-semibold text-slate-900 mb-3">Employee Worked Hours</div>
-        {selectedAppt && selectedApptAssignments.length > 0 ? (
+        {selectedAppt && selectedAppt.status === "cancelled" ? (
+          // Phase 5.7D-R19: hidden entirely for a cancelled appointment --
+          // matches computePayrollRows' unconditional cancelled-skip
+          // (lib/payroll.ts) and AppointmentModal's own cancelled guard.
+          <div className="text-xs text-slate-400">
+            This appointment is cancelled — no worked hours to show.
+          </div>
+        ) : selectedAppt && selectedApptAssignments.length > 0 ? (
           <div className="space-y-2">
             {selectedApptAssignments.map((assignment) => {
               const emp = employeeById[assignment.employee_id];
@@ -386,7 +397,19 @@ export default function DispatchPanel({
                   />
                 );
               }
-              return null;
+              // Phase 5.7D-R19: neither tracked/manually-entered nor
+              // past-due-and-missing -- a future or same-day-not-yet-ended
+              // appointment. Used to be silently omitted; every assigned
+              // employee must always appear here. Purely informational --
+              // creates no appointment_employee_hours row, sets no
+              // timestamp, and (matching missingHoursEmployeeIds exactly)
+              // never affects missingHoursCount or payroll.
+              return (
+                <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                  <div className="font-medium text-slate-800">{emp.name}</div>
+                  <div className="text-slate-500 mt-0.5">Not tracked yet.</div>
+                </div>
+              );
             })}
           </div>
         ) : (

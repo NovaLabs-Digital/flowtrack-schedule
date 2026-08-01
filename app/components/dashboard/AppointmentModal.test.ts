@@ -377,7 +377,10 @@ describe("Phase 5.7D-R18: multi-employee editor (source-level proof)", () => {
   });
 
   test("Worked Hours is rendered per assigned employee (Section E.7), one card per assignment, each independently labeled with that employee's own name", () => {
-    assert.ok(source.includes("apptAssignments.map((assignment) => {"));
+    // Phase 5.7D-R19: rows are now rendered in explicit stable order (see
+    // the R19 describe block below) -- sortAssignmentsStable(apptAssignments),
+    // not the raw apptAssignments array.
+    assert.ok(source.includes("sortAssignmentsStable(apptAssignments).map((assignment) => {"));
     assert.ok(source.includes("const emp = employees.find((e) => e.id === assignment.employee_id);"));
     assert.ok(source.includes("{emp?.name ?? \"Unknown employee\"}"));
   });
@@ -401,5 +404,90 @@ describe("Phase 5.7D-R18: multi-employee editor (source-level proof)", () => {
 
   test("assignments prop is documented as authoritative, filtered internally to this appointment -- never pre-filtered by the caller", () => {
     assert.ok(source.includes("assignments: AppointmentEmployeeAssignment[];"));
+  });
+});
+
+describe("Phase 5.7D-R19: Team Color selector (source-level proof)", () => {
+  test("teamColor state is initialized from the appointment's own stored value, defaulting to null, and is never cleared by add/removeEmployee", () => {
+    assert.ok(source.includes('const [teamColor, setTeamColor] = useState<string | null>(editing?.appointment.team_color ?? null);'));
+    const addFn = source.slice(source.indexOf("function addEmployee(id: string) {"), source.indexOf("function removeEmployee"));
+    const removeFn = source.slice(source.indexOf("function removeEmployee(id: string) {"), source.indexOf("function removeEmployee(id: string) {") + 200);
+    assert.ok(!addFn.includes("setTeamColor"), "addEmployee must never touch teamColor");
+    assert.ok(!removeFn.includes("setTeamColor"), "removeEmployee must never touch teamColor");
+  });
+
+  test("the selector is shown only at two or more selected employees", () => {
+    assert.ok(source.includes("{selectedEmployeeIds.length >= 2 && ("));
+    const teamColorLabelIdx = source.indexOf(">Team Color</label>");
+    assert.ok(teamColorLabelIdx > -1);
+  });
+
+  test("Team Color renders directly below Assigned Employees", () => {
+    // Anchored on the rendered <label> element specifically, not the bare
+    // substring "Team Color" -- that phrase also appears earlier, in a
+    // source comment introducing the teamColor state declared alongside
+    // selectedEmployeeIds, well before the JSX for either section.
+    const teamColorLabelIdx = source.indexOf(">Team Color</label>");
+    const assignedEmployeesLabelIdx = source.indexOf("Assigned Employees</label>");
+    assert.ok(assignedEmployeesLabelIdx > -1 && teamColorLabelIdx > -1);
+    assert.ok(assignedEmployeesLabelIdx < teamColorLabelIdx);
+  });
+
+  test("choices come from the shared buildTeamColorChoices helper, never a free-text input", () => {
+    assert.ok(source.includes('import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";'));
+    assert.ok(source.includes("const teamColorChoices = buildTeamColorChoices("));
+    assert.ok(!source.includes('type="color"'), "must never offer a free-text/native color-string input");
+    assert.ok(!/<input[^>]*teamColor/.test(source), "team color must only ever be set by clicking a swatch button");
+  });
+
+  test("selecting a swatch calls setTeamColor with that swatch's exact normalized hex, never a derived or partial value", () => {
+    assert.ok(source.includes("onClick={() => setTeamColor(choice.hex)}"));
+  });
+
+  test("the currently-effective color (including the deterministic fallback when teamColor is null) is what visually indicates selection, and selection is also conveyed without relying on color alone", () => {
+    assert.ok(source.includes("const isSelected = choice.hex === effectiveAccentColor;"));
+    assert.ok(source.includes('role="radio"'));
+    assert.ok(source.includes("aria-checked={isSelected}"));
+    assert.ok(source.includes("sr-only"), "selection must be conveyed to assistive tech, not color alone");
+  });
+
+  test("effectiveAccentColor is resolved through the shared resolveTeamAccentColor helper, never a locally re-derived rule", () => {
+    assert.ok(source.includes("const effectiveAccentColor = resolveTeamAccentColor(previewAssignments, employeeById, teamColor);"));
+  });
+
+  test("both create and edit payloads send team_color, using the same teamColor state either way", () => {
+    const count = source.split("team_color: teamColor,").length - 1;
+    assert.equal(count, 2, "expected exactly 2 occurrences -- one in the edit payload, one in the create payload");
+  });
+});
+
+describe("Phase 5.7D-R19: Worked Hours 'Not tracked yet' + cancelled guard (source-level proof)", () => {
+  test("the Worked Hours section is hidden entirely for a cancelled appointment", () => {
+    assert.ok(source.includes('isEdit && editing!.appointment.status !== "cancelled" && apptAssignments.length > 0 && ('));
+  });
+
+  test("an assigned employee with no recorded activity and no warning renders 'Not tracked yet' instead of being silently omitted", () => {
+    const workedHoursIdx = source.indexOf('<div className="text-xs font-medium text-slate-600">Worked Hours</div>');
+    const notTrackedIdx = source.indexOf("Not tracked yet.", workedHoursIdx);
+    assert.ok(notTrackedIdx > -1, "expected a 'Not tracked yet.' branch inside the Worked Hours section");
+    const hasAnyActivityIdx = source.indexOf("const hasAnyRecordedActivity =", workedHoursIdx);
+    assert.ok(hasAnyActivityIdx > -1 && hasAnyActivityIdx < notTrackedIdx);
+    const guardIdx = source.indexOf("if (!hasAnyRecordedActivity && !isWarning) {", workedHoursIdx);
+    assert.ok(guardIdx > -1 && guardIdx < notTrackedIdx, "the 'Not tracked yet' branch must be reached only when there is no recorded activity and no warning");
+  });
+
+  test("'Not tracked yet' never creates an appointment_employee_hours row, never sets a timestamp, and is not treated as a warning", () => {
+    const notTrackedBlockIdx = source.indexOf('<div className="text-slate-500">Not tracked yet.</div>');
+    assert.ok(notTrackedBlockIdx > -1);
+    const blockStart = source.lastIndexOf("return (", notTrackedBlockIdx);
+    const blockEnd = source.indexOf(");", notTrackedBlockIdx);
+    const block = source.slice(blockStart, blockEnd);
+    assert.ok(!block.includes("appointment_employee_hours"));
+    assert.ok(!block.includes("actual_started_at:"));
+    assert.ok(!block.includes("border-amber"), "must not use the warning styling");
+  });
+
+  test("rows are listed in stable assignment order via sortAssignmentsStable, imported from lib/appointmentEmployees", () => {
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
   });
 });

@@ -20,6 +20,11 @@ type Props = {
   client: Client | null;
   // Phase 5.7D-R18: zero, one, or many assigned employees.
   employees: Employee[];
+  // Phase 5.7D-R19: the resolved employee/team accent color (via
+  // lib/teamColor.ts's resolveTeamAccentColor) -- null when unassigned, in
+  // which case the card falls back to serviceColor below, exactly matching
+  // the pre-R19 appearance for an unassigned appointment.
+  accentColor: string | null;
   serviceColor: string | null;
   durationMinutes: number;
   onTap: () => void;
@@ -31,7 +36,7 @@ type Props = {
 // matches the one card in the approved mockup that shows Navigate instead of
 // Call, and mirrors the existing Call/Navigate fallback convention already
 // used in DispatchPanel.tsx and EmployeeSchedule.tsx.
-export default function MobileAppointmentCard({ appointment, client, employees, serviceColor, durationMinutes, onTap }: Props) {
+export default function MobileAppointmentCard({ appointment, client, employees, accentColor, serviceColor, durationMinutes, onTap }: Props) {
   const start = toBusinessLocal(appointment.scheduled_for);
   const end = new Date(start.getTime() + durationMinutes * 60_000);
   const timeLabel = `${formatTime(start)} – ${formatTime(end)}`;
@@ -52,7 +57,10 @@ export default function MobileAppointmentCard({ appointment, client, employees, 
       }}
       className="w-full flex items-stretch gap-3 rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm active:bg-slate-50 transition-colors cursor-pointer"
     >
-      <div className="w-1 rounded-full shrink-0" style={{ backgroundColor: serviceColor ?? "#94a3b8" }} />
+      {/* Phase 5.7D-R19: employee/team accent takes priority over the
+          service tint -- an unassigned appointment (accentColor: null)
+          falls back to serviceColor exactly as before this phase. */}
+      <div className="w-1 rounded-full shrink-0" style={{ backgroundColor: accentColor ?? serviceColor ?? "#94a3b8" }} />
       <div className="flex-1 min-w-0">
         <div className="text-xs font-medium text-slate-500">{timeLabel}</div>
         <div className="text-sm font-semibold text-slate-900 truncate mt-0.5">{appointment.service_type}</div>

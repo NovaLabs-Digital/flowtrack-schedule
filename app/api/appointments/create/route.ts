@@ -12,6 +12,7 @@ import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDate
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 import { isValidPriceCents } from "@/lib/money";
 import { dedupeEmployeeIds, deriveLegacyEmployeeId, validateEmployeeIdsInWorkspace, insertAssignments } from "@/lib/appointmentEmployees";
+import { validateTeamColorInput } from "@/lib/teamColor";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -109,6 +110,19 @@ export async function POST(req: Request) {
         return json({ error: "Price must be a valid, non-negative amount." }, 400);
       }
       price_cents = body.price_cents;
+    }
+
+    // Phase 5.7D-R19: the shared card accent color for two-or-more-employee
+    // appointments (see lib/teamColor.ts). Public booking never assigns
+    // employees at all (no staff-selection UI on that flow), so there is
+    // never a team to color -- team_color stays null there regardless of
+    // what the request body contains. Absent/undefined means "no explicit
+    // selection," matching every newly created appointment's default.
+    let team_color: string | null = null;
+    if (!isPublic && body.team_color !== undefined) {
+      const teamColorValidation = validateTeamColorInput(body.team_color);
+      if (!teamColorValidation.ok) return json({ error: teamColorValidation.error }, 400);
+      team_color = teamColorValidation.value;
     }
 
     if (!service_type || !scheduled_for) {
@@ -234,6 +248,7 @@ export async function POST(req: Request) {
     const hasFrequency = await hasColumn("frequency_type");
     const hasEmployee = await hasColumn("employee_id");
     const hasPrice = await hasColumn("price_cents");
+    const hasTeamColor = await hasColumn("team_color");
 
     const startDate = new Date(scheduled_for);
     const dates: Date[] = [startDate, ...generateFutureDates(startDate, frequency_type, repeat_weeks)];
@@ -276,6 +291,12 @@ export async function POST(req: Request) {
       // exact same price snapshot -- not recomputed per-date, never derived
       // from the service's (possibly since-changed) current default.
       if (hasPrice) row.price_cents = price_cents;
+      // Every occurrence in a recurring series created together gets the
+      // exact same team color snapshot -- mirrors price_cents immediately
+      // above. Two-or-more-employee-only in effect (lib/teamColor.ts
+      // ignores it entirely below 2 assignments), but stored unconditionally
+      // here the same way price_cents is, with no assignment-count branch.
+      if (hasTeamColor) row.team_color = team_color;
       return row;
     });
 

@@ -202,15 +202,38 @@ describe("Phase 5.7D-R18: multi-employee card rendering and per-assignment missi
     assert.ok(source.includes("const assignmentsByApptId = new Map<string, AppointmentEmployeeAssignment[]>();"));
   });
 
-  test("a card's employee name list is every assigned employee, comma-joined -- not just the legacy single employee_id", () => {
-    const fnIdx = source.indexOf("function employeeNames(apptId: string): string | null {");
-    assert.ok(fnIdx > -1);
-    const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));
-    assert.ok(body.includes("assignmentsFor(apptId)"));
-    assert.ok(body.includes('names.join(", ")'));
-  });
-
   test("the missing-hours warning triangle uses the per-assignment predicate, passing this card's own assignment rows -- not a bare employeeHours-only check", () => {
     assert.ok(source.includes("needsWorkedHoursAttention(a, assignmentsFor(a.id), employeeHours)"));
+  });
+});
+
+describe("Phase 5.7D-R19: Team Color accent + per-employee colored names (source-level proof)", () => {
+  test("employeesFor returns every assigned employee in stable assignment order, feeding both the accent color and the name list", () => {
+    const fnIdx = source.indexOf("function employeesFor(apptId: string): Employee[] {");
+    assert.ok(fnIdx > -1);
+    const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));
+    assert.ok(body.includes("sortAssignmentsStable(assignmentsFor(apptId))"));
+  });
+
+  test("the card's accent color is resolved through the shared resolveTeamAccentColor rule, consulting the appointment's own team_color", () => {
+    assert.ok(source.includes('import { resolveTeamAccentColor } from "@/lib/teamColor";'));
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
+    const fnIdx = source.indexOf("function accentColorFor(appt: Appointment): string | null {");
+    assert.ok(fnIdx > -1);
+    const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));
+    assert.ok(body.includes("resolveTeamAccentColor(assignmentsFor(appt.id), employeeMap, appt.team_color)"));
+  });
+
+  test("each assigned employee's name is rendered in its own individual color -- never a single comma-joined string in only the first employee's color", () => {
+    assert.ok(source.includes("const apptEmployees = employeesFor(a.id);"));
+    assert.ok(source.includes("apptEmployees.map((e, i) => ("));
+    assert.ok(source.includes('style={{ color: e.color || "#64748b" }}'));
+    // The old single-color joined-string rendering is gone.
+    assert.ok(!source.includes("{empName}"));
+  });
+
+  test("the card's left-border accent still comes from a single resolved color (empColor), now via accentColorFor rather than the pre-R19 first-assignment-only rule", () => {
+    assert.ok(source.includes("const empColor = accentColorFor(a);"));
+    assert.ok(source.includes("borderLeftColor: empColor ?? undefined,"));
   });
 });

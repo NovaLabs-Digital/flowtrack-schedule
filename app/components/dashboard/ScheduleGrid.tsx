@@ -4,6 +4,8 @@ import { useState } from "react";
 import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import { needsWorkedHoursAttention } from "@/lib/payroll";
+import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { resolveTeamAccentColor } from "@/lib/teamColor";
 
 function formatDay(d: Date) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -276,24 +278,24 @@ export default function ScheduleGrid({
     return clients.find((c) => c.id === id)?.name ?? "Client";
   }
 
-  // Phase 5.7D-R18: a comma-joined list of every assigned employee's name
-  // (null when unassigned), and the first assigned employee's color for
-  // the card's left-border accent -- replaces the pre-R18 single
-  // employee_id lookup, which could only ever represent zero or one
-  // employee.
-  function employeeNames(apptId: string): string | null {
-    const names = assignmentsFor(apptId)
-      .map((a) => employeeMap[a.employee_id]?.name)
-      .filter((n): n is string => !!n);
-    return names.length > 0 ? names.join(", ") : null;
+  // Phase 5.7D-R19: every assigned employee, in stable assignment order --
+  // the same order Team Color's deterministic fallback and Worked Hours
+  // rows use. Feeds both the card's accent color (below) and the
+  // individually-colored employee name/indicator list.
+  function employeesFor(apptId: string): Employee[] {
+    return sortAssignmentsStable(assignmentsFor(apptId))
+      .map((a) => employeeMap[a.employee_id])
+      .filter((e): e is Employee => !!e);
   }
 
-  function employeeAccentColor(apptId: string): string | null {
-    for (const a of assignmentsFor(apptId)) {
-      const color = employeeMap[a.employee_id]?.color;
-      if (color) return color;
-    }
-    return null;
+  // Phase 5.7D-R19: the card's shared accent color, via the single shared
+  // resolution rule (lib/teamColor.ts) -- 0 assignments -> null, 1 -> that
+  // employee's own color, 2+ -> the appointment's team_color when valid,
+  // otherwise the first-assignment employee's color. Replaces the pre-R19
+  // "always the first assignment's employee color" rule, which never
+  // consulted team_color at all.
+  function accentColorFor(appt: Appointment): string | null {
+    return resolveTeamAccentColor(assignmentsFor(appt.id), employeeMap, appt.team_color);
   }
 
   function apptsForDay(d: Date) {
@@ -474,8 +476,8 @@ export default function ScheduleGrid({
                     const widthPct = 100 / layout.totalColumns;
                     const leftPct = layout.column * widthPct;
 
-                    const empColor = employeeAccentColor(a.id);
-                    const empName = employeeNames(a.id);
+                    const empColor = accentColorFor(a);
+                    const apptEmployees = employeesFor(a.id);
                     const svcColor = serviceColors[a.service_type] ?? null;
 
                     const needsHoursWarning = needsWorkedHoursAttention(a, assignmentsFor(a.id), employeeHours);
@@ -565,9 +567,19 @@ export default function ScheduleGrid({
                               </div>
                             </div>
                             <div className={`text-[11px] text-slate-600 mt-0.5${darkClientCls}`}>{clientName(a.client_id)}</div>
-                            {empName && (
-                              <div className="text-[10px] mt-0.5 truncate" style={{ color: empColor ?? "#64748b" }}>
-                                {empName}
+                            {apptEmployees.length > 0 && (
+                              // Phase 5.7D-R19: each employee's name keeps
+                              // its OWN color (never the shared team accent)
+                              // -- replaces the pre-R19 single comma-joined
+                              // string rendered in only the first
+                              // employee's color.
+                              <div className="text-[10px] mt-0.5 truncate">
+                                {apptEmployees.map((e, i) => (
+                                  <span key={e.id}>
+                                    {i > 0 && <span className="text-slate-400">, </span>}
+                                    <span style={{ color: e.color || "#64748b" }}>{e.name}</span>
+                                  </span>
+                                ))}
                               </div>
                             )}
                             <div className={`text-[10px] text-slate-500 mt-0.5${darkTimeCls}`}>

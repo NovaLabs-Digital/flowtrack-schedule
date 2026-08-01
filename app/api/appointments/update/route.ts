@@ -15,6 +15,7 @@ import {
   applyAssignmentSync,
   fetchEmployeeHoursForAppointments,
 } from "@/lib/appointmentEmployees";
+import { validateTeamColorInput } from "@/lib/teamColor";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -197,6 +198,19 @@ export async function PATCH(req: Request) {
     if (employee_ids !== undefined && await hasColumn("employee_id")) {
       apptUpdate.employee_id = deriveLegacyEmployeeId(employee_ids);
     }
+    // team_color (Phase 5.7D-R19): undefined means "not part of this
+    // request, leave unchanged" -- same convention as price_cents above.
+    // Explicit null clears a previously-selected team color back to "no
+    // explicit selection" (the only way it's ever cleared -- dropping to
+    // one or zero employees never implicitly clears it, see
+    // lib/teamColor.ts's resolveTeamAccentColor). A non-null value must be
+    // a strict #RRGGBB hex color; anything else is rejected before any
+    // write happens.
+    if (body.team_color !== undefined && await hasColumn("team_color")) {
+      const teamColorValidation = validateTeamColorInput(body.team_color);
+      if (!teamColorValidation.ok) return json({ error: teamColorValidation.error }, 400);
+      apptUpdate.team_color = teamColorValidation.value;
+    }
 
     if (Object.keys(apptUpdate).length > 0) {
       const { error } = await supabaseAdmin
@@ -240,6 +254,11 @@ export async function PATCH(req: Request) {
         if (apptUpdate.duration_minutes !== undefined) sibUpdate.duration_minutes = apptUpdate.duration_minutes;
         if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
         if (apptUpdate.price_cents !== undefined) sibUpdate.price_cents = apptUpdate.price_cents;
+        // Phase 5.7D-R19: "this and future" copies the selected occurrence's
+        // team_color onto every eligible future sibling, exactly mirroring
+        // price_cents immediately above -- including an explicit null
+        // (clearing) propagating the same way a real color value does.
+        if (apptUpdate.team_color !== undefined) sibUpdate.team_color = apptUpdate.team_color;
 
         if (startDeltaMs !== 0) {
           sibUpdate.scheduled_for = new Date(new Date(sib.scheduled_for).getTime() + startDeltaMs).toISOString();

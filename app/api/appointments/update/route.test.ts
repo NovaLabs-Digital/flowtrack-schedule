@@ -868,6 +868,142 @@ describe("Phase 5.7D-R17: appointment price snapshot on edit", () => {
   });
 });
 
+describe("Phase 5.7D-R19: team_color on edit", () => {
+  test("a valid hex value updates only team_color on the selected occurrence, normalized to uppercase", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() },
+        { error: null }, // hasColumn("team_color")
+        { error: null }, // update source
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", team_color: "#2563eb" }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updateCall!.args[0], { team_color: "#2563EB" });
+  });
+
+  test("team_color: null explicitly clears a previously-selected team color", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() },
+        { error: null }, // hasColumn("team_color")
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", team_color: null }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updateCall!.args[0], { team_color: null });
+  });
+
+  test("an invalid team_color is rejected with 400, zero writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() },
+        { error: null }, // hasColumn("team_color")
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", team_color: "#FFF" }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(writeCalls(currentFake.calls), []);
+  });
+
+  test("a CSS name is rejected the same way a malformed hex value is", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() },
+        { error: null }, // hasColumn("team_color")
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", team_color: "blue" }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(writeCalls(currentFake.calls), []);
+  });
+
+  test("team_color omitted entirely leaves the appointment's team color untouched -- not part of the update payload", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "Deep Cleaning" }));
+    assert.equal(res.status, 200);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.equal("team_color" in (updateCall!.args[0] as object), false);
+  });
+
+  test("mode: future propagates the new team_color to every future sibling, as a plain value", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null }, // hasColumn("team_color")
+        { error: null }, // update source
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings
+        { error: null }, // update sib-1
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", team_color: "#16A34A" }));
+    assert.equal(res.status, 200);
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updates[0].args[0], { team_color: "#16A34A" });
+    assert.deepEqual(updates[1].args[0], { team_color: "#16A34A" });
+  });
+
+  test("mode: future propagates an explicit null (clearing) to every future sibling too", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null }, // hasColumn("team_color")
+        { error: null }, // update source
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings
+        { error: null }, // update sib-1
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", team_color: null }));
+    assert.equal(res.status, 200);
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(updates[0].args[0], { team_color: null });
+    assert.deepEqual(updates[1].args[0], { team_color: null });
+  });
+
+  test("mode: single never touches a sibling's team color, even within a recurring series", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null }, // hasColumn("team_color")
+        { error: null }, // update source only
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", team_color: "#16A34A" }));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
+    assert.equal(currentFake.calls.filter((c) => c.method === "gt").length, 0);
+  });
+});
+
 describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
   test("adding a second employee (Roxana) while Teresa remains -- only an insert, no removal", async () => {
     resetFixtures({

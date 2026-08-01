@@ -98,7 +98,12 @@ function publicBody(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const SIX_HAS_COLUMN_OK: FakeSupabaseFixture[] = [{ error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }];
+// Phase 5.7D-R19: renamed from HAS_COLUMN_OK -- a 7th hasColumn() call
+// (team_color) was added alongside duration_minutes/scheduled_end/
+// series_id/frequency_type/employee_id/price_cents, so this constant is no
+// longer six entries; kept count-agnostic in its name so a future added
+// column doesn't require another rename.
+const HAS_COLUMN_OK: FakeSupabaseFixture[] = [{ error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }];
 
 describe("POST /api/appointments/create -- authenticated branch entitlement gate (canMutateOperationalData)", () => {
   const FULL_STATES: Array<[string, ReturnType<typeof subscriptionRow>]> = [
@@ -119,7 +124,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
         workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }, { data: row }],
         clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
-        appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+        appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
         messages_sent: [{ error: null }, { error: null }],
       });
       sessionToReturn = OWNER_SESSION;
@@ -132,7 +137,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
   test("exact trusted demo workspace (tester) permits creation with zero subscriptions-table queries (real short-circuit)", async () => {
     resetFixtures({
       clients: [{ data: { id: "client-1" } }, { data: { name: "Demo Client", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
     });
     sessionToReturn = TESTER_SESSION;
     const res = await POST(req(authBody()));
@@ -240,7 +245,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ price_cents: 4550, notify_channel: "none" })));
@@ -256,7 +261,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ service_type: "Kitchen Renovation", price_cents: 20000, notify_channel: "none" })));
@@ -271,7 +276,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ notify_channel: "none" })));
@@ -286,7 +291,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ price_cents: 0, notify_channel: "none" })));
@@ -315,7 +320,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
       // repeat_weeks: 26 -> intervalDays 182, generateFutureDates(182-day
       // horizon) yields exactly one future occurrence -- two rows total,
       // small enough to assert on directly.
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ price_cents: 7500, frequency_type: "weekly", repeat_weeks: 26, notify_channel: "none" })));
@@ -331,7 +336,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { booking_enabled: true } }],
       services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
-      appointments: [{ data: [] }, ...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
       clients: [
         { data: null },
         { data: null },
@@ -349,6 +354,87 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   });
 });
 
+describe("Phase 5.7D-R19: team_color on create", () => {
+  test("a valid hex value is stored, normalized to uppercase", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ team_color: "#2563eb", notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
+    assert.equal(rows[0].team_color, "#2563EB");
+  });
+
+  test("no team_color provided stores null", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
+    assert.equal(rows[0].team_color, null);
+  });
+
+  test("an invalid team_color is rejected with 400 before any client or appointment write", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ team_color: "not-a-color" })));
+    assert.equal(res.status, 400);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "clients" || c.table === "appointments"), []);
+  });
+
+  test("every occurrence in a newly created recurring series receives the identical team_color snapshot", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ team_color: "#16A34A", frequency_type: "weekly", repeat_weeks: 26, notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.team_color === "#16A34A"));
+  });
+
+  test("public booking never stores a team color even if team_color is included in the request body", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      clients: [
+        { data: null },
+        { data: null },
+        { data: { id: "new-client-1" } },
+        { data: { name: "Jane Public", email: "jane@public.example", phone: "+15559876543", auto_email: true, auto_sms: true } },
+      ],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody({ team_color: "#DC2626" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
+    assert.equal(rows[0].team_color, null, "public booking must never accept a client-supplied team color");
+  });
+});
+
 describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("creating with two employees inserts one appointment_employees row per employee, referencing the created appointment", async () => {
     resetFixtures({
@@ -356,7 +442,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
       appointment_employees: [{ data: null, error: null }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -375,7 +461,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }] }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
       appointment_employees: [{ data: null, error: null }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -392,7 +478,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
       appointment_employees: [{ data: null, error: null }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -408,7 +494,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ notify_channel: "none" })));
@@ -438,7 +524,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }] }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
       appointment_employees: [{ data: null, error: null }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -458,7 +544,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       // repeat_weeks: 26 -> intervalDays 182, generateFutureDates yields
       // exactly one future occurrence -- two rows total (matches the
       // existing price-snapshot recurrence test's fixture shape).
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
       appointment_employees: [{ data: null, error: null }, { data: null, error: null }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -479,7 +565,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { booking_enabled: true } }],
       services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
-      appointments: [{ data: [] }, ...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
       clients: [
         { data: null },
         { data: null },
@@ -515,7 +601,7 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
         subscriptions: [{ data: row }, { data: row }],
         company_settings: [{ data: { booking_enabled: true } }],
         services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
-        appointments: [{ data: [] }, ...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+        appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
         clients: [
           { data: null }, // email lookup: not found
           { data: null }, // phone lookup: not found
@@ -627,7 +713,7 @@ describe("notification behavior is preserved exactly once entitled, on both bran
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
       messages_sent: [{ error: null }, { error: null }],
     });
     currentNotify.setSendEmailImpl(async () => {
@@ -646,7 +732,7 @@ describe("notification behavior is preserved exactly once entitled, on both bran
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { booking_enabled: true } }],
       services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
-      appointments: [{ data: [] }, ...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
       clients: [
         { data: null },
         { data: null },
@@ -667,7 +753,7 @@ describe("notification behavior is preserved exactly once entitled, on both bran
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       company_settings: [{ data: { booking_enabled: true } }],
       services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
-      appointments: [{ data: [] }, ...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-public-2" }] }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-2" }] }],
       clients: [
         { data: null },
         { data: null },
@@ -692,7 +778,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
         { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
       ],
       clients: [{ data: { id: "client-1" } }], // only the client_id validation lookup -- no notify re-fetch
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody()));
@@ -714,7 +800,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
         { error: { message: "simulated DB error" } },
       ],
       clients: [{ data: { id: "client-1" } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody()));
@@ -732,7 +818,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
         { data: subscriptionRow({ stripe_status: "canceled" }) },
       ],
       clients: [{ data: { id: "client-1" } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ workspace_id: DEMO_WORKSPACE_ID })));
@@ -749,7 +835,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
       ],
       company_settings: [{ data: { booking_enabled: true } }],
       services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
-      appointments: [{ data: [] }, ...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
       clients: [
         { data: null }, // email lookup: not found
         { data: null }, // phone lookup: not found
@@ -769,7 +855,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
   test("tester/demo creation never reaches a notification-capability check at all (existing !isTester short-circuit, zero subscriptions queries)", async () => {
     resetFixtures({
       clients: [{ data: { id: "client-1" } }, { data: { name: "Demo Client", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...SIX_HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
     });
     sessionToReturn = TESTER_SESSION;
     const res = await POST(req(authBody()));

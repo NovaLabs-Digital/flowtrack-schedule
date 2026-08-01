@@ -3,6 +3,8 @@
 import { Appointment, Client, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { toBusinessLocal, nowInBusinessTz } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
+import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { resolveTeamAccentColor } from "@/lib/teamColor";
 
 // Bounds how far ahead the agenda looks — keeps the list short and scrolling
 // light rather than rendering every future recurring appointment.
@@ -61,10 +63,18 @@ export default function MobileSchedule({
     if (list) list.push(a);
     else assignmentsByApptId.set(a.appointment_id, [a]);
   }
+  function assignmentsFor(apptId: string): AppointmentEmployeeAssignment[] {
+    return assignmentsByApptId.get(apptId) ?? [];
+  }
   function employeesFor(apptId: string): Employee[] {
-    return (assignmentsByApptId.get(apptId) ?? [])
+    return sortAssignmentsStable(assignmentsFor(apptId))
       .map((a) => employeeById[a.employee_id])
       .filter((e): e is Employee => !!e);
+  }
+  // Phase 5.7D-R19: same shared resolution rule as the Today screen's own
+  // MobileDashboard.tsx and desktop's ScheduleGrid.tsx -- see lib/teamColor.ts.
+  function accentColorFor(appt: Appointment): string | null {
+    return resolveTeamAccentColor(assignmentsFor(appt.id), employeeById, appt.team_color);
   }
 
   const upcoming = appointments
@@ -115,6 +125,7 @@ export default function MobileSchedule({
                     appointment={a}
                     client={clientById[a.client_id] ?? null}
                     employees={employeesFor(a.id)}
+                    accentColor={accentColorFor(a)}
                     serviceColor={serviceColorByName[a.service_type] ?? null}
                     durationMinutes={getDurationMinutes(a)}
                     onTap={() => onSelectAppointment(a.id)}

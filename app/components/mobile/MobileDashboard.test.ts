@@ -208,3 +208,33 @@ describe("no leaked internal detail", () => {
     }
   });
 });
+
+describe("Phase 5.7D-R19: Team Color accent threaded into the Today screen's cards (source-level proof)", () => {
+  test("assignmentsByApptId stores full assignment rows (not bare employee_ids), so stable order and team_color resolution are both available", () => {
+    assert.ok(source.includes("const assignmentsByApptId = new Map<string, AppointmentEmployeeAssignment[]>();"));
+  });
+
+  test("employeesFor uses the shared sortAssignmentsStable helper", () => {
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
+    const fnIdx = source.indexOf("function employeesFor(apptId: string): Employee[] {");
+    assert.ok(fnIdx > -1);
+    const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));
+    assert.ok(body.includes("sortAssignmentsStable(assignmentsFor(apptId))"));
+  });
+
+  test("accentColorFor resolves through the shared resolveTeamAccentColor rule", () => {
+    assert.ok(source.includes('import { resolveTeamAccentColor } from "@/lib/teamColor";'));
+    const fnIdx = source.indexOf("function accentColorFor(appt: Appointment): string | null {");
+    assert.ok(fnIdx > -1);
+    const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));
+    assert.ok(body.includes("resolveTeamAccentColor(assignmentsFor(appt.id), employeeById, appt.team_color)"));
+  });
+
+  test("the Today screen's MobileAppointmentCard usage passes accentColor={accentColorFor(a)}", () => {
+    const cardUsageIdx = source.indexOf("<MobileAppointmentCard");
+    assert.ok(cardUsageIdx > -1);
+    const cardUsageEnd = source.indexOf("/>", cardUsageIdx);
+    const jsx = source.slice(cardUsageIdx, cardUsageEnd);
+    assert.ok(jsx.includes("accentColor={accentColorFor(a)}"));
+  });
+});

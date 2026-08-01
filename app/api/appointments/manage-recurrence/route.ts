@@ -38,7 +38,7 @@ export async function POST(req: Request) {
 
     const { data: appt, error: fetchErr } = await supabaseAdmin
       .from("appointments")
-      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status, is_demo, price_cents")
+      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status, is_demo, price_cents, team_color")
       .eq("id", appointmentId)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
@@ -124,6 +124,13 @@ export async function POST(req: Request) {
         // current price snapshot -- not recomputed from the service's
         // (possibly since-changed) default price.
         price_cents: appt.price_cents,
+        // Phase 5.7D-R19: every newly generated occurrence also inherits the
+        // origin's current team_color snapshot -- mirrors price_cents
+        // immediately above. Harmless when the origin has fewer than two
+        // assigned employees (lib/teamColor.ts ignores it entirely below
+        // 2 assignments) -- stored unconditionally either way, no
+        // assignment-count branch here.
+        team_color: appt.team_color,
         cancel_token: crypto.randomBytes(24).toString("hex"),
         status: "scheduled",
         series_id: newSeriesId,

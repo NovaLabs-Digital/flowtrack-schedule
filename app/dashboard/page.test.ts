@@ -65,6 +65,20 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
     }
   });
 
+  // Phase 5.7D-R19: team_color follows the exact precedent set by
+  // price_cents (R17B) -- added to the primary field list only, relying on
+  // the same fallback-on-error mechanism for a not-yet-migrated column.
+  test("apptFields' primary value includes team_color (Phase 5.7D-R19)", () => {
+    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    assert.ok(fieldsMatch![1].includes("team_color"), `apptFields is missing team_color: "${fieldsMatch![1]}"`);
+  });
+
+  test("the minimal fallback field list also excludes team_color, same as it excludes price_cents", () => {
+    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
+    assert.ok(fallbackMatch);
+    assert.ok(!fallbackMatch![1].includes("team_color"));
+  });
+
   test("the minimal fallback field list (used only when the primary query errors) is deliberately left unchanged -- it never included duration_minutes/scheduled_end/etc. either", () => {
     const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
     assert.ok(fallbackMatch);
@@ -106,5 +120,16 @@ describe("app/dashboard/page.tsx -- fetches appointment_employees assignments, w
     const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
     assert.ok(shellBlock);
     assert.ok(shellBlock![0].includes("assignments={assignments}"));
+  });
+
+  // Phase 5.7D-R19: the assignments query is explicitly ordered so every
+  // consumer of the `assignments` prop sees a stable, deterministic order
+  // without relying on incidental query-plan order (see the investigation
+  // finding that this query previously had no .order() clause at all).
+  test("the assignments query is ordered by created_at then id, ascending", () => {
+    const block = source.match(/\.from\("appointment_employees"\)[\s\S]*?;/);
+    assert.ok(block);
+    assert.ok(block![0].includes('.order("created_at", { ascending: true })'));
+    assert.ok(block![0].includes('.order("id", { ascending: true })'));
   });
 });

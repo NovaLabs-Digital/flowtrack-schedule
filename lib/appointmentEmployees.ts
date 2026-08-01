@@ -99,9 +99,32 @@ export async function fetchAssignments(appointmentId: string, workspaceId: strin
     .from("appointment_employees")
     .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, created_at, updated_at")
     .eq("appointment_id", appointmentId)
-    .eq("workspace_id", workspaceId);
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
   if (error) throw error;
   return (data ?? []) as AppointmentEmployeeAssignment[];
+}
+
+// Phase 5.7D-R19: a single, deterministic ordering for "which assignment
+// came first" -- used for Team Color's deterministic fallback (see
+// lib/teamColor.ts), the employee names/indicators shown on a schedule
+// card, and the order Worked Hours rows are listed in, so all three always
+// agree on the same order. created_at is reliably populated (NOT NULL
+// DEFAULT NOW(), migrations/021), but ties are real and expected -- every
+// row backfilled by migration 021's own INSERT shares one migration-run
+// timestamp -- so ties are broken by the assignment's own id, which is
+// always unique, never by employee_id (which says nothing about assignment
+// order). Callers should not assume the input is already sorted (a Map
+// grouped from an unsorted query result is not reliably sorted per key) --
+// this always re-sorts rather than trusting caller order.
+export function sortAssignmentsStable<T extends Pick<AppointmentEmployeeAssignment, "id" | "created_at">>(assignments: T[]): T[] {
+  return [...assignments].sort((a, b) => {
+    const at = new Date(a.created_at).getTime();
+    const bt = new Date(b.created_at).getTime();
+    if (at !== bt) return at - bt;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 }
 
 export async function fetchEmployeeHoursForAppointments(appointmentIds: string[], workspaceId: string): Promise<EmployeeHours[]> {
