@@ -267,7 +267,13 @@ describe("Phase 5.7D-R18: per-employee dispatch summary, appointment details, an
 
 describe("Phase 5.7D-R19: Employee Worked Hours -- 'Not tracked yet' + cancelled guard + stable order (source-level proof)", () => {
   test("selectedApptAssignments is built via the shared sortAssignmentsStable helper, not the raw assignmentsByApptId order", () => {
-    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
+    // Phase 5.7D-R19 launch-blocker fix: sortAssignmentsStable now lives in
+    // lib/sortAssignmentsStable.ts (no Supabase/server-only import) -- an
+    // import from lib/appointmentEmployees.ts (which does import the
+    // server-only supabaseAdmin client) previously crashed /dashboard in
+    // production by pulling that client into this browser bundle.
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";'));
+    assert.ok(!source.includes('from "@/lib/appointmentEmployees"'), "must never import from the server-only appointmentEmployees module");
     assert.ok(source.includes("sortAssignmentsStable(assignmentsByApptId.get(selectedAppt.id) ?? [])"));
   });
 

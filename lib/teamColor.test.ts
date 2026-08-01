@@ -1,18 +1,22 @@
 // Phase 5.7D-R19: tests for lib/teamColor.ts's validation, palette, and
 // resolution rules -- the single source of truth shared by the
 // create/update/manage-recurrence API routes and every schedule-rendering
-// surface. lib/teamColor.ts imports sortAssignmentsStable from
-// lib/appointmentEmployees.ts, which also imports lib/supabaseAdmin.ts --
-// that module constructs a real Supabase client at IMPORT time from
-// process.env. A static top-level `import` of lib/teamColor.ts would be
-// hoisted and evaluated before any process.env assignment in this file
-// even runs (ESM import evaluation always precedes a module's own top-level
-// body, regardless of textual order) -- so, matching the same convention
-// every other test file that transitively touches supabaseAdmin.ts already
-// uses (see lib/appointmentEmployees.test.ts, app/api/appointments/*/route.test.ts),
-// @/lib/supabaseAdmin is mocked first and lib/teamColor.ts is imported
-// dynamically afterward. No real Supabase call is reachable from any test
-// in this file.
+// surface.
+//
+// Phase 5.7D-R19 launch-blocker fix: lib/teamColor.ts previously imported
+// sortAssignmentsStable from lib/appointmentEmployees.ts, which also
+// imports lib/supabaseAdmin.ts -- a module that constructs a real Supabase
+// client at IMPORT time from process.env, requiring the mock/dynamic-import
+// setup below (a static top-level `import` would be hoisted and evaluated
+// before any process.env assignment in this file even runs). That import
+// path caused the real production incident this fix corrects: any client
+// component importing from lib/teamColor.ts pulled the server-only
+// supabaseAdmin client into the browser bundle. sortAssignmentsStable now
+// lives in lib/sortAssignmentsStable.ts, which has no Supabase/server
+// dependency at all -- lib/teamColor.ts no longer transitively touches
+// supabaseAdmin. The mock/dynamic-import setup below is kept as-is (still
+// correct, still harmless) rather than changed as part of this urgent fix;
+// no real Supabase call is reachable from any test in this file either way.
 process.env.SUPABASE_URL = "http://localhost:54321";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 

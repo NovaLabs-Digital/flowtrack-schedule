@@ -487,7 +487,15 @@ describe("Phase 5.7D-R19: Worked Hours 'Not tracked yet' + cancelled guard (sour
     assert.ok(!block.includes("border-amber"), "must not use the warning styling");
   });
 
-  test("rows are listed in stable assignment order via sortAssignmentsStable, imported from lib/appointmentEmployees", () => {
-    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
+  test("rows are listed in stable assignment order via sortAssignmentsStable, imported from the pure lib/sortAssignmentsStable module", () => {
+    // Phase 5.7D-R19 launch-blocker fix: lib/appointmentEmployees.ts
+    // imports the server-only supabaseAdmin client, so importing
+    // sortAssignmentsStable from there pulled that client into this
+    // client component's browser bundle and crashed /dashboard in
+    // production ("supabaseUrl is required."). sortAssignmentsStable now
+    // lives in lib/sortAssignmentsStable.ts, which has no Supabase or
+    // other server-only dependency.
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";'));
+    assert.ok(!source.includes('from "@/lib/appointmentEmployees"'), "must never import from the server-only appointmentEmployees module");
   });
 });

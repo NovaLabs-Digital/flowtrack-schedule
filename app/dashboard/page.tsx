@@ -191,7 +191,7 @@ export default async function DashboardPage() {
     // Phase 5.7D-R19: ordered so every consumer (Team Color's deterministic
     // fallback, employee names/indicators, Worked Hours rows) sees
     // assignments in the same stable order without each having to re-sort
-    // -- see lib/appointmentEmployees.ts's sortAssignmentsStable, which
+    // -- see lib/sortAssignmentsStable.ts's sortAssignmentsStable, which
     // consumers still apply defensively rather than trusting query order
     // alone survives every intermediate grouping/filtering step.
     const assignRes = await supabaseAdmin

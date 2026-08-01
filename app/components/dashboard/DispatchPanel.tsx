@@ -14,7 +14,7 @@ import {
   formatMinutesAsDuration,
 } from "@/lib/payroll";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
-import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 
 // Phase 5.5E-E1G: this control's own restricted notice, distinct from every
 // other component's. Gated on canUseJobTracking, not canMutateOperationalData

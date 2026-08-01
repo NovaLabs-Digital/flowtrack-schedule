@@ -7,7 +7,7 @@ import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDur
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { centsToInputValue, parsePriceToCents } from "@/lib/money";
-import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via

@@ -3,7 +3,7 @@
 import { Appointment, Client, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { toBusinessLocal, nowInBusinessTz } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
-import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
 
 // Bounds how far ahead the agenda looks — keeps the list short and scrolling

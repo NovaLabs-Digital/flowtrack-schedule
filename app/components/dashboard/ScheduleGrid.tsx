@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import { needsWorkedHoursAttention } from "@/lib/payroll";
-import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
 
 function formatDay(d: Date) {

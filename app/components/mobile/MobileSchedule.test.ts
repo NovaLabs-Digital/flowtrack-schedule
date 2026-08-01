@@ -13,7 +13,14 @@ const source = fs.readFileSync(fileURLToPath(new URL("./MobileSchedule.tsx", imp
 
 describe("Phase 5.7D-R19: Team Color accent on the Schedule (Agenda List) tab (source-level proof)", () => {
   test("employeesFor uses the shared sortAssignmentsStable helper for stable assignment order", () => {
-    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
+    // Phase 5.7D-R19 launch-blocker fix: sortAssignmentsStable now lives in
+    // lib/sortAssignmentsStable.ts, which has no Supabase/server-only
+    // import -- see that file's own header comment. Importing it from
+    // lib/appointmentEmployees.ts (which does import the server-only
+    // supabaseAdmin client) pulled that client into this client
+    // component's browser bundle and crashed /dashboard in production.
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";'));
+    assert.ok(!source.includes('from "@/lib/appointmentEmployees"'), "must never import from the server-only appointmentEmployees module");
     const fnIdx = source.indexOf("function employeesFor(apptId: string): Employee[] {");
     assert.ok(fnIdx > -1);
     const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));

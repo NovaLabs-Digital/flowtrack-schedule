@@ -215,7 +215,13 @@ describe("Phase 5.7D-R19: Team Color accent threaded into the Today screen's car
   });
 
   test("employeesFor uses the shared sortAssignmentsStable helper", () => {
-    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/appointmentEmployees";'));
+    // Phase 5.7D-R19 launch-blocker fix: sortAssignmentsStable now lives in
+    // lib/sortAssignmentsStable.ts (no Supabase/server-only import) -- an
+    // import from lib/appointmentEmployees.ts (which does import the
+    // server-only supabaseAdmin client) previously crashed /dashboard in
+    // production by pulling that client into this browser bundle.
+    assert.ok(source.includes('import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";'));
+    assert.ok(!source.includes('from "@/lib/appointmentEmployees"'), "must never import from the server-only appointmentEmployees module");
     const fnIdx = source.indexOf("function employeesFor(apptId: string): Employee[] {");
     assert.ok(fnIdx > -1);
     const body = source.slice(fnIdx, source.indexOf("\n  }", fnIdx));

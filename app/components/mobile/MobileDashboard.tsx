@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Client, Appointment, Service, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
-import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
 import MobileAppointmentDetail from "@/app/components/mobile/MobileAppointmentDetail";

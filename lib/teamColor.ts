@@ -5,7 +5,7 @@
 // (desktop ScheduleGrid, mobile cards) can never disagree about what a
 // valid color is or which color an appointment should actually show.
 import type { AppointmentEmployeeAssignment, Employee } from "@/app/components/dashboard/types";
-import { sortAssignmentsStable } from "@/lib/appointmentEmployees";
+import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -108,7 +108,7 @@ export function buildTeamColorChoices(assignedEmployees: Pick<Employee, "name" |
 //   2+ assignments, team_color null/invalid -> the first assignment's employee
 //                                               color, by stable assignment order
 //
-// "First assignment" uses sortAssignmentsStable (lib/appointmentEmployees.ts)
+// "First assignment" uses sortAssignmentsStable (lib/sortAssignmentsStable.ts)
 // so the fallback is deterministic and agrees with the order employee
 // names and Worked Hours rows are listed in -- never the incidental order
 // a query happened to return.
