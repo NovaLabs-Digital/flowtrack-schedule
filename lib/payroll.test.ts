@@ -3,7 +3,7 @@
 // missing-hours, and derived appointment status). All fixtures use
 // Date.now()-relative offsets rather than fixed dates, so these tests never
 // go stale.
-import { test, describe } from "node:test";
+import { test, describe, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 import {
   computePayrollRows,
@@ -242,6 +242,32 @@ describe("Phase 5.7D-R18: deriveAppointmentTrackingStatus", () => {
 });
 
 describe("computePayrollRows -- missingHoursCount never counts a not-yet-due appointment (the reported defect)", () => {
+  // Freezes both the test's own Date.now()/new Date() calls AND the
+  // production code's (isEligibleForWorkedHoursWarning, computePayrollRows'
+  // internal eligibility check) to one fixed, deterministic instant --
+  // Wednesday, safely mid-week (never a weekend, never a Mon/Fri edge), and
+  // in January so it's outside any DST transition. This is the actual fix
+  // for the incident that broke these tests: the old weekRangeContainingNow()
+  // used the REAL current time to build a Monday-Friday range, so on any
+  // real Saturday/Sunday "now" itself fell outside its own range, and every
+  // appointment built from real Date.now() offsets did too.
+  //
+  // A fixed timestamp on the TEST side alone doesn't work here: production's
+  // isEligibleForWorkedHoursWarning always compares against the real
+  // Date.now(), so an appointment built from a fixed past instant would
+  // read as "long past" to production code regardless of what the test
+  // intended -- confirmed by hitting exactly that failure mode while
+  // developing this fix. node:test's built-in mock.timers instead freezes
+  // Date globally for the process, so the test fixtures AND
+  // lib/payroll.ts's own internal Date.now() calls agree on the same fixed
+  // "now" -- lib/payroll.ts itself is not modified in any way.
+  before(() => {
+    mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-14T18:00:00.000Z").getTime() });
+  });
+  after(() => {
+    mock.timers.reset();
+  });
+
   function weekRangeContainingNow() {
     const now = toBusinessLocal(new Date().toISOString());
     const monday = new Date(now);
