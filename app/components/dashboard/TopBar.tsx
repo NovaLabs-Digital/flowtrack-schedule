@@ -152,21 +152,6 @@ export default function TopBar({
           >
             Next →
           </button>
-
-          <div className="w-px h-6 bg-slate-300 mx-1" />
-
-          <button
-            className="rounded-lg border border-slate-300 bg-white p-2 text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-700 transition-colors"
-            title="Date picker (coming soon)"
-          >
-            <span className="text-sm leading-none">📆</span>
-          </button>
-          <button
-            className="rounded-lg border border-slate-300 bg-white p-2 text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-700 transition-colors"
-            title="View options (coming soon)"
-          >
-            <span className="text-sm leading-none">☰</span>
-          </button>
         </div>
 
         {/* Right: actions */}
@@ -205,24 +190,6 @@ export default function TopBar({
               </div>
             )}
           </div>
-
-          <div className="relative">
-            <input
-              type="text"
-              placeholder="Search clients..."
-              className="rounded-lg border border-slate-300 bg-white pl-3 pr-8 py-2 text-sm text-slate-700 shadow-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-[160px] transition-colors"
-              readOnly
-              title="Search (coming soon)"
-            />
-            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm">🔍</span>
-          </div>
-
-          <button
-            className="rounded-lg border border-slate-300 bg-white p-2 text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-700 transition-colors relative"
-            title="Notifications (coming soon)"
-          >
-            <span className="text-sm leading-none">🔔</span>
-          </button>
 
           {/* User avatar + menu */}
           <div className="relative">

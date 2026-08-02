@@ -161,10 +161,38 @@ describe("non-mutating desktop controls remain available", () => {
     }
   });
 
-  test("Sign Out, search box, and notification bell remain unconditional (unchanged, coming-soon placeholders untouched)", () => {
+  test("Sign Out remains unconditional", () => {
     assert.ok(source.includes("onClick={handleLogout}"));
-    assert.ok(source.includes('title="Search (coming soon)"'));
-    assert.ok(source.includes('title="Notifications (coming soon)"'));
+  });
+});
+
+describe("post-launch correction: the four unfinished header placeholders (Date picker, View options, Search, Notifications) are removed entirely from the desktop bar", () => {
+  test("no 'coming soon' text remains anywhere in this file", () => {
+    assert.ok(!/coming soon/i.test(source));
+  });
+
+  test("no Date picker (calendar) or View options (menu) icon buttons remain", () => {
+    assert.ok(!source.includes("Date picker"));
+    assert.ok(!source.includes("View options"));
+    assert.ok(!source.includes("📆"));
+    assert.ok(!source.includes("☰"));
+  });
+
+  test("no Search clients input or Notifications bell remain", () => {
+    assert.ok(!source.includes("Search clients"));
+    assert.ok(!source.includes("🔍"));
+    assert.ok(!source.includes("🔔"));
+  });
+
+  test("the now-unnecessary divider between real nav buttons and the removed placeholder icons is gone too", () => {
+    assert.ok(!source.includes('<div className="w-px h-6 bg-slate-300 mx-1" />'));
+  });
+
+  test("Today/Prev/Next and Add Appointment are still present and unchanged", () => {
+    assert.ok(source.includes("onClick={onGoToday}"));
+    assert.ok(source.includes("← Prev"));
+    assert.ok(source.includes("Next →"));
+    assert.ok(source.includes("Add Appointment"));
   });
 });
 

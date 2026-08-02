@@ -185,27 +185,17 @@ export default function MobileDashboard({
               <>
                 {/* Top bar */}
                 <div className="shrink-0 bg-white border-b border-slate-200 px-4 py-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center bg-blue-600 text-white text-xs font-bold">
-                        FTS
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-base font-semibold text-slate-900 truncate">
-                          {isToday ? "Today" : selectedDate.toLocaleDateString(undefined, { weekday: "long" })}
-                        </div>
-                        <div className="text-xs text-slate-500 truncate">
-                          {selectedDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-                        </div>
-                      </div>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-lg shrink-0 flex items-center justify-center bg-blue-600 text-white text-xs font-bold">
+                      FTS
                     </div>
-                    <div className="flex items-center gap-1 shrink-0 text-slate-400">
-                      <button type="button" className="w-8 h-8 flex items-center justify-center" title="Search (coming soon)">
-                        🔍
-                      </button>
-                      <button type="button" className="w-8 h-8 flex items-center justify-center" title="Notifications (coming soon)">
-                        🔔
-                      </button>
+                    <div className="min-w-0">
+                      <div className="text-base font-semibold text-slate-900 truncate">
+                        {isToday ? "Today" : selectedDate.toLocaleDateString(undefined, { weekday: "long" })}
+                      </div>
+                      <div className="text-xs text-slate-500 truncate">
+                        {selectedDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                      </div>
                     </div>
                   </div>
                 </div>

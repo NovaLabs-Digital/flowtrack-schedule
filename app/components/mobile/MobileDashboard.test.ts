@@ -244,3 +244,21 @@ describe("Phase 5.7D-R19: Team Color accent threaded into the Today screen's car
     assert.ok(jsx.includes("accentColor={accentColorFor(a)}"));
   });
 });
+
+describe("post-launch correction: the Today screen's Search/Notifications header placeholders are removed entirely", () => {
+  test("no 'coming soon' text, search icon, or bell icon remains in this file", () => {
+    assert.ok(!/coming soon/i.test(source));
+    assert.ok(!source.includes("🔍"));
+    assert.ok(!source.includes("🔔"));
+  });
+
+  test("the Today screen's top bar still shows the FTS logo/title block, now as the only content in its row", () => {
+    const topBarIdx = source.indexOf("{/* Top bar */}");
+    assert.notEqual(topBarIdx, -1);
+    const dayStripIdx = source.indexOf("{/* Day strip */}", topBarIdx);
+    assert.notEqual(dayStripIdx, -1);
+    const block = source.slice(topBarIdx, dayStripIdx);
+    assert.ok(block.includes("FTS"));
+    assert.ok(!block.includes("<button"), "no leftover placeholder buttons between the logo block and the day strip");
+  });
+});
