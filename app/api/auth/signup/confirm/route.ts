@@ -7,23 +7,42 @@ import { provisionOwnerWorkspace } from "@/lib/signupProvisioning";
 import { beginMfaFlow } from "@/lib/mfaFlow";
 import { setMfaPendingCookie } from "@/lib/session";
 
-// Receives Supabase's own confirmation-email redirect (the `code` query
-// param from its PKCE flow) and exchanges it for a session — this is the
-// one place email ownership is actually proven. Never issues sft_session
-// itself; hands off into the same MFA enrollment/challenge gate every
-// returning owner login uses.
+// Receives Supabase's own confirmation-email redirect and proves email
+// ownership — this is the one place that happens. Supports two mechanisms:
+//
+// - token_hash (primary): Supabase's stateless OTP-style verification,
+//   verified directly against Supabase Auth with no local state required.
+//   This is the only mechanism that can actually work with this app's
+//   architecture -- signUp() runs server-side (app/api/auth/signup/route.ts)
+//   and this callback runs in a separate, later serverless invocation, so
+//   there is no shared browser/storage for a PKCE code_verifier to survive
+//   in between (see lib/signupAuth.ts's createOwnerAuthClient, which holds
+//   no session storage at all). `type` is always hardcoded to "signup"
+//   here, never trusted from the URL -- this route only ever handles
+//   signup confirmations.
+// - code (legacy): the original PKCE exchange path, kept only for
+//   backward compatibility with any link already in flight. Requires
+//   flowType "pkce" and a persisted code_verifier to actually succeed,
+//   neither of which this app's server-side signup client provides -- see
+//   the token_hash path above for why this can't reliably work here.
+//
+// Never issues sft_session itself; hands off into the same MFA
+// enrollment/challenge gate every returning owner login uses.
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
+  const tokenHash = url.searchParams.get("token_hash");
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || url.origin;
 
-  if (!code) {
+  if (!code && !tokenHash) {
     return NextResponse.redirect(`${appUrl}/signup?error=invalid_link`);
   }
 
   try {
     const client = createOwnerAuthClient();
-    const { data, error } = await client.auth.exchangeCodeForSession(code);
+    const { data, error } = tokenHash
+      ? await client.auth.verifyOtp({ token_hash: tokenHash, type: "signup" })
+      : await client.auth.exchangeCodeForSession(code!);
     if (error || !data.session || !data.user) {
       return NextResponse.redirect(`${appUrl}/signup?error=invalid_link`);
     }
