@@ -26,9 +26,29 @@ let beginMfaFlowCalls = 0;
 let rateLimitCalls: Array<{ bucket: string; key: string }> = [];
 let rateLimitResult: { limited: boolean; retryAfterSeconds?: number } = { limited: false };
 let clearRateLimitCalls: Array<{ bucket: string; key: string }> = [];
+// Phase 5.7D-R20: login-route provisioning-recovery safety net fixtures.
+let getUserByIdResult: { data: unknown; error: unknown } = { data: null, error: { message: "not configured" } };
+let getUserByIdCalls = 0;
+let provisionOwnerWorkspaceCalls: string[] = [];
+let provisionOwnerWorkspaceImpl: (id: string) => Promise<string> = async (id) => {
+  provisionOwnerWorkspaceCalls.push(id);
+  return "provisioned-workspace";
+};
 
 mock.module("@/lib/supabaseAdmin", {
-  namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
+  namedExports: {
+    supabaseAdmin: {
+      from: (table: string) => currentFake.supabaseAdmin.from(table),
+      auth: {
+        admin: {
+          getUserById: async () => {
+            getUserByIdCalls++;
+            return getUserByIdResult;
+          },
+        },
+      },
+    },
+  },
 });
 mock.module("@/lib/durableRateLimit", {
   namedExports: {
@@ -57,6 +77,11 @@ mock.module("@/lib/mfaFlow", {
     },
   },
 });
+mock.module("@/lib/signupProvisioning", {
+  namedExports: {
+    provisionOwnerWorkspace: (id: string) => provisionOwnerWorkspaceImpl(id),
+  },
+});
 
 const { POST } = await import("./route.ts");
 const { REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
@@ -71,6 +96,13 @@ function resetState() {
   rateLimitCalls = [];
   rateLimitResult = { limited: false };
   clearRateLimitCalls = [];
+  getUserByIdResult = { data: null, error: { message: "not configured" } };
+  getUserByIdCalls = 0;
+  provisionOwnerWorkspaceCalls = [];
+  provisionOwnerWorkspaceImpl = async (id) => {
+    provisionOwnerWorkspaceCalls.push(id);
+    return "provisioned-workspace";
+  };
 }
 function req(body: unknown, ip = "203.0.113.1") {
   return new Request("http://localhost/api/auth/login", {
@@ -100,6 +132,9 @@ describe("POST /api/auth/login -- owner branch (Phase 5.7D: password success onl
     const setCookieHeader = res.headers.get("set-cookie") || "";
     assert.ok(!setCookieHeader.includes("sft_session="));
     assert.ok(setCookieHeader.includes("sft_mfa_pending="));
+    // An already-provisioned owner must never trigger the recovery path.
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+    assert.equal(getUserByIdCalls, 0);
   });
 
   test("a challenge outcome (one or more verified factors) surfaces factorIds to the client", async () => {
@@ -143,6 +178,210 @@ describe("POST /api/auth/login -- owner branch (Phase 5.7D: password success onl
     const body = await res.json();
     assert.equal(body.error, "Invalid email or password");
     assert.equal(beginMfaFlowCalls, 0);
+  });
+});
+
+// Phase 5.7D-R20: the incident-driven login safety net. A confirmed owner
+// with a valid password but no owner membership (their confirmation email
+// never reached /api/auth/signup/confirm -- see the 2026-08-06 Journey
+// Inpsyred incident) must be recovered in-place using their OWN
+// already-authenticated identity, never by email, and only when every
+// recovery condition holds.
+describe("POST /api/auth/login -- owner provisioning-recovery safety net", () => {
+  const PENDING_ROW = (overrides: Record<string, unknown> = {}) => ({
+    auth_user_id: AUTH_USER_ID,
+    consumed_at: null,
+    ...overrides,
+  });
+  const CONFIRMED_USER = (overrides: Record<string, unknown> = {}) => ({
+    data: { user: { id: AUTH_USER_ID, email_confirmed_at: "2026-08-06T14:05:45.000Z", ...overrides } },
+    error: null,
+  });
+
+  test("a confirmed user with an unconsumed pending_signups row is recovered: provisioned, re-fetched, and advanced into MFA", async () => {
+    resetState();
+    resetFixtures({
+      // First fetchOwnerMembership call (no membership yet), then a second
+      // after provisioning (recovery succeeded).
+      workspace_memberships: [
+        { data: null },
+        { data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } },
+      ],
+      pending_signups: [{ data: PENDING_ROW() }],
+    });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER();
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.1"));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.next, "enroll");
+    assert.equal(beginMfaFlowCalls, 1);
+    assert.deepEqual(provisionOwnerWorkspaceCalls, [AUTH_USER_ID]);
+  });
+
+  test("a wrong password never triggers recovery -- signInWithPassword fails before any recovery check runs", async () => {
+    resetState();
+    resetFixtures({});
+    signInWithPasswordResult = { data: null, error: { message: "invalid" } };
+    getUserByIdResult = CONFIRMED_USER();
+    const res = await POST(req({ email: "owner@example.com", password: "wrong" }, "10.0.3.2"));
+    assert.equal(res.status, 401);
+    assert.equal(getUserByIdCalls, 0);
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+  });
+
+  test("an unconfirmed Auth user is never provisioned", async () => {
+    resetState();
+    resetFixtures({ workspace_memberships: [{ data: null }] });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER({ email_confirmed_at: null });
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.3"));
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).error, "Invalid email or password");
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+  });
+
+  test("a getUserById error (not just a missing/unconfirmed user) fails closed, never throws a 500", async () => {
+    resetState();
+    resetFixtures({ workspace_memberships: [{ data: null }] });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = { data: null, error: { message: "lookup failed" } };
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.4"));
+    assert.equal(res.status, 401);
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+  });
+
+  test("no pending_signups row at all -- never provisioned", async () => {
+    resetState();
+    resetFixtures({
+      workspace_memberships: [{ data: null }],
+      pending_signups: [{ data: null }],
+    });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER();
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.5"));
+    assert.equal(res.status, 401);
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+  });
+
+  test("an already-consumed pending_signups row is never re-provisioned", async () => {
+    resetState();
+    resetFixtures({
+      workspace_memberships: [{ data: null }],
+      pending_signups: [{ data: PENDING_ROW({ consumed_at: "2026-07-01T00:00:00.000Z" }) }],
+    });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER();
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.6"));
+    assert.equal(res.status, 401);
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+  });
+
+  test("a pending_signups row belonging to a DIFFERENT auth_user_id is never trusted, even if it's the row returned by the query", async () => {
+    resetState();
+    resetFixtures({
+      workspace_memberships: [{ data: null }],
+      pending_signups: [{ data: PENDING_ROW({ auth_user_id: "bbbbbbbb-1111-1111-1111-111111111111" }) }],
+    });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER();
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.7"));
+    assert.equal(res.status, 401);
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+  });
+
+  test("a getUserById result for a DIFFERENT user id than the authenticated session is never trusted", async () => {
+    resetState();
+    resetFixtures({ workspace_memberships: [{ data: null }] });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER({ id: "cccccccc-2222-2222-2222-222222222222" });
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.8"));
+    assert.equal(res.status, 401);
+    assert.equal(provisionOwnerWorkspaceCalls.length, 0);
+  });
+
+  test("concurrent/repeated recovery: provisionOwnerWorkspace throwing (losing the unique-membership race) is not fatal -- the re-fetch finding a membership (created by the winning request) still succeeds the login", async () => {
+    resetState();
+    resetFixtures({
+      workspace_memberships: [
+        { data: null },
+        { data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } },
+      ],
+      pending_signups: [{ data: PENDING_ROW() }],
+    });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER();
+    provisionOwnerWorkspaceImpl = async (id) => {
+      provisionOwnerWorkspaceCalls.push(id);
+      throw new Error("duplicate key value violates unique constraint");
+    };
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.9"));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.next, "enroll");
+    assert.deepEqual(provisionOwnerWorkspaceCalls, [AUTH_USER_ID]);
+  });
+
+  test("provisionOwnerWorkspace throws AND the re-fetch still finds nothing -- fails closed with the generic error, no crash", async () => {
+    resetState();
+    resetFixtures({
+      workspace_memberships: [{ data: null }, { data: null }],
+      pending_signups: [{ data: PENDING_ROW() }],
+    });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER();
+    provisionOwnerWorkspaceImpl = async (id) => {
+      provisionOwnerWorkspaceCalls.push(id);
+      throw new Error("transient RPC error");
+    };
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.10"));
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).error, "Invalid email or password");
+  });
+
+  test("a successful recovery still clears the login rate-limit bucket, same as any other successful password verification", async () => {
+    resetState();
+    resetFixtures({
+      workspace_memberships: [
+        { data: null },
+        { data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } },
+      ],
+      pending_signups: [{ data: PENDING_ROW() }],
+    });
+    signInWithPasswordResult = {
+      data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } },
+      error: null,
+    };
+    getUserByIdResult = CONFIRMED_USER();
+    await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.3.11"));
+    assert.deepEqual(clearRateLimitCalls, [{ bucket: "login", key: "10.0.3.11" }]);
   });
 });
 

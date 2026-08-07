@@ -9,8 +9,82 @@ import { beginMfaFlow } from "@/lib/mfaFlow";
 import { safeEqual } from "@/lib/safeEqual";
 import { checkAndRecordRateLimit, clearRateLimit } from "@/lib/durableRateLimit";
 import { DEMO_WORKSPACE_ID } from "@/lib/workspace";
+import { provisionOwnerWorkspace } from "@/lib/signupProvisioning";
 
 const GENERIC_AUTH_ERROR = "Invalid email or password";
+
+interface OwnerMembership {
+  workspaceId: string;
+  sessionEpoch: number;
+}
+
+async function fetchOwnerMembership(authUserId: string): Promise<OwnerMembership | null> {
+  const { data, error } = await supabaseAdmin
+    .from("workspace_memberships")
+    .select("workspace_id, session_epoch")
+    .eq("profile_id", authUserId)
+    .eq("role", "owner")
+    .maybeSingle();
+
+  if (error) {
+    console.error("OWNER_AUTH_MEMBERSHIP_QUERY_ERROR");
+    return null;
+  }
+  if (!data?.workspace_id) return null;
+  return { workspaceId: data.workspace_id, sessionEpoch: data.session_epoch };
+}
+
+// Login safety net (Phase 5.7D-R20, incident-driven -- see the 2026-08-06
+// Journey Inpsyred lockout): Supabase Auth's own confirmation email does not
+// reliably route through /api/auth/signup/confirm (that redirect target is
+// Dashboard-configured, outside this app's control), so a confirmed owner
+// can reach this point with a valid password and NO workspace ever
+// provisioned. Their confirmation link is already spent, so this is their
+// only remaining path to recovery -- it must use their own
+// already-authenticated identity, never an email lookup, and never run
+// before signInWithPassword has already succeeded.
+async function tryRecoverProvisioning(authUserId: string): Promise<OwnerMembership | null> {
+  console.error("OWNER_LOGIN_PROVISION_RECOVERY_STARTED");
+
+  const { data: userData, error: userErr } = await supabaseAdmin.auth.admin.getUserById(authUserId);
+  if (userErr || !userData?.user || userData.user.id !== authUserId || !userData.user.email_confirmed_at) {
+    console.error("OWNER_LOGIN_PROVISION_RECOVERY_FAILED");
+    return null;
+  }
+
+  // Exactly one unconsumed pending_signups row for THIS SAME authenticated
+  // identity -- auth_user_id is unique per migration 017, so .maybeSingle()
+  // already returns at most one row; the explicit equality re-check below
+  // is defense-in-depth against ever trusting a row that didn't actually
+  // match, never an optimization.
+  const { data: pending, error: pendingErr } = await supabaseAdmin
+    .from("pending_signups")
+    .select("auth_user_id, consumed_at")
+    .eq("auth_user_id", authUserId)
+    .maybeSingle();
+  if (pendingErr || !pending || pending.auth_user_id !== authUserId || pending.consumed_at) {
+    console.error("OWNER_LOGIN_PROVISION_RECOVERY_FAILED");
+    return null;
+  }
+
+  try {
+    await provisionOwnerWorkspace(authUserId);
+  } catch {
+    // Swallow -- a concurrent login for the same identity may have already
+    // provisioned it (migration 017's unique (profile_id, role) guard would
+    // make this the call that loses the race). The re-fetch below is the
+    // authoritative check either way, so a thrown RPC error here does not
+    // by itself mean recovery failed.
+  }
+
+  const membership = await fetchOwnerMembership(authUserId);
+  if (!membership) {
+    console.error("OWNER_LOGIN_PROVISION_RECOVERY_FAILED");
+    return null;
+  }
+  console.error("OWNER_LOGIN_PROVISION_RECOVERY_SUCCESS");
+  return membership;
+}
 
 // A precomputed bcrypt hash of an arbitrary string, compared against when no
 // employee matches the submitted email. This keeps a "no such account"
@@ -184,22 +258,17 @@ export async function POST(req: Request) {
     let workspaceId: string | null = null;
     let sessionEpoch: number | null = null;
     if (!authErr && authData?.user) {
-      const { data: membership, error: membershipErr } = await supabaseAdmin
-        .from("workspace_memberships")
-        .select("workspace_id, session_epoch")
-        .eq("profile_id", authData.user.id)
-        .eq("role", "owner")
-        .maybeSingle();
-
-      if (membershipErr) {
-        // Fixed tag only — no identifiers or DB error details, which could
-        // otherwise leak schema/data information into logs.
-        console.error("OWNER_AUTH_MEMBERSHIP_QUERY_ERROR");
-      } else if (membership?.workspace_id) {
-        workspaceId = membership.workspace_id;
-        sessionEpoch = membership.session_epoch;
+      const membership = await fetchOwnerMembership(authData.user.id);
+      if (membership) {
+        workspaceId = membership.workspaceId;
+        sessionEpoch = membership.sessionEpoch;
       } else {
         console.error("OWNER_AUTH_MEMBERSHIP_MISSING");
+        const recovered = await tryRecoverProvisioning(authData.user.id);
+        if (recovered) {
+          workspaceId = recovered.workspaceId;
+          sessionEpoch = recovered.sessionEpoch;
+        }
       }
     }
 
