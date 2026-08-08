@@ -12,7 +12,7 @@
 process.env.SUPABASE_URL = "http://localhost:54321";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
-import { test, describe, mock } from "node:test";
+import { test, describe, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -35,9 +35,13 @@ function req(query: string) {
   return new Request(`http://localhost/api/book/availability?${query}`);
 }
 
-// A future Monday, safely within business hours regardless of when this
-// suite runs, matching the date convention already used by the other
+// A Monday, matching the date convention already used by the other
 // appointment route tests (e.g. app/api/appointments/update/route.test.ts).
+// Not actually "future" from the real system clock forever -- the FULL_STATES
+// tests below freeze time (node:test's mock.timers) to an instant before this
+// date so "is this slot in the past" resolves the same way no matter when the
+// suite actually runs (see lib/payroll.test.ts's computePayrollRows describe
+// for the same fix applied to the same class of hardcoded-date flake).
 const DATE_STR = "2026-08-03";
 
 describe("GET /api/book/availability -- entitlement gate (canUsePublicBooking)", () => {
@@ -48,23 +52,39 @@ describe("GET /api/book/availability -- entitlement gate (canUsePublicBooking)",
     ["internal", subscriptionRow({ billing_mode: "internal", stripe_status: null })],
   ];
 
-  for (const [label, row] of FULL_STATES) {
-    test(`${label} permits availability lookup, existing response contract unchanged`, async () => {
-      resetFixtures({
-        subscriptions: [{ data: row }],
-        company_settings: [{ data: { booking_enabled: true } }],
-        services: [{ data: { duration_minutes: 60 } }],
-        appointments: [{ data: [] }],
-      });
-      const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
-      assert.equal(res.status, 200, label);
-      const body = await res.json();
-      const expected = computeAvailableSlots(DATE_STR, 60, []);
-      assert.deepEqual(body.slots, expected, label);
-      assert.ok(expected.length > 0, "sanity: the fixture date/duration actually yields slots");
-      assert.equal(writeCalls(currentFake.calls).length, 0, label);
+  describe("FULL_STATES (time frozen before DATE_STR so slots aren't filtered as past)", () => {
+    // Freezes Date globally for the process -- both this test file's own
+    // computeAvailableSlots(DATE_STR, ...) call (the `expected` value below)
+    // and route.ts's internal todayBusinessDate()/computeAvailableSlots()
+    // calls (both ultimately backed by Luxon's DateTime.now(), which reads
+    // Date.now() live) agree on the same fixed "now" -- Sunday noon UTC,
+    // safely before DATE_STR's Monday business day starts in every timezone.
+    // Neither lib/availability.ts nor route.ts is modified.
+    before(() => {
+      mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-02T12:00:00.000Z").getTime() });
     });
-  }
+    after(() => {
+      mock.timers.reset();
+    });
+
+    for (const [label, row] of FULL_STATES) {
+      test(`${label} permits availability lookup, existing response contract unchanged`, async () => {
+        resetFixtures({
+          subscriptions: [{ data: row }],
+          company_settings: [{ data: { booking_enabled: true } }],
+          services: [{ data: { duration_minutes: 60 } }],
+          appointments: [{ data: [] }],
+        });
+        const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
+        assert.equal(res.status, 200, label);
+        const body = await res.json();
+        const expected = computeAvailableSlots(DATE_STR, 60, []);
+        assert.deepEqual(body.slots, expected, label);
+        assert.ok(expected.length > 0, "sanity: the fixture date/duration actually yields slots");
+        assert.equal(writeCalls(currentFake.calls).length, 0, label);
+      });
+    }
+  });
 
   const RESTRICTED_STATES: Array<[string, ReturnType<typeof subscriptionRow> | null]> = [
     ["past_due_expired", subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() - 1000).toISOString() })],
