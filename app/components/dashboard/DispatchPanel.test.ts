@@ -196,10 +196,36 @@ describe("read-only actions and navigation remain unconditional", () => {
   });
 
   test("PayrollSummary (Weekly Worked Hours date-range display) is rendered unconditionally -- it is pure read-only, no fetch, no mutation, out of this phase's scope", () => {
-    assert.ok(source.includes("<PayrollSummary appointments={appointments} employees={employees} employeeHours={employeeHours} assignments={assignments} />"));
     const idx = source.indexOf("<PayrollSummary");
+    assert.notEqual(idx, -1);
+    const invocation = source.slice(idx, source.indexOf("/>", idx) + 2);
+    for (const prop of ["appointments={appointments}", "employees={employees}", "employeeHours={employeeHours}", "assignments={assignments}", "rangeStart={rangeStart}", "rangeEnd={rangeEnd}", "onRangeStartChange={setRangeStart}", "onRangeEndChange={setRangeEnd}"]) {
+      assert.ok(invocation.includes(prop), `expected PayrollSummary invocation to include ${prop}`);
+    }
     const before = source.slice(Math.max(0, idx - 60), idx);
     assert.ok(!before.includes("canUseJobTracking"));
+  });
+
+  test("Projected Revenue (IncomeProjection component) is rendered unconditionally, directly above Weekly Worked Hours, reading the SAME rangeStart/rangeEnd state", () => {
+    const incomeIdx = source.indexOf("<IncomeProjection");
+    const payrollIdx = source.indexOf("<PayrollSummary");
+    assert.notEqual(incomeIdx, -1);
+    assert.notEqual(payrollIdx, -1);
+    assert.ok(incomeIdx < payrollIdx, "IncomeProjection must render before (above) PayrollSummary");
+
+    const invocation = source.slice(incomeIdx, source.indexOf("/>", incomeIdx) + 2);
+    for (const prop of ["appointments={appointments}", "assignments={assignments}", "rangeStart={rangeStart}", "rangeEnd={rangeEnd}"]) {
+      assert.ok(invocation.includes(prop), `expected IncomeProjection invocation to include ${prop}`);
+    }
+    // Not gated behind canUseJobTracking or a selection, same as PayrollSummary.
+    const before = source.slice(Math.max(0, incomeIdx - 60), incomeIdx);
+    assert.ok(!before.includes("canUseJobTracking"));
+  });
+
+  test("rangeStart/rangeEnd are DispatchPanel's own state (shared, not independently computed by each card)", () => {
+    assert.ok(source.includes("const [rangeStart, setRangeStart] = useState("));
+    assert.ok(source.includes("const [rangeEnd, setRangeEnd] = useState("));
+    assert.ok(source.includes("mondayOfCurrentWeek()"));
   });
 
   test("appointment selection, dispatch summary counts, and Navigate/Call actions remain unconditional", () => {

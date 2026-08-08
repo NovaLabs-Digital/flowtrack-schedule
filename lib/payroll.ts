@@ -235,7 +235,11 @@ export type PayrollComputation = {
   missingHoursCount: number;
 };
 
-function scheduledHours(appt: Appointment): number {
+// Exported for lib/incomeProjection.ts, which needs the identical scheduled-
+// duration calculation for its own labor-hours estimate -- reusing this
+// rather than re-deriving it keeps the two features from ever disagreeing
+// about what "the scheduled duration of an appointment" means.
+export function scheduledHours(appt: Appointment): number {
   if (appt.scheduled_end) {
     const mins = Math.round((new Date(appt.scheduled_end).getTime() - new Date(appt.scheduled_for).getTime()) / 60_000);
     if (mins > 0) return mins / 60;

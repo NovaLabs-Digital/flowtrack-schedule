@@ -1,40 +1,34 @@
 "use client";
 
-import { useState } from "react";
 import { Appointment, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
-import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
-import { nowInBusinessTz } from "@/lib/timezone";
+import { computePayrollRows } from "@/lib/payroll";
 
-function mondayOfCurrentWeek(): Date {
-  const d = nowInBusinessTz();
-  d.setHours(0, 0, 0, 0);
-  const dow = d.getDay(); // 0=Sun..6=Sat
-  const diff = (dow + 6) % 7; // days since Monday
-  d.setDate(d.getDate() - diff);
-  return d;
-}
-
-function addDays(d: Date, n: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-
+// The Mon-Fri default and its two editable date inputs are unchanged from
+// before -- only where rangeStart/rangeEnd LIVE has moved. They're now
+// owned by DispatchPanel (see its mondayOfCurrentWeek/addDays helpers) so
+// the new Income Projection card can read the exact same selected period
+// this card shows, rather than each card computing its own answer to
+// "which week." This component's own calculation (computePayrollRows) is
+// untouched.
 export default function PayrollSummary({
   appointments,
   employees,
   employeeHours,
   assignments,
+  rangeStart,
+  rangeEnd,
+  onRangeStartChange,
+  onRangeEndChange,
 }: {
   appointments: Appointment[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
   assignments: AppointmentEmployeeAssignment[];
+  rangeStart: string;
+  rangeEnd: string;
+  onRangeStartChange: (value: string) => void;
+  onRangeEndChange: (value: string) => void;
 }) {
-  const defaultMonday = mondayOfCurrentWeek();
-  const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
-  const [rangeEnd, setRangeEnd] = useState(toDateInputValue(addDays(defaultMonday, 4)));
-
   const { rows, missingHoursCount } = computePayrollRows({ appointments, employees, employeeHours, assignments, rangeStart, rangeEnd });
   const totalHours = rows.reduce((sum, r) => sum + r.hoursWorked, 0);
 
@@ -47,14 +41,14 @@ export default function PayrollSummary({
         <input
           type="date"
           value={rangeStart}
-          onChange={(e) => setRangeStart(e.target.value)}
+          onChange={(e) => onRangeStartChange(e.target.value)}
           className="rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <span className="text-slate-400">&#8594;</span>
         <input
           type="date"
           value={rangeEnd}
-          onChange={(e) => setRangeEnd(e.target.value)}
+          onChange={(e) => onRangeEndChange(e.target.value)}
           className="rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>

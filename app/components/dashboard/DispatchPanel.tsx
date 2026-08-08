@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { Appointment, Client, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
-import { startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
+import IncomeProjection from "@/app/components/dashboard/IncomeProjection";
+import { nowInBusinessTz, startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
 import {
   hasInvalidJobTrackingDuration,
   assignmentHasWorkedHours,
@@ -12,9 +13,30 @@ import {
   deriveAppointmentTrackingStatus,
   resolveWorkedMinutes,
   formatMinutesAsDuration,
+  toDateInputValue,
 } from "@/lib/payroll";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
+
+// Moved here from PayrollSummary.tsx unchanged -- the Mon-Fri default week,
+// now computed once at this level so both Income Projection and Weekly
+// Worked Hours read the exact same selected period (Income Projection is
+// read-only against it; PayrollSummary's existing date inputs remain the
+// one place it's edited).
+function mondayOfCurrentWeek(): Date {
+  const d = nowInBusinessTz();
+  d.setHours(0, 0, 0, 0);
+  const dow = d.getDay(); // 0=Sun..6=Sat
+  const diff = (dow + 6) % 7; // days since Monday
+  d.setDate(d.getDate() - diff);
+  return d;
+}
+
+function addDays(d: Date, n: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + n);
+  return x;
+}
 
 // Phase 5.5E-E1G: this control's own restricted notice, distinct from every
 // other component's. Gated on canUseJobTracking, not canMutateOperationalData
@@ -210,6 +232,10 @@ export default function DispatchPanel({
   onHoursSaved: (entry: EmployeeHours) => void;
   canUseJobTracking: boolean;
 }) {
+  const defaultMonday = mondayOfCurrentWeek();
+  const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
+  const [rangeEnd, setRangeEnd] = useState(toDateInputValue(addDays(defaultMonday, 4)));
+
   const employeeById: Record<string, Employee> = {};
   for (const e of employees) employeeById[e.id] = e;
 
@@ -342,10 +368,24 @@ export default function DispatchPanel({
         )}
       </div>
 
-      {/* 3. Weekly Worked Hours — always visible, independent of selection */}
-      <PayrollSummary appointments={appointments} employees={employees} employeeHours={employeeHours} assignments={assignments} />
+      {/* 3. Income Projection — always visible, independent of selection.
+          Reads the same rangeStart/rangeEnd Weekly Worked Hours below is
+          currently showing/editing. */}
+      <IncomeProjection appointments={appointments} assignments={assignments} rangeStart={rangeStart} rangeEnd={rangeEnd} />
 
-      {/* 4. Employee Worked Hours — administrative task, lives at the
+      {/* 4. Weekly Worked Hours — always visible, independent of selection */}
+      <PayrollSummary
+        appointments={appointments}
+        employees={employees}
+        employeeHours={employeeHours}
+        assignments={assignments}
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
+        onRangeStartChange={setRangeStart}
+        onRangeEndChange={setRangeEnd}
+      />
+
+      {/* 5. Employee Worked Hours — administrative task, lives at the
           bottom. Phase 5.7D-R18: one card per assigned employee (Section
           E.7 -- Teresa may have valid tracked hours and no warning while
           Roxana, on the same job, still needs attention) instead of a
