@@ -21,6 +21,7 @@ export const RATE_LIMIT_BUCKETS = {
   confirmResend: { windowSeconds: 15 * 60, maxAttempts: 3, lockoutSeconds: 30 * 60 },
   login: { windowSeconds: 15 * 60, maxAttempts: 5, lockoutSeconds: 15 * 60 },
   mfaVerify: { windowSeconds: 5 * 60, maxAttempts: 5, lockoutSeconds: 5 * 60 },
+  contact: { windowSeconds: 15 * 60, maxAttempts: 5, lockoutSeconds: 15 * 60 },
 } as const;
 
 export type RateLimitBucket = keyof typeof RATE_LIMIT_BUCKETS;

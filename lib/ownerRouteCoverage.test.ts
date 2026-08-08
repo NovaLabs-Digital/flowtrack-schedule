@@ -48,6 +48,7 @@ const EXEMPT: Record<string, string> = {
   "appointments/cancel/route.ts": "fully public, unguessable-token-based (cancel_token match) -- no session of any kind, owner or otherwise",
   "appointments/job/route.ts": "employee-only: session.role !== \"employee\" is rejected before any data read; never reachable by an owner session",
   "book/availability/route.ts": "public: resolves against the fixed REAL_WORKSPACE_ID constant, no session of any kind",
+  "contact/route.ts": "fully public: no account/session required to send a message, recipient and sender are fixed server-side constants, never workspace-scoped",
   "cron/reconcile-subscriptions/route.ts": "authenticated by CRON_SECRET, not a user session of any kind",
   "cron/reminders/route.ts": "authenticated by CRON_SECRET, not a user session of any kind (per-appointment workspace checks use requireCapabilityForWorkspace with a server-derived workspace id, not a session)",
   "stripe/webhook/route.ts": "authenticated by Stripe's own signature verification, not a user session of any kind",

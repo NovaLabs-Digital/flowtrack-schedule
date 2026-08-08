@@ -95,18 +95,22 @@ describe("app/signup/page.tsx -- generic company-name placeholder (Phase 5.7D-R8
   });
 });
 
-describe("app/signup/page.tsx -- footer Support link (post-launch correction)", () => {
-  test("uses the canonical SUPPORT_MAILTO_URL constant, never a literal address", () => {
-    assert.ok(source.includes('import { SUPPORT_MAILTO_URL } from "@/lib/support";'));
-    assert.ok(!source.includes("support@scheduleflowtrack.com"), "must not hardcode the address inline");
-  });
-
-  test("the footer renders a Support link beside Terms of Service / Privacy Policy", () => {
+describe("app/signup/page.tsx -- footer Contact Us link (replaces the old Support mailto link)", () => {
+  test("the footer renders a Contact Us link pointing to /contact, near Terms of Service / Privacy Policy", () => {
     const footerIdx = source.lastIndexOf("Terms of Service");
     assert.notEqual(footerIdx, -1);
-    const footerBlock = source.slice(footerIdx, footerIdx + 400);
-    const hrefIdx = footerBlock.indexOf("href={SUPPORT_MAILTO_URL}");
-    assert.notEqual(hrefIdx, -1, "expected a Support link near Terms of Service / Privacy Policy");
-    assert.ok(footerBlock.slice(hrefIdx, hrefIdx + 150).includes("Support"));
+    const footerBlock = source.slice(footerIdx, footerIdx + 700);
+    const hrefIdx = footerBlock.indexOf('href="/contact"');
+    assert.notEqual(hrefIdx, -1, "expected a footer link to /contact");
+    assert.ok(footerBlock.slice(hrefIdx, hrefIdx + 100).includes("Contact Us"));
+  });
+
+  test("no SUPPORT_MAILTO_URL import or Support mailto link remains -- every footer click has exactly one purpose", () => {
+    assert.ok(!source.includes("SUPPORT_MAILTO_URL"));
+    assert.ok(!source.includes("@/lib/support"));
+    const footerIdx = source.lastIndexOf("Terms of Service");
+    assert.notEqual(footerIdx, -1);
+    const footerBlock = source.slice(footerIdx, footerIdx + 700);
+    assert.ok(!/>\s*Support\s*</.test(footerBlock), "the redundant 'Support' mailto link must be gone from the footer");
   });
 });

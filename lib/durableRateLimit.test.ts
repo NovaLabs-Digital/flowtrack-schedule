@@ -122,7 +122,13 @@ describe("RATE_LIMIT_BUCKETS -- fixed, documented configuration", () => {
     assert.equal(RATE_LIMIT_BUCKETS.mfaVerify.maxAttempts, 5);
   });
 
-  test("exactly four buckets exist -- signup, confirmResend, login, mfaVerify", () => {
-    assert.deepEqual(Object.keys(RATE_LIMIT_BUCKETS).sort(), ["confirmResend", "login", "mfaVerify", "signup"]);
+  test("exactly five buckets exist -- signup, confirmResend, login, mfaVerify, contact", () => {
+    assert.deepEqual(Object.keys(RATE_LIMIT_BUCKETS).sort(), ["confirmResend", "contact", "login", "mfaVerify", "signup"]);
+  });
+
+  test("contact matches signup's window/attempt shape -- a public form deserves the same abuse bound as public signup", () => {
+    assert.equal(RATE_LIMIT_BUCKETS.contact.windowSeconds, 15 * 60);
+    assert.equal(RATE_LIMIT_BUCKETS.contact.maxAttempts, 5);
+    assert.equal(RATE_LIMIT_BUCKETS.contact.lockoutSeconds, 15 * 60);
   });
 });

@@ -1,6 +1,5 @@
 import Link from "next/link";
 import TryDemoButton from "@/app/components/TryDemoButton";
-import { SUPPORT_MAILTO_URL } from "@/lib/support";
 
 export default function LandingPage() {
   return (
@@ -146,9 +145,9 @@ export default function LandingPage() {
             <Link href="/privacy" className="hover:text-slate-700 transition-colors">
               Privacy Policy
             </Link>
-            <a href={SUPPORT_MAILTO_URL} className="hover:text-slate-700 transition-colors">
-              Support
-            </a>
+            <Link href="/contact" className="hover:text-slate-700 transition-colors">
+              Contact Us
+            </Link>
             <span>Powered by Nova Labs Digital</span>
           </div>
         </div>

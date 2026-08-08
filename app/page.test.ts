@@ -33,18 +33,22 @@ describe("app/page.tsx -- landing page CTA links (Phase 5.7D)", () => {
   });
 });
 
-describe("app/page.tsx -- footer Support link (post-launch correction)", () => {
-  test("uses the canonical SUPPORT_MAILTO_URL constant, never a literal address", () => {
-    assert.ok(source.includes('import { SUPPORT_MAILTO_URL } from "@/lib/support";'));
-    assert.ok(!source.includes("support@scheduleflowtrack.com"), "must not hardcode the address inline");
-  });
-
-  test("the footer renders a Support link using SUPPORT_MAILTO_URL", () => {
+describe("app/page.tsx -- footer Contact Us link (replaces the old Support mailto link)", () => {
+  test("the footer renders a Contact Us link pointing to /contact", () => {
     const footerStart = source.indexOf("{/* Footer */}");
     assert.notEqual(footerStart, -1);
     const footerBlock = source.slice(footerStart);
-    const hrefIdx = footerBlock.indexOf("href={SUPPORT_MAILTO_URL}");
-    assert.notEqual(hrefIdx, -1, "expected a footer link using SUPPORT_MAILTO_URL");
-    assert.ok(footerBlock.slice(hrefIdx, hrefIdx + 150).includes("Support"));
+    const hrefIdx = footerBlock.indexOf('href="/contact"');
+    assert.notEqual(hrefIdx, -1, "expected a footer link to /contact");
+    assert.ok(footerBlock.slice(hrefIdx, hrefIdx + 100).includes("Contact Us"));
+  });
+
+  test("no SUPPORT_MAILTO_URL import or Support mailto link remains -- every footer click has exactly one purpose", () => {
+    assert.ok(!source.includes("SUPPORT_MAILTO_URL"));
+    assert.ok(!source.includes("@/lib/support"));
+    const footerStart = source.indexOf("{/* Footer */}");
+    assert.notEqual(footerStart, -1);
+    const footerBlock = source.slice(footerStart);
+    assert.ok(!/>\s*Support\s*</.test(footerBlock), "the redundant 'Support' mailto link must be gone from the footer");
   });
 });
