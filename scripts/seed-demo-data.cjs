@@ -24,19 +24,32 @@ const { createClient } = require("@supabase/supabase-js");
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 const RESET = process.argv.includes("--reset");
 
+// Must match lib/workspace.ts's DEMO_WORKSPACE_ID exactly -- this script is
+// a standalone CommonJS dev script (not part of the Next.js app bundle), so
+// it can't import that TS module directly; the value is duplicated here
+// rather than re-derived. workspace_id has no database default (there is
+// deliberately no single "default tenant" anymore -- see lib/workspace.ts),
+// so every insert below must set it explicitly, or Postgres rejects the row
+// outright (NOT NULL).
+const DEMO_WORKSPACE_ID = "e3e8f3a7-c114-4d4c-9f15-590188a654b6";
+
 const EMPLOYEES = [
-  { name: "Marcus Bell", phone: "(407) 555-0201", position: "Lawn & Grounds Technician", color: "#22C55E", active: true, is_demo: true },
-  { name: "Priya Nandan", phone: "(407) 555-0202", position: "Cleaning & Turnover Specialist", color: "#3B82F6", active: true, is_demo: true },
-  { name: "Derek Osei", phone: "(407) 555-0203", position: "Maintenance & Inspections", color: "#F59E0B", active: true, is_demo: true },
+  { name: "Marcus Bell", phone: "(407) 555-0201", position: "Lawn & Grounds Technician", color: "#22C55E", active: true, is_demo: true, workspace_id: DEMO_WORKSPACE_ID },
+  { name: "Priya Nandan", phone: "(407) 555-0202", position: "Cleaning & Turnover Specialist", color: "#3B82F6", active: true, is_demo: true, workspace_id: DEMO_WORKSPACE_ID },
+  { name: "Derek Osei", phone: "(407) 555-0203", position: "Maintenance & Inspections", color: "#F59E0B", active: true, is_demo: true, workspace_id: DEMO_WORKSPACE_ID },
 ];
 
+// default_price_cents: a starting/default price only -- never authoritative.
+// Each generated appointment below gets its own price_cents snapshot (see
+// priceCentsForAppointment), which is what Projected Revenue actually reads.
+// Fictional amounts only, chosen to be realistic for the matching service.
 const SERVICES = [
-  { name: "Lawn Mowing & Edging", description: "Routine mowing, edging, and trimming", duration_minutes: 45, active: true, color: "#22C55E", is_demo: true },
-  { name: "Property Inspection", description: "Walkthrough inspection with condition report", duration_minutes: 30, active: true, color: "#F59E0B", is_demo: true },
-  { name: "Window Washing", description: "Interior and exterior window cleaning", duration_minutes: 90, active: true, color: "#38BDF8", is_demo: true },
-  { name: "Pressure Washing", description: "Driveway, walkway, and siding pressure wash", duration_minutes: 120, active: true, color: "#0EA5E9", is_demo: true },
-  { name: "Move-Out Turnover Cleaning", description: "Full turnover cleaning between tenants", duration_minutes: 180, active: true, color: "#A855F7", is_demo: true },
-  { name: "Landscaping & Yard Cleanup", description: "Seasonal yard cleanup and landscaping touch-ups", duration_minutes: 150, active: true, color: "#84CC16", is_demo: true },
+  { name: "Lawn Mowing & Edging", description: "Routine mowing, edging, and trimming", duration_minutes: 45, active: true, color: "#22C55E", is_demo: true, default_price_cents: 4500, workspace_id: DEMO_WORKSPACE_ID },
+  { name: "Property Inspection", description: "Walkthrough inspection with condition report", duration_minutes: 30, active: true, color: "#F59E0B", is_demo: true, default_price_cents: 6500, workspace_id: DEMO_WORKSPACE_ID },
+  { name: "Window Washing", description: "Interior and exterior window cleaning", duration_minutes: 90, active: true, color: "#38BDF8", is_demo: true, default_price_cents: 12000, workspace_id: DEMO_WORKSPACE_ID },
+  { name: "Pressure Washing", description: "Driveway, walkway, and siding pressure wash", duration_minutes: 120, active: true, color: "#0EA5E9", is_demo: true, default_price_cents: 18000, workspace_id: DEMO_WORKSPACE_ID },
+  { name: "Move-Out Turnover Cleaning", description: "Full turnover cleaning between tenants", duration_minutes: 180, active: true, color: "#A855F7", is_demo: true, default_price_cents: 25000, workspace_id: DEMO_WORKSPACE_ID },
+  { name: "Landscaping & Yard Cleanup", description: "Seasonal yard cleanup and landscaping touch-ups", duration_minutes: 150, active: true, color: "#84CC16", is_demo: true, default_price_cents: 15000, workspace_id: DEMO_WORKSPACE_ID },
 ];
 
 const CLIENTS = [
@@ -73,6 +86,7 @@ const CLIENTS = [
   auto_email: false,
   auto_sms: false,
   is_demo: true,
+  workspace_id: DEMO_WORKSPACE_ID,
 }));
 
 const HOURS = [8, 9, 10, 11, 13, 14, 15];
@@ -84,10 +98,29 @@ const NOTE_SAMPLES = [
 ];
 
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function pickIndex(arr) { return Math.floor(Math.random() * arr.length); }
 function randomHex(bytes) {
   let s = "";
   for (let i = 0; i < bytes * 2; i++) s += Math.floor(Math.random() * 16).toString(16);
   return s;
+}
+
+// Deterministic, per-client price variation -- a pure function of the
+// service's own default price and the CLIENTS array's fixed index (never
+// Math.random(), never the client's own DB-generated id, which changes on
+// every reseed). The same (service, clientIndex) pair always produces the
+// same fictional appointment price, so reseeding is predictable and tests
+// can assert exact numbers. This is what demonstrates the real business
+// rule Projected Revenue depends on: the same service can be priced
+// differently for different customers, while appointment.price_cents (not
+// the service default) is what's actually authoritative -- never parsed
+// or derived from the service name.
+const PRICE_VARIANT_CENTS = [0, 2500, -1000, 1500, 500];
+
+function priceCentsForAppointment(defaultPriceCents, clientIndex) {
+  const base = typeof defaultPriceCents === "number" ? defaultPriceCents : 0;
+  const variant = PRICE_VARIANT_CENTS[clientIndex % PRICE_VARIANT_CENTS.length];
+  return Math.max(base + variant, 0);
 }
 
 function buildAppointments(clientIds, serviceRows, employeeIds) {
@@ -122,8 +155,10 @@ function buildAppointments(clientIds, serviceRows, employeeIds) {
       status = "cancelled";
     }
 
+    const clientIndex = pickIndex(clientIds);
+
     rows.push({
-      client_id: pick(clientIds),
+      client_id: clientIds[clientIndex],
       service_type: service.name,
       scheduled_for: start.toISOString(),
       scheduled_end: end.toISOString(),
@@ -137,7 +172,9 @@ function buildAppointments(clientIds, serviceRows, employeeIds) {
       actual_started_at,
       actual_completed_at,
       cancel_token: randomHex(24),
+      price_cents: priceCentsForAppointment(service.default_price_cents, clientIndex),
       is_demo: true,
+      workspace_id: DEMO_WORKSPACE_ID,
     });
   }
 
@@ -145,9 +182,15 @@ function buildAppointments(clientIds, serviceRows, employeeIds) {
   for (let s = 0; s < 2; s++) {
     const seriesId = randomHex(16);
     const service = pick(serviceRows);
-    const clientId = pick(clientIds);
+    const clientIndex = pickIndex(clientIds);
+    const clientId = clientIds[clientIndex];
     const employeeId = pick(employeeIds);
     const hour = pick(HOURS);
+    // Every occurrence in the series gets the exact same price snapshot --
+    // matching the real production rule (appointments/create/route.ts):
+    // a recurring series is priced once at creation, not re-derived per
+    // occurrence.
+    const seriesPriceCents = priceCentsForAppointment(service.default_price_cents, clientIndex);
     for (let occ = 0; occ < 3; occ++) {
       const start = new Date(now);
       start.setDate(start.getDate() + 2 + occ * 7);
@@ -168,7 +211,9 @@ function buildAppointments(clientIds, serviceRows, employeeIds) {
         actual_started_at: null,
         actual_completed_at: null,
         cancel_token: randomHex(24),
+        price_cents: seriesPriceCents,
         is_demo: true,
+        workspace_id: DEMO_WORKSPACE_ID,
       });
     }
   }
@@ -260,14 +305,20 @@ async function main() {
     // employee's own FK (deliberately not cascading, so real historical
     // work is never silently erased by ordinary employee deletion) would
     // otherwise block the employees delete below.
-    await supabase.from("appointments").delete().eq("is_demo", true);
-    await supabase.from("clients").delete().eq("is_demo", true);
-    await supabase.from("employees").delete().eq("is_demo", true);
-    await supabase.from("services").delete().eq("is_demo", true);
+    //
+    // Double-scoped by BOTH workspace_id = DEMO_WORKSPACE_ID AND
+    // is_demo = true -- is_demo alone was sufficient in practice (every
+    // is_demo=true row has always belonged to DEMO_WORKSPACE_ID, verified
+    // live), but a delete predicate should be structurally incapable of
+    // reaching a differently-scoped row, not merely correct by convention.
+    await supabase.from("appointments").delete().eq("workspace_id", DEMO_WORKSPACE_ID).eq("is_demo", true);
+    await supabase.from("clients").delete().eq("workspace_id", DEMO_WORKSPACE_ID).eq("is_demo", true);
+    await supabase.from("employees").delete().eq("workspace_id", DEMO_WORKSPACE_ID).eq("is_demo", true);
+    await supabase.from("services").delete().eq("workspace_id", DEMO_WORKSPACE_ID).eq("is_demo", true);
   }
 
   console.log("Inserting services...");
-  const { data: services, error: svcErr } = await supabase.from("services").insert(SERVICES).select("id, name, duration_minutes");
+  const { data: services, error: svcErr } = await supabase.from("services").insert(SERVICES).select("id, name, duration_minutes, default_price_cents");
   if (svcErr) throw svcErr;
 
   console.log("Inserting employees...");
@@ -308,4 +359,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildAppointments, buildAssignmentRows, hasAppointmentEmployeesTable };
+module.exports = {
+  buildAppointments,
+  buildAssignmentRows,
+  hasAppointmentEmployeesTable,
+  priceCentsForAppointment,
+  SERVICES,
+};

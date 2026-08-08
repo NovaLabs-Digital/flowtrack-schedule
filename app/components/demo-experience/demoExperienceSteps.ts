@@ -18,6 +18,14 @@ export type DemoExperienceStep = {
 // Steps 0-6 (Welcome, Schedule, Appointment Details, Edit Service, Clients,
 // Employees, Services) per the approved storyboard. Steps 7-10 (Add
 // Appointment, Mobile, Explore, Completion) are added in later milestones.
+//
+// "dispatch-insights" (added after the original storyboard shipped) covers
+// Projected Revenue, Weekly Worked Hours, Employee Worked Hours, and Job
+// Tracking together in a single step -- all four live in the same
+// right-hand dispatch sidebar the tester is already looking at right after
+// selecting an appointment, so one combined, non-action step (view only,
+// like Welcome/Completion) explains them without lengthening the tour with
+// four near-identical "look at this card" steps.
 export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "welcome",
@@ -42,6 +50,13 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     targetSelector: '[data-tour="appointment-detail"]',
     actionRequired: true,
     actionId: "click-edit-appointment",
+  },
+  {
+    id: "dispatch-insights",
+    title: "Revenue & Worked Hours",
+    body: "This panel keeps you on top of the business at a glance. Projected Revenue estimates income and hours for your selected date range. Weekly Worked Hours and Employee Worked Hours track what your team has actually logged, backed by automatic Job Tracking as employees clock in and out.",
+    targetSelector: '[data-tour="dispatch-sidebar"]',
+    actionRequired: false,
   },
   {
     id: "edit-service",

@@ -409,7 +409,7 @@ export default function DashboardShell({
 
       {/* Right dispatch panel — hidden on phone landscape */}
       {!isPhoneLandscape && (
-        <aside className="shrink-0 w-[380px] p-2 pl-0">
+        <aside data-tour="dispatch-sidebar" className="shrink-0 w-[380px] p-2 pl-0">
           <DispatchPanel
             appointments={appointments}
             clients={clients}

@@ -134,6 +134,7 @@ export default function DemoExperienceOverlay() {
             <div className="mt-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Today you</div>
             <ul className="mt-1.5 space-y-1 text-sm text-slate-700">
               <li>✓ Managed appointments</li>
+              <li>✓ Reviewed revenue &amp; worked hours</li>
               <li>✓ Edited services</li>
               <li>✓ Worked with employees</li>
               <li>✓ Managed clients</li>
