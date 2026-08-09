@@ -195,3 +195,21 @@ describe("stale/programmatic invocation cannot bypass the guard", () => {
     assert.equal(guardCount, 1, "exactly one guard, at the top of execute(), covers every call site by construction");
   });
 });
+
+describe("Phase 5C: workspace-timezone-aware From/To display", () => {
+  test("Props declares timezone: string, and DashboardShell passes timezone={timezone}", () => {
+    assert.ok(source.includes("timezone: string;"));
+    const idx = shellSource.indexOf("<MoveConfirmDialog");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("formatDateTime takes an explicit tz parameter and both From/To call sites pass the timezone prop", () => {
+    assert.ok(source.includes("function formatDateTime(iso: string, tz: string)"));
+    assert.ok(source.includes("toBusinessLocal(iso, tz)"));
+    assert.ok(source.includes("formatDateTime(appointment.scheduled_for, timezone)"));
+    assert.ok(source.includes("formatDateTime(scheduledFor, timezone)"));
+  });
+});

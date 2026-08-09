@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
 import { effectiveBusinessHours, normalizeBusinessHours } from "@/lib/businessHours";
+import { effectiveTimezone, normalizeTimezone } from "@/lib/timezone";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -50,11 +51,6 @@ export async function GET() {
       smsConfigured: !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN && !!process.env.TWILIO_FROM_NUMBER,
       activeStaff: activeStaff ?? 0,
       totalStaff: totalStaff ?? 0,
-      // Mirrors BUSINESS_TZ in lib/timezone.ts, which every scheduling
-      // computation is actually anchored to — shown read-only in Settings
-      // since there's no per-company timezone column yet, and this is the
-      // real value in effect, not a placeholder.
-      timezoneLabel: "Eastern Time (US & Canada) — GMT-04:00",
     };
 
     // Phase 4: effective/current Business Hours -- the saved value if
@@ -62,7 +58,14 @@ export async function GET() {
     // always effectively used (see lib/businessHours.ts), so a workspace
     // that has never saved Business Hours sees the exact behavior already
     // in effect for its public-booking availability.
-    const settings = data ? { ...data, business_hours: effectiveBusinessHours(data.business_hours) } : { business_hours: effectiveBusinessHours(null) };
+    //
+    // Phase 5B: effective/current Time Zone, same pattern -- the saved
+    // value if present, otherwise the existing America/New_York fallback
+    // (see lib/timezone.ts). Foundation only: no scheduling/display
+    // consumer reads this yet (see lib/timezone.ts's Phase 5B header note).
+    const settings = data
+      ? { ...data, business_hours: effectiveBusinessHours(data.business_hours), timezone: effectiveTimezone(data.timezone) }
+      : { business_hours: effectiveBusinessHours(null), timezone: effectiveTimezone(null) };
 
     return json({ ok: true, settings, status });
   } catch (e: any) {
@@ -102,6 +105,11 @@ export async function POST(req: Request) {
       const validation = normalizeBusinessHours(body.business_hours);
       if (!validation.ok) return json({ error: validation.error }, 400);
       fields.business_hours = validation.value;
+    }
+    if (body.timezone !== undefined) {
+      const validation = normalizeTimezone(body.timezone);
+      if (!validation.ok) return json({ error: validation.error }, 400);
+      fields.timezone = validation.value;
     }
 
     const { data: existing } = await supabaseAdmin

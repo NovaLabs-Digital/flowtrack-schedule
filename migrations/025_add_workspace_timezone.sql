@@ -1,0 +1,43 @@
+-- 025: Phase 5B (Workspace Time Zone Foundation) -- adds a new, additive,
+-- nullable column: company_settings.timezone.
+--
+-- No existing column, row, index, policy, or other table is touched. No row
+-- is deleted or rewritten. No appointment timestamp is touched or rewritten
+-- -- this migration only adds storage for a workspace's own IANA timezone
+-- preference; it does not itself change how any existing timestamp is
+-- interpreted or displayed. Safely re-runnable (ADD COLUMN IF NOT EXISTS).
+--
+-- NULL means "this workspace has not saved a custom Time Zone" -- every
+-- existing company_settings row simply has NULL after this migration. The
+-- application (see lib/timezone.ts's effectiveTimezone) treats a NULL value
+-- as the same America/New_York default every workspace has always
+-- effectively used, so this migration does not change any existing workspace's scheduling/display behavior merely by adding the column. No
+-- backfill is performed or needed.
+--
+-- Stores IANA timezone identifiers only (e.g. "America/New_York"), never a
+-- timezone abbreviation (EST/PST) or UTC offset -- an abbreviation is not
+-- DST-aware and would silently drift twice a year. The curated allowlist of
+-- currently-supported values (lib/timezone.ts's TIMEZONE_OPTIONS) is
+-- intentionally validated in application code, not SQL -- matching this
+-- project's established preference (business_hours' migration 024, and
+-- repeat_months' migration 023 before it) for simple, maintainable SQL over
+-- complex/brittle business-rule constraints. A SQL CHECK ... IN (...)
+-- allowlist would require a new migration every time the supported list
+-- grows; application validation does not.
+--
+-- Phase 5B is foundation only: this column is not yet read by any
+-- scheduling-critical consumer (appointment create/edit, calendar display,
+-- Business Hours, public booking, recurrence generation, reminders, or
+-- reporting) -- those are wired in during Phase 5C-5E, before this feature
+-- is ever deployed to production. Saving a Time Zone in Settings during
+-- Phase 5B has no observable effect on scheduling yet.
+
+ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS timezone text;
+
+-- =============================================================================
+-- Backfill.
+--
+-- None. Every existing company_settings row simply has timezone = NULL after this migration -- exactly the pre-existing "using the default
+-- America/New_York" state this feature is designed to represent, not a
+-- value this migration invents or infers.
+-- =============================================================================

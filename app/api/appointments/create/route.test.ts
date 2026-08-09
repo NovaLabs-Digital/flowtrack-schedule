@@ -126,6 +126,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
         // single subscriptions row would actually resolve to twice in
         // production.
         workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        company_settings: [{ data: { timezone: null } }],
         subscriptions: [{ data: row }, { data: row }],
         clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
         appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -140,6 +141,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
 
   test("exact trusted demo workspace (tester) permits creation with zero subscriptions-table queries (real short-circuit)", async () => {
     resetFixtures({
+      company_settings: [{ data: { timezone: null } }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Demo Client", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
     });
@@ -233,6 +235,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
 
     test("missing service_type + entitled workspace -> the existing 400 'Missing required fields' response", async () => {
       resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req({ scheduled_for: "2026-08-03T14:00:00.000Z" }));
@@ -247,6 +250,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   test("a provided price is stored as an integer-cents snapshot on the created row", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -263,6 +267,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   test("Phase 5.7D-R17B: reproduces the exact production scenario -- a $200.00 'Kitchen Renovation' selection sends price_cents: 20000", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -278,6 +283,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   test("no price provided stores null -- not zero, not omitted", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -293,6 +299,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   test("an explicit $0.00 price (integer 0) is stored as 0, distinct from no price", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -308,6 +315,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   test("an invalid price is rejected with 400 before any client or appointment write", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -319,6 +327,7 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
   test("every occurrence in a newly created recurring series receives the identical price snapshot", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       // repeat_weeks: 26 -> intervalDays 182, generateFutureDates(182-day
@@ -362,6 +371,7 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
   test("a valid monthly request (repeat_months: 12) generates the origin plus every future occurrence, storing frequency_type/repeat_months on each row", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       // repeat_months: 12 -> MAX_MONTHLY_HORIZON_MONTHS (24) / 12 = 2 future
@@ -384,6 +394,7 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
   test("every occurrence in a newly created monthly series receives the identical price snapshot", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
@@ -400,6 +411,7 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
   test("a monthly series assigns the same employees (including multiple) to every generated occurrence", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
@@ -420,6 +432,7 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
   test("missing repeat_months on a monthly request is rejected with 400, before any client or appointment write", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -432,6 +445,7 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
     test(`repeat_months=${JSON.stringify(bad)} on a monthly request is rejected with 400 -- never silently falls back to a single one-time appointment`, async () => {
       resetFixtures({
         workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        company_settings: [{ data: { timezone: null } }],
         subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       });
       sessionToReturn = OWNER_SESSION;
@@ -445,6 +459,7 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
   test("a monthly series' notifications are unaffected -- only the first occurrence sends a confirmation, exactly like weekly", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
@@ -486,6 +501,7 @@ describe("Phase 5.7D-R19: team_color on create", () => {
   test("a valid hex value is stored, normalized to uppercase", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -501,6 +517,7 @@ describe("Phase 5.7D-R19: team_color on create", () => {
   test("no team_color provided stores null", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -516,6 +533,7 @@ describe("Phase 5.7D-R19: team_color on create", () => {
   test("an invalid team_color is rejected with 400 before any client or appointment write", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -527,6 +545,7 @@ describe("Phase 5.7D-R19: team_color on create", () => {
   test("every occurrence in a newly created recurring series receives the identical team_color snapshot", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
@@ -567,6 +586,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("creating with two employees inserts one appointment_employees row per employee, referencing the created appointment", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
@@ -586,6 +606,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("exactly one employee dual-writes appointments.employee_id to that employee's id", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }] }],
@@ -603,6 +624,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("two or more employees dual-write appointments.employee_id to null -- never an arbitrary 'primary' pick", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
@@ -620,6 +642,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("zero employees -> no appointment_employees insert call at all, appointments.employee_id is null", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -636,6 +659,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("an employee_id not belonging to this workspace is rejected with 404 before any appointment write", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }],
       employees: [{ data: [] }], // neither ID found in this workspace
@@ -649,6 +673,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("duplicate employee_ids in the request are deduped -- exactly one assignment row per unique employee", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }] }],
@@ -666,6 +691,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
   test("a recurring series assigns the same employees to every generated occurrence, not recomputed per date", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
@@ -897,15 +923,17 @@ describe("Phase 4: Business Hours enforcement on public create (owner/tester rem
   test("owner-created appointments remain exempt from Business Hours entirely -- a time far outside any plausible saved range still succeeds", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
     });
     sessionToReturn = OWNER_SESSION;
-    // 10:00pm ET -- well outside any plausible saved business hours. No
-    // company_settings fixture is even queued for this branch, proving the
-    // owner path never consults Business Hours at all (it would throw
-    // FAKE_SUPABASE_NO_QUEUED_RESPONSE if it tried).
+    // 10:00pm ET -- well outside any plausible saved business hours. Phase
+    // 5D: the owner branch now queries company_settings once too, but only
+    // to resolve the trusted timezone for recurrence generation -- the
+    // fixture above deliberately omits business_hours entirely, proving
+    // isWithinBusinessHours is still never consulted for this branch.
     const res = await POST(req(authBody({ scheduled_for: "2026-08-04T02:00:00.000Z", notify_channel: "none" })));
     assert.equal(res.status, 200);
   });
@@ -915,6 +943,7 @@ describe("notification behavior is preserved exactly once entitled, on both bran
   test("authenticated: a provider failure on one channel is isolated -- the other channel still attempts, mutation still succeeds", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
@@ -977,6 +1006,7 @@ describe("confirmation notifications identify the workspace's own business, not 
   test("confirmation email uses the workspace's company name as both the From display name and the body sign-off", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-2" }] }],
@@ -992,9 +1022,30 @@ describe("confirmation notifications identify the workspace's own business, not 
     assert.ok(!currentNotify.emailCalls[0].text.includes("ScheduleFlowTrack"), "the generic platform sign-off must be replaced, not merely supplemented");
   });
 
+  test("Phase 5E: confirmation email/SMS format the appointment time in the workspace's own resolved timezone, not a hardcoded Eastern default", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: "America/Los_Angeles" } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-tz" }] }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    // authBody()'s default scheduled_for is 2026-08-03T14:00:00.000Z --
+    // 10:00 AM Eastern, but 7:00 AM Pacific for this LA workspace.
+    const res = await POST(req(authBody()));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 1);
+    assert.ok(currentNotify.emailCalls[0].text.includes("7:00 AM"), currentNotify.emailCalls[0].text);
+    assert.ok(!currentNotify.emailCalls[0].text.includes("10:00 AM"));
+    assert.ok(currentNotify.smsCalls[0].body.includes("7:00 AM"));
+  });
+
   test("confirmation SMS body identifies the business by name", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-3" }] }],
@@ -1014,6 +1065,7 @@ describe("confirmation notifications identify the workspace's own business, not 
   test("a workspace with no company name set falls back to ScheduleFlowTrack rather than breaking the notification", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-4" }] }],
@@ -1033,6 +1085,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
   test("authenticated: mutation allowed, notification denied -> creation succeeds unchanged, zero provider calls, zero messages_sent, notify client re-fetch skipped", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData: allowed
         { data: subscriptionRow({ stripe_status: "canceled" }) }, // canSendNotifications: denied
@@ -1055,6 +1108,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
   test("authenticated: mutation allowed, notification entitlement check query_error -> fails closed, creation still succeeds, zero provider calls", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) },
         { error: { message: "simulated DB error" } },
@@ -1073,6 +1127,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
   test("authenticated: a spoofed workspace_id in the body does not change which workspace's notification capability is checked", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
       subscriptions: [
         { data: subscriptionRow({ stripe_status: "active" }) },
         { data: subscriptionRow({ stripe_status: "canceled" }) },
@@ -1114,6 +1169,7 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
 
   test("tester/demo creation never reaches a notification-capability check at all (existing !isTester short-circuit, zero subscriptions queries)", async () => {
     resetFixtures({
+      company_settings: [{ data: { timezone: null } }],
       clients: [{ data: { id: "client-1" } }, { data: { name: "Demo Client", email: null, phone: null, auto_email: false, auto_sms: false } }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
     });
@@ -1168,5 +1224,96 @@ describe("the two entitlement branches call distinct, correctly-scoped gates (so
     const sendSmsIndex = routeSource.indexOf("sendSms(");
     assert.ok(notifyGateIndex > -1 && sendEmailIndex > -1 && sendSmsIndex > -1);
     assert.ok(notifyGateIndex < sendEmailIndex && notifyGateIndex < sendSmsIndex);
+  });
+});
+
+describe("Phase 5D: trusted workspace timezone drives Business Hours enforcement and recurrence generation", () => {
+  test("a saved non-default timezone (Pacific) actually changes whether a given instant is within Business Hours -- 8:00 AM New York (within default hours) is 5:00 AM Pacific (before opening) for an LA workspace", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, timezone: "America/Los_Angeles" } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+    });
+    sessionToReturn = { role: "none" };
+    // 2026-08-03T12:00:00.000Z = 8:00 AM ET (within default hours) but
+    // 5:00 AM PT (before the 7:00 AM PT open) -- proves the check actually
+    // ran against the workspace's OWN saved timezone, not a hardcoded NY
+    // assumption.
+    const res = await POST(req(publicBody({ scheduled_for: "2026-08-03T12:00:00.000Z" })));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "That time is outside business hours. Please choose another time." });
+  });
+
+  test("the same instant is accepted for the default (NY) workspace timezone -- proves the LA rejection above is genuinely timezone-driven, not a fixed-hour coincidence", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      clients: [
+        { data: null },
+        { data: null },
+        { data: { id: "new-client-1" } },
+        { data: { name: "Jane Public", email: "jane@public.example", phone: "+15559876543", auto_email: true, auto_sms: true } },
+      ],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody({ scheduled_for: "2026-08-03T12:00:00.000Z" })));
+    assert.equal(res.status, 200);
+  });
+
+  test("a timezone field included in the request body is silently ignored -- there is no such input the caller can spoof", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, timezone: "America/Los_Angeles" } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody({ scheduled_for: "2026-08-03T12:00:00.000Z", timezone: "America/New_York" })));
+    assert.equal(res.status, 400, "the spoofed body timezone must not override the trusted, server-resolved LA timezone");
+  });
+
+  test("a recurring series whose generated occurrence lands on a nonexistent DST local time is rejected atomically -- 400, zero appointment/assignment writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: null } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }],
+      appointments: [...HAS_COLUMN_OK],
+    });
+    sessionToReturn = OWNER_SESSION;
+    // 2026-02-22T07:30:00.000Z = 2:30 AM New York (a Sunday). +1 week lands
+    // on 2026-03-08 2:30 AM New York -- the exact spring-forward gap.
+    const res = await POST(req(authBody({
+      scheduled_for: "2026-02-22T07:30:00.000Z",
+      frequency_type: "weekly",
+      repeat_weeks: 1,
+      notify_channel: "none",
+    })));
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /daylight-saving/);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "insert"), []);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointment_employees"), []);
+  });
+
+  test("the exact same origin/frequency succeeds for a workspace timezone that doesn't hit the gap (Arizona, no DST)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      company_settings: [{ data: { timezone: "America/Phoenix" } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      // 182-day horizon / 7-day interval = 26 future occurrences, +1 origin = 27 rows.
+      appointments: [...HAS_COLUMN_OK, { data: Array.from({ length: 27 }, (_, i) => ({ id: `appt-${i}` })) }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({
+      scheduled_for: "2026-02-22T09:30:00.000Z", // 2:30 AM Arizona (no DST, never a gap)
+      frequency_type: "weekly",
+      repeat_weeks: 1,
+      notify_channel: "none",
+    })));
+    assert.equal(res.status, 200);
   });
 });

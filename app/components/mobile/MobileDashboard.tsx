@@ -46,6 +46,11 @@ type Props = {
   // still just the Phase 5.5B browser-safe projection, never a raw
   // EntitlementResult.
   canMutateOperationalData: boolean;
+  // Phase 5C: the workspace's own resolved timezone -- controls "today"/day-
+  // strip navigation and every appointment's displayed date/time, threaded
+  // down to MobileAppointmentCard/MobileAppointmentDetail/MobileSchedule.
+  // Never the device's own ambient timezone.
+  timezone: string;
 };
 
 function addDays(d: Date, n: number) {
@@ -88,6 +93,7 @@ export default function MobileDashboard({
   finalAccessDate,
   readOnlyEndsAt,
   canMutateOperationalData,
+  timezone,
 }: Props) {
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
@@ -105,7 +111,7 @@ export default function MobileDashboard({
     }
   }
 
-  const today = nowInBusinessTz();
+  const today = nowInBusinessTz(timezone);
   const selectedDate = addDays(today, dayOffset);
   const isToday = sameDay(selectedDate, today);
 
@@ -142,7 +148,7 @@ export default function MobileDashboard({
   }
 
   const dayAppts = appointments
-    .filter((a) => a.status !== "cancelled" && sameDay(toBusinessLocal(a.scheduled_for), selectedDate))
+    .filter((a) => a.status !== "cancelled" && sameDay(toBusinessLocal(a.scheduled_for, timezone), selectedDate))
     .sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime());
 
   const strip = [-2, -1, 0, 1, 2].map((i) => addDays(selectedDate, i));
@@ -162,6 +168,7 @@ export default function MobileDashboard({
         recoveryAction={recoveryAction}
         finalAccessDate={finalAccessDate}
         readOnlyEndsAt={readOnlyEndsAt}
+        timezone={timezone}
       />
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {selectedAppt ? (
@@ -178,6 +185,7 @@ export default function MobileDashboard({
             }}
             onViewClient={() => setClientDrawerId(selectedAppt.client_id)}
             canMutateOperationalData={canMutateOperationalData}
+            timezone={timezone}
           />
         ) : (
           <>
@@ -273,6 +281,7 @@ export default function MobileDashboard({
                         serviceColor={serviceColorByName[a.service_type] ?? null}
                         durationMinutes={scheduledMinutes(a, services)}
                         onTap={() => setSelectedApptId(a.id)}
+                        timezone={timezone}
                       />
                     ))
                   )}
@@ -310,6 +319,7 @@ export default function MobileDashboard({
                 serviceColorByName={serviceColorByName}
                 getDurationMinutes={(a) => scheduledMinutes(a, services)}
                 onSelectAppointment={setSelectedApptId}
+                timezone={timezone}
               />
             )}
 
@@ -329,6 +339,7 @@ export default function MobileDashboard({
           client={drawerClient}
           appointments={appointments}
           onClose={() => setClientDrawerId(null)}
+          timezone={timezone}
         />
       )}
     </div>

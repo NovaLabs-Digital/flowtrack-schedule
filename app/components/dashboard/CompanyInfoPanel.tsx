@@ -6,6 +6,7 @@ import SettingsToggle from "@/app/components/dashboard/SettingsToggle";
 import CompanyStatusStrip from "@/app/components/dashboard/CompanyStatusStrip";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { WEEKDAY_KEYS, type WeekdayKey } from "@/lib/businessHours";
+import { TIMEZONE_OPTIONS } from "@/lib/timezone";
 
 // Phase 5.5E-E1F: two separate logical mutation-control areas in this
 // panel -- Company Information and Automation are independent cards with
@@ -21,10 +22,15 @@ const AUTOMATION_NOTICE_ID = "company-automation-restricted-notice";
 // so it gets its own notice id, matching the Company Information/Automation
 // precedent above.
 const HOURS_NOTICE_ID = "company-hours-restricted-notice";
+// Phase 5B: Time Zone becomes its own real, editable card (replacing the
+// former read-only preview) -- own notice id, same precedent as above.
+const TZ_NOTICE_ID = "company-timezone-restricted-notice";
 const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
+const TZ_CHANGE_WARNING =
+  "Changing the time zone changes how appointment times are displayed and scheduled going forward. Existing appointment timestamps are not rewritten.";
 
 type CompanyForm = { company_name: string; phone: string; email: string; address: string; city: string; state: string; zip: string };
-type Status = { emailConfigured: boolean; smsConfigured: boolean; activeStaff: number; totalStaff: number; timezoneLabel: string };
+type Status = { emailConfigured: boolean; smsConfigured: boolean; activeStaff: number; totalStaff: number };
 
 type TimeRange = { start: string; end: string };
 type BusinessHoursForm = Record<WeekdayKey, TimeRange[]>;
@@ -173,6 +179,20 @@ export default function CompanyInfoPanel({
   const [hoursSaving, setHoursSaving] = useState(false);
   const [hoursMsg, setHoursMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // Phase 5B (Workspace Time Zone Foundation) -- real, persisted
+  // (company_settings.timezone), its own card with its own Save, matching
+  // Business Hours' independent-save precedent immediately above. Starts
+  // at the existing global default until the load effect below replaces it
+  // with the server's effective value (the saved value, or the
+  // America/New_York fallback) -- never a guess. NOT yet wired into any
+  // scheduling/display/recurrence/notification consumer -- see
+  // lib/timezone.ts's own Phase 5B header note; saving a different value
+  // here has no observable effect until Phases 5C-5E.
+  const [timezone, setTimezone] = useState<string>("America/New_York");
+  const [timezoneSaved, setTimezoneSaved] = useState<string>("America/New_York");
+  const [tzSaving, setTzSaving] = useState(false);
+  const [tzMsg, setTzMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
   // Company Preferences — preview only, nothing persisted.
   const [defaultSlot, setDefaultSlot] = useState("30 minutes");
   const [buffer, setBuffer] = useState("15 minutes");
@@ -220,6 +240,13 @@ export default function CompanyInfoPanel({
           }
           setBusinessHours(nextHours);
           setBusinessHoursSaved(nextHours);
+
+          // s.timezone is always the server's already-effective value
+          // (saved, or the America/New_York fallback) -- coerced
+          // defensively here the same way every other loaded field above is.
+          const nextTz = typeof s.timezone === "string" && s.timezone ? s.timezone : "America/New_York";
+          setTimezone(nextTz);
+          setTimezoneSaved(nextTz);
         }
         if (data.status) setStatus(data.status);
       })
@@ -232,6 +259,7 @@ export default function CompanyInfoPanel({
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const automationDirty = bookingEnabled !== bookingSaved || notificationsEnabled !== notificationsSaved;
   const hoursDirty = JSON.stringify(businessHours) !== JSON.stringify(businessHoursSaved);
+  const tzDirty = timezone !== timezoneSaved;
 
   // Toggling a day open seeds it with the canonical Mon-Fri fallback range
   // (07:00-17:00) so the UI never shows "Open" with zero ranges -- Closed is
@@ -276,6 +304,30 @@ export default function CompanyInfoPanel({
       setHoursMsg({ type: "error", text: "Network error. Please try again." });
     } finally {
       setHoursSaving(false);
+    }
+  }
+
+  async function handleSaveTimezone() {
+    if (!canMutateOperationalData) return;
+    setTzSaving(true);
+    setTzMsg(null);
+    try {
+      const res = await fetch("/api/settings/company", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timezone }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setTzMsg({ type: "error", text: data?.error || "Save failed." });
+        return;
+      }
+      setTimezoneSaved(timezone);
+      setTzMsg({ type: "success", text: "Saved." });
+    } catch {
+      setTzMsg({ type: "error", text: "Network error. Please try again." });
+    } finally {
+      setTzSaving(false);
     }
   }
 
@@ -445,14 +497,6 @@ export default function CompanyInfoPanel({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Time Zone</label>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                {status?.timezoneLabel ?? "Eastern Time (US & Canada)"}
-              </div>
-              <div className="text-[11px] text-slate-400 mt-1">Matches your appointment scheduling — not yet editable here.</div>
-            </div>
-
-            <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
                 Website <span className="font-normal text-slate-400">(preview)</span>
               </label>
@@ -494,6 +538,65 @@ export default function CompanyInfoPanel({
                 Retry
               </button>
             )}
+          </div>
+        )}
+      </SettingsCard>
+
+      <SettingsCard
+        id="timezone-card"
+        title="Time Zone"
+        helper="The time zone your business operates in."
+        headerRight={
+          <CapabilityGatedButton
+            allowed={canMutateOperationalData}
+            disabled={tzSaving || !tzDirty}
+            onClick={handleSaveTimezone}
+            ariaDescribedBy={TZ_NOTICE_ID}
+            className={primaryBtnCls}
+          >
+            {tzSaving ? "Saving..." : "Save Changes"}
+          </CapabilityGatedButton>
+        }
+      >
+        <div className="max-w-xs">
+          <label className="block text-xs font-medium text-slate-600 mb-1">Time Zone</label>
+          <select
+            value={timezone}
+            onChange={(e) => setTimezone(e.target.value)}
+            disabled={!canMutateOperationalData}
+            className={selectCls}
+          >
+            {TIMEZONE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <div className="text-[11px] text-slate-400 mt-1">{timezone}</div>
+        </div>
+
+        {tzDirty && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {TZ_CHANGE_WARNING}
+          </div>
+        )}
+
+        <div className="flex items-center justify-between pt-1">
+          <DirtyHint dirty={tzDirty} />
+        </div>
+
+        {!canMutateOperationalData && (
+          <div id={TZ_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            {RESTRICTED_WORDING}
+          </div>
+        )}
+
+        {tzMsg && (
+          <div
+            className={[
+              "rounded-xl border px-3 py-2 text-xs",
+              tzMsg.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
+            ].join(" ")}
+          >
+            {tzMsg.text}
           </div>
         )}
       </SettingsCard>

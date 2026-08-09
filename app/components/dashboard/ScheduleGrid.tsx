@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
-import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
+import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";
 import { needsWorkedHoursAttention } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
@@ -11,12 +11,12 @@ function formatDay(d: Date) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 }
 
-function formatWeekRange(days: Date[]) {
+function formatWeekRange(days: Date[], timezone: string) {
   if (days.length === 0) return "";
   const first = days[0];
   const last = days[days.length - 1];
   const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric" };
-  if (first.getFullYear() !== nowInBusinessTz().getFullYear()) {
+  if (first.getFullYear() !== nowInBusinessTz(timezone).getFullYear()) {
     (opts as any).year = "numeric";
   }
   return `${first.toLocaleDateString(undefined, opts)} — ${last.toLocaleDateString(undefined, opts)}`;
@@ -37,9 +37,9 @@ function addDays(d: Date, n: number) {
   return x;
 }
 
-function viewDays(viewMode: ViewMode, weekOffset: number) {
-  const base = addDays(startOfWeek(nowInBusinessTz()), weekOffset * 7);
-  if (viewMode === "day") return [addDays(nowInBusinessTz(), weekOffset * 7)];
+function viewDays(viewMode: ViewMode, weekOffset: number, timezone: string) {
+  const base = addDays(startOfWeek(nowInBusinessTz(timezone)), weekOffset * 7);
+  if (viewMode === "day") return [addDays(nowInBusinessTz(timezone), weekOffset * 7)];
   if (viewMode === "weekdays") return [0, 1, 2, 3, 4].map((i) => addDays(base, i));
   return [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(base, i));
 }
@@ -88,8 +88,8 @@ function formatTime(d: Date) {
   return m === 0 ? `${h12} ${ampm}` : `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
-function timeRange(iso: string, mins: number) {
-  const start = toBusinessLocal(iso);
+function timeRange(iso: string, mins: number, timezone: string) {
+  const start = toBusinessLocal(iso, timezone);
   const end = new Date(start.getTime() + mins * 60_000);
   return `${formatTime(start)} – ${formatTime(end)}`;
 }
@@ -123,7 +123,7 @@ const QUARTER_MINUTES = [0, 15, 30, 45];
 
 type LayoutInfo = { column: number; totalColumns: number };
 
-function computeOverlapLayout(appts: Appointment[], startHour: number, durationFor: (s: string) => number): Map<string, LayoutInfo> {
+function computeOverlapLayout(appts: Appointment[], startHour: number, durationFor: (s: string) => number, timezone: string): Map<string, LayoutInfo> {
   const layout = new Map<string, LayoutInfo>();
   if (appts.length === 0) return layout;
 
@@ -132,7 +132,7 @@ function computeOverlapLayout(appts: Appointment[], startHour: number, durationF
     // (rawStart) is used separately for the duration delta, since mixing the two
     // would shift the computed duration by the runtime's ambient UTC offset.
     const rawStart = new Date(a.scheduled_for);
-    const localStart = toBusinessLocal(a.scheduled_for);
+    const localStart = toBusinessLocal(a.scheduled_for, timezone);
     const startMin = localStart.getHours() * 60 + localStart.getMinutes();
     let dur: number;
     if (a.scheduled_end) {
@@ -212,6 +212,7 @@ export default function ScheduleGrid({
   onDropAppointment,
   weekOffset,
   canMutateOperationalData,
+  timezone,
 }: {
   viewMode: ViewMode;
   clients: Client[];
@@ -232,6 +233,11 @@ export default function ScheduleGrid({
   onDropAppointment?: (appointmentId: string, scheduledFor: string, scheduledEnd: string | null) => void;
   weekOffset: number;
   canMutateOperationalData: boolean;
+  // Phase 5C: the business's own resolved timezone -- controls "today"/
+  // week-range computation, appointment vertical placement, chip time
+  // labels, and (via handleDrop below) what a drag/drop reschedule actually
+  // saves. Never the browser/device's own ambient timezone.
+  timezone: string;
 }) {
   const dragEnabled = !!onDropAppointment;
   // Phase 5.5E-E1B: dragging always initiates a reschedule mutation (via
@@ -253,7 +259,7 @@ export default function ScheduleGrid({
   function durationFor(serviceType: string) {
     return serviceDurations[serviceType] ?? 60;
   }
-  const days = viewDays(viewMode, weekOffset);
+  const days = viewDays(viewMode, weekOffset, timezone);
 
   const startHour = 7;
   const endHour = 18;
@@ -262,7 +268,7 @@ export default function ScheduleGrid({
 
   const apptsInView = appointments.filter((a) => {
     if (a.status === "cancelled") return false;
-    const apptDate = toBusinessLocal(a.scheduled_for);
+    const apptDate = toBusinessLocal(a.scheduled_for, timezone);
     return days.some((d) => d.toDateString() === apptDate.toDateString());
   });
 
@@ -305,7 +311,7 @@ export default function ScheduleGrid({
 
   function apptsForDay(d: Date) {
     return apptsInView.filter(
-      (a) => toBusinessLocal(a.scheduled_for).toDateString() === d.toDateString()
+      (a) => toBusinessLocal(a.scheduled_for, timezone).toDateString() === d.toDateString()
     );
   }
 
@@ -322,9 +328,21 @@ export default function ScheduleGrid({
     const appt = appointments.find((a) => a.id === id);
     if (!appt) return;
 
+    // `day` is a business-tz-anchored ("fake local") Date -- its own native
+    // getFullYear/getMonth/getDate agree with the business's calendar date
+    // regardless of the runtime's ambient offset, so extracting them (never
+    // calling setHours/toISOString directly on it) and resolving the drop
+    // target through zonedDateTimeToUTC is what makes a card dropped on
+    // "Monday 9:00 AM" actually mean 9:00 AM in the BUSINESS's timezone,
+    // not the browser/device's. (Native setHours+toISOString here, as this
+    // used to do, silently reinterpreted the drop in the device's own zone.)
+    const dateStr = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    const timeStr = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    const converted = zonedDateTimeToUTC(dateStr, timeStr, timezone);
+    if (!converted.ok) return;
+
     const oldStart = new Date(appt.scheduled_for);
-    const newStart = new Date(day);
-    newStart.setHours(hour, minute, 0, 0);
+    const newStart = new Date(converted.iso);
 
     if (newStart.getTime() === oldStart.getTime()) return;
 
@@ -343,7 +361,7 @@ export default function ScheduleGrid({
       <div className="flex items-center justify-between border-b px-4 py-3 shrink-0">
         <div>
           <div className="text-sm font-semibold text-slate-900">Schedule</div>
-          <div className="text-xs text-slate-500">{formatWeekRange(days)}</div>
+          <div className="text-xs text-slate-500">{formatWeekRange(days, timezone)}</div>
         </div>
         <div className="text-xs text-slate-500">
           {selectedClientId ? (
@@ -364,7 +382,7 @@ export default function ScheduleGrid({
           >
             <div className="border-b border-r px-3 py-2 text-xs font-medium text-slate-500">Time</div>
             {days.map((d) => {
-              const isToday = d.toDateString() === nowInBusinessTz().toDateString();
+              const isToday = d.toDateString() === nowInBusinessTz(timezone).toDateString();
               return (
                 <div
                   key={d.toISOString()}
@@ -449,7 +467,7 @@ export default function ScheduleGrid({
                 {/* Appointment cards positioned by time with overlap columns */}
                 {(() => {
                   const dayAppts = apptsForDay(d);
-                  const overlapLayout = computeOverlapLayout(dayAppts, startHour, durationFor);
+                  const overlapLayout = computeOverlapLayout(dayAppts, startHour, durationFor, timezone);
 
                   return dayAppts.map((a) => {
                     // rawStart is the real instant, used only for the duration delta;
@@ -457,7 +475,7 @@ export default function ScheduleGrid({
                     // field extraction (card vertical position) — mixing the two
                     // would shift either the computed duration or the position.
                     const rawStart = new Date(a.scheduled_for);
-                    const apptDate = toBusinessLocal(a.scheduled_for);
+                    const apptDate = toBusinessLocal(a.scheduled_for, timezone);
                     const apptHour = apptDate.getHours();
                     const apptMin = apptDate.getMinutes();
                     let mins: number;
@@ -554,7 +572,7 @@ export default function ScheduleGrid({
                             <div className={`text-[10px] text-slate-500 shrink-0 flex items-center gap-1${darkTimeCls}`}>
                               {hoursWarningIcon}
                               {a.frequency_type && a.frequency_type !== "one_time" && <span>&#8635;</span>}
-                              {timeRange(a.scheduled_for, mins)}
+                              {timeRange(a.scheduled_for, mins, timezone)}
                             </div>
                           </div>
                         ) : (
@@ -588,7 +606,7 @@ export default function ScheduleGrid({
                               </div>
                             )}
                             <div className={`text-[10px] text-slate-500 mt-0.5${darkTimeCls}`}>
-                              {timeRange(a.scheduled_for, mins)} ({durationLabel(mins)})
+                              {timeRange(a.scheduled_for, mins, timezone)} ({durationLabel(mins)})
                             </div>
                             {a.notes && (
                               <div className={`text-[10px] text-slate-400 italic mt-auto truncate${darkNotesCls}`}>

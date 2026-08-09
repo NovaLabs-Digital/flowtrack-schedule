@@ -7,10 +7,11 @@ import { getSession, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, getCompanyName, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
-import { generateFutureDates } from "@/lib/recurrence";
+import { generateFutureDatesSafe } from "@/lib/recurrence";
 import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDateStringFromInstant, type BusyRange } from "@/lib/availability";
 import { effectiveBusinessHours, type BusinessHours } from "@/lib/businessHours";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
+import { effectiveTimezone } from "@/lib/timezone";
 import { isValidPriceCents } from "@/lib/money";
 import { dedupeEmployeeIds, deriveLegacyEmployeeId, validateEmployeeIdsInWorkspace, insertAssignments } from "@/lib/appointmentEmployees";
 import { validateTeamColorInput } from "@/lib/teamColor";
@@ -68,18 +69,32 @@ export async function POST(req: Request) {
 
     // Only the public branch ever needs the workspace's effective Business
     // Hours -- owner/tester appointments are exempt (see isWithinBusinessHours
-    // call site below), so this stays undefined for that branch.
+    // call site below), so this stays undefined for that branch. The
+    // resolved workspace timezone, by contrast, is needed by BOTH branches
+    // (Business Hours validation for the public branch, recurrence
+    // generation for either) -- resolved once here from the trusted
+    // workspaceId, scoped to company_settings, never from the request body
+    // or the caller's own device timezone.
     let businessHours: BusinessHours | undefined;
+    let timezone: string;
     if (isPublic) {
       const { data: settings } = await supabaseAdmin
         .from("company_settings")
-        .select("booking_enabled, business_hours")
+        .select("booking_enabled, business_hours, timezone")
         .eq("workspace_id", workspaceId)
         .maybeSingle();
       if (!settings?.booking_enabled) {
         return json({ error: "Online booking is currently unavailable." }, 403);
       }
       businessHours = effectiveBusinessHours(settings?.business_hours);
+      timezone = effectiveTimezone(settings?.timezone);
+    } else {
+      const { data: settings } = await supabaseAdmin
+        .from("company_settings")
+        .select("timezone")
+        .eq("workspace_id", workspaceId)
+        .maybeSingle();
+      timezone = effectiveTimezone(settings?.timezone);
     }
 
     const body = await req.json();
@@ -172,15 +187,15 @@ export async function POST(req: Request) {
       }
       const endDate = new Date(startDate.getTime() + duration_minutes * 60000);
 
-      if (!isWithinBusinessHours(startDate, endDate, businessHours!)) {
+      if (!isWithinBusinessHours(startDate, endDate, businessHours!, timezone)) {
         return json({ error: "That time is outside business hours. Please choose another time." }, 400);
       }
 
       // Defense-in-depth: re-check the exact slot server-side, independent
       // of whatever the availability endpoint showed the browser — a direct
       // API request can't be trusted to have honored it.
-      const dayStr = businessDateStringFromInstant(startDate);
-      const { start: dayStart, end: dayEnd } = businessDayBounds(dayStr);
+      const dayStr = businessDateStringFromInstant(startDate, timezone);
+      const { start: dayStart, end: dayEnd } = businessDayBounds(dayStr, timezone);
       const { data: dayAppts, error: dayApptsErr } = await supabaseAdmin
         .from("appointments")
         .select("scheduled_for, scheduled_end, duration_minutes")
@@ -270,7 +285,17 @@ export async function POST(req: Request) {
     const hasRepeatMonths = await hasColumn("repeat_months");
 
     const startDate = new Date(scheduled_for);
-    const dates: Date[] = [startDate, ...generateFutureDates(startDate, frequency_type, repeat_weeks, repeat_months ?? undefined)];
+    // Atomic pre-validation: reject the ENTIRE request (zero appointment or
+    // assignment writes) if any generated occurrence would fall on a local
+    // time that doesn't exist due to a DST spring-forward -- never a
+    // silently shifted/skipped occurrence or a partially-created series.
+    // The public branch always passes frequency_type "one_time" above, so
+    // this is a no-op there (recurrenceResult.dates is always []).
+    const recurrenceResult = generateFutureDatesSafe(startDate, frequency_type, repeat_weeks, timezone, repeat_months ?? undefined);
+    if (!recurrenceResult.ok) {
+      return json({ error: recurrenceResult.error }, 400);
+    }
+    const dates: Date[] = [startDate, ...recurrenceResult.dates];
 
     const isRecurring = dates.length > 1;
     const seriesId = isRecurring ? crypto.randomUUID() : null;
@@ -367,7 +392,7 @@ export async function POST(req: Request) {
           const { name: cName, email: cEmail, phone: cPhone, auto_email, auto_sms } = clientRes.data;
           const cancelUrl = `${process.env.NEXT_PUBLIC_APP_URL}/cancel?token=${rows[0].cancel_token}`;
           const companyName = await getCompanyName(workspaceId);
-          const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl, companyName);
+          const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl, companyName, timezone);
 
           if (cEmail && auto_email && shouldSend(notify_channel, "email")) {
             try {

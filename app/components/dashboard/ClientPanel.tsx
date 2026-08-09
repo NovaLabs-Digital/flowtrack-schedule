@@ -70,13 +70,16 @@ function EmptyCol({ icon, line1, line2 }: { icon: string; line1: string; line2: 
   );
 }
 
-// For real timestamps (appointment scheduled_for) — anchored to business tz so
-// server/client agree on which calendar day and time-of-day it displays as.
-function fmtDate(iso: string) {
-  return toBusinessLocal(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+// For real timestamps (appointment scheduled_for) — anchored to the
+// workspace's own resolved timezone (Phase 5C) so server/client agree on
+// which calendar day and time-of-day it displays as, and so it matches the
+// same business-local time the schedule grid itself shows, regardless of
+// the owner's own device timezone.
+function fmtDate(iso: string, tz: string) {
+  return toBusinessLocal(iso, tz).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
-function fmtTime(iso: string) {
-  const d = toBusinessLocal(iso);
+function fmtTime(iso: string, tz: string) {
+  const d = toBusinessLocal(iso, tz);
   const h = d.getHours(); const m = d.getMinutes();
   const ampm = h >= 12 ? "PM" : "AM"; const h12 = h % 12 || 12;
   return m === 0 ? `${h12}:00 ${ampm}` : `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
@@ -108,9 +111,13 @@ function initForm(c: Client): EditForm {
 }
 
 export default function ClientPanel({
-  client, appointments, onClientUpdated, canMutateOperationalData,
+  client, appointments, onClientUpdated, canMutateOperationalData, timezone,
 }: {
   client: Client | null; appointments: Appointment[]; onClientUpdated: () => void; canMutateOperationalData: boolean;
+  // Phase 5C: the workspace's own resolved timezone, used for Past/Future
+  // Services' date/time display (fmtDate/fmtTime above) -- never the
+  // browser/device's own ambient timezone.
+  timezone: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<EditForm>(initForm(client ?? {} as Client));
@@ -301,7 +308,7 @@ export default function ClientPanel({
             {pastAppts.length > 0 ? (
               <div className="overflow-auto flex-1 min-h-0">
                 {pastAppts.slice(0, 6).map((a) => (
-                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for)} service={a.service_type} status={a.status === "cancelled" ? "Cancelled" : "Completed"} />
+                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for, timezone)} service={a.service_type} status={a.status === "cancelled" ? "Cancelled" : "Completed"} />
                 ))}
               </div>
             ) : <EmptyCol icon="&#128340;" line1="No past services" line2="Service history will appear here." />}
@@ -312,7 +319,7 @@ export default function ClientPanel({
             {futureAppts.length > 0 ? (
               <div className="overflow-auto flex-1 min-h-0">
                 {futureAppts.slice(0, 6).map((a) => (
-                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for)} time={fmtTime(a.scheduled_for)} service={a.service_type} status="Scheduled" />
+                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for, timezone)} time={fmtTime(a.scheduled_for, timezone)} service={a.service_type} status="Scheduled" />
                 ))}
               </div>
             ) : <EmptyCol icon="&#128197;" line1="No upcoming services" line2="Scheduled services will appear here." />}

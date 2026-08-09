@@ -1,17 +1,23 @@
 import { DateTime } from "luxon";
 
-function fmt(iso: string) {
+// Phase 5E: every appointment date/time formatter below requires an
+// explicit, resolved workspace timezone -- no hardcoded "America/New_York"
+// remains. A 9:00 AM Pacific appointment must read "9:00 AM" in the
+// client's message, not a New York (or device) reinterpretation of that
+// same UTC instant. Callers resolve the trusted timezone via
+// effectiveTimezone(company_settings.timezone) and pass it through.
+function fmt(iso: string, tz: string) {
   return DateTime.fromISO(iso)
-    .setZone("America/New_York")
+    .setZone(tz)
     .toFormat("ccc, LLL d 'at' h:mm a");
 }
 
-function fmtDate(iso: string) {
-  return DateTime.fromISO(iso).setZone("America/New_York").toFormat("cccc, LLLL d");
+function fmtDate(iso: string, tz: string) {
+  return DateTime.fromISO(iso).setZone(tz).toFormat("cccc, LLLL d");
 }
 
-function fmtTime(iso: string) {
-  return DateTime.fromISO(iso).setZone("America/New_York").toFormat("h:mm a");
+function fmtTime(iso: string, tz: string) {
+  return DateTime.fromISO(iso).setZone(tz).toFormat("h:mm a");
 }
 
 export function confirmationTemplates(
@@ -19,11 +25,12 @@ export function confirmationTemplates(
   service: string,
   scheduledIso: string,
   cancelUrl: string,
-  companyName: string
+  companyName: string,
+  tz: string
 ) {
-  const when = fmt(scheduledIso);
-  const date = fmtDate(scheduledIso);
-  const time = fmtTime(scheduledIso);
+  const when = fmt(scheduledIso, tz);
+  const date = fmtDate(scheduledIso, tz);
+  const time = fmtTime(scheduledIso, tz);
 
   return {
     email: {
@@ -57,11 +64,12 @@ export function reminder24hTemplates(
   name: string,
   service: string,
   scheduledIso: string,
-  companyName: string
+  companyName: string,
+  tz: string
 ) {
-  const when = fmt(scheduledIso);
-  const date = fmtDate(scheduledIso);
-  const time = fmtTime(scheduledIso);
+  const when = fmt(scheduledIso, tz);
+  const date = fmtDate(scheduledIso, tz);
+  const time = fmtTime(scheduledIso, tz);
 
   return {
     email: {
@@ -89,11 +97,12 @@ export function changeTemplates(
   name: string,
   service: string,
   scheduledIso: string,
-  companyName: string
+  companyName: string,
+  tz: string
 ) {
-  const when = fmt(scheduledIso);
-  const date = fmtDate(scheduledIso);
-  const time = fmtTime(scheduledIso);
+  const when = fmt(scheduledIso, tz);
+  const date = fmtDate(scheduledIso, tz);
+  const time = fmtTime(scheduledIso, tz);
 
   return {
     email: {
@@ -124,6 +133,10 @@ Time: ${time}`,
 // entire "Need another appointment?" section is omitted from both the email
 // and the SMS -- a client must never be invited to a booking page the
 // business has turned off.
+//
+// No timezone parameter -- this template contains no appointment date/time
+// (a cancellation has nothing left to schedule), so there is nothing here
+// that could read wrong in the wrong zone.
 export function cancelTemplates(name: string, service: string, companyName: string, bookingEnabled: boolean) {
   const bookingCta = bookingEnabled
     ? `\n\nNeed another appointment?\n${process.env.NEXT_PUBLIC_APP_URL}/book`

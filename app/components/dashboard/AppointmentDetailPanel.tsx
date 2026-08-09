@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Appointment, Client, Employee, Service } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { toBusinessLocal } from "@/lib/timezone";
 
 // Phase 5.5E-E1B: this panel's own restricted notice, distinct from
 // AppointmentModal's (appointment-modal-restricted-notice) -- both
@@ -43,6 +44,13 @@ type Props = {
   onEdit: () => void;
   onCancelled: () => void;
   canMutateOperationalData: boolean;
+  // Phase 5C: the business's own resolved timezone -- this panel previously
+  // read `new Date(appointment.scheduled_for)` directly and called native
+  // local getters/toLocaleDateString on it, which reflected the browser/
+  // device's own ambient timezone rather than the business's. A 9:00 AM New
+  // York appointment must display as 9:00 AM here regardless of where the
+  // owner's device currently is.
+  timezone: string;
 };
 
 // Desktop "Appointment Details" control center — the appointment-focused
@@ -50,13 +58,19 @@ type Props = {
 // just a client) is selected. Mirrors MobileAppointmentDetail.tsx's
 // Call/Text/Cancel pattern for parity with mobile, reusing the exact same
 // /api/appointments/delete endpoint — no new backend logic.
-export default function AppointmentDetailPanel({ appointment, client, employees, services, onEdit, onCancelled, canMutateOperationalData }: Props) {
+export default function AppointmentDetailPanel({ appointment, client, employees, services, onEdit, onCancelled, canMutateOperationalData, timezone }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
 
-  const start = new Date(appointment.scheduled_for);
+  // rawStart/rawEnd are real instants (used only for duration math); start/end
+  // (below) are the business-local display values derived from them -- see
+  // lib/timezone.ts's toBusinessLocal doc comment for why the two must never
+  // be mixed.
+  const rawStart = new Date(appointment.scheduled_for);
   const durationMinutes = scheduledMinutes(appointment, services);
-  const end = new Date(start.getTime() + durationMinutes * 60_000);
+  const rawEnd = new Date(rawStart.getTime() + durationMinutes * 60_000);
+  const start = toBusinessLocal(appointment.scheduled_for, timezone);
+  const end = toBusinessLocal(rawEnd.toISOString(), timezone);
 
   async function handleCancel() {
     // Defense-in-depth: the server route this reaches already enforces this

@@ -86,19 +86,19 @@ const UNEXPECTED_ERROR_MESSAGE = "We couldn't open billing right now. Please try
 
 describe("bannerVariant = none renders nothing", () => {
   test("renders no DOM content and offers no recovery action", () => {
-    const { container } = render(React.createElement(OwnerBillingBanner, { bannerVariant: "none", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null }));
+    const { container } = render(React.createElement(OwnerBillingBanner, { bannerVariant: "none", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.equal(container.innerHTML, "");
   });
 
   test("never calls beginBillingRecovery when there is nothing to render", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "none", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "none", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.deepEqual(calls, []);
   });
 });
 
 describe("wording depends only on bannerVariant", () => {
   test("grace_warning renders the approved title and body", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByText("Please update your billing information"));
     assert.ok(
       screen.getByText(
@@ -108,19 +108,19 @@ describe("wording depends only on bannerVariant", () => {
   });
 
   test("restricted renders the approved title and body", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByText("Billing attention is required"));
     assert.ok(screen.getByText("Please restore your subscription to continue using all scheduling features."));
   });
 
   test("verification_error renders the approved title and body", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByText("We need to verify your account"));
     assert.ok(screen.getByText("Please contact support so we can help restore full access."));
   });
 
   test("restricted body never claims data was deleted, suspended, lost, or at risk, and never shows a Stripe status", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     const text = screen.getByRole("status").textContent ?? "";
     for (const forbidden of ["delet", "suspend", "lost", "at risk", "stripe", "active", "canceled", "past_due"]) {
       assert.ok(!text.toLowerCase().includes(forbidden), `must not contain "${forbidden}"`);
@@ -128,7 +128,7 @@ describe("wording depends only on bannerVariant", () => {
   });
 
   test("grace_warning never displays a deadline", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     const text = screen.getByRole("status").textContent ?? "";
     assert.ok(!/\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2}|day[s]? (left|remaining)/i.test(text));
   });
@@ -144,7 +144,7 @@ describe("Phase 5.6E variants: scheduled cancellation, read-only, and locked wor
         bannerVariant: "cancel_scheduled_trial",
         recoveryAction: "portal",
         finalAccessDate: FINAL_ACCESS,
-        readOnlyEndsAt: null,
+        readOnlyEndsAt: null, timezone: "America/New_York",
       })
     );
     assert.ok(screen.getByText("Cancellation scheduled"));
@@ -160,7 +160,7 @@ describe("Phase 5.6E variants: scheduled cancellation, read-only, and locked wor
         bannerVariant: "cancel_scheduled_paid",
         recoveryAction: "portal",
         finalAccessDate: FINAL_ACCESS,
-        readOnlyEndsAt: null,
+        readOnlyEndsAt: null, timezone: "America/New_York",
       })
     );
     assert.ok(screen.getByText("Cancellation scheduled"));
@@ -175,7 +175,7 @@ describe("Phase 5.6E variants: scheduled cancellation, read-only, and locked wor
         bannerVariant: "read_only",
         recoveryAction: "checkout",
         finalAccessDate: null,
-        readOnlyEndsAt: READ_ONLY_ENDS,
+        readOnlyEndsAt: READ_ONLY_ENDS, timezone: "America/New_York",
       })
     );
     const text = screen.getByRole("status").textContent ?? "";
@@ -191,7 +191,7 @@ describe("Phase 5.6E variants: scheduled cancellation, read-only, and locked wor
         bannerVariant: "locked",
         recoveryAction: "checkout",
         finalAccessDate: null,
-        readOnlyEndsAt: null,
+        readOnlyEndsAt: null, timezone: "America/New_York",
       })
     );
     assert.ok(screen.getByText("Subscription required"));
@@ -208,7 +208,7 @@ describe("Phase 5.6E variants: scheduled cancellation, read-only, and locked wor
           bannerVariant: variant,
           recoveryAction: "checkout",
           finalAccessDate: null,
-          readOnlyEndsAt: READ_ONLY_ENDS,
+          readOnlyEndsAt: READ_ONLY_ENDS, timezone: "America/New_York",
         })
       );
       const text = (screen.getByRole("status").textContent ?? "").toLowerCase();
@@ -219,35 +219,71 @@ describe("Phase 5.6E variants: scheduled cancellation, read-only, and locked wor
   });
 });
 
+describe("Phase 5E: the displayed date is driven by the explicit timezone prop, not a hardcoded America/New_York literal", () => {
+  // Chosen so the UTC instant is on the OTHER side of local midnight in
+  // Hawaii than it is in New York -- a real behavioral difference, not
+  // just a formatting nuance.
+  const NEAR_MIDNIGHT = new Date("2026-08-25T04:30:00.000Z"); // Aug 24 11:30 PM in Honolulu, Aug 25 12:30 AM in New York
+
+  test("America/New_York renders the New-York-local calendar date", () => {
+    render(
+      React.createElement(OwnerBillingBanner, {
+        bannerVariant: "cancel_scheduled_trial",
+        recoveryAction: "portal",
+        finalAccessDate: NEAR_MIDNIGHT,
+        readOnlyEndsAt: null,
+        timezone: "America/New_York",
+      })
+    );
+    const text = screen.getByRole("status").textContent ?? "";
+    assert.ok(text.includes("August 25, 2026"), text);
+  });
+
+  test("Pacific/Honolulu renders a DIFFERENT calendar date for the exact same instant -- proves the prop, not a fixed zone, controls the display", () => {
+    render(
+      React.createElement(OwnerBillingBanner, {
+        bannerVariant: "cancel_scheduled_trial",
+        recoveryAction: "portal",
+        finalAccessDate: NEAR_MIDNIGHT,
+        readOnlyEndsAt: null,
+        timezone: "Pacific/Honolulu",
+      })
+    );
+    const text = screen.getByRole("status").textContent ?? "";
+    assert.ok(text.includes("August 24, 2026"), text);
+    assert.ok(!text.includes("August 25, 2026"));
+  });
+});
+
 describe("action label depends only on recoveryAction, independent of bannerVariant", () => {
   test('recoveryAction "portal" renders "Update billing"', () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByRole("button", { name: "Update billing" }));
   });
 
   test('recoveryAction "checkout" renders "Restore subscription"', () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "checkout", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "checkout", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByRole("button", { name: "Restore subscription" }));
   });
 
   test('recoveryAction "support" renders "Contact support"', () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByRole("button", { name: "Contact support" }));
   });
 
   test("recoveryAction null renders no action button, for any bannerVariant", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: null, finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.equal(screen.queryByRole("button"), null);
   });
 
   test("an unusual but type-valid combination (verification_error + checkout) renders both independently, with no local policy override", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "checkout", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "checkout", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByText("We need to verify your account"));
     assert.ok(screen.getByRole("button", { name: "Restore subscription" }));
   });
 
   test("another unusual combination (grace_warning + support) renders both independently", () => {
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "grace_warning", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
     assert.ok(screen.getByText("Please update your billing information"));
     assert.ok(screen.getByRole("button", { name: "Contact support" }));
   });
@@ -260,7 +296,7 @@ describe("activation calls beginBillingRecovery exactly once with the exact proj
       impl = () => deferred.promise;
       const label = action === "portal" ? "Update billing" : action === "checkout" ? "Restore subscription" : "Contact support";
       const user = userEvent.setup();
-      render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: action, finalAccessDate: null, readOnlyEndsAt: null }));
+      render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: action, finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
       await user.click(screen.getByRole("button", { name: label }));
 
@@ -289,7 +325,7 @@ describe("support_required uses only the canonical mailto mechanism", () => {
   test("clicking support with a support_required result makes no network call, throws nothing, and clears pending", async () => {
     impl = async () => ({ status: "support_required" });
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Contact support" }));
 
@@ -305,7 +341,7 @@ describe("pending state and synchronous duplicate-activation guard", () => {
     const deferred = createDeferred<BillingRecoveryResult>();
     impl = () => deferred.promise;
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Update billing" }));
 
@@ -320,7 +356,7 @@ describe("pending state and synchronous duplicate-activation guard", () => {
     const deferred = createDeferred<BillingRecoveryResult>();
     impl = () => deferred.promise;
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     const button = screen.getByRole("button", { name: "Update billing" });
     await user.click(button);
@@ -338,7 +374,7 @@ describe("pending state and synchronous duplicate-activation guard", () => {
     const deferred = createDeferred<BillingRecoveryResult>();
     impl = () => deferred.promise;
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     screen.getByRole("button", { name: "Update billing" }).focus();
     await user.keyboard("{Enter}");
@@ -356,7 +392,7 @@ describe("redirecting remains pending", () => {
   test("a redirecting result keeps the button disabled/pending (navigation is expected)", async () => {
     impl = async () => ({ status: "redirecting" });
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "checkout", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "checkout", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Restore subscription" }));
 
@@ -369,7 +405,7 @@ describe("returned error and thrown error behavior", () => {
   test("a returned error clears pending and renders exactly the helper's safe message, nothing else", async () => {
     impl = async () => ({ status: "error", message: "We couldn't open billing right now. Please try again." });
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Update billing" }));
 
@@ -383,7 +419,7 @@ describe("returned error and thrown error behavior", () => {
       throw new Error("Stripe API key invalid: sk_live_XXXXXXXXXXXXXXXXXXXX");
     };
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Update billing" }));
 
@@ -399,7 +435,7 @@ describe("returned error and thrown error behavior", () => {
       throw new Error("simulated unexpected failure");
     };
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "verification_error", recoveryAction: "support", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Contact support" }));
 
@@ -414,7 +450,7 @@ describe("no_action clears pending", () => {
   test("a no_action result clears pending with no error shown", async () => {
     impl = async () => ({ status: "no_action" });
     const user = userEvent.setup();
-    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Update billing" }));
 
@@ -429,7 +465,7 @@ describe("unmount safety during unresolved async recovery", () => {
     const deferred = createDeferred<BillingRecoveryResult>();
     impl = () => deferred.promise;
     const user = userEvent.setup();
-    const { unmount } = render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null }));
+    const { unmount } = render(React.createElement(OwnerBillingBanner, { bannerVariant: "restricted", recoveryAction: "portal", finalAccessDate: null, readOnlyEndsAt: null, timezone: "America/New_York" }));
 
     await user.click(screen.getByRole("button", { name: "Update billing" }));
     unmount();

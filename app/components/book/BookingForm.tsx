@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { timezoneLabel } from "@/lib/timezone";
 
 type Service = { name: string; description: string | null; duration_minutes: number };
 
@@ -20,16 +21,17 @@ const inputCls =
   "w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
 const labelCls = "block text-xs font-medium text-slate-600 mb-1";
 
-// Matches lib/availability.ts's BUSINESS_TZ — kept as a plain string here
-// since this is a client component and can't import a server-only lib
-// constant; both represent the same single business timezone.
-const BUSINESS_TZ = "America/New_York";
-
-function formatSlotTime(iso: string): string {
+// Phase 5D: the workspace timezone is resolved server-side (app/book/
+// page.tsx, via effectiveTimezone) and passed down as an explicit prop --
+// never a hardcoded constant, never the customer's own device/browser
+// timezone. Slots are never converted into the customer's local time; SFT
+// is a local-service booking flow, so the appointment time IS the time
+// where the business operates.
+function formatSlotTime(iso: string, tz: string): string {
   return new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     minute: "2-digit",
-    timeZone: BUSINESS_TZ,
+    timeZone: tz,
   }).format(new Date(iso));
 }
 
@@ -42,7 +44,15 @@ function todayDateInputValue(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export default function BookingForm({ services, companyName }: { services: Service[]; companyName: string }) {
+export default function BookingForm({
+  services,
+  companyName,
+  timezone,
+}: {
+  services: Service[];
+  companyName: string;
+  timezone: string;
+}) {
   const [form, setForm] = useState<FormState>(EMPTY);
   const [slots, setSlots] = useState<string[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<string>("");
@@ -224,6 +234,9 @@ export default function BookingForm({ services, companyName }: { services: Servi
         {form.service_type && form.date && (
           <div>
             <label className={labelCls}>Preferred Time</label>
+            {!slotsLoading && !slotsError && slots.length > 0 && (
+              <p className="mb-1.5 text-xs text-slate-400">Times shown in {timezoneLabel(timezone)}</p>
+            )}
             {slotsLoading && <p className="text-sm text-slate-500">Loading available times...</p>}
             {!slotsLoading && slotsError && <p className="text-sm text-rose-600">{slotsError}</p>}
             {!slotsLoading && !slotsError && slots.length === 0 && (
@@ -243,7 +256,7 @@ export default function BookingForm({ services, companyName }: { services: Servi
                         : "border-slate-300 text-slate-600 hover:border-slate-400",
                     ].join(" ")}
                   >
-                    {formatSlotTime(slot)}
+                    {formatSlotTime(slot, timezone)}
                   </button>
                 ))}
               </div>

@@ -15,8 +15,8 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 const RESTRICTED_NOTICE_ID = "move-confirm-dialog-restricted-notice";
 const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
-function formatDateTime(iso: string) {
-  const d = toBusinessLocal(iso);
+function formatDateTime(iso: string, tz: string) {
+  const d = toBusinessLocal(iso, tz);
   const date = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return `${date} at ${time}`;
@@ -30,9 +30,13 @@ type Props = {
   onClose: () => void;
   onMoved: () => void;
   canMutateOperationalData: boolean;
+  // Phase 5C: the business's own resolved timezone -- both the "From" and
+  // "To" times shown here must agree with the business-local time the
+  // schedule grid itself just showed, never the browser/device's own zone.
+  timezone: string;
 };
 
-export default function MoveConfirmDialog({ appointment, client, scheduledFor, scheduledEnd, onClose, onMoved, canMutateOperationalData }: Props) {
+export default function MoveConfirmDialog({ appointment, client, scheduledFor, scheduledEnd, onClose, onMoved, canMutateOperationalData, timezone }: Props) {
   // Dragging always changes date/time, so smart-default to the client's preferred
   // method (or "both") right away — the picker below still lets staff change it.
   const [notifyChannel, setNotifyChannel] = useState<NotifyChannel>(
@@ -88,12 +92,12 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">From</div>
-              <div className="text-sm text-slate-500 truncate">{formatDateTime(appointment.scheduled_for)}</div>
+              <div className="text-sm text-slate-500 truncate">{formatDateTime(appointment.scheduled_for, timezone)}</div>
             </div>
             <span className="text-slate-300 shrink-0">&#8594;</span>
             <div className="min-w-0 text-right">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">To</div>
-              <div className="text-sm font-medium text-slate-900 truncate">{formatDateTime(scheduledFor)}</div>
+              <div className="text-sm font-medium text-slate-900 truncate">{formatDateTime(scheduledFor, timezone)}</div>
             </div>
           </div>
         </div>

@@ -45,15 +45,15 @@ describe("prop wiring", () => {
 });
 
 describe("shared wording", () => {
-  test("exact approved wording constant, shared by all three cards' notices", () => {
+  test("exact approved wording constant, shared by all four cards' notices", () => {
     assert.ok(source.includes(`const RESTRICTED_WORDING = "${APPROVED_WORDING}";`));
   });
 
-  // Phase 4: a third card (Business Hours) now shares this same approved
-  // wording constant too -- 2 -> 3 render sites, one per governed card.
-  test("all three notice blocks render the exact same wording constant, not divergent strings", () => {
+  // Phase 5B: a fourth card (Time Zone) now shares this same approved
+  // wording constant too -- 3 -> 4 render sites, one per governed card.
+  test("all four notice blocks render the exact same wording constant, not divergent strings", () => {
     const wordingMatches = source.match(/\{RESTRICTED_WORDING\}/g) ?? [];
-    assert.equal(wordingMatches.length, 3, "one render site per card notice (Company Information, Business Hours, Automation)");
+    assert.equal(wordingMatches.length, 4, "one render site per card notice (Company Information, Time Zone, Business Hours, Automation)");
   });
 });
 
@@ -347,6 +347,120 @@ describe("Phase 4: Business Hours card", () => {
 
   test("EMPTY_HOURS (the pre-load default) has every weekday closed -- never a guessed set of open hours before the server responds", () => {
     assert.ok(source.includes("Object.fromEntries(WEEKDAY_KEYS.map((d) => [d, [] as TimeRange[]]))"));
+  });
+});
+
+describe("Phase 5B: Time Zone card", () => {
+  test("the old read-only Time Zone preview (status.timezoneLabel, 'not yet editable here') is completely gone", () => {
+    assert.ok(!source.includes("timezoneLabel"));
+    assert.ok(!source.includes("not yet editable here"));
+  });
+
+  test("Time Zone is its own SettingsCard, distinct from Company Information, Business Hours, and Automation", () => {
+    assert.ok(source.includes('id="timezone-card"'));
+    assert.ok(source.includes('title="Time Zone"'));
+  });
+
+  test("Time Zone is imported from the canonical lib/timezone.ts source of truth, not a locally hand-written list", () => {
+    assert.ok(source.includes('import { TIMEZONE_OPTIONS } from "@/lib/timezone";'));
+    assert.ok(source.includes("{TIMEZONE_OPTIONS.map((opt) => ("));
+  });
+
+  test("the control is a real <select> bound to the raw IANA value, never browser/device auto-detection", () => {
+    const cardStart = source.indexOf('id="timezone-card"');
+    const cardEnd = source.indexOf('id="business-hours-card"');
+    assert.notEqual(cardStart, -1);
+    assert.notEqual(cardEnd, -1);
+    const block = source.slice(cardStart, cardEnd);
+    assert.ok(block.includes("<select"));
+    assert.ok(block.includes("value={timezone}"));
+    assert.ok(block.includes('onChange={(e) => setTimezone(e.target.value)}'));
+    for (const forbidden of ["Intl.DateTimeFormat().resolvedOptions", "navigator.", "getTimezoneOffset"]) {
+      assert.ok(!block.includes(forbidden), `must not use device/browser timezone detection: "${forbidden}"`);
+    }
+  });
+
+  test("no searchable/global timezone picker and no new dependency -- a plain native <select>, same primitive as every other Settings dropdown", () => {
+    assert.ok(!source.includes("react-select"));
+    assert.ok(!source.includes("timezone-select"));
+    assert.ok(!/<input[^>]*placeholder="[^"]*[Ss]earch/.test(source));
+  });
+
+  test("state defaults to the existing global fallback (America/New_York) before load, never a guess", () => {
+    assert.ok(source.includes('const [timezone, setTimezone] = useState<string>("America/New_York");'));
+    assert.ok(source.includes('const [timezoneSaved, setTimezoneSaved] = useState<string>("America/New_York");'));
+  });
+
+  test("the load effect populates timezone/timezoneSaved from the server's already-effective s.timezone, defensively coercing a missing/non-string value", () => {
+    assert.ok(source.includes('const nextTz = typeof s.timezone === "string" && s.timezone ? s.timezone : "America/New_York";'));
+    assert.ok(source.includes("setTimezone(nextTz);"));
+    assert.ok(source.includes("setTimezoneSaved(nextTz);"));
+  });
+
+  test("tzDirty is a plain equality check against the last saved value", () => {
+    assert.ok(source.includes("const tzDirty = timezone !== timezoneSaved;"));
+  });
+
+  test("Time Zone's Save Changes is a CapabilityGatedButton wired to allowed/onClick/disabled/ariaDescribedBy, guarded independently of the other three cards", () => {
+    const idx = source.indexOf("onClick={handleSaveTimezone}");
+    assert.notEqual(idx, -1);
+    const block = source.slice(Math.max(0, idx - 150), idx + 100);
+    assert.match(block, /<CapabilityGatedButton/);
+    assert.match(block, /allowed=\{canMutateOperationalData\}/);
+    assert.match(block, /disabled=\{tzSaving \|\| !tzDirty\}/);
+    assert.match(block, /ariaDescribedBy=\{TZ_NOTICE_ID\}/);
+  });
+
+  test("handleSaveTimezone guards on canMutateOperationalData as its first statement, before the fetch call", () => {
+    const fnStart = source.indexOf("async function handleSaveTimezone()");
+    assert.notEqual(fnStart, -1);
+    const braceIdx = source.indexOf("{", fnStart);
+    const afterBrace = source.slice(braceIdx + 1, braceIdx + 200);
+    const firstNonBlank = afterBrace.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+    assert.equal(firstNonBlank, "if (!canMutateOperationalData) return;");
+  });
+
+  test("handleSaveTimezone posts { timezone } to the existing company settings route -- no new API route", () => {
+    const fnStart = source.indexOf("async function handleSaveTimezone()");
+    const fnEnd = source.indexOf("async function handleSave()");
+    const body = source.slice(fnStart, fnEnd);
+    assert.ok(body.includes('fetch("/api/settings/company"'));
+    assert.ok(body.includes("body: JSON.stringify({ timezone })"));
+    assert.ok(body.includes("setTimezoneSaved(timezone);"));
+  });
+
+  test("Time Zone's own notice id is declared, unique, and distinct from the other three cards'", () => {
+    const declared = source.match(/const TZ_NOTICE_ID = "([^"]+)";/)?.[1];
+    assert.equal(declared, "company-timezone-restricted-notice");
+    assert.notEqual(declared, "company-info-restricted-notice");
+    assert.notEqual(declared, "company-hours-restricted-notice");
+    assert.notEqual(declared, "company-automation-restricted-notice");
+    const matches = source.match(/id=\{TZ_NOTICE_ID\}/g) ?? [];
+    assert.equal(matches.length, 1);
+  });
+
+  test("the inline change warning renders only when the selection differs from the last saved value, and states both required facts: interpretation changes AND existing timestamps are not rewritten", () => {
+    assert.ok(source.includes("{tzDirty && ("));
+    const warningIdx = source.indexOf("TZ_CHANGE_WARNING");
+    assert.notEqual(warningIdx, -1);
+    const constMatch = source.match(/const TZ_CHANGE_WARNING =\s*\n?\s*"([^"]+)"/);
+    assert.ok(constMatch, "TZ_CHANGE_WARNING must be declared as a string constant");
+    const wording = (constMatch![1] || "").toLowerCase();
+    assert.ok(wording.includes("displayed") || wording.includes("display"));
+    assert.ok(wording.includes("scheduled") || wording.includes("scheduling"));
+    assert.ok(wording.includes("not rewritten"), "must not imply existing appointments are completely unaffected");
+    assert.ok(!wording.includes("completely unaffected"));
+  });
+
+  test("the warning is not a blocking confirmation -- it renders inline with no modal, no second click required, and Save remains a single action", () => {
+    const idx = source.indexOf("{tzDirty && (");
+    const block = source.slice(idx, idx + 300);
+    assert.ok(!block.includes("confirm"));
+    assert.ok(!block.includes("Modal"));
+  });
+
+  test("Phase 5B is foundation only -- this file documents that the saved timezone has no scheduling effect yet", () => {
+    assert.ok(/has no observable effect until Phases 5C-5E/i.test(source));
   });
 });
 

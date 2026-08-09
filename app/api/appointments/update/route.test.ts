@@ -51,6 +51,7 @@ mock.module("@/lib/notify", {
     recordMessageSent: (...args: [unknown]) => currentNotify.namedExports.recordMessageSent(...(args as [never])),
     sanitizeCompanyName: (...args: [string | null | undefined]) => currentNotify.namedExports.sanitizeCompanyName(...args),
     getCompanyName: (...args: [string]) => currentNotify.namedExports.getCompanyName(...args),
+    getCompanyIdentity: (...args: [string]) => currentNotify.namedExports.getCompanyIdentity(...args),
     sendEmail: (...args: [string, string, string, string, string?]) => currentNotify.namedExports.sendEmail(...args),
     sendSms: (...args: [string, string, string]) => currentNotify.namedExports.sendSms(...args),
   },
@@ -359,6 +360,28 @@ describe("update/reschedule notifications identify the workspace's own business"
     assert.ok(body.startsWith("Sunshine Cleaning Co.:"));
     assert.equal(body.split("Sunshine Cleaning Co.").length - 1, 1, "the business name must appear exactly once -- no duplicate trailing sign-off");
     assert.ok(!body.includes("Thank you,"), "the trailing sign-off line was removed for SMS specifically (kept for email)");
+  });
+
+  test("Phase 5E: update email/SMS format the appointment time in the workspace's own resolved timezone, not a hardcoded Eastern default", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt() },
+        { error: null },
+        // 2026-08-03T14:00:00.000Z -- 10:00 AM Eastern, 7:00 AM Pacific.
+        { data: { service_type: "New Service", scheduled_for: "2026-08-03T14:00:00.000Z" } },
+      ],
+      clients: [{ data: optedInClient() }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    currentNotify.setTimezone("America/Los_Angeles");
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.ok(currentNotify.emailCalls[0].text.includes("7:00 AM"), currentNotify.emailCalls[0].text);
+    assert.ok(!currentNotify.emailCalls[0].text.includes("10:00 AM"));
+    assert.ok(currentNotify.smsCalls[0].body.includes("7:00 AM"));
   });
 });
 

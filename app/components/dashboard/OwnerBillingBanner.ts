@@ -27,24 +27,36 @@ import type { EntitlementView } from "@/lib/entitlementView";
 export type OwnerBillingBannerProps = Pick<
   EntitlementView,
   "bannerVariant" | "recoveryAction" | "finalAccessDate" | "readOnlyEndsAt"
->;
+> & {
+  // Phase 5E: the workspace's own resolved timezone -- required, no
+  // default. finalAccessDate/readOnlyEndsAt are real Stripe-period-derived
+  // instants (not date-only values with independent contractual meaning:
+  // the entitlement projection that produces them does no date-only
+  // truncation of its own), so displaying them in the workspace's own
+  // timezone is a pure presentation-consistency choice -- it makes this
+  // banner's dates read the same way every other business-fact date in
+  // this app does -- and never changes what Stripe/entitlement logic
+  // actually enforces (that remains real-instant comparisons server-side,
+  // untouched by this component). Explicit (never the ambient runtime
+  // default) so this still renders identically during SSR and after client
+  // hydration regardless of which timezone the server process happens to
+  // run in -- the same class of server/client mismatch
+  // lib/timezone.ts's nowInBusinessTz() exists to avoid, applied here to a
+  // single formatted string instead of a Date.
+  timezone: string;
+};
 
 type NonNoneVariant = Exclude<OwnerBillingBannerProps["bannerVariant"], "none">;
 
-// Fixed locale and explicit timeZone (not the ambient runtime default) so
-// this renders identically during SSR and after client hydration regardless
-// of which timezone the server process happens to run in -- the same class
-// of server/client mismatch lib/timezone.ts's nowInBusinessTz() exists to
-// avoid, applied here to a single formatted string instead of a Date.
-function formatDate(d: Date | null): string {
+function formatDate(d: Date | null, tz: string): string {
   if (!d) return "the scheduled date";
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "America/New_York" });
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: tz });
 }
 
 // Wording keyed ONLY by bannerVariant, with the two approved dates (final
 // full-access date / read-only end date) interpolated where the approved
 // copy requires them -- never any other subscription/Stripe detail.
-function contentFor(variant: NonNoneVariant, finalAccessDate: Date | null, readOnlyEndsAt: Date | null): { title: string; body: string } {
+function contentFor(variant: NonNoneVariant, finalAccessDate: Date | null, readOnlyEndsAt: Date | null, tz: string): { title: string; body: string } {
   switch (variant) {
     case "grace_warning":
       return {
@@ -54,17 +66,17 @@ function contentFor(variant: NonNoneVariant, finalAccessDate: Date | null, readO
     case "cancel_scheduled_trial":
       return {
         title: "Cancellation scheduled",
-        body: `Your free trial will end and no charge will occur on ${formatDate(finalAccessDate)}. You'll keep full access until then.`,
+        body: `Your free trial will end and no charge will occur on ${formatDate(finalAccessDate, tz)}. You'll keep full access until then.`,
       };
     case "cancel_scheduled_paid":
       return {
         title: "Cancellation scheduled",
-        body: `Your subscription is scheduled to end on ${formatDate(finalAccessDate)}, the end of your current paid period. You'll keep full access until then.`,
+        body: `Your subscription is scheduled to end on ${formatDate(finalAccessDate, tz)}, the end of your current paid period. You'll keep full access until then.`,
       };
     case "read_only":
       return {
         title: "Your subscription has ended — account is read-only",
-        body: `You can still view your existing data, but changes and notifications are turned off. Read-only access ends ${formatDate(readOnlyEndsAt)}. Reactivate any time to restore full access -- all your data is preserved.`,
+        body: `You can still view your existing data, but changes and notifications are turned off. Read-only access ends ${formatDate(readOnlyEndsAt, tz)}. Reactivate any time to restore full access -- all your data is preserved.`,
       };
     case "locked":
       return {
@@ -136,7 +148,7 @@ const VARIANT_STYLE: Record<NonNoneVariant, { wrap: string; title: string; body:
   trial_available: { wrap: "border-slate-200 bg-slate-50", title: "text-slate-900", body: "text-slate-600" },
 };
 
-export default function OwnerBillingBanner({ bannerVariant, recoveryAction, finalAccessDate, readOnlyEndsAt }: OwnerBillingBannerProps) {
+export default function OwnerBillingBanner({ bannerVariant, recoveryAction, finalAccessDate, readOnlyEndsAt, timezone }: OwnerBillingBannerProps) {
   const [pending, setPending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -156,7 +168,7 @@ export default function OwnerBillingBanner({ bannerVariant, recoveryAction, fina
 
   if (bannerVariant === "none") return null;
 
-  const content = contentFor(bannerVariant, finalAccessDate, readOnlyEndsAt);
+  const content = contentFor(bannerVariant, finalAccessDate, readOnlyEndsAt, timezone);
   const style = VARIANT_STYLE[bannerVariant];
   const label = recoveryAction ? ACTION_LABEL[recoveryAction] : null;
 

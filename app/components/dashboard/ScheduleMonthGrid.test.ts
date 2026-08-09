@@ -35,9 +35,9 @@ describe("calendar structure -- built from the tested pure helpers, not reimplem
     assert.ok(!/\bweekOffset\s*[:=]/.test(source), "Month view must not read the hourly grid's weekOffset as a prop/variable");
   });
 
-  test("\"now\" is resolved via nowInBusinessTz, the same business-timezone convention ScheduleGrid.tsx already uses for today/day-bucketing", () => {
+  test("\"now\" is resolved via nowInBusinessTz, the same business-timezone convention ScheduleGrid.tsx already uses for today/day-bucketing, using the resolved workspace timezone prop (Phase 5C)", () => {
     assert.ok(source.includes('import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";'));
-    assert.ok(source.includes("const now = nowInBusinessTz();"));
+    assert.ok(source.includes("const now = nowInBusinessTz(timezone);"));
   });
 });
 
@@ -55,8 +55,8 @@ describe("header identifies the displayed month, matching ScheduleGrid's existin
 });
 
 describe("appointment chips -- content, truncation, ordering, and busy-day '+N more'", () => {
-  test("appointments are grouped via groupAppointmentsByDate(appointments, toBusinessLocal) -- the same business-local day-bucketing convention as ScheduleGrid, and the same function that excludes cancelled appointments and orders chronologically", () => {
-    assert.ok(source.includes("const apptsByDate = groupAppointmentsByDate(appointments, toBusinessLocal);"));
+  test("appointments are grouped via groupAppointmentsByDate(appointments, ...toBusinessLocal) -- the same business-local day-bucketing convention as ScheduleGrid, using the resolved workspace timezone prop (Phase 5C), and the same function that excludes cancelled appointments and orders chronologically", () => {
+    assert.ok(source.includes("const apptsByDate = groupAppointmentsByDate(appointments, (iso) => toBusinessLocal(iso, timezone));"));
   });
 
   test("each day cell shows at most MAX_VISIBLE_CHIPS_PER_DAY chips, with a '+N more' indicator for the remainder", () => {
@@ -66,7 +66,7 @@ describe("appointment chips -- content, truncation, ordering, and busy-day '+N m
   });
 
   test("a chip's visible text uses formatChipTime (compact, no AM/PM), client name, and service_type -- never price_cents, notes, or other private detail", () => {
-    assert.ok(source.includes("{formatChipTime(toBusinessLocal(appt.scheduled_for))}"));
+    assert.ok(source.includes("{formatChipTime(toBusinessLocal(appt.scheduled_for, timezone))}"));
     assert.ok(source.includes("{clientName(appt.client_id)}"));
     assert.ok(source.includes("{appt.service_type}"));
     for (const forbidden of ["price_cents", "appt.notes", "Projected Revenue"]) {
@@ -188,5 +188,19 @@ describe("no leaked internal detail (matches the hygiene convention already esta
     for (const forbidden of ["getSession", "fetchEntitlementForWorkspace", "requireCapability", "localStorage", "sessionStorage"]) {
       assert.ok(!source.includes(forbidden), `ScheduleMonthGrid.tsx must not contain "${forbidden}"`);
     }
+  });
+});
+
+describe("Phase 5C: workspace-timezone-aware month grouping", () => {
+  test("Props declares timezone: string, and DashboardShell passes timezone={timezone}", () => {
+    assert.ok(source.includes("timezone: string;"));
+    const idx = shellSource.indexOf("<ScheduleMonthGrid");
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("groupAppointmentsByDate is passed an inline localize closure over toBusinessLocal(iso, timezone), not the bare function reference", () => {
+    assert.ok(source.includes("groupAppointmentsByDate(appointments, (iso) => toBusinessLocal(iso, timezone))"));
   });
 });

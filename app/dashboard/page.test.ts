@@ -148,3 +148,28 @@ describe("app/dashboard/page.tsx -- fetches appointment_employees assignments, w
     assert.ok(block![0].includes('.order("id", { ascending: true })'));
   });
 });
+
+describe("app/dashboard/page.tsx -- Phase 5C: workspace timezone resolved server-side and passed to DashboardShell", () => {
+  test("imports effectiveTimezone from lib/timezone", () => {
+    assert.ok(source.includes('import { effectiveTimezone } from "@/lib/timezone";'));
+  });
+
+  test("queries company_settings for timezone, scoped by workspace_id, and resolves it through effectiveTimezone -- never trusts a client-supplied value (there is none; this is a server component)", () => {
+    const block = source.match(/let timezone = effectiveTimezone\(null\);[\s\S]*?catch \{[\s\S]*?\}/);
+    assert.ok(block, "expected a try/catch around the company_settings timezone lookup");
+    assert.ok(block![0].includes('.from("company_settings")'));
+    assert.ok(block![0].includes('.select("timezone")'));
+    assert.ok(block![0].includes('.eq("workspace_id", workspaceId)'));
+    assert.ok(block![0].includes("timezone = effectiveTimezone(tzRow?.timezone);"));
+  });
+
+  test("a missing/erroring company_settings row degrades safely to the default (effectiveTimezone(null)), never a hard failure", () => {
+    assert.ok(source.includes("let timezone = effectiveTimezone(null);"));
+  });
+
+  test("timezone is passed to DashboardShell", () => {
+    const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
+    assert.ok(shellBlock);
+    assert.ok(shellBlock![0].includes("timezone={timezone}"));
+  });
+});

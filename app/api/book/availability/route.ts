@@ -11,6 +11,7 @@ import {
 import { effectiveBusinessHours } from "@/lib/businessHours";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
+import { effectiveTimezone } from "@/lib/timezone";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -31,7 +32,7 @@ export async function GET(req: Request) {
 
     const { data: settings } = await supabaseAdmin
       .from("company_settings")
-      .select("booking_enabled, business_hours")
+      .select("booking_enabled, business_hours, timezone")
       .eq("workspace_id", REAL_WORKSPACE_ID)
       .maybeSingle();
 
@@ -40,6 +41,10 @@ export async function GET(req: Request) {
     }
 
     const businessHours = effectiveBusinessHours(settings?.business_hours);
+    // Trusted, server-resolved workspace timezone -- never accepted from
+    // the request (there is no such parameter on this route) or the
+    // customer's own device/browser timezone.
+    const timezone = effectiveTimezone(settings?.timezone);
 
     const url = new URL(req.url);
     const dateStr = (url.searchParams.get("date") || "").trim();
@@ -51,7 +56,7 @@ export async function GET(req: Request) {
     if (!serviceName) {
       return json({ error: "Missing service" }, 400);
     }
-    if (dateStr < todayBusinessDate()) {
+    if (dateStr < todayBusinessDate(timezone)) {
       return json({ slots: [] });
     }
 
@@ -68,7 +73,7 @@ export async function GET(req: Request) {
       return json({ error: "Please choose a valid service." }, 400);
     }
 
-    const { start, end } = businessDayBounds(dateStr);
+    const { start, end } = businessDayBounds(dateStr, timezone);
     const { data: appts, error } = await supabaseAdmin
       .from("appointments")
       .select("scheduled_for, scheduled_end, duration_minutes")
@@ -88,7 +93,7 @@ export async function GET(req: Request) {
       return { start: busyStart, end: busyEnd };
     });
 
-    const slots = computeAvailableSlots(dateStr, svc.duration_minutes || 60, busy, businessHours);
+    const slots = computeAvailableSlots(dateStr, svc.duration_minutes || 60, busy, businessHours, timezone);
     return json({ slots });
   } catch (e: any) {
     console.error("BOOK_AVAILABILITY_ERROR", e);

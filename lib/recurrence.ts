@@ -1,5 +1,4 @@
 import { DateTime } from "luxon";
-import { BUSINESS_TZ } from "@/lib/timezone";
 
 export const MAX_HORIZON_DAYS = 182;
 
@@ -14,10 +13,24 @@ export const MAX_HORIZON_DAYS = 182;
 // this window.
 export const MAX_MONTHLY_HORIZON_MONTHS = 24;
 
-export function addDays(date: Date, days: number): Date {
-  const d = new Date(date);
-  d.setDate(d.getDate() + days);
-  return d;
+// Phase 5D: `tz` is an explicit, required parameter on every function in
+// this module -- the resolved workspace timezone, never the global
+// BUSINESS_TZ default (see lib/timezone.ts's own note on that default being
+// a Phase 5C-era compatibility shim). `date`/`startDate` are always an
+// absolute instant (their own getDate()/getHours() are meaningless without
+// a zone) -- appointments.scheduled_for's real meaning is a wall-clock time
+// in the WORKSPACE's own timezone, which the browser correctly encoded into
+// that UTC instant at creation time. Computing this with plain Date-local
+// methods instead (as an earlier version of addDays did) inherits whatever
+// zone the Node process happens to run in -- on a UTC production server
+// that means the UTC hour gets preserved across a DST transition instead of
+// the business-local hour, silently shifting a 9:00 AM appointment to
+// 10:00 AM (or 8:00 AM) after crossing a DST boundary. Luxon resolves the
+// real IANA DST offset for the target date/zone, so the business-local
+// wall-clock hour is what's preserved for daily/weekdays/weekly recurrence
+// too, exactly like addCalendarMonths already did for monthly (Phase 2).
+export function addDays(date: Date, days: number, tz: string): Date {
+  return DateTime.fromJSDate(date).setZone(tz).plus({ days }).toJSDate();
 }
 
 // Adds `months` calendar months to `date`, always measured from `date`'s
@@ -27,33 +40,13 @@ export function addDays(date: Date, days: number): Date {
 // to that month's actual last day; the ORIGINAL day is used again for every
 // later occurrence, so Jan 31 + 1 month = Feb 28, but Jan 31 + 2 months is
 // computed fresh from day 31 and lands on Mar 31, not Mar 28.
-//
-// Deliberately does the month-and-clamp arithmetic in BUSINESS_TZ (via
-// Luxon), not in whatever local timezone the executing runtime happens to
-// have -- `date` is always an absolute instant (its own getDate()/getHours()
-// are meaningless without a zone), and appointments.scheduled_for's real
-// meaning is a wall-clock time in the business's own timezone
-// (America/New_York), which the browser correctly encoded into that UTC
-// instant at creation time. Computing this with plain Date-local methods
-// instead (as an earlier version of this function did) inherits whatever
-// zone the Node process happens to run in -- on a UTC production server
-// that means the UTC hour gets preserved across a DST transition instead
-// of the business-local hour, silently shifting a 9:00 AM New York
-// appointment to 10:00 AM (or 8:00 AM) New York after crossing a DST
-// boundary. Luxon resolves the real IANA DST offset for the target
-// date/zone, so the business-local wall-clock hour is what's preserved,
-// exactly like the existing BUSINESS_TZ-aware helpers in lib/timezone.ts
-// and lib/availability.ts already do for "now"/business-hours -- this is a
-// Phase 2 correctness fix using the EXISTING global BUSINESS_TZ, not new
-// per-workspace Time Zone support (see the same file's docs for the
-// boundary between the two).
-export function addCalendarMonths(date: Date, months: number): Date {
-  return DateTime.fromJSDate(date).setZone(BUSINESS_TZ).plus({ months }).toJSDate();
+export function addCalendarMonths(date: Date, months: number, tz: string): Date {
+  return DateTime.fromJSDate(date).setZone(tz).plus({ months }).toJSDate();
 }
 
-function isWeekday(d: Date): boolean {
-  const day = d.getDay();
-  return day !== 0 && day !== 6;
+function isWeekdayInTz(d: Date, tz: string): boolean {
+  const weekday = DateTime.fromJSDate(d).setZone(tz).weekday; // 1=Monday..7=Sunday
+  return weekday !== 6 && weekday !== 7;
 }
 
 // repeatMonths is only consulted when frequencyType === "monthly" -- every
@@ -64,25 +57,26 @@ export function generateFutureDates(
   startDate: Date,
   frequencyType: string,
   repeatWeeks: number,
+  tz: string,
   repeatMonths?: number,
 ): Date[] {
   const dates: Date[] = [];
 
   if (frequencyType === "daily") {
     for (let d = 1; d <= MAX_HORIZON_DAYS; d++) {
-      dates.push(addDays(startDate, d));
+      dates.push(addDays(startDate, d, tz));
     }
   } else if (frequencyType === "weekdays") {
     for (let d = 1; d <= MAX_HORIZON_DAYS; d++) {
-      const candidate = addDays(startDate, d);
-      if (isWeekday(candidate)) {
+      const candidate = addDays(startDate, d, tz);
+      if (isWeekdayInTz(candidate, tz)) {
         dates.push(candidate);
       }
     }
   } else if (frequencyType === "weekly" && repeatWeeks >= 1) {
     const intervalDays = repeatWeeks * 7;
     for (let d = intervalDays; d <= MAX_HORIZON_DAYS; d += intervalDays) {
-      dates.push(addDays(startDate, d));
+      dates.push(addDays(startDate, d, tz));
     }
   } else if (
     frequencyType === "monthly" &&
@@ -92,7 +86,7 @@ export function generateFutureDates(
   ) {
     const interval = repeatMonths as number;
     for (let m = interval; m <= MAX_MONTHLY_HORIZON_MONTHS; m += interval) {
-      dates.push(addCalendarMonths(startDate, m));
+      dates.push(addCalendarMonths(startDate, m, tz));
     }
   }
 
@@ -102,9 +96,48 @@ export function generateFutureDates(
 export function countFutureOccurrences(
   frequencyType: string,
   repeatWeeks: number,
+  tz: string,
   startDate?: Date,
   repeatMonths?: number,
 ): number {
   if (frequencyType === "one_time" || !frequencyType) return 0;
-  return generateFutureDates(startDate ?? new Date(), frequencyType, repeatWeeks, repeatMonths).length;
+  return generateFutureDates(startDate ?? new Date(), frequencyType, repeatWeeks, tz, repeatMonths).length;
+}
+
+export type RecurrenceGenerationResult =
+  | { ok: true; dates: Date[] }
+  | { ok: false; error: string };
+
+// Same generation as generateFutureDates, but additionally detects any
+// occurrence whose business-local time-of-day drifted from the origin's own
+// local hour/minute -- the signature of a generated occurrence silently
+// landing on a DST spring-forward gap (Luxon rolls e.g. 2:30 AM forward to
+// 3:30 AM rather than marking the result invalid; empirically verified the
+// same way lib/timezone.ts's zonedDateTimeToUTC round-trip check was).
+//
+// Every caller that WRITES appointments (never the count-only preview,
+// which uses generateFutureDates/countFutureOccurrences directly) must use
+// this instead, and must reject the ENTIRE request -- zero appointment or
+// assignment writes -- rather than silently dropping, shifting, or
+// partially creating the series.
+export function generateFutureDatesSafe(
+  startDate: Date,
+  frequencyType: string,
+  repeatWeeks: number,
+  tz: string,
+  repeatMonths?: number,
+): RecurrenceGenerationResult {
+  const dates = generateFutureDates(startDate, frequencyType, repeatWeeks, tz, repeatMonths);
+  const origin = DateTime.fromJSDate(startDate).setZone(tz);
+  for (const d of dates) {
+    const local = DateTime.fromJSDate(d).setZone(tz);
+    if (local.hour !== origin.hour || local.minute !== origin.minute) {
+      return {
+        ok: false,
+        error:
+          "One or more appointments in this recurring series would fall on a time that doesn't exist due to a daylight-saving change. Please choose another time or frequency.",
+      };
+    }
+  }
+  return { ok: true, dates };
 }

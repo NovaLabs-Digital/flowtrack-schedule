@@ -45,6 +45,7 @@ export default function DashboardShell({
   assignments,
   isTester,
   entitlement,
+  timezone,
 }: {
   clients: Client[];
   appointments: Appointment[];
@@ -77,6 +78,11 @@ export default function DashboardShell({
   // never a raw EntitlementResult. canSendNotifications remains unconsumed
   // by any owner UI control.
   entitlement: EntitlementView;
+  // Phase 5C: the workspace's own trusted timezone, resolved server-side
+  // (app/dashboard/page.tsx, via lib/timezone.ts's effectiveTimezone) and
+  // threaded through to every scheduling/display consumer below -- never
+  // re-derived from the browser/device's own ambient timezone.
+  timezone: string;
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
@@ -287,6 +293,7 @@ export default function DashboardShell({
           : undefined
       }
       canMutateOperationalData={entitlement.canMutateOperationalData}
+      timezone={timezone}
     />
   );
 
@@ -309,6 +316,7 @@ export default function DashboardShell({
           finalAccessDate={entitlement.finalAccessDate}
           readOnlyEndsAt={entitlement.readOnlyEndsAt}
           canMutateOperationalData={entitlement.canMutateOperationalData}
+          timezone={timezone}
         />
         {modalEl}
       </>
@@ -329,6 +337,7 @@ export default function DashboardShell({
         recoveryAction={entitlement.recoveryAction}
         finalAccessDate={entitlement.finalAccessDate}
         readOnlyEndsAt={entitlement.readOnlyEndsAt}
+        timezone={timezone}
       />
       <div className="flex-1 min-h-0 flex">
       {/* Left bar — full height, never moves */}
@@ -385,6 +394,7 @@ export default function DashboardShell({
                     onSelectAppointment={handleSelectAppointment}
                     onEditAppointment={handleEditAppointment}
                     monthOffset={monthOffset}
+                    timezone={timezone}
                   />
                 ) : (
                   <ScheduleGrid
@@ -403,6 +413,7 @@ export default function DashboardShell({
                     onDropAppointment={handleDropAppointment}
                     weekOffset={weekOffset}
                     canMutateOperationalData={entitlement.canMutateOperationalData}
+                    timezone={timezone}
                   />
                 )}
               </div>
@@ -418,6 +429,7 @@ export default function DashboardShell({
                     onEdit={() => handleEditAppointment(selectedAppt.id)}
                     onCancelled={handleAppointmentCancelled}
                     canMutateOperationalData={entitlement.canMutateOperationalData}
+                    timezone={timezone}
                   />
                 ) : (
                   <ClientPanel
@@ -425,6 +437,7 @@ export default function DashboardShell({
                     appointments={appointments}
                     onClientUpdated={() => router.refresh()}
                     canMutateOperationalData={entitlement.canMutateOperationalData}
+                    timezone={timezone}
                   />
                 )}
               </div>
@@ -456,6 +469,7 @@ export default function DashboardShell({
             selectedAppointmentId={selectedApptId}
             onHoursSaved={handleHoursSaved}
             canUseJobTracking={entitlement.canUseJobTracking}
+            timezone={timezone}
           />
         </aside>
       )}
@@ -471,6 +485,7 @@ export default function DashboardShell({
           onClose={() => setPendingMove(null)}
           onMoved={handleMoved}
           canMutateOperationalData={entitlement.canMutateOperationalData}
+          timezone={timezone}
         />
       )}
     </div>

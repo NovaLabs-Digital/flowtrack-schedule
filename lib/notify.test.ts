@@ -161,3 +161,46 @@ describe("getCompanyIdentity -- combined workspace-scoped company_name + booking
     assert.notEqual(a.companyName, b.companyName);
   });
 });
+
+describe("Phase 5E: getCompanyIdentity -- timezone resolved through effectiveTimezone in the same query", () => {
+  test("a saved supported timezone is read through unchanged", async () => {
+    resetFixtures({ company_settings: [{ data: { company_name: "Acme", booking_enabled: true, timezone: "America/Los_Angeles" } }] });
+    const identity = await getCompanyIdentity("workspace-a");
+    assert.equal(identity.timezone, "America/Los_Angeles");
+  });
+
+  test("NULL timezone on an existing row falls back to America/New_York", async () => {
+    resetFixtures({ company_settings: [{ data: { company_name: "Acme", booking_enabled: true, timezone: null } }] });
+    const identity = await getCompanyIdentity("workspace-a");
+    assert.equal(identity.timezone, "America/New_York");
+  });
+
+  test("no company_settings row at all falls back to America/New_York, same as a NULL column", async () => {
+    resetFixtures({ company_settings: [{ data: null }] });
+    const identity = await getCompanyIdentity("workspace-none");
+    assert.equal(identity.timezone, "America/New_York");
+  });
+
+  test("an unsupported/garbage timezone value falls back to America/New_York rather than being passed through unvalidated", async () => {
+    resetFixtures({ company_settings: [{ data: { company_name: "Acme", booking_enabled: true, timezone: "Not/AZone" } }] });
+    const identity = await getCompanyIdentity("workspace-a");
+    assert.equal(identity.timezone, "America/New_York");
+  });
+
+  test("Workspace A (New York) and Workspace B (Los Angeles) never leak each other's timezone", async () => {
+    resetFixtures({ company_settings: [{ data: { company_name: "A", booking_enabled: true, timezone: "America/New_York" } }] });
+    const a = await getCompanyIdentity("workspace-a");
+    resetFixtures({ company_settings: [{ data: { company_name: "B", booking_enabled: true, timezone: "America/Los_Angeles" } }] });
+    const b = await getCompanyIdentity("workspace-b");
+    assert.equal(a.timezone, "America/New_York");
+    assert.equal(b.timezone, "America/Los_Angeles");
+  });
+
+  test("timezone is still read via the single .eq(\"workspace_id\", workspaceId)-scoped query, no second round trip", async () => {
+    resetFixtures({ company_settings: [{ data: { company_name: "Acme", booking_enabled: true, timezone: "America/Denver" } }] });
+    await getCompanyIdentity("workspace-check");
+    assert.equal(currentFake.calls.filter((c) => c.table === "company_settings").length > 0, true);
+    const eqCall = currentFake.calls.find((c) => c.table === "company_settings" && c.method === "eq");
+    assert.deepEqual(eqCall!.args, ["workspace_id", "workspace-check"]);
+  });
+});

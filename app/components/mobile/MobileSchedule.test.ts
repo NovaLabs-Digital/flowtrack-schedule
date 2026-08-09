@@ -43,3 +43,20 @@ describe("Phase 5.7D-R19: Team Color accent on the Schedule (Agenda List) tab (s
     assert.ok(jsx.includes("accentColor={accentColorFor(a)}"));
   });
 });
+
+describe("Phase 5C: workspace-timezone-aware agenda list", () => {
+  test("Props declares timezone: string, destructured and used for today/upcoming/day-grouping -- never the unparameterized default", () => {
+    assert.ok(source.includes("timezone: string;"));
+    assert.ok(source.includes("const today = nowInBusinessTz(timezone);"));
+    assert.ok(source.includes("const local = toBusinessLocal(a.scheduled_for, timezone);"));
+    assert.ok(source.includes("const day = toBusinessLocal(a.scheduled_for, timezone);"));
+  });
+
+  test("timezone is forwarded to MobileAppointmentCard", () => {
+    const idx = source.indexOf("<MobileAppointmentCard");
+    assert.notEqual(idx, -1);
+    const closeIdx = source.indexOf("/>", idx);
+    const jsx = source.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+});

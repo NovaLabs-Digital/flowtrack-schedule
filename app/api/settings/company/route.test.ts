@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
 import { DEFAULT_BUSINESS_HOURS } from "../../../../lib/businessHours.ts";
+import { TIMEZONE_OPTIONS } from "../../../../lib/timezone.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
 let sessionToReturn: unknown = { role: "none" };
@@ -456,6 +457,206 @@ describe("Phase 4: Business Hours", () => {
       await POST(req("POST", { business_hours: { monday: [{ start: "08:00", end: "17:00" }] }, workspace_id: "attacker-ws" }));
       const scopedToAttacker = currentFake.calls.some((c) => c.table === "company_settings" && c.method === "eq" && c.args[1] === "attacker-ws");
       assert.equal(scopedToAttacker, false);
+    });
+  });
+});
+
+describe("Phase 5B: Time Zone (foundation only -- not yet wired into scheduling)", () => {
+  describe("GET returns effective timezone", () => {
+    test("a workspace with no saved timezone (NULL/absent) gets the America/New_York fallback", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true, timezone: null } }],
+        employees: [{ count: 3 }, { count: 2 }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await GET();
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.settings.timezone, "America/New_York");
+    });
+
+    for (const opt of TIMEZONE_OPTIONS) {
+      test(`a workspace with a saved timezone of "${opt.value}" gets back its own effective value`, async () => {
+        resetFixtures({
+          workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+          subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+          company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true, timezone: opt.value } }],
+          employees: [{ count: 3 }, { count: 2 }],
+        });
+        sessionToReturn = OWNER_SESSION;
+        const res = await GET();
+        const body = await res.json();
+        assert.equal(body.settings.timezone, opt.value);
+      });
+    }
+
+    test("no company_settings row at all still returns the default fallback, not a crash", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: null }],
+        employees: [{ count: 0 }, { count: 0 }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await GET();
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.settings.timezone, "America/New_York");
+    });
+
+    test("Business Hours' own effective value is unaffected by the timezone field being added alongside it", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true, timezone: "America/Chicago", business_hours: null } }],
+        employees: [{ count: 3 }, { count: 2 }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await GET();
+      const body = await res.json();
+      assert.deepEqual(body.settings.business_hours, DEFAULT_BUSINESS_HOURS);
+      assert.equal(body.settings.timezone, "America/Chicago");
+    });
+  });
+
+  describe("POST persists valid timezone", () => {
+    function lastCompanySettingsWrite() {
+      const writes = writeCalls(currentFake.calls).filter((c) => c.table === "company_settings");
+      return writes[writes.length - 1];
+    }
+
+    for (const opt of TIMEZONE_OPTIONS) {
+      test(`"${opt.value}" is accepted and persisted`, async () => {
+        resetFixtures({
+          workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+          subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+          company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+        });
+        sessionToReturn = OWNER_SESSION;
+        const res = await POST(req("POST", { timezone: opt.value }));
+        assert.equal(res.status, 200);
+        const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+        assert.equal(fields.timezone, opt.value);
+      });
+    }
+
+    for (const bad of ["EST", "PST", "", "  ", "Europe/London", "america/new_york", 42, null, {}]) {
+      test(`invalid timezone ${JSON.stringify(bad)} is rejected with 400, before any write`, async () => {
+        resetFixtures({
+          workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+          subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        });
+        sessionToReturn = OWNER_SESSION;
+        const res = await POST(req("POST", { timezone: bad }));
+        assert.equal(res.status, 400);
+        assert.deepEqual(currentFake.calls.filter((c) => c.table === "company_settings"), []);
+      });
+    }
+
+    test("omitting timezone entirely from the request leaves it untouched -- an unrelated Company Info save cannot change it", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(req("POST", { company_name: "Acme Cleaning" }));
+      assert.equal(res.status, 200);
+      const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+      assert.ok(!("timezone" in fields));
+    });
+
+    test("saving timezone never includes business_hours in the persisted fields -- the two Settings cards remain independently omittable", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(req("POST", { timezone: "America/Denver" }));
+      assert.equal(res.status, 200);
+      const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+      assert.ok(!("business_hours" in fields));
+      assert.equal(fields.timezone, "America/Denver");
+    });
+  });
+
+  describe("workspace isolation: Workspace A (America/New_York) and Workspace B (America/Los_Angeles)", () => {
+    function lastCompanySettingsWrite() {
+      const writes = writeCalls(currentFake.calls).filter((c) => c.table === "company_settings");
+      return writes[writes.length - 1];
+    }
+
+    test("Workspace A's GET returns its own saved value, independent of any other workspace", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { company_name: "Workspace A", booking_enabled: true, timezone: "America/New_York" } }],
+        employees: [{ count: 0 }, { count: 0 }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await GET();
+      const body = await res.json();
+      assert.equal(body.settings.timezone, "America/New_York");
+    });
+
+    test("Workspace B's GET returns its own saved value, independent of Workspace A", async () => {
+      const WORKSPACE_B = "bbbbbbbb-0000-0000-0000-00000000000b";
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: WORKSPACE_B, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { company_name: "Workspace B", booking_enabled: true, timezone: "America/Los_Angeles" } }],
+        employees: [{ count: 0 }, { count: 0 }],
+      });
+      sessionToReturn = { role: "owner", workspaceId: WORKSPACE_B, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
+      const res = await GET();
+      const body = await res.json();
+      assert.equal(body.settings.timezone, "America/Los_Angeles");
+    });
+
+    test("Workspace A's POST updates only its own row, scoped by its own workspace_id", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-a" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      await POST(req("POST", { timezone: "America/New_York" }));
+      const workspaceScopedEq = currentFake.calls.some(
+        (c) => c.table === "company_settings" && c.method === "eq" && c.args[0] === "workspace_id" && c.args[1] === REAL_WORKSPACE_ID
+      );
+      assert.ok(workspaceScopedEq, "Workspace A's Time Zone write must be scoped to Workspace A's own workspace_id");
+    });
+
+    test("a spoofed workspace_id in the request body cannot redirect a Time Zone save to another workspace", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      await POST(req("POST", { timezone: "America/Los_Angeles", workspace_id: "attacker-ws" }));
+      const scopedToAttacker = currentFake.calls.some((c) => c.table === "company_settings" && c.method === "eq" && c.args[1] === "attacker-ws");
+      assert.equal(scopedToAttacker, false);
+      const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+      assert.equal(fields.timezone, "America/Los_Angeles", "the value itself still saves -- only the workspace scope is protected");
+    });
+
+    test("a missing company_settings row for a brand-new workspace still falls back safely on GET", async () => {
+      const WORKSPACE_C = "cccccccc-0000-0000-0000-00000000000c";
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: WORKSPACE_C, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: null }],
+        employees: [{ count: 0 }, { count: 0 }],
+      });
+      sessionToReturn = { role: "owner", workspaceId: WORKSPACE_C, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
+      const res = await GET();
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.settings.timezone, "America/New_York");
     });
   });
 });

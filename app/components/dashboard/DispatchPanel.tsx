@@ -23,8 +23,14 @@ import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 // Worked Hours read the exact same selected period (Income Projection is
 // read-only against it; PayrollSummary's existing date inputs remain the
 // one place it's edited).
-function mondayOfCurrentWeek(): Date {
-  const d = nowInBusinessTz();
+//
+// Phase 5E: `tz` is required, no default -- "Monday" must be resolved from
+// "now" in the WORKSPACE's own timezone, never the browser/device's. Two
+// workspaces reading this at the identical real instant can land on
+// different calendar weeks (e.g. already Monday in New York, still Sunday
+// in Honolulu) -- each must see its own correct local week.
+function mondayOfCurrentWeek(tz: string): Date {
+  const d = nowInBusinessTz(tz);
   d.setHours(0, 0, 0, 0);
   const dow = d.getDay(); // 0=Sun..6=Sat
   const diff = (dow + 6) % 7; // days since Monday
@@ -48,8 +54,9 @@ function addDays(d: Date, n: number) {
 const RESTRICTED_NOTICE_ID = "employee-hours-restricted-notice";
 const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
-function formatDateTime(iso: string) {
-  const d = toBusinessLocal(iso);
+// `tz` is the workspace's own resolved timezone -- required, no default.
+function formatDateTime(iso: string, tz: string) {
+  const d = toBusinessLocal(iso, tz);
   const date = d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   const h = d.getHours();
   const m = d.getMinutes();
@@ -219,6 +226,7 @@ export default function DispatchPanel({
   selectedAppointmentId,
   onHoursSaved,
   canUseJobTracking,
+  timezone,
 }: {
   appointments: Appointment[];
   clients: Client[];
@@ -231,8 +239,14 @@ export default function DispatchPanel({
   selectedAppointmentId: string | null;
   onHoursSaved: (entry: EmployeeHours) => void;
   canUseJobTracking: boolean;
+  // The workspace's own resolved timezone -- used for the selected
+  // appointment's own detail display (formatDateTime above), the default
+  // Mon-Fri week (mondayOfCurrentWeek), the "today" Dispatch summary
+  // counts below, and passed through to Income Projection/Weekly Worked
+  // Hours for their own date-range bucketing.
+  timezone: string;
 }) {
-  const defaultMonday = mondayOfCurrentWeek();
+  const defaultMonday = mondayOfCurrentWeek(timezone);
   const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
   const [rangeEnd, setRangeEnd] = useState(toDateInputValue(addDays(defaultMonday, 4)));
 
@@ -246,8 +260,8 @@ export default function DispatchPanel({
     else assignmentsByApptId.set(a.appointment_id, [a]);
   }
 
-  const today = startOfBusinessDay(0);
-  const tomorrow = startOfBusinessDay(1);
+  const today = startOfBusinessDay(0, timezone);
+  const tomorrow = startOfBusinessDay(1, timezone);
 
   const todayAppts = appointments.filter((a) => {
     const d = new Date(a.scheduled_for);
@@ -318,7 +332,7 @@ export default function DispatchPanel({
                 value={selectedApptEmployees.length > 0 ? selectedApptEmployees.map((e) => e.name).join(", ") : "Unassigned"}
               />
               <InfoRow label="Service" value={selectedAppt.service_type} />
-              <InfoRow label="Date & Time" value={formatDateTime(selectedAppt.scheduled_for)} />
+              <InfoRow label="Date & Time" value={formatDateTime(selectedAppt.scheduled_for, timezone)} />
               <InfoRow label="Status" value={
                 selectedAppt.status === "cancelled" ? "Cancelled"
                 : selectedApptStatus === "completed" ? "Completed"
@@ -371,7 +385,7 @@ export default function DispatchPanel({
       {/* 3. Income Projection — always visible, independent of selection.
           Reads the same rangeStart/rangeEnd Weekly Worked Hours below is
           currently showing/editing. */}
-      <IncomeProjection appointments={appointments} assignments={assignments} rangeStart={rangeStart} rangeEnd={rangeEnd} />
+      <IncomeProjection appointments={appointments} assignments={assignments} rangeStart={rangeStart} rangeEnd={rangeEnd} timezone={timezone} />
 
       {/* 4. Weekly Worked Hours — always visible, independent of selection */}
       <PayrollSummary
@@ -383,6 +397,7 @@ export default function DispatchPanel({
         rangeEnd={rangeEnd}
         onRangeStartChange={setRangeStart}
         onRangeEndChange={setRangeEnd}
+        timezone={timezone}
       />
 
       {/* 5. Employee Worked Hours — administrative task, lives at the

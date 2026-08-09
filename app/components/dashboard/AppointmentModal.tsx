@@ -9,6 +9,7 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 import { centsToInputValue, parsePriceToCents } from "@/lib/money";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";
+import { zonedDateValue, zonedTimeValue, zonedDateTimeToUTC, toBusinessLocal } from "@/lib/timezone";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via
 // aria-describedby by every capability-gated mutation button below, rather
@@ -43,16 +44,6 @@ function buildTimeSlots() {
   return slots;
 }
 const TIME_SLOTS = buildTimeSlots();
-
-function toDateValue(iso: string) {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function toHHMM(iso: string) {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
 
 function snapTo15(hhmm: string) {
   const [h, m] = hhmm.split(":").map(Number);
@@ -200,9 +191,16 @@ type Props = {
   // manage-recurrence (unchanged by this phase) remains the sole security
   // boundary; this is UX only.
   canMutateOperationalData: boolean;
+  // Phase 5C: the workspace's own resolved timezone -- every date/time form
+  // field reads/writes through this explicitly (via
+  // zonedDateValue/zonedTimeValue/zonedDateTimeToUTC in lib/timezone.ts),
+  // never the browser/device's own ambient timezone. A 9:00 AM New York
+  // appointment must display and save as 9:00 AM New York even when the
+  // owner is physically traveling in a different timezone.
+  timezone: string;
 };
 
-export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, assignments, editing, prefill, canMutateOperationalData }: Props) {
+export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, assignments, editing, prefill, canMutateOperationalData, timezone }: Props) {
   const isEdit = !!editing;
 
   // Phase 5.7D-R18: this appointment's own assignment rows (edit mode
@@ -222,12 +220,12 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   function defaultDuration(name: string) { return serviceDurations[name] ?? 60; }
 
   function initTimeIn(): string {
-    if (editing) return snapTo15(toHHMM(editing.appointment.scheduled_for));
+    if (editing) return snapTo15(zonedTimeValue(editing.appointment.scheduled_for, timezone));
     if (prefill?.time) return snapTo15(prefill.time);
     return "09:00";
   }
   function initTimeOut(): string {
-    if (editing?.appointment.scheduled_end) return snapTo15(toHHMM(editing.appointment.scheduled_end));
+    if (editing?.appointment.scheduled_end) return snapTo15(zonedTimeValue(editing.appointment.scheduled_end, timezone));
     return addMinsToHHMM(initTimeIn(), editing?.appointment.duration_minutes ?? defaultDuration(initialService));
   }
   // Editing an appointment always shows its OWN price snapshot, never the
@@ -294,7 +292,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   // Form state
   const [form, setForm] = useState({
     service_type: initialService,
-    date: editing ? toDateValue(editing.appointment.scheduled_for) : (prefill?.date ?? ""),
+    date: editing ? zonedDateValue(editing.appointment.scheduled_for, timezone) : (prefill?.date ?? ""),
     time_in: initTimeIn(),
     time_out: initTimeOut(),
     notes: editing?.appointment.notes ?? "",
@@ -369,7 +367,8 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   // originalDurationMins reuses initTimeIn/initTimeOut, which are pure functions of
   // `editing` — they reflect the appointment's original values, unaffected by `form`.
   const originalStartMs = isEdit ? new Date(editing!.appointment.scheduled_for).getTime() : null;
-  const currentStartMs = form.date && form.time_in ? new Date(`${form.date}T${form.time_in}`).getTime() : null;
+  const currentStartConversion = form.date && form.time_in ? zonedDateTimeToUTC(form.date, form.time_in, timezone) : null;
+  const currentStartMs = currentStartConversion?.ok ? new Date(currentStartConversion.iso).getTime() : null;
   const originalDurationMins = isEdit ? diffMins(initTimeIn(), initTimeOut()) : 0;
   const dateTimeChanged = isEdit && (currentStartMs !== originalStartMs || computedDuration !== originalDurationMins);
   // Phase 5.7D-R18: employee-assignment changes are staffing-only and must
@@ -457,8 +456,19 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     if (!canMutateOperationalData) return;
     if (!validateForm()) return;
 
-    const scheduled_for = new Date(`${form.date}T${form.time_in}`).toISOString();
-    const scheduled_end = new Date(`${form.date}T${form.time_out}`).toISOString();
+    // Resolved with the workspace's own explicit timezone (Phase 5C) --
+    // never `new Date(`${date}T${time}`)`, which the browser interprets in
+    // its OWN ambient timezone and would silently save the wrong UTC
+    // instant the moment the owner's device timezone differs from the
+    // workspace's. Also catches a nonexistent spring-forward local time
+    // (e.g. 2:30 AM on the day clocks jump to 3:00) rather than silently
+    // shifting it -- see zonedDateTimeToUTC's own doc comment.
+    const startResult = zonedDateTimeToUTC(form.date, form.time_in, timezone);
+    if (!startResult.ok) { setError(startResult.error); return; }
+    const endResult = zonedDateTimeToUTC(form.date, form.time_out, timezone);
+    if (!endResult.ok) { setError(endResult.error); return; }
+    const scheduled_for = startResult.iso;
+    const scheduled_end = endResult.iso;
     const price_cents = form.price.trim() === "" ? null : parsePriceToCents(form.price);
 
     setSubmitting(true);
@@ -922,7 +932,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
               {manageFreq !== "one_time" && (
                 <div className="text-xs text-slate-500">
-                  This will create approximately {countFutureOccurrences(manageFreq, manageWeeks, new Date(editing.appointment.scheduled_for), manageMonths)} future appointments.
+                  This will create approximately {countFutureOccurrences(manageFreq, manageWeeks, timezone, new Date(editing.appointment.scheduled_for), manageMonths)} future appointments.
                 </div>
               )}
               {manageFreq === "one_time" && editing.appointment.series_id && (
@@ -996,11 +1006,16 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                   );
                 }
 
+                // Displayed in the business's own resolved timezone, not
+                // the owner's device timezone -- toBusinessLocal's
+                // synthesized Date is self-consistent for this native
+                // toLocaleString() read (no explicit timeZone needed) the
+                // same way it already is for native getters elsewhere.
                 const startedLabel = assignment.actual_started_at
-                  ? new Date(assignment.actual_started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                  ? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
                   : "Not recorded";
                 const completedLabel = assignment.actual_completed_at
-                  ? new Date(assignment.actual_completed_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                  ? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
                   : "Not recorded";
                 const workedMins = resolveWorkedMinutes(editing!.appointment.id, assignment.employee_id, assignment, employeeHours);
 

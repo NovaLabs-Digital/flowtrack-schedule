@@ -59,3 +59,46 @@ describe("app/schedule/page.tsx -- resolves assigned appointments from appointme
     assert.ok(source.includes("if (apptsFetchFailed) appts = [];"));
   });
 });
+
+describe("app/schedule/page.tsx -- Phase 5C: workspace timezone resolved server-side and passed to EmployeeSchedule", () => {
+  test("imports effectiveTimezone alongside the existing nowInBusinessTz import", () => {
+    assert.ok(source.includes('import { nowInBusinessTz, effectiveTimezone } from "@/lib/timezone";'));
+  });
+
+  test("timezone is fetched in the same company_settings read already used for officePhone -- no second round trip", () => {
+    const block = source.match(/\.from\("company_settings"\)[\s\S]*?;/);
+    assert.ok(block, "expected a company_settings query");
+    assert.ok(block![0].includes('.select("phone, timezone")'));
+    assert.ok(block![0].includes('.eq("workspace_id", workspaceId)'));
+  });
+
+  test("timezone resolves through effectiveTimezone, defaulting safely before the query and again from the row", () => {
+    assert.ok(source.includes("let timezone = effectiveTimezone(null);"));
+    assert.ok(source.includes("timezone = effectiveTimezone(companyRow?.timezone);"));
+  });
+
+  test("timezone is passed to EmployeeSchedule", () => {
+    const componentBlock = source.match(/<EmployeeSchedule[\s\S]*?\/>/);
+    assert.ok(componentBlock);
+    assert.ok(componentBlock![0].includes("timezone={timezone}"));
+  });
+
+});
+
+describe("app/schedule/page.tsx -- Phase 5E: worked-hours bucketing (mondayOfWeek/computePayrollRows) now uses the explicit resolved workspace timezone, no more temporary default", () => {
+  test("mondayOfWeek requires an explicit tz parameter, called with the resolved timezone for both this-week and last-week", () => {
+    assert.ok(source.includes("function mondayOfWeek(offsetWeeks: number, tz: string): Date {"));
+    assert.ok(source.includes("const d = nowInBusinessTz(tz);"));
+    assert.ok(!source.includes("const d = nowInBusinessTz();"));
+    assert.ok(source.includes("const thisWeekStart = mondayOfWeek(0, timezone);"));
+    assert.ok(source.includes("const lastWeekStart = mondayOfWeek(-1, timezone);"));
+  });
+
+  test("both computePayrollRows calls (this week, last week) pass the resolved timezone", () => {
+    const calls = [...source.matchAll(/computePayrollRows\(\{[\s\S]*?\}\)/g)];
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.ok(call[0].includes("timezone,"));
+    }
+  });
+});

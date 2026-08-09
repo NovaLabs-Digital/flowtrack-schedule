@@ -1,22 +1,40 @@
 "use client";
 
 import { Client, Appointment } from "@/app/components/dashboard/types";
+import { toBusinessLocal } from "@/lib/timezone";
 
+// For a plain "YYYY-MM-DD" calendar field (client_since) with no
+// time-of-day meaning -- parses the components directly, never through a
+// timezone conversion (which would shift the date backward a day in
+// negative-UTC-offset zones, since a date-only ISO string parses as UTC
+// midnight).
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+}
+
+// For a real timestamp (an appointment's scheduled_for) -- anchored to the
+// workspace's own resolved timezone (Phase 5C), never the device's own
+// ambient one. Distinct from fmtDate above, which is for date-only
+// calendar fields where a timezone conversion would be wrong, not right.
+function fmtApptDate(iso: string, tz: string) {
+  return toBusinessLocal(iso, tz).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
 }
 
 type Props = {
   client: Client;
   appointments: Appointment[];
   onClose: () => void;
+  // Phase 5C: the workspace's own resolved timezone, used only for
+  // fmtApptDate above ("Next: ..." display) -- client_since's own
+  // date-only display is deliberately unaffected.
+  timezone: string;
 };
 
 // Screen 3 of the approved mockup — a slide-in drawer overlay, not a
 // separate page/route. VIP badge is conditional on an is_vip field that
 // doesn't exist on clients yet (backend TODO, flagged in the milestone
 // report) — it simply won't render until that column is added.
-export default function MobileClientDrawer({ client, appointments, onClose }: Props) {
+export default function MobileClientDrawer({ client, appointments, onClose, timezone }: Props) {
   // Plain new Date() is a pure instant comparison (Date < Date), which is
   // timezone-agnostic and doesn't need business-tz anchoring — matches the
   // same past/future split already used on desktop in ClientPanel.tsx.
@@ -138,7 +156,7 @@ export default function MobileClientDrawer({ client, appointments, onClose }: Pr
             <div>
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Future Services</div>
               <div className="text-sm text-slate-700">
-                {nextAppt ? `Next: ${fmtDate(nextAppt.scheduled_for)}` : "None scheduled"}
+                {nextAppt ? `Next: ${fmtApptDate(nextAppt.scheduled_for, timezone)}` : "None scheduled"}
               </div>
             </div>
           </div>

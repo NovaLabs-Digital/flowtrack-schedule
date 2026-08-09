@@ -19,6 +19,7 @@ export default function PayrollSummary({
   rangeEnd,
   onRangeStartChange,
   onRangeEndChange,
+  timezone,
 }: {
   appointments: Appointment[];
   employees: Employee[];
@@ -28,8 +29,13 @@ export default function PayrollSummary({
   rangeEnd: string;
   onRangeStartChange: (value: string) => void;
   onRangeEndChange: (value: string) => void;
+  // The workspace's own resolved timezone -- passed through unchanged to
+  // computePayrollRows, which uses it to decide each appointment's
+  // WORKSPACE-LOCAL calendar date for range inclusion. Worked-duration math
+  // itself remains absolute instant math, unaffected by this value.
+  timezone: string;
 }) {
-  const { rows, missingHoursCount } = computePayrollRows({ appointments, employees, employeeHours, assignments, rangeStart, rangeEnd });
+  const { rows, missingHoursCount } = computePayrollRows({ appointments, employees, employeeHours, assignments, rangeStart, rangeEnd, timezone });
   const totalHours = rows.reduce((sum, r) => sum + r.hoursWorked, 0);
 
   return (

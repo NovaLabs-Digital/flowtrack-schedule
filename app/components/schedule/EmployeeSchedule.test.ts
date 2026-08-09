@@ -33,7 +33,7 @@ const source = fs.readFileSync(fileURLToPath(new URL("./EmployeeSchedule.tsx", i
 
 describe("entitlement is read and wired into the extracted job-action control, nowhere else", () => {
   test("the component destructures entitlement from its props", () => {
-    assert.ok(source.includes("lastWeekHours, entitlement }: Props)"));
+    assert.ok(source.includes("lastWeekHours, entitlement, timezone }: Props)"));
   });
 
   test("EmployeeJobActionButton receives canUseJobTracking={entitlement.canUseJobTracking}", () => {
@@ -113,5 +113,49 @@ describe("the extracted button remains the sole owner of Start/Complete renderin
   test("handleJobAction (the fetch to /api/appointments/job) is unchanged and only reachable via the extracted button's onActivate", () => {
     assert.ok(source.includes('fetch("/api/appointments/job"'));
     assert.ok(source.includes("onActivate={() => handleJobAction(a.id, !isStarted ? \"start\" : \"complete\")}"));
+  });
+});
+
+describe("Phase 5C: workspace-timezone-aware today/appointment display -- the same fix as the desktop traveling-owner case, applied to the employee's own device", () => {
+  test("Props declares timezone: string", () => {
+    assert.ok(source.includes("timezone: string;"));
+  });
+
+  test("today/currentDay/dayAppts are resolved via nowInBusinessTz/toBusinessLocal with the explicit timezone prop -- never a bare new Date()/native getters on a raw new Date(iso)", () => {
+    assert.ok(source.includes('import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";'));
+    assert.ok(source.includes("const today = nowInBusinessTz(timezone);"));
+    assert.ok(source.includes("const d = toBusinessLocal(a.scheduled_for, timezone);"));
+    assert.ok(!source.includes("const today = new Date();"));
+  });
+
+  test("each appointment's scheduled start (display) is resolved via toBusinessLocal, while duration math still uses the real instant (rawStart)", () => {
+    assert.ok(source.includes("const rawStart = new Date(a.scheduled_for);"));
+    assert.ok(source.includes("const start = toBusinessLocal(a.scheduled_for, timezone);"));
+  });
+
+  test("greeting() remains a plain device-local pleasantry, not a business fact -- deliberately unaffected by the timezone fix", () => {
+    assert.ok(source.includes("const h = new Date().getHours();"));
+  });
+});
+
+describe("Phase 5E: job-tracking Started/Completed display uses the workspace's own resolved timezone, not the employee's device timezone", () => {
+  test("startedAt/completedAt (display) are resolved via toBusinessLocal with the explicit timezone prop, while rawStartedAt/rawCompletedAt (the real instants) drive the duration delta", () => {
+    assert.ok(source.includes("const rawStartedAt = times?.started ? new Date(times.started) : null;"));
+    assert.ok(source.includes("const rawCompletedAt = times?.completed ? new Date(times.completed) : null;"));
+    assert.ok(source.includes('const startedAt = times?.started ? toBusinessLocal(times.started, timezone) : null;'));
+    assert.ok(source.includes('const completedAt = times?.completed ? toBusinessLocal(times.completed, timezone) : null;'));
+  });
+
+  test("actualDuration is computed from the real instants (rawStartedAt/rawCompletedAt), never the business-local display Dates", () => {
+    const idx = source.indexOf("let actualDuration: string | null = null;");
+    assert.notEqual(idx, -1);
+    const block = source.slice(idx, idx + 200);
+    assert.ok(block.includes("if (rawStartedAt && rawCompletedAt)"));
+    assert.ok(block.includes("rawCompletedAt.getTime() - rawStartedAt.getTime()"));
+  });
+
+  test("no bare new Date(times.started)/new Date(times.completed) remains as the DISPLAY value (only as the raw-instant value)", () => {
+    assert.ok(!source.includes("const startedAt = times?.started ? new Date(times.started) : null;"));
+    assert.ok(!source.includes("const completedAt = times?.completed ? new Date(times.completed) : null;"));
   });
 });

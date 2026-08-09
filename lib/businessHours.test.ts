@@ -10,6 +10,14 @@ import {
   rangesForDate,
   cloneBusinessHours,
 } from "./businessHours.ts";
+import { TIMEZONE_OPTIONS } from "./timezone.ts";
+
+// Phase 5D: weekdayKeyForDate/rangesForDate now require an explicit,
+// resolved workspace timezone -- no BUSINESS_TZ default remains. Existing
+// tests below pass this fixed NY value (unchanged pre-Phase-5D behavior);
+// a dedicated cross-timezone describe block further down proves the
+// function is genuinely zone-safe, not just NY-safe.
+const NY = "America/New_York";
 
 describe("isValidTimeString", () => {
   for (const good of ["00:00", "07:00", "08:00", "12:00", "17:30", "23:59"]) {
@@ -193,25 +201,43 @@ describe("effectiveBusinessHours", () => {
 
 describe("weekdayKeyForDate / rangesForDate", () => {
   test("2026-08-03 (a Monday) maps to 'monday'", () => {
-    assert.equal(weekdayKeyForDate("2026-08-03"), "monday");
+    assert.equal(weekdayKeyForDate("2026-08-03", NY), "monday");
   });
 
   test("2026-08-08 (a Saturday) maps to 'saturday'", () => {
-    assert.equal(weekdayKeyForDate("2026-08-08"), "saturday");
+    assert.equal(weekdayKeyForDate("2026-08-08", NY), "saturday");
   });
 
   test("2026-08-09 (a Sunday) maps to 'sunday'", () => {
-    assert.equal(weekdayKeyForDate("2026-08-09"), "sunday");
+    assert.equal(weekdayKeyForDate("2026-08-09", NY), "sunday");
   });
 
   test("an invalid date string returns null", () => {
-    assert.equal(weekdayKeyForDate("not-a-date"), null);
+    assert.equal(weekdayKeyForDate("not-a-date", NY), null);
   });
 
   test("rangesForDate looks up the correct day's ranges from a BusinessHours object", () => {
     const hours = effectiveBusinessHours({ monday: [{ start: "09:00", end: "12:00" }] });
-    assert.deepEqual(rangesForDate(hours, "2026-08-03"), [{ start: "09:00", end: "12:00" }]);
-    assert.deepEqual(rangesForDate(hours, "2026-08-08"), []); // Saturday, closed
+    assert.deepEqual(rangesForDate(hours, "2026-08-03", NY), [{ start: "09:00", end: "12:00" }]);
+    assert.deepEqual(rangesForDate(hours, "2026-08-08", NY), []); // Saturday, closed
+  });
+});
+
+describe("Phase 5D: weekdayKeyForDate is genuinely zone-safe, not just NY-safe", () => {
+  test("every supported workspace timezone maps the same calendar date string to the same weekday -- a plain YYYY-MM-DD date's weekday is resolved from its own calendar fields, never from a shared instant", () => {
+    for (const { value: tz } of TIMEZONE_OPTIONS) {
+      assert.equal(weekdayKeyForDate("2026-08-03", tz), "monday", tz);
+      assert.equal(weekdayKeyForDate("2026-08-08", tz), "saturday", tz);
+      assert.equal(weekdayKeyForDate("2026-08-09", tz), "sunday", tz);
+    }
+  });
+
+  test("rangesForDate agrees with weekdayKeyForDate across every supported timezone for a split-hours day", () => {
+    const hours = effectiveBusinessHours({ saturday: [{ start: "09:00", end: "13:00" }] });
+    for (const { value: tz } of TIMEZONE_OPTIONS) {
+      assert.deepEqual(rangesForDate(hours, "2026-08-08", tz), [{ start: "09:00", end: "13:00" }], tz);
+      assert.deepEqual(rangesForDate(hours, "2026-08-03", tz), [], tz);
+    }
   });
 });
 

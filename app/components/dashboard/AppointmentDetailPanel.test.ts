@@ -218,3 +218,26 @@ describe("mouse/keyboard/repeated-activation guarantee (delegated proof)", () =>
     assert.ok(!block.includes("onClick={() =>"), "onClick must be passed directly (handleCancel), not wrapped, so CapabilityGatedButton's own guard is the only gate");
   });
 });
+
+describe("Phase 5C: workspace-timezone-aware date/time display", () => {
+  test("Props declares timezone: string, and DashboardShell passes timezone={timezone}", () => {
+    assert.ok(source.includes("timezone: string;"));
+    const idx = shellSource.indexOf("<AppointmentDetailPanel");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("start/end are resolved via toBusinessLocal with the explicit timezone prop, never bare native getters on a raw new Date(scheduled_for) (the previous device-local bug)", () => {
+    assert.ok(source.includes('import { toBusinessLocal } from "@/lib/timezone";'));
+    assert.ok(source.includes("const start = toBusinessLocal(appointment.scheduled_for, timezone);"));
+    assert.ok(source.includes("const end = toBusinessLocal(rawEnd.toISOString(), timezone);"));
+    assert.ok(!source.includes("const start = new Date(appointment.scheduled_for);"));
+  });
+
+  test("duration math still uses the real UTC instants (rawStart/rawEnd), never the business-local display values", () => {
+    assert.ok(source.includes("const rawStart = new Date(appointment.scheduled_for);"));
+    assert.ok(source.includes("const rawEnd = new Date(rawStart.getTime() + durationMinutes * 60_000);"));
+  });
+});

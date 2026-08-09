@@ -4,7 +4,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { fetchAllPages } from "@/lib/paginate";
 import EmployeeSchedule from "@/app/components/schedule/EmployeeSchedule";
 import { computePayrollRows, toDateInputValue } from "@/lib/payroll";
-import { nowInBusinessTz } from "@/lib/timezone";
+import { nowInBusinessTz, effectiveTimezone } from "@/lib/timezone";
 import type { Appointment, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForEmployee } from "@/lib/entitlementView";
@@ -19,8 +19,11 @@ function addDays(d: Date, n: number) {
 }
 
 // Monday of the week `offsetWeeks` from this week (0 = this week, -1 = last week).
-function mondayOfWeek(offsetWeeks: number): Date {
-  const d = nowInBusinessTz();
+// `tz` is required, no default -- "this week" must be resolved from "now"
+// in the employee's own WORKSPACE timezone, never the device's, so this
+// screen's This/Last Week always agrees with the owner dashboard's.
+function mondayOfWeek(offsetWeeks: number, tz: string): Date {
+  const d = nowInBusinessTz(tz);
   d.setHours(0, 0, 0, 0);
   const dow = d.getDay(); // 0=Sun..6=Sat
   const diff = (dow + 6) % 7; // days since Monday
@@ -177,13 +180,20 @@ export default async function SchedulePage() {
   } catch {}
 
   let officePhone: string | null = null;
+  // The workspace's own trusted timezone, resolved server-side (never from
+  // the employee's own device) -- used for EmployeeSchedule's appointment
+  // date/time display, this/last-week Monday resolution, and worked-hours
+  // date bucketing below. Fetched in the same company_settings read already
+  // used for officePhone, rather than a second round trip.
+  let timezone = effectiveTimezone(null);
   try {
     const { data: companyRow } = await supabaseAdmin
       .from("company_settings")
-      .select("phone")
+      .select("phone, timezone")
       .eq("workspace_id", workspaceId)
       .maybeSingle();
     officePhone = companyRow?.phone ?? null;
+    timezone = effectiveTimezone(companyRow?.timezone);
   } catch {}
 
   let employeeHours: EmployeeHours[] = [];
@@ -196,9 +206,9 @@ export default async function SchedulePage() {
     employeeHours = hoursRows ?? [];
   } catch {}
 
-  const thisWeekStart = mondayOfWeek(0);
+  const thisWeekStart = mondayOfWeek(0, timezone);
   const thisWeekEnd = addDays(thisWeekStart, 6);
-  const lastWeekStart = mondayOfWeek(-1);
+  const lastWeekStart = mondayOfWeek(-1, timezone);
   const lastWeekEnd = addDays(lastWeekStart, 6);
 
   const employeesForCalc = [{ id: employee.id, name: employee.name, phone: employee.phone ?? null, color: employee.color, active: employee.active }];
@@ -210,6 +220,7 @@ export default async function SchedulePage() {
     assignments: myAssignments,
     rangeStart: toDateInputValue(thisWeekStart),
     rangeEnd: toDateInputValue(thisWeekEnd),
+    timezone,
   });
   const lastWeek = computePayrollRows({
     appointments: appts,
@@ -218,6 +229,7 @@ export default async function SchedulePage() {
     assignments: myAssignments,
     rangeStart: toDateInputValue(lastWeekStart),
     rangeEnd: toDateInputValue(lastWeekEnd),
+    timezone,
   });
 
   // entitlementResult was already resolved at the top of this component,
@@ -238,6 +250,7 @@ export default async function SchedulePage() {
       thisWeekHours={thisWeek.rows[0]?.hoursWorked ?? 0}
       lastWeekHours={lastWeek.rows[0]?.hoursWorked ?? 0}
       entitlement={entitlement}
+      timezone={timezone}
     />
   );
 }

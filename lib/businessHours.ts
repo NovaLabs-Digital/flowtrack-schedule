@@ -1,5 +1,4 @@
 import { DateTime } from "luxon";
-import { BUSINESS_TZ } from "@/lib/timezone";
 
 // Canonical, lowercase weekday keys -- the only valid keys in a stored
 // business_hours JSONB object (company_settings.business_hours). Order here
@@ -150,13 +149,19 @@ export function effectiveBusinessHours(stored: unknown): BusinessHours {
 // key, using Luxon's IANA-backed weekday resolution (1=Monday..7=Sunday) so
 // it agrees with lib/availability.ts's businessDateStringFromInstant/
 // businessDayBounds regardless of the runtime's own ambient timezone.
-export function weekdayKeyForDate(dateStr: string): WeekdayKey | null {
-  const dt = DateTime.fromISO(dateStr, { zone: BUSINESS_TZ });
+//
+// Phase 5D: `tz` is an explicit, required parameter -- the resolved
+// workspace timezone -- never a global default. Every caller (Business
+// Hours enforcement, public booking availability) must resolve and pass
+// its own trusted timezone; there is no compatibility fallback left for
+// this module.
+export function weekdayKeyForDate(dateStr: string, tz: string): WeekdayKey | null {
+  const dt = DateTime.fromISO(dateStr, { zone: tz });
   if (!dt.isValid) return null;
   return WEEKDAY_KEYS[dt.weekday - 1];
 }
 
-export function rangesForDate(hours: BusinessHours, dateStr: string): TimeRange[] {
-  const key = weekdayKeyForDate(dateStr);
+export function rangesForDate(hours: BusinessHours, dateStr: string, tz: string): TimeRange[] {
+  const key = weekdayKeyForDate(dateStr, tz);
   return key ? hours[key] : [];
 }

@@ -28,6 +28,7 @@ mock.module("@/lib/supabaseAdmin", {
 const { GET } = await import("./route.ts");
 const { computeAvailableSlots } = await import("../../../../lib/availability.ts");
 const { DEFAULT_BUSINESS_HOURS, effectiveBusinessHours } = await import("../../../../lib/businessHours.ts");
+const { BUSINESS_TZ } = await import("../../../../lib/timezone.ts");
 
 function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
   currentFake = createFakeSupabaseAdmin(responses);
@@ -79,7 +80,7 @@ describe("GET /api/book/availability -- entitlement gate (canUsePublicBooking)",
         const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
         assert.equal(res.status, 200, label);
         const body = await res.json();
-        const expected = computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS);
+        const expected = computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS, BUSINESS_TZ);
         assert.deepEqual(body.slots, expected, label);
         assert.ok(expected.length > 0, "sanity: the fixture date/duration actually yields slots");
         assert.equal(writeCalls(currentFake.calls).length, 0, label);
@@ -202,7 +203,7 @@ describe("Phase 4: Business Hours drive public availability", () => {
     const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
     assert.equal(res.status, 200);
     const body = await res.json();
-    const expected = computeAvailableSlots(DATE_STR, 30, [], effectiveBusinessHours(businessHours));
+    const expected = computeAvailableSlots(DATE_STR, 30, [], effectiveBusinessHours(businessHours), BUSINESS_TZ);
     assert.deepEqual(body.slots, expected);
     for (const s of body.slots as string[]) {
       const hm = s.slice(11, 16);
@@ -220,8 +221,59 @@ describe("Phase 4: Business Hours drive public availability", () => {
     const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.deepEqual(body.slots, computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS));
+    assert.deepEqual(body.slots, computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS, BUSINESS_TZ));
     assert.ok(body.slots.length > 0);
+  });
+});
+
+describe("Phase 5D: public availability resolves the trusted workspace timezone, not a hardcoded BUSINESS_TZ", () => {
+  before(() => {
+    mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-02T12:00:00.000Z").getTime() });
+  });
+  after(() => {
+    mock.timers.reset();
+  });
+
+  test("a saved non-default timezone (Pacific) shifts the returned UTC slot instants, matching computeAvailableSlots(..., 'America/Los_Angeles') exactly, not the NY default", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, timezone: "America/Los_Angeles" } }],
+      services: [{ data: { duration_minutes: 60 } }],
+      appointments: [{ data: [] }],
+    });
+    const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    const expectedLA = computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS, "America/Los_Angeles");
+    const expectedNY = computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS, BUSINESS_TZ);
+    assert.deepEqual(body.slots, expectedLA);
+    assert.notDeepEqual(body.slots, expectedNY, "sanity: LA and NY must actually produce different UTC instants for the same local hours");
+  });
+
+  test("NULL/missing timezone on the company_settings row falls back to America/New_York, matching effectiveTimezone(null)", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, timezone: null } }],
+      services: [{ data: { duration_minutes: 60 } }],
+      appointments: [{ data: [] }],
+    });
+    const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.slots, computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS, BUSINESS_TZ));
+  });
+
+  test("there is no request parameter that can influence the resolved timezone -- a spoofed query string is silently ignored", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, timezone: "America/Los_Angeles" } }],
+      services: [{ data: { duration_minutes: 60 } }],
+      appointments: [{ data: [] }],
+    });
+    const res = await GET(req(`date=${DATE_STR}&service=Haircut&timezone=Pacific/Honolulu&tz=Pacific/Honolulu`));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.slots, computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS, "America/Los_Angeles"));
   });
 });
 

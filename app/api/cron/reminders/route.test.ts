@@ -521,6 +521,103 @@ describe("GET /api/cron/reminders -- existing notification behavior preserved on
   });
 });
 
+describe("Phase 5E: reminder content uses each appointment's own workspace timezone, never a hardcoded America/New_York or the server's own ambient timezone", () => {
+  test("a workspace with a saved non-default timezone (Pacific) formats the reminder's date/time in Pacific, not Eastern", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      // 2026-08-03T14:00:00.000Z = 10:00 AM Eastern / 7:00 AM Pacific.
+      appointments: [{ data: [apptCandidate({ scheduled_for: "2026-08-03T14:00:00.000Z" })] }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      company_settings: [{ data: { notifications_enabled: true, timezone: "America/Los_Angeles" } }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    assert.ok(currentNotify.emailCalls[0].text.includes("7:00 AM"), currentNotify.emailCalls[0].text);
+    assert.ok(!currentNotify.emailCalls[0].text.includes("10:00 AM"));
+    assert.ok(currentNotify.smsCalls[0].body.includes("7:00 AM"), currentNotify.smsCalls[0].body);
+  });
+
+  test("Workspace A (New York) and Workspace B (Los Angeles) in the SAME run each format the identical UTC instant in their OWN saved timezone", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) }, // WORKSPACE_A
+        { data: subscriptionRow({ stripe_status: "active" }) }, // WORKSPACE_B
+      ],
+      appointments: [
+        {
+          data: [
+            // Same UTC instant for both -- 10:00 AM Eastern / 7:00 AM Pacific.
+            apptCandidate({ id: "appt-a", workspace_id: WORKSPACE_A, client_id: "client-a", scheduled_for: "2026-08-03T14:00:00.000Z" }),
+            apptCandidate({ id: "appt-b", workspace_id: WORKSPACE_B, client_id: "client-b", scheduled_for: "2026-08-03T14:00:00.000Z" }),
+          ],
+        },
+        { error: null },
+        { error: null },
+      ],
+      clients: [{ data: optedInClient() }, { data: optedInClient() }],
+      company_settings: [
+        { data: { notifications_enabled: true, timezone: "America/New_York" } }, // WORKSPACE_A
+        { data: { notifications_enabled: true, timezone: "America/Los_Angeles" } }, // WORKSPACE_B
+      ],
+      messages_sent: [{ error: null }, { error: null }, { error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 2);
+
+    const workspaceAEmail = currentNotify.emailCalls.find((c) => c.workspaceId === WORKSPACE_A)!;
+    const workspaceBEmail = currentNotify.emailCalls.find((c) => c.workspaceId === WORKSPACE_B)!;
+    assert.ok(workspaceAEmail.text.includes("10:00 AM"), workspaceAEmail.text);
+    assert.ok(workspaceBEmail.text.includes("7:00 AM"), workspaceBEmail.text);
+  });
+
+  test("NULL/missing timezone on the company_settings row falls back to America/New_York, matching effectiveTimezone(null)", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: [apptCandidate({ scheduled_for: "2026-08-03T14:00:00.000Z" })] }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      company_settings: [{ data: { notifications_enabled: true, timezone: null } }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    assert.ok(currentNotify.emailCalls[0].text.includes("10:00 AM"));
+  });
+
+  test("the timezone cache is extended, not a second per-appointment query -- exactly one company_settings read for two appointments in the same workspace", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        {
+          data: [
+            apptCandidate({ id: "appt-1", workspace_id: WORKSPACE_A, client_id: "client-1", scheduled_for: "2026-08-03T14:00:00.000Z" }),
+            apptCandidate({ id: "appt-2", workspace_id: WORKSPACE_A, client_id: "client-2", scheduled_for: "2026-08-04T14:00:00.000Z" }),
+          ],
+        },
+        { error: null },
+        { error: null },
+      ],
+      clients: [{ data: optedInClient() }, { data: optedInClient() }],
+      company_settings: [{ data: { notifications_enabled: true, timezone: "America/Los_Angeles" } }],
+      messages_sent: [{ error: null }, { error: null }, { error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "company_settings" && c.method === "maybeSingle").length, 1);
+    assert.equal(currentNotify.emailCalls.length, 2);
+    assert.ok(currentNotify.emailCalls.every((c) => c.text.includes("7:00 AM")));
+  });
+
+  test("the 23-25-hour query window itself is unaffected by workspace timezone -- proven by source (no per-workspace zone feeds the discovery query)", () => {
+    const routeSource = fs.readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+    assert.ok(!routeSource.includes('DateTime.now().setZone("America/New_York")'), "the misleading hardcoded zone on the window calculation must be gone");
+    assert.ok(routeSource.includes("const now = DateTime.now();"));
+    assert.ok(routeSource.includes("now.plus({ hours: 23 })"));
+    assert.ok(routeSource.includes("now.plus({ hours: 25 })"));
+  });
+});
+
 describe("the entitlement gate is source-correctly scoped (source-level proof)", () => {
   const routeSource = fs.readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
 

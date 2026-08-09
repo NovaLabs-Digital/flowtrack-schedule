@@ -17,11 +17,16 @@ export default function IncomeProjection({
   assignments,
   rangeStart,
   rangeEnd,
+  timezone,
 }: {
   appointments: Appointment[];
   assignments: AppointmentEmployeeAssignment[];
   rangeStart: string;
   rangeEnd: string;
+  // The workspace's own resolved timezone -- passed through unchanged to
+  // computeIncomeProjection, which uses it to decide each appointment's
+  // WORKSPACE-LOCAL calendar date for range inclusion.
+  timezone: string;
 }) {
   const [hidden, setHidden] = useState(false);
   // Never read localStorage during the initial render (SSR has no
@@ -50,6 +55,7 @@ export default function IncomeProjection({
     assignments,
     rangeStart,
     rangeEnd,
+    timezone,
   });
 
   return (

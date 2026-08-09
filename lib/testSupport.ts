@@ -195,6 +195,12 @@ export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Re
   // existing tests that never call setBookingEnabled therefore exercise
   // the CTA-omitted path unless they explicitly opt in.
   let bookingEnabled = false;
+  // Phase 5E: defaults to the same canonical NULL-fallback the real
+  // getCompanyIdentity's effectiveTimezone() resolves to -- existing tests
+  // that never call setTimezone therefore exercise the exact same
+  // "workspace hasn't saved a Time Zone yet" behavior as before this field
+  // existed, unless they explicitly opt into a different zone.
+  let timezone = "America/New_York";
 
   const namedExports = {
     shouldSend: (channel: string | undefined, medium: "email" | "sms") => {
@@ -209,7 +215,7 @@ export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Re
     },
     sanitizeCompanyName: fakeSanitizeCompanyName,
     getCompanyName: async (_workspaceId: string) => companyName,
-    getCompanyIdentity: async (_workspaceId: string) => ({ companyName, bookingEnabled }),
+    getCompanyIdentity: async (_workspaceId: string) => ({ companyName, bookingEnabled, timezone }),
     sendEmail: async (to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string) => {
       emailCalls.push({ to, subject, text, workspaceId, fromDisplayName });
       return sendEmailImpl(to, subject, text, workspaceId, fromDisplayName);
@@ -235,6 +241,9 @@ export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Re
     },
     setBookingEnabled: (value: boolean) => {
       bookingEnabled = value;
+    },
+    setTimezone: (value: string) => {
+      timezone = value;
     },
   };
 }

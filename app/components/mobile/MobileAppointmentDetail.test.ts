@@ -332,3 +332,18 @@ describe("mouse/touch/keyboard/repeated-activation guarantee (delegated proof)",
     assert.ok(!block.includes("onClick={() =>"), "onClick must be passed directly (handleEditClick), not wrapped, so CapabilityGatedButton's own guard is the only gate");
   });
 });
+
+describe("Phase 5C: workspace-timezone-aware date/time display", () => {
+  test("Props declares timezone: string, and start is resolved via toBusinessLocal with the explicit prop", () => {
+    assert.ok(source.includes("timezone: string;"));
+    assert.ok(source.includes("const start = toBusinessLocal(appointment.scheduled_for, timezone);"));
+  });
+
+  test("MobileDashboard passes timezone={timezone} to this component", () => {
+    const idx = mobileDashboardSource.indexOf("<MobileAppointmentDetail");
+    assert.notEqual(idx, -1);
+    const closeIdx = mobileDashboardSource.indexOf("/>", idx);
+    const jsx = mobileDashboardSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+});

@@ -304,6 +304,7 @@ export function computePayrollRows({
   rangeStart,
   rangeEnd,
   mode = "job_tracking",
+  timezone,
 }: {
   appointments: Appointment[];
   employees: Employee[];
@@ -317,6 +318,13 @@ export function computePayrollRows({
   rangeStart: string;
   rangeEnd: string;
   mode?: PayrollMode;
+  // The workspace's own resolved timezone -- required, no default. Range
+  // inclusion (rangeStart/rangeEnd) is decided by the appointment's
+  // WORKSPACE-LOCAL calendar date; the actual worked-duration calculations
+  // below (job-tracking timestamp deltas, scheduledHours) remain absolute
+  // instant math, deliberately untouched by this parameter -- a tracked
+  // duration must never be distorted by which zone it's bucketed into.
+  timezone: string;
 }): PayrollComputation {
   const employeeById: Record<string, Employee> = {};
   for (const e of employees) employeeById[e.id] = e;
@@ -343,7 +351,7 @@ export function computePayrollRows({
     const apptAssignments = assignmentsByAppointmentId.get(appt.id);
     if (!apptAssignments || apptAssignments.length === 0) continue;
 
-    const apptDate = toDateInputValue(toBusinessLocal(appt.scheduled_for));
+    const apptDate = toDateInputValue(toBusinessLocal(appt.scheduled_for, timezone));
     if (apptDate < rangeStart || apptDate > rangeEnd) continue;
 
     for (const assignment of apptAssignments) {

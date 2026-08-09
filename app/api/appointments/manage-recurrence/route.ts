@@ -3,10 +3,11 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { generateFutureDates } from "@/lib/recurrence";
+import { generateFutureDatesSafe } from "@/lib/recurrence";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
 import { fetchAssignments, insertAssignments, deriveLegacyEmployeeId } from "@/lib/appointmentEmployees";
+import { effectiveTimezone } from "@/lib/timezone";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -70,6 +71,31 @@ export async function POST(req: Request) {
     const originAssignments = await fetchAssignments(appointmentId, workspaceId);
     const employeeIds = originAssignments.map((a) => a.employee_id);
 
+    const isNewRecurring = newFrequency !== "one_time";
+    const newSeriesId = isNewRecurring ? crypto.randomUUID() : null;
+
+    // Resolve the trusted workspace timezone and pre-validate the ENTIRE
+    // recurrence generation BEFORE any write below -- a generated occurrence
+    // landing on a nonexistent DST local time must reject the whole request
+    // with zero partial writes (no cancelled siblings, no updated
+    // frequency, no newly inserted occurrences), never a silently
+    // shifted/dropped occurrence or a partially-regenerated series.
+    const startDate = new Date(appt.scheduled_for);
+    let futureDates: Date[] = [];
+    if (isNewRecurring) {
+      const { data: settings } = await supabaseAdmin
+        .from("company_settings")
+        .select("timezone")
+        .eq("workspace_id", workspaceId)
+        .maybeSingle();
+      const timezone = effectiveTimezone(settings?.timezone);
+      const recurrenceResult = generateFutureDatesSafe(startDate, newFrequency, newRepeatWeeks, timezone, newRepeatMonths ?? undefined);
+      if (!recurrenceResult.ok) {
+        return json({ error: recurrenceResult.error }, 400);
+      }
+      futureDates = recurrenceResult.dates;
+    }
+
     let cancelled = 0;
 
     if (appt.series_id) {
@@ -96,9 +122,6 @@ export async function POST(req: Request) {
       }
     }
 
-    const isNewRecurring = newFrequency !== "one_time";
-    const newSeriesId = isNewRecurring ? crypto.randomUUID() : null;
-
     const { error: updateErr } = await supabaseAdmin
       .from("appointments")
       .update({
@@ -115,9 +138,6 @@ export async function POST(req: Request) {
     let created = 0;
 
     if (isNewRecurring) {
-      const startDate = new Date(appt.scheduled_for);
-      const futureDates = generateFutureDates(startDate, newFrequency, newRepeatWeeks, newRepeatMonths ?? undefined);
-
       let endOffsetMs = 0;
       if (appt.scheduled_end) {
         endOffsetMs = new Date(appt.scheduled_end).getTime() - startDate.getTime();

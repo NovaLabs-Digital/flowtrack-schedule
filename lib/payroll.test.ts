@@ -18,6 +18,11 @@ import { toBusinessLocal } from "./timezone.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
 
+// The fixed workspace timezone every computePayrollRows fixture below is
+// scoped to -- Phase 5E made `timezone` a required, explicit parameter (no
+// default), so every call site in this file must pass one.
+const TZ = "America/New_York";
+
 function appt(overrides: Partial<Appointment> = {}): Appointment {
   return {
     id: "appt-1",
@@ -269,7 +274,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
   });
 
   function weekRangeContainingNow() {
-    const now = toBusinessLocal(new Date().toISOString());
+    const now = toBusinessLocal(new Date().toISOString(), TZ);
     const monday = new Date(now);
     const dow = monday.getDay();
     monday.setDate(monday.getDate() - ((dow + 6) % 7));
@@ -287,7 +292,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
       scheduled_end: new Date(Date.now() + 2 * HOUR_MS).toISOString(),
     });
     const { missingHoursCount, rows } = computePayrollRows({
-      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "future-1" })], rangeStart, rangeEnd,
+      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "future-1" })], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 0);
     assert.equal(rows.length, 0);
@@ -302,7 +307,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
       scheduled_end: new Date(Date.now() + HOUR_MS).toISOString(),
     });
     const { missingHoursCount } = computePayrollRows({
-      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "in-progress-1" })], rangeStart, rangeEnd,
+      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "in-progress-1" })], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 0);
   });
@@ -316,7 +321,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
       scheduled_end: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
     });
     const { missingHoursCount } = computePayrollRows({
-      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "past-unresolved-1" })], rangeStart, rangeEnd,
+      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "past-unresolved-1" })], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 1);
   });
@@ -335,7 +340,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
       actual_completed_at: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
     });
     const { missingHoursCount, rows } = computePayrollRows({
-      appointments: [a], employees, employeeHours: [], assignments: [asg], rangeStart, rangeEnd,
+      appointments: [a], employees, employeeHours: [], assignments: [asg], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 0);
     assert.equal(rows.length, 1);
@@ -352,7 +357,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
       scheduled_end: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
     });
     const { missingHoursCount } = computePayrollRows({
-      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "cancelled-1" })], rangeStart, rangeEnd,
+      appointments: [a], employees, employeeHours: [], assignments: [assignment({ appointment_id: "cancelled-1" })], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 0);
   });
@@ -365,7 +370,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
       scheduled_end: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
     });
     const { missingHoursCount, rows } = computePayrollRows({
-      appointments: [a], employees: [], employeeHours: [], assignments: [], rangeStart, rangeEnd,
+      appointments: [a], employees: [], employeeHours: [], assignments: [], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 0);
     assert.equal(rows.length, 0);
@@ -384,7 +389,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
     // separately elsewhere); the point here is purely that missingHoursCount
     // never increments for either, regardless of range membership.
     const { missingHoursCount } = computePayrollRows({
-      appointments, employees, employeeHours: [], assignments, rangeStart, rangeEnd: toDateInputValue(new Date(Date.now() + 30 * HOUR_MS)),
+      appointments, employees, employeeHours: [], assignments, rangeStart, rangeEnd: toDateInputValue(new Date(Date.now() + 30 * HOUR_MS)), timezone: TZ,
     });
     assert.equal(missingHoursCount, 0);
   });
@@ -407,7 +412,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
     });
     const roxanaAssignment = assignment({ id: "ae-r", appointment_id: "shared-1", employee_id: "roxana" });
     const { missingHoursCount, rows } = computePayrollRows({
-      appointments: [a], employees, employeeHours: [], assignments: [teresaAssignment, roxanaAssignment], rangeStart, rangeEnd,
+      appointments: [a], employees, employeeHours: [], assignments: [teresaAssignment, roxanaAssignment], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 1);
     assert.equal(rows.length, 1);
@@ -436,7 +441,7 @@ describe("computePayrollRows -- missingHoursCount never counts a not-yet-due app
       actual_completed_at: new Date(Date.now() - 4 * HOUR_MS + 15 * 60 * 1000 + 3 * HOUR_MS).toISOString(),
     });
     const { rows, missingHoursCount } = computePayrollRows({
-      appointments: [a], employees, employeeHours: [], assignments: [teresaAssignment, roxanaAssignment], rangeStart, rangeEnd,
+      appointments: [a], employees, employeeHours: [], assignments: [teresaAssignment, roxanaAssignment], rangeStart, rangeEnd, timezone: TZ,
     });
     assert.equal(missingHoursCount, 0);
     const teresaRow = rows.find((r) => r.employeeId === "teresa")!;
@@ -468,5 +473,73 @@ describe("timezone-boundary safety -- instant comparison, not UTC/local calendar
       scheduled_end: new Date(farFuture.getTime() + HOUR_MS).toISOString(),
     });
     assert.equal(isEligibleForWorkedHoursWarning(a), false);
+  });
+});
+
+describe("Phase 5E: computePayrollRows -- range inclusion uses the WORKSPACE-LOCAL calendar date, not a fixed zone", () => {
+  // Same near-midnight instant as lib/incomeProjection.test.ts's own Phase
+  // 5E block -- already Aug 10 in New York, still Aug 9 in Honolulu.
+  const NEAR_MIDNIGHT_UTC = "2026-08-10T04:30:00.000Z";
+
+  function completedAppt(): { appt: Appointment; assignment: AppointmentEmployeeAssignment } {
+    return {
+      appt: appt({
+        id: "a1",
+        scheduled_for: NEAR_MIDNIGHT_UTC,
+        scheduled_end: new Date(new Date(NEAR_MIDNIGHT_UTC).getTime() + 2 * HOUR_MS).toISOString(),
+      }),
+      assignment: assignment({
+        appointment_id: "a1",
+        actual_started_at: NEAR_MIDNIGHT_UTC,
+        actual_completed_at: new Date(new Date(NEAR_MIDNIGHT_UTC).getTime() + 2 * HOUR_MS).toISOString(),
+      }),
+    };
+  }
+
+  test("America/New_York: the appointment is Aug 10 local -- included in an Aug 10-only range, excluded from an Aug 9-only range", () => {
+    const employees: Employee[] = [{ id: "emp-1", name: "Teresa", phone: null, color: "#000", active: true }];
+    const { appt: a, assignment: asg } = completedAppt();
+
+    const included = computePayrollRows({
+      appointments: [a], employees, employeeHours: [], assignments: [asg],
+      rangeStart: "2026-08-10", rangeEnd: "2026-08-10", timezone: "America/New_York",
+    });
+    assert.equal(included.rows.length, 1);
+
+    const excluded = computePayrollRows({
+      appointments: [a], employees, employeeHours: [], assignments: [asg],
+      rangeStart: "2026-08-09", rangeEnd: "2026-08-09", timezone: "America/New_York",
+    });
+    assert.equal(excluded.rows.length, 0);
+  });
+
+  test("Pacific/Honolulu: the SAME instant is Aug 9 local -- included in an Aug 9-only range, excluded from an Aug 10-only range (the opposite of New York)", () => {
+    const employees: Employee[] = [{ id: "emp-1", name: "Teresa", phone: null, color: "#000", active: true }];
+    const { appt: a, assignment: asg } = completedAppt();
+
+    const included = computePayrollRows({
+      appointments: [a], employees, employeeHours: [], assignments: [asg],
+      rangeStart: "2026-08-09", rangeEnd: "2026-08-09", timezone: "Pacific/Honolulu",
+    });
+    assert.equal(included.rows.length, 1);
+
+    const excluded = computePayrollRows({
+      appointments: [a], employees, employeeHours: [], assignments: [asg],
+      rangeStart: "2026-08-10", rangeEnd: "2026-08-10", timezone: "Pacific/Honolulu",
+    });
+    assert.equal(excluded.rows.length, 0);
+  });
+
+  test("the ACTUAL worked-duration hours are identical regardless of which timezone decided range inclusion -- only bucketing changes, never the tracked duration itself", () => {
+    const employees: Employee[] = [{ id: "emp-1", name: "Teresa", phone: null, color: "#000", active: true }];
+    const { appt: a, assignment: asg } = completedAppt();
+    for (const timezone of ["America/New_York", "America/Los_Angeles", "Pacific/Honolulu"]) {
+      const result = computePayrollRows({
+        appointments: [a], employees, employeeHours: [], assignments: [asg],
+        rangeStart: "2000-01-01", rangeEnd: "2100-01-01", timezone,
+      });
+      assert.equal(result.rows.length, 1, timezone);
+      assert.equal(result.rows[0].hoursWorked, 2, timezone);
+    }
   });
 });

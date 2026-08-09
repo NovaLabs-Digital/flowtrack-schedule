@@ -28,6 +28,10 @@ type Props = {
   serviceColor: string | null;
   durationMinutes: number;
   onTap: () => void;
+  // Phase 5C: the workspace's own resolved timezone -- the displayed time
+  // label must agree with the same time desktop shows for this
+  // appointment, regardless of the device's own ambient timezone.
+  timezone: string;
 };
 
 // Presentational card used by both the Today screen and the Schedule
@@ -36,8 +40,8 @@ type Props = {
 // matches the one card in the approved mockup that shows Navigate instead of
 // Call, and mirrors the existing Call/Navigate fallback convention already
 // used in DispatchPanel.tsx and EmployeeSchedule.tsx.
-export default function MobileAppointmentCard({ appointment, client, employees, accentColor, serviceColor, durationMinutes, onTap }: Props) {
-  const start = toBusinessLocal(appointment.scheduled_for);
+export default function MobileAppointmentCard({ appointment, client, employees, accentColor, serviceColor, durationMinutes, onTap, timezone }: Props) {
+  const start = toBusinessLocal(appointment.scheduled_for, timezone);
   const end = new Date(start.getTime() + durationMinutes * 60_000);
   const timeLabel = `${formatTime(start)} – ${formatTime(end)}`;
 

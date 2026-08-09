@@ -9,6 +9,7 @@ import { fetchAllPages } from "@/lib/paginate";
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForOwner } from "@/lib/entitlementView";
 import { requireCurrentOwnerSession } from "@/lib/sessionEpoch";
+import { effectiveTimezone } from "@/lib/timezone";
 import type { AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 
 export const runtime = "nodejs";
@@ -205,6 +206,25 @@ export default async function DashboardPage() {
     // appointment_employees table may not exist yet
   }
 
+  // Phase 5C: the workspace's own trusted timezone, resolved server-side
+  // from the authenticated session's workspace_id (never client-supplied)
+  // and passed down as an explicit prop -- the scheduling UI must never
+  // fall back to the browser/device's own ambient timezone. effectiveTimezone
+  // safely resolves a missing row or NULL column to the existing
+  // America/New_York default, so this is safe even before an owner has
+  // ever saved a Time Zone.
+  let timezone = effectiveTimezone(null);
+  try {
+    const { data: tzRow } = await supabaseAdmin
+      .from("company_settings")
+      .select("timezone")
+      .eq("workspace_id", workspaceId)
+      .maybeSingle();
+    timezone = effectiveTimezone(tzRow?.timezone);
+  } catch {
+    // company_settings row/column may not exist yet -- fall back safely.
+  }
+
   if (clientsErr || apptsErr) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -233,6 +253,7 @@ export default async function DashboardPage() {
       assignments={assignments}
       isTester={isTester}
       entitlement={entitlement}
+      timezone={timezone}
     />
   );
 }

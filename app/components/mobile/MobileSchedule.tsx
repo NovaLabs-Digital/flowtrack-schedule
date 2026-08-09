@@ -36,6 +36,10 @@ type Props = {
   serviceColorByName: Record<string, string>;
   getDurationMinutes: (appt: Appointment) => number;
   onSelectAppointment: (id: string) => void;
+  // Phase 5C: the workspace's own resolved timezone -- controls the
+  // "today"/window boundaries and which business-local day each upcoming
+  // appointment groups under.
+  timezone: string;
 };
 
 // Schedule tab (Screen 4) — Agenda List View, per the approved mockup's
@@ -52,8 +56,9 @@ export default function MobileSchedule({
   serviceColorByName,
   getDurationMinutes,
   onSelectAppointment,
+  timezone,
 }: Props) {
-  const today = nowInBusinessTz();
+  const today = nowInBusinessTz(timezone);
   today.setHours(0, 0, 0, 0);
   const windowEnd = addDays(today, WINDOW_DAYS);
 
@@ -80,7 +85,7 @@ export default function MobileSchedule({
   const upcoming = appointments
     .filter((a) => {
       if (a.status === "cancelled") return false;
-      const local = toBusinessLocal(a.scheduled_for);
+      const local = toBusinessLocal(a.scheduled_for, timezone);
       return local >= today && local < windowEnd;
     })
     .sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime());
@@ -89,7 +94,7 @@ export default function MobileSchedule({
   // sorted, so each new day starts a new group).
   const groups: { date: Date; appts: Appointment[] }[] = [];
   for (const a of upcoming) {
-    const day = toBusinessLocal(a.scheduled_for);
+    const day = toBusinessLocal(a.scheduled_for, timezone);
     day.setHours(0, 0, 0, 0);
     const last = groups[groups.length - 1];
     if (last && sameDay(last.date, day)) {
@@ -129,6 +134,7 @@ export default function MobileSchedule({
                     serviceColor={serviceColorByName[a.service_type] ?? null}
                     durationMinutes={getDurationMinutes(a)}
                     onTap={() => onSelectAppointment(a.id)}
+                    timezone={timezone}
                   />
                 ))}
               </div>

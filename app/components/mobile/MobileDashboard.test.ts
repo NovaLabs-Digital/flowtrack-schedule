@@ -262,3 +262,29 @@ describe("post-launch correction: the Today screen's Search/Notifications header
     assert.ok(!block.includes("<button"), "no leftover placeholder buttons between the logo block and the day strip");
   });
 });
+
+describe("Phase 5C: workspace-timezone-aware Today screen and child threading", () => {
+  test("Props declares timezone: string, and DashboardShell passes timezone={timezone}", () => {
+    assert.ok(source.includes("timezone: string;"));
+    const idx = shellSource.indexOf("<MobileDashboard");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("today/selectedDate/dayAppts are resolved via the explicit timezone prop, never the unparameterized default", () => {
+    assert.ok(source.includes("const today = nowInBusinessTz(timezone);"));
+    assert.ok(source.includes("sameDay(toBusinessLocal(a.scheduled_for, timezone), selectedDate)"));
+  });
+
+  test("timezone is threaded down to MobileAppointmentDetail, MobileAppointmentCard, MobileSchedule, and MobileClientDrawer", () => {
+    for (const jsxTag of ["<MobileAppointmentDetail", "<MobileAppointmentCard", "<MobileSchedule", "<MobileClientDrawer"]) {
+      const idx = source.indexOf(jsxTag);
+      assert.notEqual(idx, -1, `expected to find ${jsxTag}`);
+      const closeIdx = source.indexOf("/>", idx);
+      const jsx = source.slice(idx, closeIdx);
+      assert.match(jsx, /timezone=\{timezone\}/, `${jsxTag} must receive timezone={timezone}`);
+    }
+  });
+});

@@ -34,11 +34,19 @@ export function computeIncomeProjection({
   assignments,
   rangeStart,
   rangeEnd,
+  timezone,
 }: {
   appointments: Appointment[];
   assignments: AppointmentEmployeeAssignment[];
   rangeStart: string;
   rangeEnd: string;
+  // The workspace's own resolved timezone -- required, no default. An
+  // appointment's inclusion in [rangeStart, rangeEnd] is decided by its
+  // WORKSPACE-LOCAL calendar date, never the server process's own ambient
+  // timezone -- otherwise an appointment near UTC midnight could be bucketed
+  // into the wrong day (e.g. 2026-08-10T04:30:00Z is already Aug 10 in New
+  // York but still Aug 9 in Alaska/Hawaii).
+  timezone: string;
 }): IncomeProjectionResult {
   const assignmentCountByAppointmentId = new Map<string, number>();
   for (const a of assignments) {
@@ -51,7 +59,7 @@ export function computeIncomeProjection({
   for (const appt of appointments) {
     if (appt.status === "cancelled") continue;
 
-    const apptDate = toDateInputValue(toBusinessLocal(appt.scheduled_for));
+    const apptDate = toDateInputValue(toBusinessLocal(appt.scheduled_for, timezone));
     if (apptDate < rangeStart || apptDate > rangeEnd) continue;
 
     estimatedIncomeCents += appt.price_cents ?? 0;

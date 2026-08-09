@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, getCompanyName, NotifyChannel } from "@/lib/notify";
+import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, getCompanyIdentity, NotifyChannel } from "@/lib/notify";
 import { changeTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
@@ -323,8 +323,8 @@ export async function PATCH(req: Request) {
         if (!apptRes.error && !clientRes.error) {
           const { name, email, phone, auto_email, auto_sms } = clientRes.data;
           const { service_type, scheduled_for } = apptRes.data;
-          const companyName = await getCompanyName(workspaceId);
-          const t = changeTemplates(name, service_type, scheduled_for, companyName);
+          const { companyName, timezone } = await getCompanyIdentity(workspaceId);
+          const t = changeTemplates(name, service_type, scheduled_for, companyName, timezone);
 
           if (email && auto_email && shouldSend(notify_channel, "email")) {
             try {

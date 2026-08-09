@@ -25,6 +25,7 @@ export default function ScheduleMonthGrid({
   onSelectAppointment,
   onEditAppointment,
   monthOffset,
+  timezone,
 }: {
   appointments: Appointment[];
   clients: Client[];
@@ -42,13 +43,19 @@ export default function ScheduleMonthGrid({
   // current month) -- deliberately separate from ScheduleGrid's weekOffset;
   // see DashboardShell for how Today/Prev/Next branch by viewMode.
   monthOffset: number;
+  // Phase 5C: the business's own resolved timezone -- controls which
+  // month "today" anchors to, which calendar day each appointment groups
+  // under (an appointment near UTC midnight must land on the date the
+  // BUSINESS's timezone says it is, not UTC's or the device's), and chip
+  // time labels.
+  timezone: string;
 }) {
-  const now = nowInBusinessTz();
+  const now = nowInBusinessTz(timezone);
   const anchor = shiftMonth(now.getFullYear(), now.getMonth(), monthOffset);
   const weeks = buildMonthGrid(anchor.year, anchor.month);
   const todayKey = dateKey(now);
 
-  const apptsByDate = groupAppointmentsByDate(appointments, toBusinessLocal);
+  const apptsByDate = groupAppointmentsByDate(appointments, (iso) => toBusinessLocal(iso, timezone));
 
   const employeeMap: Record<string, Employee> = {};
   for (const e of employees) employeeMap[e.id] = e;
@@ -148,7 +155,7 @@ export default function ScheduleMonthGrid({
                               key={appt.id}
                               onClick={(e) => { e.stopPropagation(); onSelectAppointment(appt.id); }}
                               onDoubleClick={(e) => { e.stopPropagation(); onEditAppointment?.(appt.id); }}
-                              title={`${formatChipTime(toBusinessLocal(appt.scheduled_for))} ${clientName(appt.client_id)} – ${appt.service_type}`}
+                              title={`${formatChipTime(toBusinessLocal(appt.scheduled_for, timezone))} ${clientName(appt.client_id)} – ${appt.service_type}`}
                               className={[
                                 "w-full text-left rounded px-1 py-0.5 text-[10px] leading-tight truncate border",
                                 selected
@@ -157,7 +164,7 @@ export default function ScheduleMonthGrid({
                               ].join(" ")}
                               style={accent ? { borderLeftWidth: 3, borderLeftColor: accent } : undefined}
                             >
-                              <span className="font-medium text-slate-700">{formatChipTime(toBusinessLocal(appt.scheduled_for))}</span>
+                              <span className="font-medium text-slate-700">{formatChipTime(toBusinessLocal(appt.scheduled_for, timezone))}</span>
                               {" "}
                               <span className="text-slate-600">{clientName(appt.client_id)}</span>
                               <span className="text-slate-400"> – </span>

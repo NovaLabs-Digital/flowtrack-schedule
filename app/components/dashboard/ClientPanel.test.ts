@@ -33,7 +33,7 @@ describe("prop wiring", () => {
   });
 
   test("the component destructures canMutateOperationalData from its props", () => {
-    assert.match(source, /^\s*client, appointments, onClientUpdated, canMutateOperationalData,$/m);
+    assert.match(source, /^\s*client, appointments, onClientUpdated, canMutateOperationalData, timezone,$/m);
   });
 
   test("DashboardShell passes entitlement.canMutateOperationalData to ClientPanel", () => {
@@ -244,5 +244,32 @@ describe("no duplicated billing surface, no leaked internal detail", () => {
     for (const forbidden of ["getSession", "fetchEntitlementForWorkspace", "requireCapability", "localStorage", "sessionStorage"]) {
       assert.ok(!source.includes(forbidden), `ClientPanel.tsx must not contain "${forbidden}"`);
     }
+  });
+});
+
+describe("Phase 5C: workspace-timezone-aware Past/Future Services display", () => {
+  test("Props declares timezone: string, and DashboardShell passes timezone={timezone}", () => {
+    assert.ok(source.includes("timezone: string;"));
+    const idx = shellSource.indexOf("<ClientPanel");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("fmtDate/fmtTime (real appointment timestamps) take an explicit tz parameter and both call sites pass the timezone prop", () => {
+    assert.ok(source.includes("function fmtDate(iso: string, tz: string)"));
+    assert.ok(source.includes("function fmtTime(iso: string, tz: string)"));
+    assert.ok(source.includes("fmtDate(a.scheduled_for, timezone)"));
+    assert.ok(source.includes("fmtTime(a.scheduled_for, timezone)"));
+  });
+
+  test("fmtCalendarDate (client_since, a date-only field) remains untouched by timezone -- a date-only ISO string is deliberately never run through a timezone conversion", () => {
+    assert.ok(source.includes("function fmtCalendarDate(dateOnly: string)"));
+    assert.ok(source.includes("fmtCalendarDate(client.client_since)"));
+  });
+
+  test("past/future classification (a pure instant comparison) remains on bare new Date(), unaffected by the display-formatter fix", () => {
+    assert.ok(source.includes("const now = new Date();"));
   });
 });

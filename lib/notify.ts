@@ -1,6 +1,7 @@
 import twilio from "twilio";
 import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { effectiveTimezone } from "@/lib/timezone";
 
 let resendClient: Resend | null = null;
 function getResend(): Resend {
@@ -89,21 +90,30 @@ export type CompanyIdentity = {
   // never accidentally advertise a booking page the business hasn't
   // enabled (or that this app has no way to confirm is enabled).
   bookingEnabled: boolean;
+  // Phase 5E: the workspace's own resolved timezone, read from the SAME row
+  // -- callers that need appointment date/time content (changeTemplates,
+  // reminder24hTemplates) get it from this one query rather than a second
+  // round trip. Missing row/column safely resolves through
+  // effectiveTimezone to the canonical America/New_York fallback, exactly
+  // like every other timezone-reading call site in this codebase.
+  timezone: string;
 };
 
-// Workspace-scoped lookup combining company_name and booking_enabled for
-// callers that need both -- same workspace_id scoping guarantees as
-// getCompanyName above, just one query instead of two for routes (cancel/
-// delete) that need both fields together.
+// Workspace-scoped lookup combining company_name, booking_enabled, and
+// timezone for callers that need any combination of the three -- same
+// workspace_id scoping guarantees as getCompanyName above, just one query
+// instead of two (or three) for routes that need more than company_name
+// alone.
 export async function getCompanyIdentity(workspaceId: string): Promise<CompanyIdentity> {
   const { data } = await supabaseAdmin
     .from("company_settings")
-    .select("company_name, booking_enabled")
+    .select("company_name, booking_enabled, timezone")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
   return {
     companyName: sanitizeCompanyName(data?.company_name),
     bookingEnabled: Boolean(data?.booking_enabled),
+    timezone: effectiveTimezone(data?.timezone),
   };
 }
 

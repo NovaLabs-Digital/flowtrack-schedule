@@ -7,6 +7,7 @@ import { sendEmail, sendSms, describeProviderError, recordMessageSent, sanitizeC
 import { reminder24hTemplates } from "@/lib/templates";
 import { isAuthorizedCronRequest } from "@/lib/cronAuth";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
+import { effectiveTimezone } from "@/lib/timezone";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -19,7 +20,15 @@ export async function GET(req: Request) {
       return json({ error: "Unauthorized" }, 401);
     }
 
-    const now = DateTime.now().setZone("America/New_York");
+    // A pure 23-25-hour absolute lookahead window -- Luxon's hour/minute/
+    // second duration units are always exact elapsed time, never
+    // calendar/DST-adjusted (unlike "days"/"months"), so which zone `now`
+    // is displayed in has zero effect on the resulting UTC instants. The
+    // window is therefore correct for every workspace at once, regardless
+    // of that workspace's own saved timezone -- no per-workspace zone is
+    // (or ever was, despite the old .setZone("America/New_York") here)
+    // needed to compute it.
+    const now = DateTime.now();
     const start = now.plus({ hours: 23 }).toUTC().toISO();
     const end = now.plus({ hours: 25 }).toUTC().toISO();
 
@@ -46,20 +55,29 @@ export async function GET(req: Request) {
     // appointments for the same business. lib/notify.ts's sendEmail/sendSms
     // still perform their own authoritative notifications_enabled check on
     // every call; this is purely an optimization to skip attempting a send
-    // we can already predict will no-op. company_name is fetched in this
-    // same query (rather than a second per-workspace round trip via
-    // lib/notify.ts's getCompanyName) since this route already pays for one
-    // company_settings read per workspace here.
-    const workspaceInfoCache = new Map<string, { enabled: boolean; companyName: string }>();
-    async function workspaceInfo(workspaceId: string): Promise<{ enabled: boolean; companyName: string }> {
+    // we can already predict will no-op. company_name and timezone are
+    // fetched in this same query (rather than a second per-workspace round
+    // trip via lib/notify.ts's getCompanyName/getCompanyIdentity) since this
+    // route already pays for one company_settings read per workspace here.
+    // A single cron run can span many workspaces at once, each with its own
+    // saved timezone (Workspace A: America/New_York, Workspace B:
+    // America/Los_Angeles) -- this cache keeps each workspace's own
+    // resolved zone isolated from every other's, exactly like `enabled`/
+    // `companyName` already are.
+    const workspaceInfoCache = new Map<string, { enabled: boolean; companyName: string; timezone: string }>();
+    async function workspaceInfo(workspaceId: string): Promise<{ enabled: boolean; companyName: string; timezone: string }> {
       const cached = workspaceInfoCache.get(workspaceId);
       if (cached) return cached;
       const { data } = await supabaseAdmin
         .from("company_settings")
-        .select("notifications_enabled, company_name")
+        .select("notifications_enabled, company_name, timezone")
         .eq("workspace_id", workspaceId)
         .maybeSingle();
-      const info = { enabled: Boolean(data?.notifications_enabled), companyName: sanitizeCompanyName(data?.company_name) };
+      const info = {
+        enabled: Boolean(data?.notifications_enabled),
+        companyName: sanitizeCompanyName(data?.company_name),
+        timezone: effectiveTimezone(data?.timezone),
+      };
       workspaceInfoCache.set(workspaceId, info);
       return info;
     }
@@ -107,8 +125,8 @@ export async function GET(req: Request) {
       if (clientRes.error) continue;
 
       const { name, email, phone, auto_email, auto_sms } = clientRes.data;
-      const { enabled: notifying, companyName } = await workspaceInfo(a.workspace_id);
-      const t = reminder24hTemplates(name, a.service_type, a.scheduled_for, companyName);
+      const { enabled: notifying, companyName, timezone } = await workspaceInfo(a.workspace_id);
+      const t = reminder24hTemplates(name, a.service_type, a.scheduled_for, companyName, timezone);
 
       // Each channel is isolated in its own try/catch — matching the
       // pattern already used in create/update/delete — so one appointment's

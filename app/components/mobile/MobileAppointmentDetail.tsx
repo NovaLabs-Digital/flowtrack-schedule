@@ -41,6 +41,10 @@ type Props = {
   onCancelled: () => void;
   onViewClient?: () => void;
   canMutateOperationalData: boolean;
+  // Phase 5C: the business's own resolved timezone -- must agree with the
+  // same time desktop's AppointmentDetailPanel shows for this appointment,
+  // regardless of the device's own ambient timezone.
+  timezone: string;
 };
 
 // Screen 2 of the approved mockup. "Edit" reuses the existing AppointmentModal
@@ -57,11 +61,12 @@ export default function MobileAppointmentDetail({
   onCancelled,
   onViewClient,
   canMutateOperationalData,
+  timezone,
 }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
 
-  const start = toBusinessLocal(appointment.scheduled_for);
+  const start = toBusinessLocal(appointment.scheduled_for, timezone);
   const end = new Date(start.getTime() + durationMinutes * 60_000);
 
   async function handleCancel() {

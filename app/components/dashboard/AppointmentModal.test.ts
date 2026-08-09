@@ -46,7 +46,7 @@ const source = fs.readFileSync(fileURLToPath(new URL("./AppointmentModal.tsx", i
 
 describe("prop wiring: canMutateOperationalData reaches this component and nowhere reproduces entitlement policy", () => {
   test("the component destructures canMutateOperationalData from its props", () => {
-    assert.ok(source.includes("prefill, canMutateOperationalData }: Props)"));
+    assert.ok(source.includes("prefill, canMutateOperationalData, timezone }: Props)"));
   });
 
   test("Props declares canMutateOperationalData: boolean, and no EntitlementView/EntitlementResult type is imported", () => {
@@ -577,5 +577,82 @@ describe("Phase 2: Monthly Recurring Appointments -- interval options 1 through 
     assert.ok(source.includes("const WEEK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];"));
     assert.ok(source.includes("repeat_weeks: form.repeat_weeks,"));
     assert.ok(source.includes("repeat_weeks: manageWeeks,"));
+  });
+});
+
+describe("Phase 5C: workspace-timezone-aware create/edit -- the traveling-owner fix", () => {
+  test("Props declares timezone: string, and the component receives it as an explicit prop", () => {
+    assert.ok(source.includes("timezone: string;"));
+    assert.ok(source.includes("prefill, canMutateOperationalData, timezone }: Props)"));
+  });
+
+  test("the old device-local toDateValue/toHHMM helpers (native Date getters on a raw new Date(iso)) are completely gone", () => {
+    assert.ok(!source.includes("function toDateValue(iso: string)"));
+    assert.ok(!source.includes("function toHHMM(iso: string)"));
+  });
+
+  test("date/time form fields are read via zonedDateValue/zonedTimeValue, both passed the explicit timezone prop", () => {
+    assert.ok(source.includes('import { zonedDateValue, zonedTimeValue, zonedDateTimeToUTC, toBusinessLocal } from "@/lib/timezone";'));
+    assert.ok(source.includes("zonedDateValue(editing.appointment.scheduled_for, timezone)"));
+    assert.ok(source.includes("zonedTimeValue(editing.appointment.scheduled_for, timezone)"));
+    assert.ok(source.includes("zonedTimeValue(editing.appointment.scheduled_end, timezone)"));
+  });
+
+  test("no bare `new Date(`${form.date}T${form.time_in}`)`-style device-local construction remains anywhere in the save path", () => {
+    assert.ok(!source.includes("new Date(`${form.date}T${form.time_in}`)"));
+    assert.ok(!source.includes("new Date(`${form.date}T${form.time_out}`)"));
+  });
+
+  test("executeEdit resolves scheduled_for/scheduled_end via zonedDateTimeToUTC with the explicit timezone prop, and rejects (setError, no fetch) on a DST-invalid result before constructing the request payload", () => {
+    const fnStart = source.indexOf("async function executeEdit(mode:");
+    assert.notEqual(fnStart, -1);
+    const body = source.slice(fnStart, fnStart + 1400);
+    assert.ok(body.includes('const startResult = zonedDateTimeToUTC(form.date, form.time_in, timezone);'));
+    assert.ok(body.includes('if (!startResult.ok) { setError(startResult.error); return; }'));
+    assert.ok(body.includes('const endResult = zonedDateTimeToUTC(form.date, form.time_out, timezone);'));
+    assert.ok(body.includes('if (!endResult.ok) { setError(endResult.error); return; }'));
+    assert.ok(body.includes("const scheduled_for = startResult.iso;"));
+    assert.ok(body.includes("const scheduled_end = endResult.iso;"));
+    // The DST-rejection guards must appear textually before the price_cents
+    // line, proving they run before the request payload is built/sent.
+    const startGuardIdx = body.indexOf("if (!startResult.ok)");
+    const priceIdx = body.indexOf("const price_cents");
+    assert.ok(startGuardIdx > -1 && startGuardIdx < priceIdx);
+  });
+
+  test("dateTimeChanged's own comparison also goes through zonedDateTimeToUTC, never a bare device-local Date construction", () => {
+    assert.ok(source.includes("const currentStartConversion = form.date && form.time_in ? zonedDateTimeToUTC(form.date, form.time_in, timezone) : null;"));
+    assert.ok(source.includes("const currentStartMs = currentStartConversion?.ok ? new Date(currentStartConversion.iso).getTime() : null;"));
+  });
+
+  test("DashboardShell passes timezone={timezone} to AppointmentModal", () => {
+    const shellSource = fs.readFileSync(fileURLToPath(new URL("./DashboardShell.tsx", import.meta.url)), "utf8");
+    const idx = shellSource.indexOf("<AppointmentModal");
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("recurrence generation (countFutureOccurrences) is untouched by Phase 5C -- still called with a bare new Date(editing.appointment.scheduled_for), not zonedDateTimeToUTC", () => {
+    assert.ok(source.includes("new Date(editing.appointment.scheduled_for)"));
+  });
+});
+
+describe("Phase 5E: Worked Hours Started/Completed labels display in the business's own resolved timezone, not the owner's device timezone", () => {
+  test("startedLabel/completedLabel are built from toBusinessLocal(..., timezone), never a bare new Date(...).toLocaleString(...)", () => {
+    assert.ok(source.includes("toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: \"short\", day: \"numeric\", hour: \"numeric\", minute: \"2-digit\" })"));
+    assert.ok(source.includes("toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: \"short\", day: \"numeric\", hour: \"numeric\", minute: \"2-digit\" })"));
+    assert.ok(!source.includes("new Date(assignment.actual_started_at).toLocaleString"));
+    assert.ok(!source.includes("new Date(assignment.actual_completed_at).toLocaleString"));
+  });
+});
+
+describe("Phase 5D: the recurrence occurrence-count preview passes the same explicit workspace timezone already supplied in Phase 5C", () => {
+  test("countFutureOccurrences is called with the explicit timezone prop, never the temporary global default", () => {
+    assert.ok(source.includes("countFutureOccurrences(manageFreq, manageWeeks, timezone, new Date(editing.appointment.scheduled_for), manageMonths)"));
+  });
+
+  test("no bare, unparameterized countFutureOccurrences(...) call remains in this file (the preview and the API generation must never disagree)", () => {
+    assert.ok(!/countFutureOccurrences\(manageFreq, manageWeeks, new Date/.test(source));
   });
 });

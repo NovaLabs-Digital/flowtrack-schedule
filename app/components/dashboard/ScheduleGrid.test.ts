@@ -243,3 +243,60 @@ describe("Phase 5.7D-R19: Team Color accent + per-employee colored names (source
     assert.ok(source.includes("borderLeftColor: empColor ?? undefined,"));
   });
 });
+
+describe("Phase 5C: workspace-timezone-aware calendar display and drag/drop reschedule", () => {
+  test("Props declares timezone: string, and DashboardShell passes timezone={timezone}", () => {
+    assert.ok(source.includes("timezone: string;"));
+    const idx = shellSource.indexOf("<ScheduleGrid");
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("every nowInBusinessTz/toBusinessLocal call site passes the explicit timezone prop -- none rely on the BUSINESS_TZ compatibility default", () => {
+    assert.ok(!/nowInBusinessTz\(\)/.test(source), "nowInBusinessTz must never be called with no arguments in this file");
+    assert.ok(!/toBusinessLocal\(\s*[a-zA-Z.]+\s*\)/.test(source), "toBusinessLocal must never be called with only one argument in this file");
+    // Direct, explicit check of every known call-site shape:
+    for (const call of [
+      "nowInBusinessTz(timezone)",
+      "toBusinessLocal(iso, timezone)",
+      "toBusinessLocal(a.scheduled_for, timezone)",
+    ]) {
+      assert.ok(source.includes(call), `expected to find "${call}"`);
+    }
+  });
+
+  test("viewDays/formatWeekRange/computeOverlapLayout/apptsForDay all take an explicit timezone parameter", () => {
+    assert.ok(source.includes("function viewDays(viewMode: ViewMode, weekOffset: number, timezone: string)"));
+    assert.ok(source.includes("function formatWeekRange(days: Date[], timezone: string)"));
+    assert.ok(source.includes("function computeOverlapLayout(appts: Appointment[], startHour: number, durationFor: (s: string) => number, timezone: string)"));
+  });
+
+  test("handleDrop resolves the drop target via zonedDateTimeToUTC with the explicit timezone prop -- never native setHours/toISOString on the drop day (which silently reinterpreted the drop in the device's own timezone)", () => {
+    assert.ok(source.includes('import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";'));
+    const fnStart = source.indexOf("function handleDrop(day: Date, hour: number, minute: number)");
+    assert.notEqual(fnStart, -1);
+    const body = source.slice(fnStart, fnStart + 2000);
+    assert.ok(body.includes("const converted = zonedDateTimeToUTC(dateStr, timeStr, timezone);"));
+    assert.ok(body.includes("if (!converted.ok) return;"));
+    assert.ok(body.includes("const newStart = new Date(converted.iso);"));
+    // The old device-local construction must be completely gone.
+    assert.ok(!body.includes("const newStart = new Date(day);"));
+    assert.ok(!body.includes("newStart.setHours(hour, minute, 0, 0);"));
+  });
+
+  test("handleDrop extracts the drop day's date components via native getters (safe -- day is a business-tz-anchored 'fake local' Date whose own getters are self-consistent), never via toISOString/getTime directly on it", () => {
+    const fnStart = source.indexOf("function handleDrop(day: Date, hour: number, minute: number)");
+    const body = source.slice(fnStart, fnStart + 2000);
+    assert.ok(body.includes("day.getFullYear()"));
+    assert.ok(body.includes("day.getMonth()"));
+    assert.ok(body.includes("day.getDate()"));
+  });
+
+  test("duration is still preserved via the real-instant delta between old and new scheduled_end, unchanged by the conversion fix", () => {
+    const fnStart = source.indexOf("function handleDrop(day: Date, hour: number, minute: number)");
+    const body = source.slice(fnStart, fnStart + 2000);
+    assert.ok(body.includes("const delta = newStart.getTime() - oldStart.getTime();"));
+    assert.ok(body.includes("newEndIso = new Date(new Date(appt.scheduled_end).getTime() + delta).toISOString();"));
+  });
+});

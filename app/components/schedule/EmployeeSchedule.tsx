@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { formatHoursAsDuration } from "@/lib/payroll";
 import type { EmployeeEntitlementView } from "@/lib/entitlementView";
 import EmployeeJobActionButton from "@/app/components/schedule/EmployeeJobActionButton";
+import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 
 type Appointment = {
   id: string;
@@ -36,6 +37,14 @@ type Props = {
   // app/api/appointments/job/route.ts remains the authoritative
   // enforcement; this is UX only.
   entitlement: EmployeeEntitlementView;
+  // The workspace's own resolved timezone, resolved server-side
+  // (app/schedule/page.tsx) -- every appointment date/time this screen
+  // shows must agree with what the owner's dashboard shows for the same
+  // appointment, never the employee's own device timezone. Worked-hours
+  // totals (thisWeekHours/lastWeekHours) are also computed server-side
+  // using this same resolved timezone (see app/schedule/page.tsx's
+  // mondayOfWeek/computePayrollRows calls).
+  timezone: string;
 };
 
 function addDays(d: Date, n: number) {
@@ -78,7 +87,7 @@ function greeting(): string {
   return "Good evening";
 }
 
-export default function EmployeeSchedule({ employee, appointments, clients, serviceColors, officePhone, thisWeekHours, lastWeekHours, entitlement }: Props) {
+export default function EmployeeSchedule({ employee, appointments, clients, serviceColors, officePhone, thisWeekHours, lastWeekHours, entitlement, timezone }: Props) {
   const router = useRouter();
   const [dayOffset, setDayOffset] = useState(0);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -93,12 +102,17 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
     return map;
   });
 
-  const today = new Date();
+  // Phase 5C: business-tz-anchored (never bare `new Date()`/native getters
+  // on a raw `new Date(iso)`) -- this screen previously computed "today"
+  // and each appointment's day in the EMPLOYEE's own device timezone,
+  // which could disagree with the owner's dashboard the moment the two
+  // devices weren't in the same zone.
+  const today = nowInBusinessTz(timezone);
   today.setHours(0, 0, 0, 0);
   const currentDay = addDays(today, dayOffset);
 
   const dayAppts = appointments.filter((a) => {
-    const d = new Date(a.scheduled_for);
+    const d = toBusinessLocal(a.scheduled_for, timezone);
     return sameDay(d, currentDay);
   });
 
@@ -245,27 +259,37 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
           </div>
         ) : (
           dayAppts.map((a) => {
-            const start = new Date(a.scheduled_for);
+            // rawStart is the real instant (used only for the duration
+            // delta); start/end (display) are the workspace-local values
+            // derived from it -- mixing the two would shift either.
+            const rawStart = new Date(a.scheduled_for);
             let mins: number;
             if (a.scheduled_end) {
-              mins = Math.round((new Date(a.scheduled_end).getTime() - start.getTime()) / 60_000);
+              mins = Math.round((new Date(a.scheduled_end).getTime() - rawStart.getTime()) / 60_000);
               if (mins <= 0) mins = a.duration_minutes ?? 60;
             } else {
               mins = a.duration_minutes ?? 60;
             }
+            const start = toBusinessLocal(a.scheduled_for, timezone);
             const end = new Date(start.getTime() + mins * 60_000);
             const client = clients[a.client_id];
             const svcColor = serviceColors[a.service_type] ?? null;
 
+            // rawStartedAt/rawCompletedAt are the real instants (used only
+            // for the duration delta); startedAt/completedAt (display) are
+            // the workspace-local values derived from them -- mixing the
+            // two would shift either, exactly like rawStart/start above.
             const times = jobTimes[a.id];
-            const startedAt = times?.started ? new Date(times.started) : null;
-            const completedAt = times?.completed ? new Date(times.completed) : null;
+            const rawStartedAt = times?.started ? new Date(times.started) : null;
+            const rawCompletedAt = times?.completed ? new Date(times.completed) : null;
+            const startedAt = times?.started ? toBusinessLocal(times.started, timezone) : null;
+            const completedAt = times?.completed ? toBusinessLocal(times.completed, timezone) : null;
             const isStarted = !!startedAt;
             const isCompleted = !!completedAt;
 
             let actualDuration: string | null = null;
-            if (startedAt && completedAt) {
-              const actualMins = Math.round((completedAt.getTime() - startedAt.getTime()) / 60_000);
+            if (rawStartedAt && rawCompletedAt) {
+              const actualMins = Math.round((rawCompletedAt.getTime() - rawStartedAt.getTime()) / 60_000);
               if (actualMins >= 0) actualDuration = durationLabel(actualMins);
             }
 

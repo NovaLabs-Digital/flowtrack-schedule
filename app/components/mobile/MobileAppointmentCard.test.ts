@@ -17,7 +17,7 @@ describe("Phase 5.7D-R19: accentColor prop -- employee/team accent with a servic
   });
 
   test("the component destructures accentColor from its props", () => {
-    assert.ok(source.includes("export default function MobileAppointmentCard({ appointment, client, employees, accentColor, serviceColor, durationMinutes, onTap }: Props) {"));
+    assert.ok(source.includes("export default function MobileAppointmentCard({ appointment, client, employees, accentColor, serviceColor, durationMinutes, onTap, timezone }: Props) {"));
   });
 
   test("the left accent bar prefers accentColor, falling back to serviceColor, then the pre-existing gray default -- exact same fallback chain and default color as before this phase", () => {
@@ -26,5 +26,12 @@ describe("Phase 5.7D-R19: accentColor prop -- employee/team accent with a servic
 
   test("employees are still listed as plain text -- this phase does not add per-employee coloring to the mobile card (desktop-only, see ScheduleGrid.tsx)", () => {
     assert.ok(source.includes('{employees.map((e) => e.name).join(", ")}'));
+  });
+});
+
+describe("Phase 5C: workspace-timezone-aware time label", () => {
+  test("Props declares timezone: string, and the displayed start time is resolved via toBusinessLocal with the explicit prop", () => {
+    assert.ok(source.includes("timezone: string;"));
+    assert.ok(source.includes("const start = toBusinessLocal(appointment.scheduled_for, timezone);"));
   });
 });

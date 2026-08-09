@@ -225,7 +225,7 @@ describe("read-only actions and navigation remain unconditional", () => {
   test("rangeStart/rangeEnd are DispatchPanel's own state (shared, not independently computed by each card)", () => {
     assert.ok(source.includes("const [rangeStart, setRangeStart] = useState("));
     assert.ok(source.includes("const [rangeEnd, setRangeEnd] = useState("));
-    assert.ok(source.includes("mondayOfCurrentWeek()"));
+    assert.ok(source.includes("mondayOfCurrentWeek(timezone)"));
   });
 
   test("appointment selection, dispatch summary counts, and Navigate/Call actions remain unconditional", () => {
@@ -347,5 +347,49 @@ describe("Phase 5.7D-R19: Employee Worked Hours -- 'Not tracked yet' + cancelled
     assert.ok(!block.includes("appointment_employee_hours"));
     assert.ok(!block.includes("actual_started_at:"));
     assert.ok(!block.includes("EmployeeHoursSection"), "must not offer a manual-entry override for a not-yet-due assignment");
+  });
+});
+
+describe("Phase 5C: workspace-timezone-aware selected-appointment detail display", () => {
+  test("Props declares timezone: string, and DashboardShell passes timezone={timezone}", () => {
+    assert.ok(source.includes("timezone: string;"));
+    const idx = shellSource.indexOf("<DispatchPanel");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /timezone=\{timezone\}/);
+  });
+
+  test("formatDateTime takes an explicit tz parameter and its one call site (the selected appointment's own Date & Time row) passes the timezone prop", () => {
+    assert.ok(source.includes("function formatDateTime(iso: string, tz: string) {"));
+    assert.ok(source.includes("toBusinessLocal(iso, tz)"));
+    assert.ok(source.includes('<InfoRow label="Date & Time" value={formatDateTime(selectedAppt.scheduled_for, timezone)} />'));
+  });
+});
+
+describe("Phase 5E: mondayOfCurrentWeek/startOfBusinessDay (Weekly Worked Hours range, today's Dispatch summary counts) now take the explicit workspace timezone prop, no more temporary default", () => {
+  test("mondayOfCurrentWeek requires an explicit tz parameter, called with the timezone prop", () => {
+    assert.ok(source.includes("function mondayOfCurrentWeek(tz: string): Date {"));
+    assert.ok(source.includes("const d = nowInBusinessTz(tz);"));
+    assert.ok(source.includes("const defaultMonday = mondayOfCurrentWeek(timezone);"));
+  });
+
+  test("today's Dispatch summary counts (Scheduled/In Progress/Completed) resolve via startOfBusinessDay with the explicit timezone prop, not the unparameterized default", () => {
+    assert.ok(source.includes("const today = startOfBusinessDay(0, timezone);"));
+    assert.ok(source.includes("const tomorrow = startOfBusinessDay(1, timezone);"));
+    assert.ok(!source.includes("startOfBusinessDay(0);"));
+    assert.ok(!source.includes("startOfBusinessDay(1);"));
+  });
+
+  test("Income Projection and Weekly Worked Hours both receive the explicit timezone prop", () => {
+    const incomeIdx = source.indexOf("<IncomeProjection");
+    assert.notEqual(incomeIdx, -1);
+    const incomeClose = source.indexOf("/>", incomeIdx);
+    assert.match(source.slice(incomeIdx, incomeClose), /timezone=\{timezone\}/);
+
+    const payrollIdx = source.indexOf("<PayrollSummary");
+    assert.notEqual(payrollIdx, -1);
+    const payrollClose = source.indexOf("/>", payrollIdx);
+    assert.match(source.slice(payrollIdx, payrollClose), /timezone=\{timezone\}/);
   });
 });

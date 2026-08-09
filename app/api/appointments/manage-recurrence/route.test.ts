@@ -75,6 +75,7 @@ describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
       resetFixtures({
         workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: row }],
+        company_settings: [{ data: { timezone: null } }],
         appointments: [
           { data: oneTimeAppt() }, // fetch existing
           { error: null }, // update source appointment
@@ -227,6 +228,7 @@ describe("existing recurrence business rules remain unchanged once entitled", ()
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: { ...oneTimeAppt(), series_id: "series-1" } }, // fetch existing
         { data: [{ id: "sib-1" }, { id: "sib-2" }] }, // sibling lookup
@@ -294,6 +296,7 @@ describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appo
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: oneTimeAppt() }, // price_cents: 5000
         { error: null }, // update source appointment
@@ -314,6 +317,7 @@ describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appo
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: { ...oneTimeAppt(), price_cents: null } },
         { error: null },
@@ -335,6 +339,7 @@ describe("Phase 5.7D-R19: newly generated recurring rows receive the origin appo
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: oneTimeAppt() }, // team_color: "#2563EB"
         { error: null }, // update source appointment
@@ -355,6 +360,7 @@ describe("Phase 5.7D-R19: newly generated recurring rows receive the origin appo
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: { ...oneTimeAppt(), team_color: null } },
         { error: null },
@@ -376,6 +382,7 @@ describe("Phase 5.7D-R18: newly generated recurring rows receive the origin appo
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: oneTimeAppt() },
         { error: null }, // update source appointment
@@ -410,6 +417,7 @@ describe("Phase 5.7D-R18: newly generated recurring rows receive the origin appo
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: oneTimeAppt() },
         { error: null },
@@ -429,6 +437,7 @@ describe("Phase 2: Monthly Recurring Appointments via Manage Recurrence", () => 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: oneTimeAppt() }, // fetch existing
         { error: null }, // update source appointment
@@ -461,6 +470,7 @@ describe("Phase 2: Monthly Recurring Appointments via Manage Recurrence", () => 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: oneTimeAppt() }, // price_cents: 5000
         { error: null },
@@ -481,6 +491,7 @@ describe("Phase 2: Monthly Recurring Appointments via Manage Recurrence", () => 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: oneTimeAppt() },
         { error: null },
@@ -510,6 +521,7 @@ describe("Phase 2: Monthly Recurring Appointments via Manage Recurrence", () => 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
       appointments: [
         { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "weekly", repeat_weeks: 2 } },
         { data: [{ id: "sib-1" }, { id: "sib-2" }] }, // weekly sibling lookup
@@ -580,5 +592,105 @@ describe("Phase 2: Monthly Recurring Appointments via Manage Recurrence", () => 
     const updateArgs = updateCall!.args[0] as { frequency_type: string; repeat_months: number | null };
     assert.equal(updateArgs.frequency_type, "one_time");
     assert.equal(updateArgs.repeat_months, null, "converting away from monthly clears repeat_months rather than leaving a stale value");
+  });
+});
+
+describe("Phase 5D: trusted workspace timezone drives recurrence generation, with atomic DST-nonexistent rejection", () => {
+  test("converting to one_time never queries company_settings -- the timezone lookup is skipped entirely when there is no recurrence to generate", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "weekly" } },
+        { data: [{ id: "sib-1" }] },
+        { error: null },
+        { error: null },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "company_settings"), []);
+  });
+
+  test("a weekly recurrence whose generated occurrence lands on a nonexistent DST local time is rejected atomically -- 400, zero cancelled siblings, zero source-row update, zero new rows", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
+      appointments: [
+        // 2026-02-22T07:30:00.000Z = 2:30 AM New York (a Sunday). +1 week
+        // lands on 2026-03-08 2:30 AM New York -- the exact spring-forward
+        // gap. This appointment is ALREADY part of a series (siblings would
+        // normally be cancelled) -- proving the atomicity guarantee holds
+        // even when there's something to lose by acting too early.
+        { data: { ...oneTimeAppt(), series_id: "series-1", scheduled_for: "2026-02-22T07:30:00.000Z" } },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1 }));
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /daylight-saving/);
+    // Only the initial fetch + the company_settings read happened -- no
+    // sibling lookup/cancel, no source-row update, no insert.
+    assert.deepEqual(currentFake.calls.filter((c) => c.method === "update" || c.method === "insert"), []);
+  });
+
+  test("a monthly recurrence whose generated occurrence lands on a nonexistent DST local time is also rejected atomically", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }],
+      appointments: [
+        // 2026-01-08T07:30:00.000Z = 2:30 AM New York, Jan 8. +2 months
+        // (repeat_months: 2) lands on Mar 8, 2:30 AM New York -- the gap.
+        { data: { ...oneTimeAppt(), scheduled_for: "2026-01-08T07:30:00.000Z" } },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 2 }));
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /daylight-saving/);
+    assert.deepEqual(currentFake.calls.filter((c) => c.method === "update" || c.method === "insert"), []);
+  });
+
+  test("the exact same DST-gap origin succeeds for a workspace timezone that never hits it (Arizona, no DST)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/Phoenix" } }],
+      appointments: [
+        // 2026-02-22T09:30:00.000Z = 2:30 AM Arizona (no DST, never a gap).
+        { data: { ...oneTimeAppt(), scheduled_for: "2026-02-22T09:30:00.000Z" } },
+        { error: null }, // update source appointment
+        { data: [{ id: "new-1" }] }, // insert new series rows
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1 }));
+    assert.equal(res.status, 200);
+  });
+
+  test("a timezone field included in the request body is silently ignored -- there is no such input the caller can spoof", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: null } }], // trusted: America/New_York
+      appointments: [
+        { data: { ...oneTimeAppt(), scheduled_for: "2026-02-22T07:30:00.000Z" } },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    // A body-supplied timezone claiming Arizona (which would NOT hit the
+    // gap) must not override the trusted, server-resolved NY timezone.
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1, timezone: "America/Phoenix" }));
+    assert.equal(res.status, 400);
   });
 });

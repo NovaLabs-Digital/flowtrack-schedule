@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession } from "@/lib/session";
 import BookingForm from "@/app/components/book/BookingForm";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
+import { effectiveTimezone } from "@/lib/timezone";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export default async function BookPage() {
   // workspace exists.
   const [session, settingsRes, servicesRes] = await Promise.all([
     getSession(),
-    supabaseAdmin.from("company_settings").select("booking_enabled, company_name").eq("workspace_id", REAL_WORKSPACE_ID).maybeSingle(),
+    supabaseAdmin.from("company_settings").select("booking_enabled, company_name, timezone").eq("workspace_id", REAL_WORKSPACE_ID).maybeSingle(),
     supabaseAdmin
       .from("services")
       .select("name, description, duration_minutes")
@@ -24,6 +25,9 @@ export default async function BookPage() {
   const bookingEnabled = Boolean(settingsRes.data?.booking_enabled);
   const companyName = settingsRes.data?.company_name || "";
   const isOwnerPreview = session.role === "owner";
+  // Trusted, server-resolved workspace timezone -- never the customer's own
+  // device/browser timezone.
+  const timezone = effectiveTimezone(settingsRes.data?.timezone);
 
   if (!bookingEnabled && !isOwnerPreview) {
     return (
@@ -46,7 +50,7 @@ export default async function BookPage() {
           Public booking is currently OFF — customers can&apos;t see this page. You&apos;re previewing it as the owner.
         </div>
       )}
-      <BookingForm services={servicesRes.data ?? []} companyName={companyName} />
+      <BookingForm services={servicesRes.data ?? []} companyName={companyName} timezone={timezone} />
     </>
   );
 }

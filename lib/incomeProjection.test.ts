@@ -45,7 +45,7 @@ describe("computeIncomeProjection -- price source is appointment.price_cents, ne
       appointments: [appt({ id: "a1", price_cents: 18500 }), appt({ id: "a2", price_cents: 9500 })],
       assignments: [],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 28000);
   });
@@ -55,7 +55,7 @@ describe("computeIncomeProjection -- price source is appointment.price_cents, ne
       appointments: [appt({ id: "a1", service_type: "Regular Cleaning $185", price_cents: 0 })],
       assignments: [],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 0, "the $185 in the name must never be parsed or summed");
   });
@@ -65,7 +65,7 @@ describe("computeIncomeProjection -- price source is appointment.price_cents, ne
       appointments: [appt({ id: "a1", price_cents: null })],
       assignments: [assignment({ appointment_id: "a1" })],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 0);
   });
@@ -77,7 +77,7 @@ describe("computeIncomeProjection -- cancelled excluded, completed included", ()
       appointments: [appt({ id: "a1", status: "cancelled", price_cents: 18500 })],
       assignments: [assignment({ appointment_id: "a1" })],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 0);
     assert.equal(result.estimatedWorkHours, 0);
@@ -101,7 +101,7 @@ describe("computeIncomeProjection -- cancelled excluded, completed included", ()
         }),
       ],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 18500);
     assert.equal(result.estimatedWorkHours, 2); // 2-hour scheduled duration x 1 employee
@@ -124,7 +124,7 @@ describe("computeIncomeProjection -- cancelled excluded, completed included", ()
         }),
       ],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedWorkHours, 2, "must use the 2-hour SCHEDULED duration, not the 10-minute actual");
   });
@@ -138,7 +138,7 @@ describe("computeIncomeProjection -- Estimated Work Hours = scheduled duration x
       ],
       assignments: [assignment({ appointment_id: "a1", employee_id: "emp-1" })],
       rangeStart: "2000-01-01",
-      rangeEnd: "2100-01-01",
+      rangeEnd: "2100-01-01", timezone: "America/New_York",
     });
     assert.equal(result.estimatedWorkHours, 3);
   });
@@ -153,7 +153,7 @@ describe("computeIncomeProjection -- Estimated Work Hours = scheduled duration x
         assignment({ id: "ae-2", appointment_id: "a1", employee_id: "emp-2" }),
       ],
       rangeStart: "2000-01-01",
-      rangeEnd: "2100-01-01",
+      rangeEnd: "2100-01-01", timezone: "America/New_York",
     });
     assert.equal(result.estimatedWorkHours, 6);
   });
@@ -165,7 +165,7 @@ describe("computeIncomeProjection -- Estimated Work Hours = scheduled duration x
       ],
       assignments: [],
       rangeStart: "2000-01-01",
-      rangeEnd: "2100-01-01",
+      rangeEnd: "2100-01-01", timezone: "America/New_York",
     });
     assert.equal(result.estimatedWorkHours, 0);
     assert.equal(result.estimatedIncomeCents, 18500);
@@ -176,7 +176,7 @@ describe("computeIncomeProjection -- Estimated Work Hours = scheduled duration x
       appointments: [appt({ id: "a1", scheduled_end: null, duration_minutes: 90 })],
       assignments: [assignment({ appointment_id: "a1" })],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedWorkHours, 1.5);
   });
@@ -191,7 +191,7 @@ describe("computeIncomeProjection -- date-range filtering", () => {
       ],
       assignments: [],
       rangeStart: "2026-06-01",
-      rangeEnd: "2026-06-05",
+      rangeEnd: "2026-06-05", timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 200);
   });
@@ -204,7 +204,7 @@ describe("computeIncomeProjection -- date-range filtering", () => {
       ],
       assignments: [],
       rangeStart: "2026-06-01",
-      rangeEnd: "2026-06-05",
+      rangeEnd: "2026-06-05", timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 0);
   });
@@ -212,7 +212,7 @@ describe("computeIncomeProjection -- date-range filtering", () => {
 
 describe("computeIncomeProjection -- zero qualifying appointments", () => {
   test("no appointments at all -> $0.00 / 0.00 hrs", () => {
-    const result = computeIncomeProjection({ appointments: [], assignments: [], rangeStart: RANGE_START, rangeEnd: RANGE_END });
+    const result = computeIncomeProjection({ appointments: [], assignments: [], rangeStart: RANGE_START, rangeEnd: RANGE_END, timezone: "America/New_York" });
     assert.equal(result.estimatedIncomeCents, 0);
     assert.equal(result.estimatedWorkHours, 0);
   });
@@ -222,10 +222,84 @@ describe("computeIncomeProjection -- zero qualifying appointments", () => {
       appointments: [appt({ id: "a1", status: "cancelled" }), appt({ id: "a2", scheduled_for: "1999-01-01T00:00:00.000Z" })],
       assignments: [assignment({ appointment_id: "a1" }), assignment({ appointment_id: "a2" })],
       rangeStart: RANGE_START,
-      rangeEnd: RANGE_END,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
     });
     assert.equal(result.estimatedIncomeCents, 0);
     assert.equal(result.estimatedWorkHours, 0);
+  });
+});
+
+describe("Phase 5E: computeIncomeProjection -- range inclusion uses the WORKSPACE-LOCAL calendar date, not a fixed zone", () => {
+  // 2026-08-10T04:30:00Z: already Aug 10 in New York (00:30 EDT), but still
+  // Aug 9 in Alaska (20:30 AKDT the prior evening) and Hawaii (18:30 HST
+  // the prior evening) -- the exact instant from the spec.
+  const NEAR_MIDNIGHT_UTC = "2026-08-10T04:30:00.000Z";
+
+  test("America/New_York: the appointment is Aug 10 local -- included in an Aug 10-only range, excluded from an Aug 9-only range", () => {
+    const included = computeIncomeProjection({
+      appointments: [appt({ id: "a1", scheduled_for: NEAR_MIDNIGHT_UTC, price_cents: 5000 })],
+      assignments: [],
+      rangeStart: "2026-08-10",
+      rangeEnd: "2026-08-10",
+      timezone: "America/New_York",
+    });
+    assert.equal(included.estimatedIncomeCents, 5000);
+
+    const excluded = computeIncomeProjection({
+      appointments: [appt({ id: "a1", scheduled_for: NEAR_MIDNIGHT_UTC, price_cents: 5000 })],
+      assignments: [],
+      rangeStart: "2026-08-09",
+      rangeEnd: "2026-08-09",
+      timezone: "America/New_York",
+    });
+    assert.equal(excluded.estimatedIncomeCents, 0);
+  });
+
+  test("Pacific/Honolulu: the SAME instant is Aug 9 local -- included in an Aug 9-only range, excluded from an Aug 10-only range (the opposite of New York)", () => {
+    const included = computeIncomeProjection({
+      appointments: [appt({ id: "a1", scheduled_for: NEAR_MIDNIGHT_UTC, price_cents: 5000 })],
+      assignments: [],
+      rangeStart: "2026-08-09",
+      rangeEnd: "2026-08-09",
+      timezone: "Pacific/Honolulu",
+    });
+    assert.equal(included.estimatedIncomeCents, 5000);
+
+    const excluded = computeIncomeProjection({
+      appointments: [appt({ id: "a1", scheduled_for: NEAR_MIDNIGHT_UTC, price_cents: 5000 })],
+      assignments: [],
+      rangeStart: "2026-08-10",
+      rangeEnd: "2026-08-10",
+      timezone: "Pacific/Honolulu",
+    });
+    assert.equal(excluded.estimatedIncomeCents, 0);
+  });
+
+  test("America/Los_Angeles also sees Aug 9 local for the same instant (21:30 PDT the prior evening)", () => {
+    const result = computeIncomeProjection({
+      appointments: [appt({ id: "a1", scheduled_for: NEAR_MIDNIGHT_UTC, price_cents: 5000 })],
+      assignments: [],
+      rangeStart: "2026-08-09",
+      rangeEnd: "2026-08-09",
+      timezone: "America/Los_Angeles",
+    });
+    assert.equal(result.estimatedIncomeCents, 5000);
+  });
+
+  test("the revenue/hours FORMULAS themselves are unaffected by which timezone decided inclusion -- once included, the same appointment yields the same estimatedIncomeCents/estimatedWorkHours regardless of zone", () => {
+    const base = { id: "a1", scheduled_for: "2026-06-01T09:00:00.000Z", scheduled_end: "2026-06-01T12:00:00.000Z", price_cents: 18500 };
+    const assignments = [assignment({ appointment_id: "a1" })];
+    for (const timezone of ["America/New_York", "America/Los_Angeles", "Pacific/Honolulu"]) {
+      const result = computeIncomeProjection({
+        appointments: [appt(base)],
+        assignments,
+        rangeStart: "2000-01-01",
+        rangeEnd: "2100-01-01",
+        timezone,
+      });
+      assert.equal(result.estimatedIncomeCents, 18500, timezone);
+      assert.equal(result.estimatedWorkHours, 3, timezone);
+    }
   });
 });
 
