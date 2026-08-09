@@ -27,6 +27,7 @@ mock.module("@/lib/supabaseAdmin", {
 
 const { GET } = await import("./route.ts");
 const { computeAvailableSlots } = await import("../../../../lib/availability.ts");
+const { DEFAULT_BUSINESS_HOURS, effectiveBusinessHours } = await import("../../../../lib/businessHours.ts");
 
 function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
   currentFake = createFakeSupabaseAdmin(responses);
@@ -78,7 +79,7 @@ describe("GET /api/book/availability -- entitlement gate (canUsePublicBooking)",
         const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
         assert.equal(res.status, 200, label);
         const body = await res.json();
-        const expected = computeAvailableSlots(DATE_STR, 60, []);
+        const expected = computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS);
         assert.deepEqual(body.slots, expected, label);
         assert.ok(expected.length > 0, "sanity: the fixture date/duration actually yields slots");
         assert.equal(writeCalls(currentFake.calls).length, 0, label);
@@ -161,6 +162,66 @@ describe("GET /api/book/availability -- entitlement gate (canUsePublicBooking)",
       assert.equal(res.status, 403);
       assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
     });
+  });
+});
+
+describe("Phase 4: Business Hours drive public availability", () => {
+  before(() => {
+    mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-02T12:00:00.000Z").getTime() });
+  });
+  after(() => {
+    mock.timers.reset();
+  });
+
+  test("a workspace-saved Closed day (empty array) yields zero slots, even though the default hours would be open", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, business_hours: { monday: [] } } }],
+      services: [{ data: { duration_minutes: 60 } }],
+      appointments: [{ data: [] }],
+    });
+    const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.slots, []);
+  });
+
+  test("a workspace-saved split-hours day (lunch gap) produces zero slots inside the gap", async () => {
+    const businessHours = {
+      monday: [
+        { start: "08:00", end: "12:00" },
+        { start: "13:00", end: "17:00" },
+      ],
+    };
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, business_hours: businessHours } }],
+      services: [{ data: { duration_minutes: 30 } }],
+      appointments: [{ data: [] }],
+    });
+    const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    const expected = computeAvailableSlots(DATE_STR, 30, [], effectiveBusinessHours(businessHours));
+    assert.deepEqual(body.slots, expected);
+    for (const s of body.slots as string[]) {
+      const hm = s.slice(11, 16);
+      assert.ok(!(hm >= "12:00" && hm < "13:00"), `unexpected slot inside the lunch gap: ${s}`);
+    }
+  });
+
+  test("NULL business_hours falls back to the default Mon-Fri 07:00-17:00 hours, matching pre-Phase-4 behavior", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, business_hours: null } }],
+      services: [{ data: { duration_minutes: 60 } }],
+      appointments: [{ data: [] }],
+    });
+    const res = await GET(req(`date=${DATE_STR}&service=Haircut`));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.slots, computeAvailableSlots(DATE_STR, 60, [], DEFAULT_BUSINESS_HOURS));
+    assert.ok(body.slots.length > 0);
   });
 });
 

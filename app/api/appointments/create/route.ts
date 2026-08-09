@@ -9,6 +9,7 @@ import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSen
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
 import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDateStringFromInstant, type BusyRange } from "@/lib/availability";
+import { effectiveBusinessHours, type BusinessHours } from "@/lib/businessHours";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 import { isValidPriceCents } from "@/lib/money";
 import { dedupeEmployeeIds, deriveLegacyEmployeeId, validateEmployeeIdsInWorkspace, insertAssignments } from "@/lib/appointmentEmployees";
@@ -65,15 +66,20 @@ export async function POST(req: Request) {
       if (!capability.allowed) return capability.response;
     }
 
+    // Only the public branch ever needs the workspace's effective Business
+    // Hours -- owner/tester appointments are exempt (see isWithinBusinessHours
+    // call site below), so this stays undefined for that branch.
+    let businessHours: BusinessHours | undefined;
     if (isPublic) {
       const { data: settings } = await supabaseAdmin
         .from("company_settings")
-        .select("booking_enabled")
+        .select("booking_enabled, business_hours")
         .eq("workspace_id", workspaceId)
         .maybeSingle();
       if (!settings?.booking_enabled) {
         return json({ error: "Online booking is currently unavailable." }, 403);
       }
+      businessHours = effectiveBusinessHours(settings?.business_hours);
     }
 
     const body = await req.json();
@@ -166,7 +172,7 @@ export async function POST(req: Request) {
       }
       const endDate = new Date(startDate.getTime() + duration_minutes * 60000);
 
-      if (!isWithinBusinessHours(startDate, endDate)) {
+      if (!isWithinBusinessHours(startDate, endDate, businessHours!)) {
         return json({ error: "That time is outside business hours. Please choose another time." }, 400);
       }
 

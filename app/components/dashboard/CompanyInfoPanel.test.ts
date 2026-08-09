@@ -45,13 +45,15 @@ describe("prop wiring", () => {
 });
 
 describe("shared wording", () => {
-  test("exact approved wording constant, shared by both cards' notices", () => {
+  test("exact approved wording constant, shared by all three cards' notices", () => {
     assert.ok(source.includes(`const RESTRICTED_WORDING = "${APPROVED_WORDING}";`));
   });
 
-  test("both notice blocks render the exact same wording constant, not two divergent strings", () => {
+  // Phase 4: a third card (Business Hours) now shares this same approved
+  // wording constant too -- 2 -> 3 render sites, one per governed card.
+  test("all three notice blocks render the exact same wording constant, not divergent strings", () => {
     const wordingMatches = source.match(/\{RESTRICTED_WORDING\}/g) ?? [];
-    assert.equal(wordingMatches.length, 2, "one render site per card notice");
+    assert.equal(wordingMatches.length, 3, "one render site per card notice (Company Information, Business Hours, Automation)");
   });
 });
 
@@ -178,6 +180,173 @@ describe("post-launch correction: the three 'coming soon' functions (Logo upload
     const before = source.slice(Math.max(0, idx - 100), idx);
     assert.ok(before.includes("<button"));
     assert.ok(!before.includes("CapabilityGatedButton"));
+  });
+});
+
+describe("Phase 4: Business Hours card", () => {
+  test("the old preview-only Business Hours control (hoursDay/hoursStart/hoursEnd state, the no-op + Add hours button) is completely gone", () => {
+    assert.ok(!source.includes("hoursDay"));
+    assert.ok(!source.includes("hoursStart"));
+    assert.ok(!source.includes("hoursEnd"));
+    assert.ok(!/Business Hours <span className="font-normal text-slate-400">\(preview\)<\/span>/.test(source));
+  });
+
+  test("Business Hours is its own SettingsCard, distinct from Company Information and Automation", () => {
+    assert.ok(source.includes('id="business-hours-card"'));
+    assert.ok(source.includes('title="Business Hours"'));
+  });
+
+  test("renders all seven canonical weekdays via WEEKDAY_KEYS.map, not a hand-written list", () => {
+    assert.ok(source.includes("import { WEEKDAY_KEYS, type WeekdayKey } from \"@/lib/businessHours\";"));
+    assert.ok(source.includes("{WEEKDAY_KEYS.map((day) => {"));
+  });
+
+  test("each day has an Open/Closed toggle driven purely by range-array length -- no separate boolean state", () => {
+    assert.ok(source.includes("const isOpen = ranges.length > 0;"));
+    assert.ok(source.includes("{isOpen ? \"Open\" : \"Closed\"}"));
+  });
+
+  test("toggleDayOpen seeds a newly-opened day with the canonical 07:00-17:00 fallback range, and closes to an empty array", () => {
+    const fnStart = source.indexOf("function toggleDayOpen(day: WeekdayKey) {");
+    assert.notEqual(fnStart, -1);
+    const body = source.slice(fnStart, fnStart + 250);
+    assert.ok(body.includes('p[day].length > 0 ? [] : [{ start: "07:00", end: "17:00" }]'));
+  });
+
+  test("+ Add hours is functional -- appends a new range to the day's array, no longer a no-op button", () => {
+    const fnStart = source.indexOf("function addHoursRange(day: WeekdayKey) {");
+    assert.notEqual(fnStart, -1);
+    const body = source.slice(fnStart, fnStart + 150);
+    assert.ok(body.includes("[...p[day], { start:"));
+    assert.ok(source.includes("onClick={() => addHoursRange(day)}"));
+    assert.ok(source.includes("+ Add hours"));
+  });
+
+  test("Remove deletes exactly the clicked range, by index, from that day's array", () => {
+    const fnStart = source.indexOf("function removeHoursRange(day: WeekdayKey, index: number) {");
+    assert.notEqual(fnStart, -1);
+    const body = source.slice(fnStart, fnStart + 150);
+    assert.ok(body.includes("p[day].filter((_, i) => i !== index)"));
+    assert.ok(source.includes("onClick={() => removeHoursRange(day, index)}"));
+  });
+
+  test("Remove is only rendered for index > 0 -- the primary (first) range of an open day never shows a Remove control", () => {
+    const removeButtonIdx = source.indexOf("onClick={() => removeHoursRange(day, index)}");
+    assert.notEqual(removeButtonIdx, -1);
+    const before = source.slice(Math.max(0, removeButtonIdx - 200), removeButtonIdx);
+    assert.ok(/\{index > 0 && \(/.test(before), "the Remove button's render site must be guarded by index > 0");
+  });
+
+  test("closing an open day remains possible only via the Open/Closed toggle, never via a Remove control on the primary range", () => {
+    // removeHoursRange only ever filters by index -- it can shrink a day
+    // down to zero ADDITIONAL ranges, but the Remove button that calls it
+    // is structurally absent for index 0 (proven above), so it can never
+    // remove the primary range and can never itself produce a day with
+    // zero ranges (i.e. Closed). Only toggleDayOpen's ternary explicitly
+    // assigns a day's range array back to [].
+    const removeFnStart = source.indexOf("function removeHoursRange(day: WeekdayKey, index: number) {");
+    const removeFnBody = source.slice(removeFnStart, removeFnStart + 150);
+    assert.ok(!removeFnBody.includes(": []"), "removeHoursRange must never itself assign the empty-array Closed state");
+    assert.ok(source.includes('p[day].length > 0 ? [] : [{ start: "07:00", end: "17:00" }]'), "toggleDayOpen remains the sole place a day's ranges become []");
+  });
+
+  test("start/end time controls are <select>s of normalized HH:mm option values with friendly, unambiguous AM/PM labels -- never a native type=\"time\" input (which silently clipped its PM indicator) or a free-text field", () => {
+    assert.ok(!source.includes('type="time"'), "the clipped native time input must be fully removed");
+    assert.ok(source.includes("<select"));
+    assert.ok(source.includes("value={range.start}"));
+    assert.ok(source.includes("value={range.end}"));
+    assert.ok(source.includes('onChange={(e) => updateHoursRange(day, index, "start", e.target.value)}'));
+    assert.ok(source.includes('onChange={(e) => updateHoursRange(day, index, "end", e.target.value)}'));
+    assert.ok(source.includes("{BUSINESS_HOURS_TIME_OPTIONS.map((opt) => ("));
+    assert.match(source, /<option key=\{opt\.value\} value=\{opt\.value\}>\{opt\.label\}<\/option>/);
+  });
+
+  test("BUSINESS_HOURS_TIME_OPTIONS covers the full 24-hour day at 15-minute granularity, and every option.value is a normalized HH:mm string -- option.label (the only thing ever shown to the owner) is never what gets stored", () => {
+    const fnMatch = source.match(/function buildBusinessHoursTimeOptions\(\)[\s\S]*?\r?\n\}\r?\n/);
+    assert.ok(fnMatch, "buildBusinessHoursTimeOptions must be defined");
+    assert.ok(fnMatch![0].includes("for (let h = 0; h < 24; h++)"));
+    assert.ok(fnMatch![0].includes("m += 15"));
+    assert.ok(source.includes("const BUSINESS_HOURS_TIME_OPTIONS = buildBusinessHoursTimeOptions();"));
+  });
+
+  test("representative stored values render as the exact unambiguous friendly labels: 07:00 -> 7:00 AM, 17:00 -> 5:00 PM, 00:00 -> 12:00 AM, 12:00 -> 12:00 PM, 13:30 -> 1:30 PM, 23:45 -> 11:45 PM", () => {
+    // Faithful copy of buildBusinessHoursTimeOptions()'s logic (this .tsx
+    // file can't be imported by Node's test runner -- same constraint
+    // documented at the top of this file, and the same "faithful copy"
+    // convention lib/testSupport.ts's own fakeSanitizeCompanyName already
+    // establishes) -- proves the exact labeling behavior end-to-end, not
+    // just that the function is textually present.
+    function buildBusinessHoursTimeOptions(): { value: string; label: string }[] {
+      const options: { value: string; label: string }[] = [];
+      for (let h = 0; h < 24; h++) {
+        for (let m = 0; m < 60; m += 15) {
+          const value = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+          const ampm = h >= 12 ? "PM" : "AM";
+          const h12 = h % 12 || 12;
+          options.push({ value, label: `${h12}:${String(m).padStart(2, "0")} ${ampm}` });
+        }
+      }
+      return options;
+    }
+    const options = buildBusinessHoursTimeOptions();
+    const labelFor = (hhmm: string) => options.find((o) => o.value === hhmm)?.label;
+    assert.equal(labelFor("07:00"), "7:00 AM");
+    assert.equal(labelFor("17:00"), "5:00 PM");
+    assert.equal(labelFor("00:00"), "12:00 AM");
+    assert.equal(labelFor("12:00"), "12:00 PM");
+    assert.equal(labelFor("13:30"), "1:30 PM");
+    assert.equal(labelFor("23:45"), "11:45 PM");
+    // Every label is unambiguous -- always carries an explicit AM or PM marker.
+    assert.ok(options.every((o) => / (AM|PM)$/.test(o.label)));
+    assert.equal(options.length, 96, "24 hours x 4 quarter-hour slots");
+  });
+
+  test("Business Hours' Save Changes is a CapabilityGatedButton wired to allowed/onClick/disabled/ariaDescribedBy, guarded independently of Company Information and Automation", () => {
+    const idx = source.indexOf("onClick={handleSaveHours}");
+    assert.notEqual(idx, -1);
+    const block = source.slice(Math.max(0, idx - 150), idx + 100);
+    assert.match(block, /<CapabilityGatedButton/);
+    assert.match(block, /allowed=\{canMutateOperationalData\}/);
+    assert.match(block, /disabled=\{hoursSaving \|\| !hoursDirty\}/);
+    assert.match(block, /ariaDescribedBy=\{HOURS_NOTICE_ID\}/);
+  });
+
+  test("handleSaveHours guards on canMutateOperationalData as its first statement, before the fetch call", () => {
+    const fnStart = source.indexOf("async function handleSaveHours()");
+    assert.notEqual(fnStart, -1);
+    const braceIdx = source.indexOf("{", fnStart);
+    const afterBrace = source.slice(braceIdx + 1, braceIdx + 200);
+    const firstNonBlank = afterBrace.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+    assert.equal(firstNonBlank, "if (!canMutateOperationalData) return;");
+  });
+
+  test("handleSaveHours posts { business_hours: businessHours } to the existing company settings route -- no new API route", () => {
+    const fnStart = source.indexOf("async function handleSaveHours()");
+    const fnEnd = source.indexOf("async function handleSave()");
+    const body = source.slice(fnStart, fnEnd);
+    assert.ok(body.includes('fetch("/api/settings/company"'));
+    assert.ok(body.includes("body: JSON.stringify({ business_hours: businessHours })"));
+    assert.ok(body.includes("setBusinessHoursSaved(businessHours);"));
+  });
+
+  test("Business Hours' own notice id is declared, unique, and distinct from Company Information's and Automation's", () => {
+    const declared = source.match(/const HOURS_NOTICE_ID = "([^"]+)";/)?.[1];
+    assert.equal(declared, "company-hours-restricted-notice");
+    assert.notEqual(declared, "company-info-restricted-notice");
+    assert.notEqual(declared, "company-automation-restricted-notice");
+    const matches = source.match(/id=\{HOURS_NOTICE_ID\}/g) ?? [];
+    assert.equal(matches.length, 1);
+  });
+
+  test("the load effect populates businessHours/businessHoursSaved from the server's already-effective s.business_hours, defensively coercing each day to an array", () => {
+    assert.ok(source.includes("const dayRanges = s.business_hours?.[day];"));
+    assert.ok(source.includes("nextHours[day] = Array.isArray(dayRanges) ? dayRanges : [];"));
+    assert.ok(source.includes("setBusinessHours(nextHours);"));
+    assert.ok(source.includes("setBusinessHoursSaved(nextHours);"));
+  });
+
+  test("EMPTY_HOURS (the pre-load default) has every weekday closed -- never a guessed set of open hours before the server responds", () => {
+    assert.ok(source.includes("Object.fromEntries(WEEKDAY_KEYS.map((d) => [d, [] as TimeRange[]]))"));
   });
 });
 

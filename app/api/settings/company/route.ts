@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
+import { effectiveBusinessHours, normalizeBusinessHours } from "@/lib/businessHours";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -56,7 +57,14 @@ export async function GET() {
       timezoneLabel: "Eastern Time (US & Canada) — GMT-04:00",
     };
 
-    return json({ ok: true, settings: data, status });
+    // Phase 4: effective/current Business Hours -- the saved value if
+    // present, otherwise the same Mon-Fri 07:00-17:00 fallback the app has
+    // always effectively used (see lib/businessHours.ts), so a workspace
+    // that has never saved Business Hours sees the exact behavior already
+    // in effect for its public-booking availability.
+    const settings = data ? { ...data, business_hours: effectiveBusinessHours(data.business_hours) } : { business_hours: effectiveBusinessHours(null) };
+
+    return json({ ok: true, settings, status });
   } catch (e: any) {
     console.error("COMPANY_SETTINGS_GET_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);
@@ -89,6 +97,11 @@ export async function POST(req: Request) {
     }
     if (typeof body.notifications_enabled === "boolean") {
       fields.notifications_enabled = body.notifications_enabled;
+    }
+    if (body.business_hours !== undefined) {
+      const validation = normalizeBusinessHours(body.business_hours);
+      if (!validation.ok) return json({ error: validation.error }, 400);
+      fields.business_hours = validation.value;
     }
 
     const { data: existing } = await supabaseAdmin

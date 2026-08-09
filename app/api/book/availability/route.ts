@@ -8,6 +8,7 @@ import {
   todayBusinessDate,
   type BusyRange,
 } from "@/lib/availability";
+import { effectiveBusinessHours } from "@/lib/businessHours";
 import { REAL_WORKSPACE_ID } from "@/lib/workspace";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
@@ -30,13 +31,15 @@ export async function GET(req: Request) {
 
     const { data: settings } = await supabaseAdmin
       .from("company_settings")
-      .select("booking_enabled")
+      .select("booking_enabled, business_hours")
       .eq("workspace_id", REAL_WORKSPACE_ID)
       .maybeSingle();
 
     if (!settings?.booking_enabled) {
       return json({ error: "Online booking is currently unavailable." }, 403);
     }
+
+    const businessHours = effectiveBusinessHours(settings?.business_hours);
 
     const url = new URL(req.url);
     const dateStr = (url.searchParams.get("date") || "").trim();
@@ -85,7 +88,7 @@ export async function GET(req: Request) {
       return { start: busyStart, end: busyEnd };
     });
 
-    const slots = computeAvailableSlots(dateStr, svc.duration_minutes || 60, busy);
+    const slots = computeAvailableSlots(dateStr, svc.duration_minutes || 60, busy, businessHours);
     return json({ slots });
   } catch (e: any) {
     console.error("BOOK_AVAILABILITY_ERROR", e);

@@ -15,6 +15,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
+import { DEFAULT_BUSINESS_HOURS } from "../../../../lib/businessHours.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
 let sessionToReturn: unknown = { role: "none" };
@@ -286,5 +287,175 @@ describe("Phase 5.7C: notifications_enabled fail-closed persistence", () => {
     assert.ok(!source.includes("@/lib/notify"));
     assert.ok(!source.includes("sendEmail"));
     assert.ok(!source.includes("sendSms"));
+  });
+});
+
+describe("Phase 4: Business Hours", () => {
+  describe("GET returns effective business_hours", () => {
+    test("a workspace with no saved business_hours (NULL/absent) gets the Mon-Fri 07:00-17:00 fallback", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true, business_hours: null } }],
+        employees: [{ count: 3 }, { count: 2 }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await GET();
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.settings.business_hours, DEFAULT_BUSINESS_HOURS);
+    });
+
+    test("a workspace with saved business_hours gets back its own effective (normalized) value", async () => {
+      const saved = { tuesday: [{ start: "09:00", end: "18:00" }] };
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true, business_hours: saved } }],
+        employees: [{ count: 3 }, { count: 2 }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await GET();
+      const body = await res.json();
+      assert.deepEqual(body.settings.business_hours.tuesday, [{ start: "09:00", end: "18:00" }]);
+      assert.deepEqual(body.settings.business_hours.monday, []);
+    });
+
+    test("no company_settings row at all still returns the default fallback, not a crash", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: null }],
+        employees: [{ count: 0 }, { count: 0 }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await GET();
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.settings.business_hours, DEFAULT_BUSINESS_HOURS);
+    });
+  });
+
+  describe("POST persists valid business_hours", () => {
+    function lastCompanySettingsWrite() {
+      const writes = writeCalls(currentFake.calls).filter((c) => c.table === "company_settings");
+      return writes[writes.length - 1];
+    }
+
+    test("a valid split-hours payload is normalized and persisted", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(
+        req("POST", {
+          business_hours: {
+            monday: [
+              { start: "08:00", end: "12:00" },
+              { start: "13:00", end: "17:00" },
+            ],
+          },
+        })
+      );
+      assert.equal(res.status, 200);
+      const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+      assert.deepEqual(fields.business_hours, {
+        monday: [
+          { start: "08:00", end: "12:00" },
+          { start: "13:00", end: "17:00" },
+        ],
+        tuesday: [],
+        wednesday: [],
+        thursday: [],
+        friday: [],
+        saturday: [],
+        sunday: [],
+      });
+    });
+
+    test("all seven days Closed is accepted and persisted as empty arrays", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const allClosed = Object.fromEntries(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((d) => [d, []]));
+      const res = await POST(req("POST", { business_hours: allClosed }));
+      assert.equal(res.status, 200);
+      const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+      assert.deepEqual(fields.business_hours, allClosed);
+    });
+
+    test("an invalid payload (overlapping ranges) is rejected with 400, before any write", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(
+        req("POST", {
+          business_hours: {
+            monday: [
+              { start: "08:00", end: "13:00" },
+              { start: "12:00", end: "17:00" },
+            ],
+          },
+        })
+      );
+      assert.equal(res.status, 400);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table === "company_settings"), []);
+    });
+
+    test("an invalid payload (bad HH:mm) is rejected with 400", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(req("POST", { business_hours: { monday: [{ start: "8:00 AM", end: "5:00 PM" }] } }));
+      assert.equal(res.status, 400);
+    });
+
+    test("omitting business_hours entirely from the request leaves it untouched -- an unrelated Company Info save cannot change it", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(req("POST", { company_name: "Acme Cleaning" }));
+      assert.equal(res.status, 200);
+      const fields = lastCompanySettingsWrite().args[0] as Record<string, unknown>;
+      assert.ok(!("business_hours" in fields));
+    });
+
+    test("workspace isolation: saving business_hours scopes the write to the caller's own workspace_id", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      await POST(req("POST", { business_hours: { monday: [{ start: "08:00", end: "17:00" }] } }));
+      const workspaceScopedEq = currentFake.calls.some(
+        (c) => c.table === "company_settings" && c.method === "eq" && c.args[0] === "workspace_id" && c.args[1] === REAL_WORKSPACE_ID
+      );
+      assert.ok(workspaceScopedEq, "Company A's Business Hours write must be scoped to Company A's own workspace_id, never a request-supplied one");
+    });
+
+    test("a spoofed workspace_id in the request body cannot redirect a Business Hours save to another workspace (Company A cannot affect Company B)", async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      await POST(req("POST", { business_hours: { monday: [{ start: "08:00", end: "17:00" }] }, workspace_id: "attacker-ws" }));
+      const scopedToAttacker = currentFake.calls.some((c) => c.table === "company_settings" && c.method === "eq" && c.args[1] === "attacker-ws");
+      assert.equal(scopedToAttacker, false);
+    });
   });
 });

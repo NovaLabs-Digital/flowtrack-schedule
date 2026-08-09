@@ -835,6 +835,82 @@ describe("POST /api/appointments/create -- public booking branch entitlement gat
   });
 });
 
+describe("Phase 4: Business Hours enforcement on public create (owner/tester remain exempt)", () => {
+  test("public booking inside the workspace's saved business hours succeeds", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, business_hours: { monday: [{ start: "08:00", end: "18:00" }] } } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      clients: [
+        { data: null },
+        { data: null },
+        { data: { id: "new-client-1" } },
+        { data: { name: "Jane Public", email: "jane@public.example", phone: "+15559876543", auto_email: true, auto_sms: true } },
+      ],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody()));
+    assert.equal(res.status, 200);
+  });
+
+  test("public booking on a day the workspace has marked Closed is rejected with 400, before any client or appointment write", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, business_hours: { monday: [] } } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody()));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "That time is outside business hours. Please choose another time." });
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "clients" || c.table === "appointments"), []);
+  });
+
+  test("public booking outside the workspace's saved hours (before opening) is rejected with 400", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, business_hours: { monday: [{ start: "12:00", end: "17:00" }] } } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+    });
+    sessionToReturn = { role: "none" };
+    // publicBody()'s default scheduled_for is 2026-08-03T14:00:00.000Z, 10:00am ET -- before the 12:00 open.
+    const res = await POST(req(publicBody()));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "That time is outside business hours. Please choose another time." });
+  });
+
+  test("public booking that starts within the saved range but crosses its end is rejected with 400", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true, business_hours: { monday: [{ start: "08:00", end: "12:00" }] } } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 90 } }],
+    });
+    sessionToReturn = { role: "none" };
+    // 11:00am ET start + 90 minutes = 12:30pm ET, crossing the 12:00 close.
+    const res = await POST(req(publicBody({ scheduled_for: "2026-08-03T15:00:00.000Z" })));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "That time is outside business hours. Please choose another time." });
+  });
+
+  test("owner-created appointments remain exempt from Business Hours entirely -- a time far outside any plausible saved range still succeeds", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    // 10:00pm ET -- well outside any plausible saved business hours. No
+    // company_settings fixture is even queued for this branch, proving the
+    // owner path never consults Business Hours at all (it would throw
+    // FAKE_SUPABASE_NO_QUEUED_RESPONSE if it tried).
+    const res = await POST(req(authBody({ scheduled_for: "2026-08-04T02:00:00.000Z", notify_channel: "none" })));
+    assert.equal(res.status, 200);
+  });
+});
+
 describe("notification behavior is preserved exactly once entitled, on both branches", () => {
   test("authenticated: a provider failure on one channel is isolated -- the other channel still attempts, mutation still succeeds", async () => {
     resetFixtures({

@@ -1,16 +1,8 @@
 import { DateTime } from "luxon";
 import { BUSINESS_TZ } from "@/lib/timezone";
+import { rangesForDate, type BusinessHours } from "@/lib/businessHours";
 
-// v1 defaults for Public Booking. There is no per-business hours schema yet
-// — adding one is a database change, deliberately deferred to a future
-// sprint rather than done here. These match the same Monday-Friday /
-// 7:00 AM-5:00 PM values already shown as the (currently preview-only)
-// Business Hours default in Settings, so the number shown to customers
-// matches the number shown to the owner.
-export const BUSINESS_OPEN_HOUR = 7; // 7:00 AM
-export const BUSINESS_CLOSE_HOUR = 17; // 5:00 PM
 export const SLOT_MINUTES = 30;
-const OPEN_WEEKDAYS = new Set([1, 2, 3, 4, 5]); // Luxon weekday: 1=Mon..7=Sun
 
 export type BusyRange = { start: Date; end: Date };
 
@@ -26,9 +18,8 @@ function dayStart(dateStr: string): DateTime {
   return DateTime.fromISO(dateStr, { zone: BUSINESS_TZ }).startOf("day");
 }
 
-export function isOpenDay(dateStr: string): boolean {
-  const d = dayStart(dateStr);
-  return d.isValid && OPEN_WEEKDAYS.has(d.weekday);
+export function isOpenDay(dateStr: string, hours: BusinessHours): boolean {
+  return rangesForDate(hours, dateStr).length > 0;
 }
 
 // The real UTC instant bounds of a business-local calendar date — use this
@@ -41,33 +32,41 @@ export function businessDayBounds(dateStr: string): { start: Date; end: Date } {
 }
 
 // All candidate slot start times for a given business-local calendar date,
-// at SLOT_MINUTES granularity, that fit the given service duration before
-// closing, aren't already in the past, and don't overlap any busy range.
+// at SLOT_MINUTES granularity, that fit the service duration entirely
+// within one of the workspace's saved open ranges for that weekday, aren't
+// already in the past, and don't overlap any busy range. A slot never
+// spans two ranges -- e.g. a split day of 08:00-12:00 / 13:00-17:00 never
+// offers a slot crossing the 12:00-13:00 gap.
 export function computeAvailableSlots(
   dateStr: string,
   durationMinutes: number,
-  busy: BusyRange[]
+  busy: BusyRange[],
+  hours: BusinessHours
 ): string[] {
-  if (!isOpenDay(dateStr)) return [];
-
   const day = dayStart(dateStr);
   if (!day.isValid) return [];
 
-  const closeTime = day.set({ hour: BUSINESS_CLOSE_HOUR });
+  const ranges = rangesForDate(hours, dateStr);
   const now = DateTime.now().setZone(BUSINESS_TZ);
 
   const slots: string[] = [];
-  let cursor = day.set({ hour: BUSINESS_OPEN_HOUR });
+  for (const range of ranges) {
+    const [openHour, openMinute] = range.start.split(":").map(Number);
+    const [closeHour, closeMinute] = range.end.split(":").map(Number);
+    const rangeOpen = day.set({ hour: openHour, minute: openMinute });
+    const rangeClose = day.set({ hour: closeHour, minute: closeMinute });
 
-  while (cursor.plus({ minutes: durationMinutes }) <= closeTime) {
-    const slotStart = cursor.toJSDate();
-    const slotEnd = cursor.plus({ minutes: durationMinutes }).toJSDate();
+    let cursor = rangeOpen;
+    while (cursor.plus({ minutes: durationMinutes }) <= rangeClose) {
+      const slotStart = cursor.toJSDate();
+      const slotEnd = cursor.plus({ minutes: durationMinutes }).toJSDate();
 
-    const inPast = cursor <= now;
-    const overlaps = busy.some((b) => slotStart < b.end && slotEnd > b.start);
+      const inPast = cursor <= now;
+      const overlaps = busy.some((b) => slotStart < b.end && slotEnd > b.start);
 
-    if (!inPast && !overlaps) slots.push(cursor.toISO()!);
-    cursor = cursor.plus({ minutes: SLOT_MINUTES });
+      if (!inPast && !overlaps) slots.push(cursor.toISO()!);
+      cursor = cursor.plus({ minutes: SLOT_MINUTES });
+    }
   }
 
   return slots;
@@ -80,11 +79,23 @@ export function isSlotAvailable(start: Date, end: Date, busy: BusyRange[]): bool
   return !busy.some((b) => start < b.end && end > b.start);
 }
 
-export function isWithinBusinessHours(start: Date, end: Date): boolean {
+// True only if [start, end) fits entirely inside a single one of the
+// workspace's saved open ranges for start's business-local weekday -- never
+// true for a range that starts within hours but crosses into a closed gap
+// or past closing.
+export function isWithinBusinessHours(start: Date, end: Date, hours: BusinessHours): boolean {
   const s = DateTime.fromJSDate(start).setZone(BUSINESS_TZ);
   const e = DateTime.fromJSDate(end).setZone(BUSINESS_TZ);
-  if (!s.isValid || !e.isValid || !OPEN_WEEKDAYS.has(s.weekday)) return false;
-  const dayOpen = s.startOf("day").set({ hour: BUSINESS_OPEN_HOUR });
-  const dayClose = s.startOf("day").set({ hour: BUSINESS_CLOSE_HOUR });
-  return s >= dayOpen && e <= dayClose;
+  if (!s.isValid || !e.isValid) return false;
+
+  const dateStr = s.toFormat("yyyy-MM-dd");
+  const ranges = rangesForDate(hours, dateStr);
+
+  return ranges.some((range) => {
+    const [openHour, openMinute] = range.start.split(":").map(Number);
+    const [closeHour, closeMinute] = range.end.split(":").map(Number);
+    const rangeOpen = s.startOf("day").set({ hour: openHour, minute: openMinute });
+    const rangeClose = s.startOf("day").set({ hour: closeHour, minute: closeMinute });
+    return s >= rangeOpen && e <= rangeClose;
+  });
 }

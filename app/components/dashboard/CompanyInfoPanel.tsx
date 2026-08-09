@@ -5,6 +5,7 @@ import SettingsCard, { DirtyHint, PreviewPill } from "@/app/components/dashboard
 import SettingsToggle from "@/app/components/dashboard/SettingsToggle";
 import CompanyStatusStrip from "@/app/components/dashboard/CompanyStatusStrip";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { WEEKDAY_KEYS, type WeekdayKey } from "@/lib/businessHours";
 
 // Phase 5.5E-E1F: two separate logical mutation-control areas in this
 // panel -- Company Information and Automation are independent cards with
@@ -15,25 +16,56 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 // earlier phases.
 const COMPANY_NOTICE_ID = "company-info-restricted-notice";
 const AUTOMATION_NOTICE_ID = "company-automation-restricted-notice";
+// Phase 4: Business Hours is its own card (its own question -- "how does my
+// business operate" -- distinct from Company Information's "who are we"),
+// so it gets its own notice id, matching the Company Information/Automation
+// precedent above.
+const HOURS_NOTICE_ID = "company-hours-restricted-notice";
 const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 type CompanyForm = { company_name: string; phone: string; email: string; address: string; city: string; state: string; zip: string };
 type Status = { emailConfigured: boolean; smsConfigured: boolean; activeStaff: number; totalStaff: number; timezoneLabel: string };
 
+type TimeRange = { start: string; end: string };
+type BusinessHoursForm = Record<WeekdayKey, TimeRange[]>;
+
 const EMPTY: CompanyForm = { company_name: "", phone: "", email: "", address: "", city: "", state: "", zip: "" };
+const EMPTY_HOURS: BusinessHoursForm = Object.fromEntries(WEEKDAY_KEYS.map((d) => [d, [] as TimeRange[]])) as BusinessHoursForm;
 const inputCls =
   "w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
-// Same field styling as inputCls but without w-full, for inputs that sit
-// side-by-side in a row (e.g. Business Hours' time range) — kept as a
-// separate class string rather than string-concatenating "w-24" onto
-// inputCls, since two same-specificity Tailwind utility classes race on
-// stylesheet order, not on their order in the className string.
-const inputInlineCls =
-  "rounded-xl border border-slate-300 px-3 py-2 text-sm w-24 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
 const selectCls =
   "rounded-xl border border-slate-300 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
+// A native time-of-day input at a compact width silently clips its AM/PM
+// segment on this browser/OS combination -- 17:00 visibly rendered as
+// "05:00" with no PM indicator, indistinguishable from 05:00. A <select> of
+// plain option text can't clip that way, so Business Hours' start/end
+// controls use one (see BUSINESS_HOURS_TIME_OPTIONS below), matching the
+// same value="HH:mm"/label="h:mm AM/PM" pattern AppointmentModal.tsx's own
+// buildTimeSlots() already establishes for its Time In/Time Out selects --
+// wide enough ("12:00 AM" et al.) to never truncate its own label either.
+const timeSelectCls =
+  "rounded-xl border border-slate-300 px-2 py-2 text-sm bg-white w-[7.5rem] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500";
 const primaryBtnCls =
   "rounded-xl bg-blue-600 px-5 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-40 transition-colors";
+
+// Full 24-hour range (Business Hours can span any wall-clock time, unlike
+// AppointmentModal's 6am-8pm appointment-scheduling window) at the same
+// 15-minute granularity as that existing precedent. option.value is always
+// the normalized "HH:mm" string that gets stored -- option.label is the
+// friendly, unambiguous "h:mm AM/PM" text the owner actually sees.
+function buildBusinessHoursTimeOptions(): { value: string; label: string }[] {
+  const options: { value: string; label: string }[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 15) {
+      const value = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      const ampm = h >= 12 ? "PM" : "AM";
+      const h12 = h % 12 || 12;
+      options.push({ value, label: `${h12}:${String(m).padStart(2, "0")} ${ampm}` });
+    }
+  }
+  return options;
+}
+const BUSINESS_HOURS_TIME_OPTIONS = buildBusinessHoursTimeOptions();
 
 function initials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
@@ -130,9 +162,16 @@ export default function CompanyInfoPanel({
   // for this pass) — interactive so the page doesn't look broken, but not
   // included in the Save payload. See final report for what's deferred.
   const [website, setWebsite] = useState("");
-  const [hoursDay, setHoursDay] = useState("Monday - Friday");
-  const [hoursStart, setHoursStart] = useState("7:00 AM");
-  const [hoursEnd, setHoursEnd] = useState("5:00 PM");
+
+  // Phase 4: Business Hours -- real, persisted (company_settings.business_hours),
+  // its own card with its own Save, matching the Automation card's
+  // independent-save precedent above. Starts all-Closed (EMPTY_HOURS) until
+  // the load effect below replaces it with the server's effective value
+  // (the saved value, or the Mon-Fri 07:00-17:00 fallback) -- never a guess.
+  const [businessHours, setBusinessHours] = useState<BusinessHoursForm>(EMPTY_HOURS);
+  const [businessHoursSaved, setBusinessHoursSaved] = useState<BusinessHoursForm>(EMPTY_HOURS);
+  const [hoursSaving, setHoursSaving] = useState(false);
+  const [hoursMsg, setHoursMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Company Preferences — preview only, nothing persisted.
   const [defaultSlot, setDefaultSlot] = useState("30 minutes");
@@ -170,6 +209,17 @@ export default function CompanyInfoPanel({
           setBookingSaved(Boolean(s.booking_enabled));
           setNotificationsEnabled(Boolean(s.notifications_enabled));
           setNotificationsSaved(Boolean(s.notifications_enabled));
+
+          // s.business_hours is always the server's already-effective value
+          // (saved, or the Mon-Fri 07:00-17:00 fallback) -- coerced
+          // defensively here the same way every other loaded field above is.
+          const nextHours = {} as BusinessHoursForm;
+          for (const day of WEEKDAY_KEYS) {
+            const dayRanges = s.business_hours?.[day];
+            nextHours[day] = Array.isArray(dayRanges) ? dayRanges : [];
+          }
+          setBusinessHours(nextHours);
+          setBusinessHoursSaved(nextHours);
         }
         if (data.status) setStatus(data.status);
       })
@@ -181,6 +231,53 @@ export default function CompanyInfoPanel({
 
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const automationDirty = bookingEnabled !== bookingSaved || notificationsEnabled !== notificationsSaved;
+  const hoursDirty = JSON.stringify(businessHours) !== JSON.stringify(businessHoursSaved);
+
+  // Toggling a day open seeds it with the canonical Mon-Fri fallback range
+  // (07:00-17:00) so the UI never shows "Open" with zero ranges -- Closed is
+  // represented purely as an empty array, never a separate boolean.
+  function toggleDayOpen(day: WeekdayKey) {
+    setBusinessHours((p) => ({
+      ...p,
+      [day]: p[day].length > 0 ? [] : [{ start: "07:00", end: "17:00" }],
+    }));
+  }
+  function updateHoursRange(day: WeekdayKey, index: number, field: "start" | "end", value: string) {
+    setBusinessHours((p) => ({
+      ...p,
+      [day]: p[day].map((r, i) => (i === index ? { ...r, [field]: value } : r)),
+    }));
+  }
+  function addHoursRange(day: WeekdayKey) {
+    setBusinessHours((p) => ({ ...p, [day]: [...p[day], { start: "09:00", end: "17:00" }] }));
+  }
+  function removeHoursRange(day: WeekdayKey, index: number) {
+    setBusinessHours((p) => ({ ...p, [day]: p[day].filter((_, i) => i !== index) }));
+  }
+
+  async function handleSaveHours() {
+    if (!canMutateOperationalData) return;
+    setHoursSaving(true);
+    setHoursMsg(null);
+    try {
+      const res = await fetch("/api/settings/company", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ business_hours: businessHours }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setHoursMsg({ type: "error", text: data?.error || "Save failed." });
+        return;
+      }
+      setBusinessHoursSaved(businessHours);
+      setHoursMsg({ type: "success", text: "Saved." });
+    } catch {
+      setHoursMsg({ type: "error", text: "Network error. Please try again." });
+    } finally {
+      setHoursSaving(false);
+    }
+  }
 
   async function handleSave() {
     // Defense-in-depth: the server route this reaches already enforces this
@@ -338,35 +435,6 @@ export default function CompanyInfoPanel({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                Business Hours <span className="font-normal text-slate-400">(preview)</span>
-              </label>
-              <div className="flex items-center gap-2 flex-wrap">
-                <select value={hoursDay} onChange={(e) => setHoursDay(e.target.value)} className={selectCls}>
-                  <option>Monday - Friday</option>
-                  <option>Every day</option>
-                  <option>Monday - Saturday</option>
-                </select>
-                <input
-                  type="text"
-                  value={hoursStart}
-                  onChange={(e) => setHoursStart(e.target.value)}
-                  className={inputInlineCls}
-                />
-                <span className="text-slate-400 text-sm">&ndash;</span>
-                <input
-                  type="text"
-                  value={hoursEnd}
-                  onChange={(e) => setHoursEnd(e.target.value)}
-                  className={inputInlineCls}
-                />
-              </div>
-              <button type="button" className="mt-1.5 text-xs font-medium text-blue-600 hover:text-blue-700">
-                + Add hours
-              </button>
-            </div>
-
-            <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Email</label>
               <input
                 type="email"
@@ -426,6 +494,120 @@ export default function CompanyInfoPanel({
                 Retry
               </button>
             )}
+          </div>
+        )}
+      </SettingsCard>
+
+      <SettingsCard
+        id="business-hours-card"
+        title="Business Hours"
+        helper="Set when your business is open. This controls what times customers can request online — it never blocks you from scheduling an appointment yourself."
+        headerRight={
+          <CapabilityGatedButton
+            allowed={canMutateOperationalData}
+            disabled={hoursSaving || !hoursDirty}
+            onClick={handleSaveHours}
+            ariaDescribedBy={HOURS_NOTICE_ID}
+            className={primaryBtnCls}
+          >
+            {hoursSaving ? "Saving..." : "Save Changes"}
+          </CapabilityGatedButton>
+        }
+      >
+        <div className="divide-y divide-slate-100">
+          {WEEKDAY_KEYS.map((day) => {
+            const ranges = businessHours[day];
+            const isOpen = ranges.length > 0;
+            return (
+              <div key={day} className="flex flex-col sm:flex-row sm:items-start gap-2 py-3">
+                <div className="flex items-center gap-3 sm:w-36 shrink-0">
+                  <span className="text-sm font-medium text-slate-800 capitalize">{day}</span>
+                  <button
+                    type="button"
+                    onClick={() => toggleDayOpen(day)}
+                    disabled={!canMutateOperationalData}
+                    className={[
+                      "text-[11px] font-medium px-2 py-0.5 rounded-full transition-colors disabled:opacity-50",
+                      isOpen ? "text-emerald-700 bg-emerald-50" : "text-slate-500 bg-slate-100",
+                    ].join(" ")}
+                  >
+                    {isOpen ? "Open" : "Closed"}
+                  </button>
+                </div>
+                {isOpen && (
+                  <div className="flex-1 flex flex-col gap-2">
+                    {ranges.map((range, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <select
+                          value={range.start}
+                          onChange={(e) => updateHoursRange(day, index, "start", e.target.value)}
+                          disabled={!canMutateOperationalData}
+                          className={timeSelectCls}
+                        >
+                          {BUSINESS_HOURS_TIME_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                        <span className="text-slate-400 text-sm">&ndash;</span>
+                        <select
+                          value={range.end}
+                          onChange={(e) => updateHoursRange(day, index, "end", e.target.value)}
+                          disabled={!canMutateOperationalData}
+                          className={timeSelectCls}
+                        >
+                          {BUSINESS_HOURS_TIME_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                        {/* The primary (first) range closes via the Open/Closed
+                            control above, never via Remove -- Remove only
+                            applies to additional ranges created through
+                            + Add hours, so it never appears for index 0. */}
+                        {index > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => removeHoursRange(day, index)}
+                            disabled={!canMutateOperationalData}
+                            className="text-xs font-medium text-slate-400 hover:text-rose-600 disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => addHoursRange(day)}
+                      disabled={!canMutateOperationalData}
+                      className="self-start text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                    >
+                      + Add hours
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center justify-between pt-1">
+          <DirtyHint dirty={hoursDirty} />
+        </div>
+
+        {!canMutateOperationalData && (
+          <div id={HOURS_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            {RESTRICTED_WORDING}
+          </div>
+        )}
+
+        {hoursMsg && (
+          <div
+            className={[
+              "rounded-xl border px-3 py-2 text-xs",
+              hoursMsg.type === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700",
+            ].join(" ")}
+          >
+            {hoursMsg.text}
           </div>
         )}
       </SettingsCard>
