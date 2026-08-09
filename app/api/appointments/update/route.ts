@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, NotifyChannel } from "@/lib/notify";
+import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, getCompanyName, NotifyChannel } from "@/lib/notify";
 import { changeTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
@@ -323,11 +323,12 @@ export async function PATCH(req: Request) {
         if (!apptRes.error && !clientRes.error) {
           const { name, email, phone, auto_email, auto_sms } = clientRes.data;
           const { service_type, scheduled_for } = apptRes.data;
-          const t = changeTemplates(name, service_type, scheduled_for);
+          const companyName = await getCompanyName(workspaceId);
+          const t = changeTemplates(name, service_type, scheduled_for, companyName);
 
           if (email && auto_email && shouldSend(notify_channel, "email")) {
             try {
-              const providerId = await sendEmail(email, t.email.subject, t.email.body, workspaceId);
+              const providerId = await sendEmail(email, t.email.subject, t.email.body, workspaceId, companyName);
               await recordMessageSent({
                 appointment_id, channel: "email", kind: "update", workspace_id: workspaceId,
                 to_value: email, body: t.email.body, provider_id: providerId,

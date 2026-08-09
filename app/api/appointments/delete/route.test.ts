@@ -47,7 +47,10 @@ mock.module("@/lib/notify", {
     shouldSend: (...args: [string | undefined, "email" | "sms"]) => currentNotify.namedExports.shouldSend(...args),
     describeProviderError: (...args: [unknown]) => currentNotify.namedExports.describeProviderError(...args),
     recordMessageSent: (...args: [unknown]) => currentNotify.namedExports.recordMessageSent(...(args as [never])),
-    sendEmail: (...args: [string, string, string, string]) => currentNotify.namedExports.sendEmail(...args),
+    sanitizeCompanyName: (...args: [string | null | undefined]) => currentNotify.namedExports.sanitizeCompanyName(...args),
+    getCompanyName: (...args: [string]) => currentNotify.namedExports.getCompanyName(...args),
+    getCompanyIdentity: (...args: [string]) => currentNotify.namedExports.getCompanyIdentity(...args),
+    sendEmail: (...args: [string, string, string, string, string?]) => currentNotify.namedExports.sendEmail(...args),
     sendSms: (...args: [string, string, string]) => currentNotify.namedExports.sendSms(...args),
   },
 });
@@ -314,6 +317,97 @@ describe("notification behavior is preserved exactly once entitled", () => {
     assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
     assert.equal(currentNotify.emailCalls.length, 1, "email was still attempted");
     assert.equal(currentNotify.smsCalls.length, 1, "sms still attempted despite the email failure");
+  });
+});
+
+describe("owner-initiated cancellation notifications identify the workspace's own business", () => {
+  test("cancellation email uses the workspace's company name as the From display name and sign-off", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    currentNotify.setCompanyName("Sunshine Cleaning Co.");
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls[0].fromDisplayName, "Sunshine Cleaning Co.");
+    assert.ok(currentNotify.emailCalls[0].text.includes("Sunshine Cleaning Co."));
+    assert.ok(!currentNotify.emailCalls[0].text.includes("ScheduleFlowTrack"));
+  });
+
+  test("cancellation SMS body identifies the business by name", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    currentNotify.setCompanyName("Sunshine Cleaning Co.");
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    const body = currentNotify.smsCalls[0].body;
+    assert.ok(body.startsWith("Sunshine Cleaning Co.:"));
+    assert.equal(body.split("Sunshine Cleaning Co.").length - 1, 1, "the business name must appear exactly once -- no duplicate trailing sign-off");
+    assert.ok(!body.includes("Thank you,"), "the trailing sign-off line was removed for SMS specifically (kept for email)");
+  });
+});
+
+describe("owner-initiated cancellation notifications only advertise public booking when the workspace has it enabled", () => {
+  test("booking_enabled: true -> the CTA/link is present in both email and SMS", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    currentNotify.setBookingEnabled(true);
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.ok(currentNotify.emailCalls[0].text.includes("Need another appointment?"));
+    assert.ok(currentNotify.emailCalls[0].text.includes("/book"));
+    assert.ok(currentNotify.smsCalls[0].body.includes("Need another appointment?"));
+    assert.ok(currentNotify.smsCalls[0].body.includes("/book"));
+  });
+
+  test("booking_enabled: false -> the CTA/link is entirely absent from both email and SMS", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    currentNotify.setBookingEnabled(false);
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.ok(!currentNotify.emailCalls[0].text.includes("Need another appointment?"));
+    assert.ok(!currentNotify.emailCalls[0].text.includes("/book"));
+    assert.ok(!currentNotify.smsCalls[0].body.includes("Need another appointment?"));
+    assert.ok(!currentNotify.smsCalls[0].body.includes("/book"));
+  });
+
+  test("booking status missing/undetermined -> fails closed, CTA/link absent (never assume booking is enabled)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt() }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    // Deliberately not calling setBookingEnabled -- fail-closed default.
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 200);
+    assert.ok(!currentNotify.emailCalls[0].text.includes("/book"));
+    assert.ok(!currentNotify.smsCalls[0].body.includes("/book"));
   });
 });
 

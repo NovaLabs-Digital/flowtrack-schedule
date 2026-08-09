@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { sendEmail, sendSms, describeProviderError, recordMessageSent } from "@/lib/notify";
+import { sendEmail, sendSms, describeProviderError, recordMessageSent, getCompanyIdentity } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 
@@ -69,7 +69,8 @@ export async function POST(req: Request) {
     if (clientRes.error) throw clientRes.error;
 
     const { name, email, phone, auto_email, auto_sms } = clientRes.data;
-    const t = cancelTemplates(name, apptRes.data.service_type);
+    const { companyName, bookingEnabled } = await getCompanyIdentity(workspaceId);
+    const t = cancelTemplates(name, apptRes.data.service_type, companyName, bookingEnabled);
 
     // The cancellation itself already succeeded above — a notification
     // provider hiccup here must never turn into a 500 that makes a customer
@@ -77,7 +78,7 @@ export async function POST(req: Request) {
     // isolated, matching the pattern in create/update/delete.
     if (email && auto_email) {
       try {
-        const providerId = await sendEmail(email, t.email.subject, t.email.body, workspaceId);
+        const providerId = await sendEmail(email, t.email.subject, t.email.body, workspaceId, companyName);
         await recordMessageSent({
           appointment_id: apptRes.data.id,
           channel: "email",

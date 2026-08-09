@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
-import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, NotifyChannel } from "@/lib/notify";
+import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, getCompanyName, NotifyChannel } from "@/lib/notify";
 import { confirmationTemplates } from "@/lib/templates";
 import { generateFutureDates } from "@/lib/recurrence";
 import { isSlotAvailable, isWithinBusinessHours, businessDayBounds, businessDateStringFromInstant, type BusyRange } from "@/lib/availability";
@@ -343,11 +343,12 @@ export async function POST(req: Request) {
         if (!clientRes.error && clientRes.data) {
           const { name: cName, email: cEmail, phone: cPhone, auto_email, auto_sms } = clientRes.data;
           const cancelUrl = `${process.env.NEXT_PUBLIC_APP_URL}/cancel?token=${rows[0].cancel_token}`;
-          const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl);
+          const companyName = await getCompanyName(workspaceId);
+          const t = confirmationTemplates(cName, service_type, scheduled_for, cancelUrl, companyName);
 
           if (cEmail && auto_email && shouldSend(notify_channel, "email")) {
             try {
-              const providerId = await sendEmail(cEmail, t.email.subject, t.email.body, workspaceId);
+              const providerId = await sendEmail(cEmail, t.email.subject, t.email.body, workspaceId, companyName);
               await recordMessageSent({
                 appointment_id: firstId,
                 channel: "email", kind: "confirmation", workspace_id: workspaceId,

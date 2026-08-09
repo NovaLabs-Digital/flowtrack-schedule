@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { DateTime } from "luxon";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { sendEmail, sendSms, describeProviderError, recordMessageSent } from "@/lib/notify";
+import { sendEmail, sendSms, describeProviderError, recordMessageSent, sanitizeCompanyName } from "@/lib/notify";
 import { reminder24hTemplates } from "@/lib/templates";
 import { isAuthorizedCronRequest } from "@/lib/cronAuth";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
@@ -44,24 +44,28 @@ export async function GET(req: Request) {
     // Local, single-request cache — avoids re-querying the same workspace's
     // company_settings once per appointment when a cron run covers many
     // appointments for the same business. lib/notify.ts's sendEmail/sendSms
-    // still perform their own authoritative check on every call; this is
-    // purely an optimization to skip attempting a send we can already
-    // predict will no-op.
-    const notifCache = new Map<string, boolean>();
-    async function workspaceNotifying(workspaceId: string): Promise<boolean> {
-      if (notifCache.has(workspaceId)) return notifCache.get(workspaceId)!;
+    // still perform their own authoritative notifications_enabled check on
+    // every call; this is purely an optimization to skip attempting a send
+    // we can already predict will no-op. company_name is fetched in this
+    // same query (rather than a second per-workspace round trip via
+    // lib/notify.ts's getCompanyName) since this route already pays for one
+    // company_settings read per workspace here.
+    const workspaceInfoCache = new Map<string, { enabled: boolean; companyName: string }>();
+    async function workspaceInfo(workspaceId: string): Promise<{ enabled: boolean; companyName: string }> {
+      const cached = workspaceInfoCache.get(workspaceId);
+      if (cached) return cached;
       const { data } = await supabaseAdmin
         .from("company_settings")
-        .select("notifications_enabled")
+        .select("notifications_enabled, company_name")
         .eq("workspace_id", workspaceId)
         .maybeSingle();
-      const enabled = Boolean(data?.notifications_enabled);
-      notifCache.set(workspaceId, enabled);
-      return enabled;
+      const info = { enabled: Boolean(data?.notifications_enabled), companyName: sanitizeCompanyName(data?.company_name) };
+      workspaceInfoCache.set(workspaceId, info);
+      return info;
     }
 
     // One entitlement check per unique workspace present in this run,
-    // cached exactly like workspaceNotifying above -- a single cron
+    // cached exactly like workspaceInfo above -- a single cron
     // invocation spans every workspace, so a restricted workspace must never
     // block, slow down, or share a decision with another workspace's
     // reminders. Uses requireCapabilityForWorkspace (never requireCapability
@@ -103,8 +107,8 @@ export async function GET(req: Request) {
       if (clientRes.error) continue;
 
       const { name, email, phone, auto_email, auto_sms } = clientRes.data;
-      const t = reminder24hTemplates(name, a.service_type, a.scheduled_for);
-      const notifying = await workspaceNotifying(a.workspace_id);
+      const { enabled: notifying, companyName } = await workspaceInfo(a.workspace_id);
+      const t = reminder24hTemplates(name, a.service_type, a.scheduled_for, companyName);
 
       // Each channel is isolated in its own try/catch — matching the
       // pattern already used in create/update/delete — so one appointment's
@@ -114,7 +118,7 @@ export async function GET(req: Request) {
       // leaving every other workspace's reminders unprocessed too.
       if (notifying && email && auto_email) {
         try {
-          const providerId = await sendEmail(email, t.email.subject, t.email.body, a.workspace_id);
+          const providerId = await sendEmail(email, t.email.subject, t.email.body, a.workspace_id, companyName);
           await recordMessageSent({
             appointment_id: a.id,
             channel: "email",

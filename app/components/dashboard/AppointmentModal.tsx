@@ -93,7 +93,7 @@ function frequencyLabel(ft?: string | null, rw?: number | null): string {
   return ft;
 }
 
-const WEEK_OPTIONS = [1, 2, 3, 4, 6, 8];
+const WEEK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 export type NotifyChannel = "email" | "sms" | "both" | "none";
 
@@ -875,7 +875,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                   <span className="text-xs text-slate-600">Repeat every</span>
                   <select value={manageWeeks} onChange={(e) => setManageWeeks(Number(e.target.value))}
                     className="rounded-xl border px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 w-20">
-                    {[1, 2, 3, 4, 6, 8].map((w) => <option key={w} value={w}>{w}</option>)}
+                    {WEEK_OPTIONS.map((w) => <option key={w} value={w}>{w}</option>)}
                   </select>
                   <span className="text-xs text-slate-600">week{manageWeeks > 1 ? "s" : ""}</span>
                 </div>

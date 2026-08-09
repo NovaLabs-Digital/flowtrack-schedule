@@ -39,7 +39,9 @@ mock.module("@/lib/notify", {
     shouldSend: (...args: [string | undefined, "email" | "sms"]) => currentNotify.namedExports.shouldSend(...args),
     describeProviderError: (...args: [unknown]) => currentNotify.namedExports.describeProviderError(...args),
     recordMessageSent: (...args: [unknown]) => currentNotify.namedExports.recordMessageSent(...(args as [never])),
-    sendEmail: (...args: [string, string, string, string]) => currentNotify.namedExports.sendEmail(...args),
+    sanitizeCompanyName: (...args: [string | null | undefined]) => currentNotify.namedExports.sanitizeCompanyName(...args),
+    getCompanyName: (...args: [string]) => currentNotify.namedExports.getCompanyName(...args),
+    sendEmail: (...args: [string, string, string, string, string?]) => currentNotify.namedExports.sendEmail(...args),
     sendSms: (...args: [string, string, string]) => currentNotify.namedExports.sendSms(...args),
   },
 });
@@ -428,6 +430,78 @@ describe("GET /api/cron/reminders -- existing notification behavior preserved on
     assert.equal(currentNotify.emailCalls.length, 1, "email was still attempted");
     assert.equal(currentNotify.smsCalls.length, 1, "sms still attempted despite the email failure");
     assert.equal(currentFake.calls.filter((c) => c.table === "messages_sent" && c.method === "insert").length, 2, "both attempts (success and failure) are still audited");
+  });
+
+  test("reminder email uses the workspace's company name as the From display name and sign-off", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: [apptCandidate()] }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      company_settings: [{ data: { notifications_enabled: true, company_name: "Sunshine Cleaning Co." } }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls[0].fromDisplayName, "Sunshine Cleaning Co.");
+    assert.ok(currentNotify.emailCalls[0].text.includes("Sunshine Cleaning Co."));
+    assert.ok(!currentNotify.emailCalls[0].text.includes("ScheduleFlowTrack"));
+  });
+
+  test("reminder SMS body identifies the business by name", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: [apptCandidate()] }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      company_settings: [{ data: { notifications_enabled: true, company_name: "Sunshine Cleaning Co." } }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    const body = currentNotify.smsCalls[0].body;
+    assert.ok(body.startsWith("Sunshine Cleaning Co.:"));
+    assert.equal(body.split("Sunshine Cleaning Co.").length - 1, 1, "the business name must appear exactly once -- no duplicate trailing sign-off");
+    assert.ok(!body.includes("Thank you,"), "the trailing sign-off line was removed for SMS specifically (kept for email)");
+  });
+
+  test("a workspace with no company name set falls back to ScheduleFlowTrack rather than breaking the reminder", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: [apptCandidate()] }, { error: null }],
+      clients: [{ data: optedInClient() }],
+      company_settings: [{ data: { notifications_enabled: true } }], // no company_name field at all
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls[0].fromDisplayName, "ScheduleFlowTrack");
+    const smsBody = currentNotify.smsCalls[0].body;
+    assert.ok(smsBody.startsWith("ScheduleFlowTrack:"));
+    assert.equal(smsBody.split("ScheduleFlowTrack").length - 1, 1, "the fallback name must also appear exactly once, not duplicated");
+  });
+
+  test("two different workspaces in the same run each get their own company name -- never the other's", async () => {
+    resetFixtures({
+      subscriptions: [
+        { data: subscriptionRow({ stripe_status: "active" }) },
+        { data: subscriptionRow({ stripe_status: "active" }) },
+      ],
+      appointments: [
+        { data: [apptCandidate({ id: "appt-x", workspace_id: "workspace-x" }), apptCandidate({ id: "appt-y", workspace_id: "workspace-y" })] },
+        { error: null },
+        { error: null },
+      ],
+      clients: [{ data: optedInClient() }, { data: optedInClient() }],
+      company_settings: [
+        { data: { notifications_enabled: true, company_name: "Workspace X Cleaning" } },
+        { data: { notifications_enabled: true, company_name: "Workspace Y Cleaning" } },
+      ],
+      messages_sent: [{ error: null }, { error: null }, { error: null }, { error: null }],
+    });
+    const res = await GET(req());
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 2);
+    const names = currentNotify.emailCalls.map((c) => c.fromDisplayName).sort();
+    assert.deepEqual(names, ["Workspace X Cleaning", "Workspace Y Cleaning"]);
   });
 
   test("no write occurs beyond the pre-existing set (appointments update + messages_sent inserts) for an allowed, fully-opted-in workspace", async () => {

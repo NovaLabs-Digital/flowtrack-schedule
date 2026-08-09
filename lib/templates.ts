@@ -18,7 +18,8 @@ export function confirmationTemplates(
   name: string,
   service: string,
   scheduledIso: string,
-  cancelUrl: string
+  cancelUrl: string,
+  companyName: string
 ) {
   const when = fmt(scheduledIso);
   const date = fmtDate(scheduledIso);
@@ -39,26 +40,24 @@ Need to cancel?
 ${cancelUrl}
 
 Thank you,
-ScheduleFlowTrack`,
+${companyName}`,
     },
-    sms: `✅ Appointment Confirmed
+    sms: `${companyName}: ✅ Appointment Confirmed
 
 Service: ${service}
 Date: ${date}
 Time: ${time}
 
 Need to cancel?
-${cancelUrl}
-
-Thank you,
-ScheduleFlowTrack`,
+${cancelUrl}`,
   };
 }
 
 export function reminder24hTemplates(
   name: string,
   service: string,
-  scheduledIso: string
+  scheduledIso: string,
+  companyName: string
 ) {
   const when = fmt(scheduledIso);
   const date = fmtDate(scheduledIso);
@@ -76,23 +75,21 @@ Date: ${date}
 Time: ${time}
 
 Thank you,
-ScheduleFlowTrack`,
+${companyName}`,
     },
-    sms: `Reminder
+    sms: `${companyName}: Reminder
 
 Service: ${service}
 Date: ${date}
-Time: ${time}
-
-Thank you,
-ScheduleFlowTrack`,
+Time: ${time}`,
   };
 }
 
 export function changeTemplates(
   name: string,
   service: string,
-  scheduledIso: string
+  scheduledIso: string,
+  companyName: string
 ) {
   const when = fmt(scheduledIso);
   const date = fmtDate(scheduledIso);
@@ -110,21 +107,27 @@ Date: ${date}
 Time: ${time}
 
 Thank you,
-ScheduleFlowTrack`,
+${companyName}`,
     },
-    sms: `Appointment Updated
+    sms: `${companyName}: Appointment Updated
 
 Service: ${service}
 Date: ${date}
-Time: ${time}
-
-Thank you,
-ScheduleFlowTrack`,
+Time: ${time}`,
   };
 }
 
-export function cancelTemplates(name: string, service: string) {
-  const bookUrl = `${process.env.NEXT_PUBLIC_APP_URL}/book`;
+// bookingEnabled: the workspace's own company_settings.booking_enabled,
+// read by the caller and passed in explicitly rather than looked up here --
+// this file has no Supabase dependency and stays that way. When false (or
+// the caller couldn't safely determine it and fails closed to false), the
+// entire "Need another appointment?" section is omitted from both the email
+// and the SMS -- a client must never be invited to a booking page the
+// business has turned off.
+export function cancelTemplates(name: string, service: string, companyName: string, bookingEnabled: boolean) {
+  const bookingCta = bookingEnabled
+    ? `\n\nNeed another appointment?\n${process.env.NEXT_PUBLIC_APP_URL}/book`
+    : "";
   return {
     email: {
       subject: `Appointment Cancelled`,
@@ -132,22 +135,13 @@ export function cancelTemplates(name: string, service: string) {
 
 Your appointment has been cancelled.
 
-Service: ${service}
-
-Need another appointment?
-${bookUrl}
+Service: ${service}${bookingCta}
 
 Thank you,
-ScheduleFlowTrack`,
+${companyName}`,
     },
-    sms: `Your appointment has been cancelled.
+    sms: `${companyName}: Your appointment has been cancelled.
 
-Service: ${service}
-
-Need another appointment?
-${bookUrl}
-
-Thank you,
-ScheduleFlowTrack`,
+Service: ${service}${bookingCta}`,
   };
 }

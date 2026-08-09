@@ -53,7 +53,9 @@ mock.module("@/lib/notify", {
     shouldSend: (...args: [string | undefined, "email" | "sms"]) => currentNotify.namedExports.shouldSend(...args),
     describeProviderError: (...args: [unknown]) => currentNotify.namedExports.describeProviderError(...args),
     recordMessageSent: (...args: [unknown]) => currentNotify.namedExports.recordMessageSent(...(args as [never])),
-    sendEmail: (...args: [string, string, string, string]) => currentNotify.namedExports.sendEmail(...args),
+    sanitizeCompanyName: (...args: [string | null | undefined]) => currentNotify.namedExports.sanitizeCompanyName(...args),
+    getCompanyName: (...args: [string]) => currentNotify.namedExports.getCompanyName(...args),
+    sendEmail: (...args: [string, string, string, string, string?]) => currentNotify.namedExports.sendEmail(...args),
     sendSms: (...args: [string, string, string]) => currentNotify.namedExports.sendSms(...args),
   },
 });
@@ -766,6 +768,62 @@ describe("notification behavior is preserved exactly once entitled, on both bran
     assert.equal(res.status, 200);
     assert.equal(currentNotify.emailCalls.length, 0);
     assert.equal(currentNotify.smsCalls.length, 0);
+  });
+});
+
+describe("confirmation notifications identify the workspace's own business, not generic ScheduleFlowTrack branding", () => {
+  test("confirmation email uses the workspace's company name as both the From display name and the body sign-off", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-2" }] }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    currentNotify.setCompanyName("Sunshine Cleaning Co.");
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody()));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 1);
+    assert.equal(currentNotify.emailCalls[0].fromDisplayName, "Sunshine Cleaning Co.");
+    assert.ok(currentNotify.emailCalls[0].text.includes("Sunshine Cleaning Co."));
+    assert.ok(!currentNotify.emailCalls[0].text.includes("ScheduleFlowTrack"), "the generic platform sign-off must be replaced, not merely supplemented");
+  });
+
+  test("confirmation SMS body identifies the business by name", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-3" }] }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    currentNotify.setCompanyName("Sunshine Cleaning Co.");
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody()));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.smsCalls.length, 1);
+    const body = currentNotify.smsCalls[0].body;
+    assert.ok(body.startsWith("Sunshine Cleaning Co.:"), "the business name should be immediately visible at the start of the SMS");
+    assert.equal(body.split("Sunshine Cleaning Co.").length - 1, 1, "the business name must appear exactly once -- no duplicate trailing sign-off");
+    assert.ok(!body.includes("Thank you,"), "the trailing sign-off line was removed for SMS specifically (kept for email)");
+  });
+
+  test("a workspace with no company name set falls back to ScheduleFlowTrack rather than breaking the notification", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-4" }] }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    // Deliberately not calling setCompanyName -- exercises the fake's own
+    // default, which mirrors the real getCompanyName's fallback.
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody()));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls[0].fromDisplayName, "ScheduleFlowTrack");
+    assert.ok(currentNotify.smsCalls[0].body.startsWith("ScheduleFlowTrack:"));
   });
 });
 

@@ -152,6 +152,7 @@ export interface FakeNotifyEmailCall {
   subject: string;
   text: string;
   workspaceId: string;
+  fromDisplayName?: string;
 }
 export interface FakeNotifySmsCall {
   to: string;
@@ -159,13 +160,41 @@ export interface FakeNotifySmsCall {
   workspaceId: string;
 }
 
+// Faithful copy of lib/notify.ts's sanitizeCompanyName (pure,
+// dependency-free) -- the real module can't be imported here (see the
+// Twilio-client-at-module-load comment above), so this mirrors its exact
+// behavior rather than re-deriving it, matching shouldSend/
+// describeProviderError's existing "faithful copy" convention below.
+const FAKE_FALLBACK_COMPANY_NAME = "ScheduleFlowTrack";
+export function fakeSanitizeCompanyName(raw: string | null | undefined): string {
+  const cleaned = (raw ?? "")
+    .replace(/[\r\n\x00-\x1F\x7F<>]/g, "")
+    .trim()
+    .slice(0, 150);
+  return cleaned || FAKE_FALLBACK_COMPANY_NAME;
+}
+
 export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Record<string, unknown> }) {
   const emailCalls: FakeNotifyEmailCall[] = [];
   const smsCalls: FakeNotifySmsCall[] = [];
-  let sendEmailImpl: (to: string, subject: string, text: string, workspaceId: string) => Promise<string> =
+  let sendEmailImpl: (to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string) => Promise<string> =
     async () => "fake-email-provider-id";
   let sendSmsImpl: (to: string, body: string, workspaceId: string) => Promise<string> =
     async () => "fake-sms-provider-id";
+  // Settable per-test, defaulting to the real fallback name -- deliberately
+  // NOT routed through supabaseAdminRef's "company_settings" queue (unlike
+  // recordMessageSent above): dozens of pre-existing tests across every
+  // notification-sending route already reach this call without expecting an
+  // extra queued company_settings fixture, and this keeps all of them
+  // passing unchanged. The real getCompanyName's workspace-scoped Supabase
+  // query and sanitization/fallback behavior is unit-tested directly and in
+  // isolation in lib/notify.test.ts instead.
+  let companyName = FAKE_FALLBACK_COMPANY_NAME;
+  // Fails closed by default, matching the real getCompanyIdentity's
+  // Boolean(undefined) === false behavior when nothing is configured --
+  // existing tests that never call setBookingEnabled therefore exercise
+  // the CTA-omitted path unless they explicitly opt in.
+  let bookingEnabled = false;
 
   const namedExports = {
     shouldSend: (channel: string | undefined, medium: "email" | "sms") => {
@@ -178,9 +207,12 @@ export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Re
       const builder = supabaseAdminRef.from("messages_sent") as { insert: (row: unknown) => Promise<unknown> };
       await builder.insert(row);
     },
-    sendEmail: async (to: string, subject: string, text: string, workspaceId: string) => {
-      emailCalls.push({ to, subject, text, workspaceId });
-      return sendEmailImpl(to, subject, text, workspaceId);
+    sanitizeCompanyName: fakeSanitizeCompanyName,
+    getCompanyName: async (_workspaceId: string) => companyName,
+    getCompanyIdentity: async (_workspaceId: string) => ({ companyName, bookingEnabled }),
+    sendEmail: async (to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string) => {
+      emailCalls.push({ to, subject, text, workspaceId, fromDisplayName });
+      return sendEmailImpl(to, subject, text, workspaceId, fromDisplayName);
     },
     sendSms: async (to: string, body: string, workspaceId: string) => {
       smsCalls.push({ to, body, workspaceId });
@@ -192,11 +224,17 @@ export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Re
     namedExports,
     emailCalls,
     smsCalls,
-    setSendEmailImpl: (fn: (to: string, subject: string, text: string, workspaceId: string) => Promise<string>) => {
+    setSendEmailImpl: (fn: (to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string) => Promise<string>) => {
       sendEmailImpl = fn;
     },
     setSendSmsImpl: (fn: (to: string, body: string, workspaceId: string) => Promise<string>) => {
       sendSmsImpl = fn;
+    },
+    setCompanyName: (name: string) => {
+      companyName = name;
+    },
+    setBookingEnabled: (value: boolean) => {
+      bookingEnabled = value;
     },
   };
 }

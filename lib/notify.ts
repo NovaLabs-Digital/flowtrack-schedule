@@ -39,6 +39,74 @@ async function ownerNotificationsEnabled(workspaceId: string): Promise<boolean> 
   return Boolean(data?.notifications_enabled);
 }
 
+// The platform name a client-facing message falls back to when a workspace
+// hasn't set (or has cleared) its own company name -- never an empty
+// header/sign-off, and never another workspace's identity.
+const FALLBACK_COMPANY_NAME = "ScheduleFlowTrack";
+
+// Every company_name value must pass through here before it's used in an
+// email "From" header or a message body -- company_name is owner-entered
+// free text with no existing format validation elsewhere in the app.
+// Strips CR/LF and other control characters (which could otherwise inject
+// extra headers into a raw email "From" line) and angle brackets (which
+// could otherwise break out of the display-name portion of
+// `"Name <address>"` and forge a second address), trims surrounding
+// whitespace, and caps length defensively. Falls back to the platform name
+// when nothing legitimate remains -- a blank, whitespace-only, or
+// entirely-stripped value must never produce an empty header/sign-off.
+export function sanitizeCompanyName(raw: string | null | undefined): string {
+  const cleaned = (raw ?? "")
+    .replace(/[\r\n\x00-\x1F\x7F<>]/g, "")
+    .trim()
+    .slice(0, 150);
+  return cleaned || FALLBACK_COMPANY_NAME;
+}
+
+// Workspace-scoped lookup of the business's own display name, for use as
+// the email "From" display name and the sign-off/prefix in every
+// client-facing template -- so a client clearly sees which business they
+// booked with, not just the software behind it. Always scoped by the exact
+// workspace_id the caller already established (the appointment/session's
+// own workspace, never request input) -- never a global/default row, and
+// never another workspace's name.
+export async function getCompanyName(workspaceId: string): Promise<string> {
+  const { data } = await supabaseAdmin
+    .from("company_settings")
+    .select("company_name")
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  return sanitizeCompanyName(data?.company_name);
+}
+
+export type CompanyIdentity = {
+  companyName: string;
+  // Whether this workspace has public booking turned on -- read from the
+  // SAME row as company_name (one query, not two) for the templates that
+  // need both (currently only cancelTemplates' "Need another appointment?"
+  // CTA). Fails closed to false on a missing row, a null value, or a query
+  // error: `data?.booking_enabled` is undefined in every one of those
+  // cases, and Boolean(undefined) is false. A settings-query problem must
+  // never accidentally advertise a booking page the business hasn't
+  // enabled (or that this app has no way to confirm is enabled).
+  bookingEnabled: boolean;
+};
+
+// Workspace-scoped lookup combining company_name and booking_enabled for
+// callers that need both -- same workspace_id scoping guarantees as
+// getCompanyName above, just one query instead of two for routes (cancel/
+// delete) that need both fields together.
+export async function getCompanyIdentity(workspaceId: string): Promise<CompanyIdentity> {
+  const { data } = await supabaseAdmin
+    .from("company_settings")
+    .select("company_name, booking_enabled")
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  return {
+    companyName: sanitizeCompanyName(data?.company_name),
+    bookingEnabled: Boolean(data?.booking_enabled),
+  };
+}
+
 export type NotifyChannel = "email" | "sms" | "both" | "none";
 
 export function shouldSend(channel: NotifyChannel | undefined, medium: "email" | "sms"): boolean {
@@ -119,7 +187,15 @@ export async function sendSms(to: string, body: string, workspaceId: string) {
   return msg.sid;
 }
 
-export async function sendEmail(to: string, subject: string, text: string, workspaceId: string) {
+// fromDisplayName: the workspace's own sanitized company name (see
+// getCompanyName/sanitizeCompanyName above), so the client's inbox shows
+// which business the email is from -- not just generic platform branding.
+// Optional and falls back to the pre-existing RESEND_FROM_NAME/platform
+// default so any caller that doesn't (yet) have a company name to pass
+// keeps working exactly as before. Re-sanitized here regardless of whether
+// the caller already did, so this function can never emit an unsafe "From"
+// header no matter what a future caller passes in.
+export async function sendEmail(to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string) {
   if (disabled) {
     console.log("[DISABLE_MESSAGES] Email skipped — to:", to, "| subject:", subject, "| body:", text);
     return "disabled";
@@ -128,7 +204,7 @@ export async function sendEmail(to: string, subject: string, text: string, works
     console.log("[notifications_enabled=false] Email skipped — to:", to, "| subject:", subject, "| workspace:", workspaceId);
     return "notifications-off";
   }
-  const fromName = process.env.RESEND_FROM_NAME || "FlowTrack Schedule";
+  const fromName = fromDisplayName ? sanitizeCompanyName(fromDisplayName) : (process.env.RESEND_FROM_NAME || "FlowTrack Schedule");
   const { data, error } = await getResend().emails.send({
     from: `${fromName} <${process.env.RESEND_FROM_EMAIL}>`,
     to,

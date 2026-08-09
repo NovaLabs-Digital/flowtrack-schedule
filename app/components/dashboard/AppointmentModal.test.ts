@@ -499,3 +499,24 @@ describe("Phase 5.7D-R19: Worked Hours 'Not tracked yet' + cancelled guard (sour
     assert.ok(!source.includes('from "@/lib/appointmentEmployees"'), "must never import from the server-only appointmentEmployees module");
   });
 });
+
+describe("weekly recurrence interval options -- complete 1 through 8, one shared list", () => {
+  test("WEEK_OPTIONS is exactly [1, 2, 3, 4, 5, 6, 7, 8]", () => {
+    assert.ok(source.includes("const WEEK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];"));
+  });
+
+  test("the create-mode Repeat Every select maps over WEEK_OPTIONS", () => {
+    const idx = source.indexOf('<span className="text-xs text-slate-600">Repeat Every</span>');
+    assert.ok(idx > -1);
+    const block = source.slice(idx, source.indexOf("</select>", idx));
+    assert.ok(block.includes("{WEEK_OPTIONS.map((w) => <option key={w} value={w}>{w}</option>)}"));
+  });
+
+  test("the Manage Recurrence 'Repeat every' select also maps over WEEK_OPTIONS -- no second, independently-hardcoded list", () => {
+    const idx = source.indexOf('<span className="text-xs text-slate-600">Repeat every</span>');
+    assert.ok(idx > -1);
+    const block = source.slice(idx, source.indexOf("</select>", idx));
+    assert.ok(block.includes("{WEEK_OPTIONS.map((w) => <option key={w} value={w}>{w}</option>)}"));
+    assert.ok(!source.includes("[1, 2, 3, 4, 6, 8]"), "the old, separately-hardcoded 1/2/3/4/6/8 list must not remain anywhere");
+  });
+});
