@@ -500,8 +500,11 @@ describe("existing appointment-editing business rules remain unchanged once enti
 // start) and adds it to each future sibling's own stored scheduled_for/
 // scheduled_end, which is delta-based rather than recomputed from
 // frequency_type/repeat_weeks, so it works identically for daily, weekly,
-// and every-N-weeks series and preserves the original spacing between
-// occurrences exactly.
+// every-N-weeks, and (Phase 2) monthly series alike, and preserves the
+// original spacing between occurrences exactly -- see the source-level
+// proof below confirming this route never reads frequency_type,
+// repeat_weeks, or repeat_months at all, so monthly recurrence required
+// zero changes here.
 describe("recurring 'This & future' rescheduling shifts every future occurrence by the same date/time delta", () => {
   const OLD_SELECTED_START = "2026-08-06T14:00:00.000Z"; // Thursday
   const OLD_SELECTED_END = "2026-08-06T15:00:00.000Z";
@@ -1245,5 +1248,34 @@ describe("Phase 5.5E-C: the notification gate is source-correctly placed and sco
 
   test("the notification gate uses the same trusted workspaceId already used for the canMutateOperationalData gate, never a new/request-derived value", () => {
     assert.ok(routeSource.includes("const workspaceId = session.workspaceId;"));
+  });
+});
+
+// Phase 2 (Monthly Recurring Appointments): this route's "Only this" (mode:
+// single) and "This & future" (mode: future) mechanisms are proven
+// frequency-agnostic above via the delta-based sibling shift (daily/weekly/
+// every-N-weeks all pass through the exact same code path). Monthly
+// recurrence deliberately required ZERO changes to app/api/appointments/
+// update/route.ts -- this source-level proof is the evidence: the route
+// never reads frequency_type, repeat_weeks, or repeat_months from either
+// its own SELECT or its sibling propagation logic, so a monthly series'
+// "Only this"/"This & future" behavior is identical, by construction, to
+// every existing frequency this file already covers above.
+describe("Phase 2: monthly recurrence required no changes to this route (source-level proof)", () => {
+  const routeSource = fs.readFileSync(fileURLToPath(new URL("./route.ts", import.meta.url)), "utf8");
+
+  test("this route's own appointment SELECT never fetches frequency_type, repeat_weeks, or repeat_months, and no apptUpdate.* write ever touches them -- 'Only this'/'This & future' are frequency-agnostic by construction, covering monthly with zero changes", () => {
+    const selectMatch = routeSource.match(/\.select\("([^"]*)"\)/);
+    assert.ok(selectMatch, "expected to find the appointment SELECT field list");
+    for (const forbidden of ["frequency_type", "repeat_weeks", "repeat_months"]) {
+      assert.ok(!selectMatch![1].includes(forbidden), `SELECT must not fetch "${forbidden}": "${selectMatch![1]}"`);
+      assert.ok(!routeSource.includes(`apptUpdate.${forbidden}`), `must never write apptUpdate.${forbidden}`);
+      assert.ok(!routeSource.includes(`sibUpdate.${forbidden}`), `must never write sibUpdate.${forbidden}`);
+    }
+  });
+
+  test("the sibling ('This & future') shift is delta-based (old vs. new timestamp), not recomputed from any recurrence rule", () => {
+    assert.ok(routeSource.includes("startDeltaMs"));
+    assert.ok(routeSource.includes("endDeltaMs"));
   });
 });

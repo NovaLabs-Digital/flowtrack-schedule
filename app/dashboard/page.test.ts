@@ -79,6 +79,21 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
     assert.ok(!fallbackMatch![1].includes("team_color"));
   });
 
+  // Phase 2 (Monthly Recurring Appointments): repeat_months follows the
+  // exact same precedent as price_cents (R17B) and team_color (R19) above
+  // -- added to the primary field list only, relying on the same
+  // fallback-on-error mechanism for a not-yet-migrated column.
+  test("apptFields' primary value includes repeat_months", () => {
+    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    assert.ok(fieldsMatch![1].includes("repeat_months"), `apptFields is missing repeat_months: "${fieldsMatch![1]}"`);
+  });
+
+  test("the minimal fallback field list also excludes repeat_months, same as it excludes price_cents/team_color", () => {
+    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
+    assert.ok(fallbackMatch);
+    assert.ok(!fallbackMatch![1].includes("repeat_months"));
+  });
+
   test("the minimal fallback field list (used only when the primary query errors) is deliberately left unchanged -- it never included duration_minutes/scheduled_end/etc. either", () => {
     const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
     assert.ok(fallbackMatch);

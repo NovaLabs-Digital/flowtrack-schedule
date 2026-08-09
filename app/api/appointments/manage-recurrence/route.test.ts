@@ -54,6 +54,7 @@ function oneTimeAppt() {
     series_id: null,
     frequency_type: "one_time",
     repeat_weeks: 1,
+    repeat_months: null,
     status: "scheduled",
     is_demo: false,
     price_cents: 5000,
@@ -420,5 +421,164 @@ describe("Phase 5.7D-R18: newly generated recurring rows receive the origin appo
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
     assert.equal(res.status, 200);
     assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert").length, 0);
+  });
+});
+
+describe("Phase 2: Monthly Recurring Appointments via Manage Recurrence", () => {
+  test("converting a one-time appointment to monthly recurrence generates every future occurrence and saves repeat_months on the source row", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: oneTimeAppt() }, // fetch existing
+        { error: null }, // update source appointment
+        // repeat_months: 12 -> MAX_MONTHLY_HORIZON_MONTHS (24) / 12 = 2 future rows.
+        { data: [{ id: "new-1" }, { id: "new-2" }] },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.created, 2);
+
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    const updateArgs = updateCall!.args[0] as { frequency_type: string; repeat_weeks: number; repeat_months: number | null; series_id: string | null };
+    assert.equal(updateArgs.frequency_type, "monthly");
+    assert.equal(updateArgs.repeat_weeks, 1);
+    assert.equal(updateArgs.repeat_months, 12);
+    assert.ok(updateArgs.series_id, "a new series_id is generated for the newly-recurring source appointment");
+
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ frequency_type?: string; repeat_months?: number | null }>;
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((r) => r.frequency_type === "monthly" && r.repeat_months === 12));
+  });
+
+  test("every generated future row copies the origin appointment's own price_cents for a monthly series, not a service default", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: oneTimeAppt() }, // price_cents: 5000
+        { error: null },
+        { data: [{ id: "new-1" }, { id: "new-2" }] },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
+    assert.ok(rows.length > 0);
+    assert.ok(rows.every((r) => r.price_cents === 5000));
+  });
+
+  test("every generated future row of a monthly series gets the same set of assigned employees as the origin, including multiple", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: oneTimeAppt() },
+        { error: null },
+        { data: [{ id: "new-1" }, { id: "new-2" }] },
+      ],
+      appointment_employees: [
+        { data: [
+          { id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+        ] }, // fetchAssignments(origin)
+        { data: null, error: null }, // insertAssignments(new-1)
+        { data: null, error: null }, // insertAssignments(new-2)
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
+    assert.equal(res.status, 200);
+    const assignmentInsertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
+    assert.equal(assignmentInsertCalls.length, 2, "one insertAssignments call per newly generated monthly occurrence");
+    for (const call of assignmentInsertCalls) {
+      const rows = call.args[0] as Array<{ employee_id: string }>;
+      assert.deepEqual(rows.map((r) => r.employee_id), ["teresa", "roxana"]);
+    }
+  });
+
+  test("converting an existing weekly series to monthly cancels its future weekly siblings before generating monthly occurrences", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "weekly", repeat_weeks: 2 } },
+        { data: [{ id: "sib-1" }, { id: "sib-2" }] }, // weekly sibling lookup
+        { error: null }, // bulk-cancel weekly siblings
+        { error: null }, // update source appointment
+        { data: [{ id: "new-1" }, { id: "new-2" }] }, // insert new monthly series
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.cancelled, 2);
+    assert.equal(body.created, 2);
+  });
+
+  test("missing repeat_months on a monthly request is rejected with 400, before any appointment read/write", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly" }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Repeat interval must be a whole number of months between 1 and 12." });
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+  });
+
+  for (const bad of [0, -1, 1.5, 13, 100]) {
+    test(`repeat_months=${bad} on a monthly request is rejected with 400 -- never silently regenerates as a broken/empty series`, async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: bad }));
+      assert.equal(res.status, 400);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+    });
+  }
+
+  test("converting a monthly series back to one_time cancels future siblings and creates no new rows", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "monthly", repeat_months: 12 } },
+        { data: [{ id: "sib-1" }] },
+        { error: null },
+        { error: null },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.cancelled, 1);
+    assert.equal(body.created, 0);
+    // Two "update" calls happen in this flow: the bulk sibling-cancel
+    // (.update({status: "cancelled"})) and the source-row recurrence update
+    // -- find the latter specifically by its frequency_type key, rather
+    // than assuming call order.
+    const updateCall = currentFake.calls.find(
+      (c) => c.table === "appointments" && c.method === "update" && (c.args[0] as Record<string, unknown>)?.frequency_type !== undefined
+    );
+    const updateArgs = updateCall!.args[0] as { frequency_type: string; repeat_months: number | null };
+    assert.equal(updateArgs.frequency_type, "one_time");
+    assert.equal(updateArgs.repeat_months, null, "converting away from monthly clears repeat_months rather than leaving a stale value");
   });
 });

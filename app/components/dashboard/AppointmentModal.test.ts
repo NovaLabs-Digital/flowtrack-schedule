@@ -520,3 +520,62 @@ describe("weekly recurrence interval options -- complete 1 through 8, one shared
     assert.ok(!source.includes("[1, 2, 3, 4, 6, 8]"), "the old, separately-hardcoded 1/2/3/4/6/8 list must not remain anywhere");
   });
 });
+
+describe("Phase 2: Monthly Recurring Appointments -- interval options 1 through 12, one shared list (source-level proof)", () => {
+  test("MONTH_OPTIONS is exactly [1..12]", () => {
+    assert.ok(source.includes("const MONTH_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];"));
+  });
+
+  test("Monthly is offered as a fifth Frequency choice, alongside the existing four, in both the create-mode radio group and the Manage Recurrence radio group", () => {
+    const createFreqIdx = source.indexOf('(["one_time", "daily", "weekdays", "weekly", "monthly"] as const).map((ft) => (');
+    const manageFreqIdx = source.indexOf('(["one_time", "daily", "weekdays", "weekly", "monthly"] as const).map((ft) => (', createFreqIdx + 1);
+    assert.ok(createFreqIdx > -1, "create-mode Frequency radio group must include monthly");
+    assert.ok(manageFreqIdx > -1, "Manage Recurrence radio group must include monthly");
+  });
+
+  test("the create-mode monthly Repeat Every select maps over MONTH_OPTIONS, shown only when frequency_type is monthly", () => {
+    const idx = source.indexOf('{form.frequency_type === "monthly" && (');
+    assert.ok(idx > -1);
+    const block = source.slice(idx, source.indexOf("</select>", idx));
+    assert.ok(block.includes("{MONTH_OPTIONS.map((m) => <option key={m} value={m}>{m}</option>)}"));
+    assert.ok(block.includes("set(\"repeat_months\""));
+  });
+
+  test("the Manage Recurrence monthly Repeat Every select also maps over MONTH_OPTIONS, shown only when manageFreq is monthly", () => {
+    const idx = source.indexOf('{manageFreq === "monthly" && (');
+    assert.ok(idx > -1);
+    const block = source.slice(idx, source.indexOf("</select>", idx));
+    assert.ok(block.includes("{MONTH_OPTIONS.map((m) => <option key={m} value={m}>{m}</option>)}"));
+    assert.ok(block.includes("setManageMonths"));
+  });
+
+  test("both create and manage-recurrence payloads send repeat_months alongside frequency_type/repeat_weeks", () => {
+    assert.ok(source.includes("repeat_months: form.repeat_months,"), "create payload must include repeat_months");
+    assert.ok(source.includes("repeat_months: manageMonths,"), "manage-recurrence payload must include repeat_months");
+  });
+
+  test("switching Manage Recurrence away from monthly resets manageMonths back to 1, mirroring the existing weekly reset", () => {
+    assert.ok(source.includes('onChange={() => { setManageFreq(ft); if (ft !== "weekly") setManageWeeks(1); if (ft !== "monthly") setManageMonths(1); }}'));
+  });
+
+  test("frequencyLabel renders 'Monthly' / 'Every N Months' for the monthly frequency, matching the weekly label's own convention", () => {
+    const fnStart = source.indexOf("function frequencyLabel(");
+    const fnEnd = source.indexOf("\n}", fnStart);
+    const body = source.slice(fnStart, fnEnd);
+    assert.ok(body.includes('if (ft === "monthly") {'));
+    assert.ok(body.includes('return "Monthly";'));
+    assert.ok(body.includes("`Every ${rm} Months`"));
+  });
+
+  test("the Recurring Schedule info panel and its 'Manage >' handoff both know about a monthly interval label and repeat_months, not just repeat_weeks", () => {
+    assert.ok(source.includes("const rm = editing.appointment.repeat_months ?? 1;"));
+    assert.ok(source.includes('ft === "monthly"'));
+    assert.ok(source.includes("setManageMonths(rm)"), "the 'Manage >' handoff must seed manageMonths from the appointment's own repeat_months");
+  });
+
+  test("existing weekly recurrence UI (WEEK_OPTIONS, repeat_weeks, manageWeeks) is completely unchanged by adding monthly", () => {
+    assert.ok(source.includes("const WEEK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];"));
+    assert.ok(source.includes("repeat_weeks: form.repeat_weeks,"));
+    assert.ok(source.includes("repeat_weeks: manageWeeks,"));
+  });
+});

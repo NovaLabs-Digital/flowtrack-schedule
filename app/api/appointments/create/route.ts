@@ -89,6 +89,18 @@ export async function POST(req: Request) {
     // owner triages staff assignment afterward.
     const frequency_type: string = isPublic ? "one_time" : (body.frequency_type || "one_time").trim();
     const repeat_weeks: number = isPublic ? 1 : (typeof body.repeat_weeks === "number" ? body.repeat_weeks : 1);
+    // Phase 2 (Monthly Recurring Appointments): null whenever this isn't a
+    // monthly series -- mirrors repeat_weeks' meaning for a weekly series,
+    // but stored in its own additive column (migrations/023) rather than
+    // overloading repeat_weeks. Validated below, immediately after parsing,
+    // so a malformed monthly request is rejected clearly rather than
+    // silently generating zero future occurrences.
+    const repeat_months: number | null = isPublic ? null : (typeof body.repeat_months === "number" ? body.repeat_months : null);
+    if (!isPublic && frequency_type === "monthly") {
+      if (!Number.isInteger(repeat_months) || (repeat_months as number) < 1 || (repeat_months as number) > 12) {
+        return json({ error: "Repeat interval must be a whole number of months between 1 and 12." }, 400);
+      }
+    }
     // Phase 5.7D-R18: zero, one, or many assigned employees. A public
     // booking is always unassigned (no staff-selection UI on that flow) --
     // the owner triages staff assignment afterward. employee_ids is the
@@ -249,9 +261,10 @@ export async function POST(req: Request) {
     const hasEmployee = await hasColumn("employee_id");
     const hasPrice = await hasColumn("price_cents");
     const hasTeamColor = await hasColumn("team_color");
+    const hasRepeatMonths = await hasColumn("repeat_months");
 
     const startDate = new Date(scheduled_for);
-    const dates: Date[] = [startDate, ...generateFutureDates(startDate, frequency_type, repeat_weeks)];
+    const dates: Date[] = [startDate, ...generateFutureDates(startDate, frequency_type, repeat_weeks, repeat_months ?? undefined)];
 
     const isRecurring = dates.length > 1;
     const seriesId = isRecurring ? crypto.randomUUID() : null;
@@ -281,6 +294,10 @@ export async function POST(req: Request) {
         row.frequency_type = frequency_type;
         row.repeat_weeks = repeat_weeks;
       }
+      // repeat_months (migrations/023): null for every series that isn't
+      // monthly -- mirrors how repeat_weeks is stored unconditionally above
+      // regardless of frequency_type.
+      if (hasRepeatMonths) row.repeat_months = repeat_months;
       // appointments.employee_id: read-only compatibility mirror, not the
       // authoritative assignment list (see employee_ids above). The one
       // employee's id when exactly one is assigned, otherwise NULL.

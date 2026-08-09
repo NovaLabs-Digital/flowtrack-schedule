@@ -26,6 +26,12 @@ export type Appointment = {
   series_id?: string | null;
   frequency_type?: string | null;
   repeat_weeks?: number | null;
+  // Phase 2 (Monthly Recurring Appointments): the repeat interval in
+  // months for a monthly series (migrations/023) -- null for every
+  // non-monthly appointment, mirroring repeat_weeks' role for a weekly
+  // series. A monthly series never uses repeat_weeks, and a weekly series
+  // never uses this field.
+  repeat_months?: number | null;
   // Phase 5.7D-R18: read-only compatibility mirror, not the authoritative
   // assignment -- null whenever zero or two-or-more employees are
   // assigned (see AppointmentEmployeeAssignment below and

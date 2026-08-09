@@ -81,7 +81,7 @@ function durationLabel(mins: number) {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-function frequencyLabel(ft?: string | null, rw?: number | null): string {
+function frequencyLabel(ft?: string | null, rw?: number | null, rm?: number | null): string {
   if (!ft || ft === "one_time") return "One Time";
   if (ft === "daily") return "Daily";
   if (ft === "weekdays") return "Weekdays (Mon–Fri)";
@@ -90,10 +90,15 @@ function frequencyLabel(ft?: string | null, rw?: number | null): string {
     if (rw === 2) return "Every 2 Weeks";
     return `Every ${rw} Weeks`;
   }
+  if (ft === "monthly") {
+    if (!rm || rm === 1) return "Monthly";
+    return `Every ${rm} Months`;
+  }
   return ft;
 }
 
 const WEEK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
+const MONTH_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
 export type NotifyChannel = "email" | "sms" | "both" | "none";
 
@@ -296,6 +301,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     status: editing?.appointment.status ?? "scheduled",
     frequency_type: "one_time" as string,
     repeat_weeks: 1,
+    repeat_months: 1,
     price: initPrice(),
   });
   // True once the owner has directly typed into the Price field themselves
@@ -326,6 +332,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const [showManageRecurrence, setShowManageRecurrence] = useState(false);
   const [manageFreq, setManageFreq] = useState<string>(editing?.appointment.frequency_type ?? "one_time");
   const [manageWeeks, setManageWeeks] = useState<number>(editing?.appointment.repeat_weeks ?? 1);
+  const [manageMonths, setManageMonths] = useState<number>(editing?.appointment.repeat_months ?? 1);
   const [savingRecurrence, setSavingRecurrence] = useState(false);
 
   function set(field: string, value: string | number) {
@@ -485,6 +492,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           duration_minutes: computedDuration,
           frequency_type: form.frequency_type,
           repeat_weeks: form.repeat_weeks,
+          repeat_months: form.repeat_months,
           employee_ids: selectedEmployeeIds,
           price_cents,
           team_color: teamColor,
@@ -551,6 +559,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           appointment_id: editing.appointment.id,
           frequency_type: manageFreq,
           repeat_weeks: manageWeeks,
+          repeat_months: manageMonths,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -763,7 +772,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-2">Frequency</label>
               <div className="flex flex-wrap gap-x-4 gap-y-2">
-                {(["one_time", "daily", "weekdays", "weekly"] as const).map((ft) => (
+                {(["one_time", "daily", "weekdays", "weekly", "monthly"] as const).map((ft) => (
                   <label key={ft} className="flex items-center gap-1.5 text-sm cursor-pointer">
                     <input
                       type="radio"
@@ -772,7 +781,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                       onChange={() => set("frequency_type", ft)}
                       className="accent-slate-900"
                     />
-                    {ft === "one_time" ? "One Time" : ft === "daily" ? "Daily" : ft === "weekdays" ? "Weekdays" : "Weekly"}
+                    {ft === "one_time" ? "One Time" : ft === "daily" ? "Daily" : ft === "weekdays" ? "Weekdays" : ft === "weekly" ? "Weekly" : "Monthly"}
                   </label>
                 ))}
               </div>
@@ -791,11 +800,27 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 </div>
               )}
 
+              {form.frequency_type === "monthly" && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs text-slate-600">Repeat Every</span>
+                  <select
+                    value={form.repeat_months}
+                    onChange={(e) => set("repeat_months", Number(e.target.value) as any)}
+                    className="rounded-xl border px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 w-20"
+                  >
+                    {MONTH_OPTIONS.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                  <span className="text-xs text-slate-600">Month{form.repeat_months > 1 ? "s" : ""}</span>
+                </div>
+              )}
+
               {form.frequency_type !== "one_time" && (
                 <div className="mt-1 text-[11px] text-slate-500">
                   {form.frequency_type === "weekdays"
                     ? "Appointments will be created for weekdays (Mon–Fri) over the next 26 weeks."
-                    : "Appointments will be created for the next 26 weeks from the start date."}
+                    : form.frequency_type === "monthly"
+                      ? "Appointments will be created for the next 24 months from the start date."
+                      : "Appointments will be created for the next 26 weeks from the start date."}
                 </div>
               )}
             </div>
@@ -810,13 +835,14 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               return (
                 <div className="rounded-xl border bg-slate-50 px-3 py-2 flex items-center justify-between">
                   <span className="text-xs text-slate-500">One-time appointment</span>
-                  <button type="button" onClick={() => { setManageFreq("one_time"); setManageWeeks(1); setShowManageRecurrence(true); }}
+                  <button type="button" onClick={() => { setManageFreq("one_time"); setManageWeeks(1); setManageMonths(1); setShowManageRecurrence(true); }}
                     className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">Manage &gt;</button>
                 </div>
               );
             }
 
             const rw = editing.appointment.repeat_weeks ?? 1;
+            const rm = editing.appointment.repeat_months ?? 1;
             const sid = editing.appointment.series_id;
             const currentTime = new Date(editing.appointment.scheduled_for).getTime();
 
@@ -832,13 +858,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               ? "Daily"
               : ft === "weekdays"
                 ? "Weekdays (Mon–Fri)"
-                : rw === 1 ? "Weekly" : `Weekly • Every ${rw} weeks`;
+                : ft === "monthly"
+                  ? (rm === 1 ? "Monthly" : `Monthly • Every ${rm} months`)
+                  : rw === 1 ? "Weekly" : `Weekly • Every ${rw} weeks`;
 
             return (
               <div className="rounded-xl border bg-slate-50 px-3 py-2.5">
                 <div className="flex items-center justify-between">
                   <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Recurring Schedule</div>
-                  <button type="button" onClick={() => { setManageFreq(ft!); setManageWeeks(rw); setShowManageRecurrence(true); }}
+                  <button type="button" onClick={() => { setManageFreq(ft!); setManageWeeks(rw); setManageMonths(rm); setShowManageRecurrence(true); }}
                     className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">Manage &gt;</button>
                 </div>
                 <div className="text-sm font-medium text-slate-900 mt-1">{intervalLabel}</div>
@@ -859,12 +887,12 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-2">Change to:</label>
                 <div className="flex flex-wrap gap-x-4 gap-y-2">
-                  {(["one_time", "daily", "weekdays", "weekly"] as const).map((ft) => (
+                  {(["one_time", "daily", "weekdays", "weekly", "monthly"] as const).map((ft) => (
                     <label key={ft} className="flex items-center gap-1.5 text-sm cursor-pointer">
                       <input type="radio" name="manage_freq" checked={manageFreq === ft}
-                        onChange={() => { setManageFreq(ft); if (ft !== "weekly") setManageWeeks(1); }}
+                        onChange={() => { setManageFreq(ft); if (ft !== "weekly") setManageWeeks(1); if (ft !== "monthly") setManageMonths(1); }}
                         className="accent-slate-900" />
-                      {ft === "one_time" ? "One-time" : ft === "daily" ? "Daily" : ft === "weekdays" ? "Weekdays" : "Weekly"}
+                      {ft === "one_time" ? "One-time" : ft === "daily" ? "Daily" : ft === "weekdays" ? "Weekdays" : ft === "weekly" ? "Weekly" : "Monthly"}
                     </label>
                   ))}
                 </div>
@@ -881,9 +909,20 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 </div>
               )}
 
+              {manageFreq === "monthly" && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-600">Repeat every</span>
+                  <select value={manageMonths} onChange={(e) => setManageMonths(Number(e.target.value))}
+                    className="rounded-xl border px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 w-20">
+                    {MONTH_OPTIONS.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                  <span className="text-xs text-slate-600">month{manageMonths > 1 ? "s" : ""}</span>
+                </div>
+              )}
+
               {manageFreq !== "one_time" && (
                 <div className="text-xs text-slate-500">
-                  This will create approximately {countFutureOccurrences(manageFreq, manageWeeks, new Date(editing.appointment.scheduled_for))} future appointments.
+                  This will create approximately {countFutureOccurrences(manageFreq, manageWeeks, new Date(editing.appointment.scheduled_for), manageMonths)} future appointments.
                 </div>
               )}
               {manageFreq === "one_time" && editing.appointment.series_id && (

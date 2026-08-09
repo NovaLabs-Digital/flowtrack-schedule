@@ -27,10 +27,24 @@ export async function POST(req: Request) {
     const appointmentId = (body.appointment_id || "").trim();
     const newFrequency: string = (body.frequency_type || "one_time").trim();
     const newRepeatWeeks: number = typeof body.repeat_weeks === "number" ? body.repeat_weeks : 1;
+    // Phase 2 (Monthly Recurring Appointments): null whenever the new
+    // recurrence isn't monthly -- mirrors newRepeatWeeks' role for a
+    // weekly series, stored in its own additive column (migrations/023).
+    const newRepeatMonths: number | null = typeof body.repeat_months === "number" ? body.repeat_months : null;
 
     if (!appointmentId) return json({ error: "Missing appointment_id" }, 400);
-    if (!["one_time", "daily", "weekdays", "weekly"].includes(newFrequency)) {
+    if (!["one_time", "daily", "weekdays", "weekly", "monthly"].includes(newFrequency)) {
       return json({ error: "Invalid frequency_type" }, 400);
+    }
+    // Rejected clearly here, before any read/write below, rather than
+    // silently falling through to generateFutureDates' own fail-safe (which
+    // would produce zero future occurrences and leave the series looking
+    // like a one-time appointment despite frequency_type being saved as
+    // "monthly").
+    if (newFrequency === "monthly") {
+      if (!Number.isInteger(newRepeatMonths) || (newRepeatMonths as number) < 1 || (newRepeatMonths as number) > 12) {
+        return json({ error: "Repeat interval must be a whole number of months between 1 and 12." }, 400);
+      }
     }
 
     const isTester = session.role === "tester";
@@ -38,7 +52,7 @@ export async function POST(req: Request) {
 
     const { data: appt, error: fetchErr } = await supabaseAdmin
       .from("appointments")
-      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, status, is_demo, price_cents, team_color")
+      .select("id, client_id, service_type, scheduled_for, scheduled_end, notes, duration_minutes, employee_id, series_id, frequency_type, repeat_weeks, repeat_months, status, is_demo, price_cents, team_color")
       .eq("id", appointmentId)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
@@ -90,6 +104,7 @@ export async function POST(req: Request) {
       .update({
         frequency_type: newFrequency,
         repeat_weeks: newRepeatWeeks,
+        repeat_months: newRepeatMonths,
         series_id: newSeriesId,
       })
       .eq("id", appointmentId)
@@ -101,7 +116,7 @@ export async function POST(req: Request) {
 
     if (isNewRecurring) {
       const startDate = new Date(appt.scheduled_for);
-      const futureDates = generateFutureDates(startDate, newFrequency, newRepeatWeeks);
+      const futureDates = generateFutureDates(startDate, newFrequency, newRepeatWeeks, newRepeatMonths ?? undefined);
 
       let endOffsetMs = 0;
       if (appt.scheduled_end) {
@@ -136,6 +151,7 @@ export async function POST(req: Request) {
         series_id: newSeriesId,
         frequency_type: newFrequency,
         repeat_weeks: newRepeatWeeks,
+        repeat_months: newRepeatMonths,
         is_demo: appt.is_demo,
         workspace_id: workspaceId,
       }));

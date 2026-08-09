@@ -105,7 +105,9 @@ function publicBody(overrides: Record<string, unknown> = {}) {
 // series_id/frequency_type/employee_id/price_cents, so this constant is no
 // longer six entries; kept count-agnostic in its name so a future added
 // column doesn't require another rename.
-const HAS_COLUMN_OK: FakeSupabaseFixture[] = [{ error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }];
+// Phase 2 (Monthly Recurring Appointments): an 8th hasColumn() call
+// (repeat_months) was added -- same growth pattern as team_color above.
+const HAS_COLUMN_OK: FakeSupabaseFixture[] = [{ error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }, { error: null }];
 
 describe("POST /api/appointments/create -- authenticated branch entitlement gate (canMutateOperationalData)", () => {
   const FULL_STATES: Array<[string, ReturnType<typeof subscriptionRow>]> = [
@@ -353,6 +355,130 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
     const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
     const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
     assert.equal(rows[0].price_cents, null, "public booking must never accept a client-supplied price");
+  });
+});
+
+describe("Phase 2: Monthly Recurring Appointments on create", () => {
+  test("a valid monthly request (repeat_months: 12) generates the origin plus every future occurrence, storing frequency_type/repeat_months on each row", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      // repeat_months: 12 -> MAX_MONTHLY_HORIZON_MONTHS (24) / 12 = 2 future
+      // occurrences -- three rows total (origin + 2), small enough to assert
+      // on directly, same convention as the weekly repeat_weeks: 26 tests
+      // above.
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12, notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ frequency_type?: string; repeat_months?: number | null; scheduled_for: string }>;
+    assert.equal(rows.length, 3);
+    assert.ok(rows.every((r) => r.frequency_type === "monthly" && r.repeat_months === 12));
+    // The origin appointment's own scheduled_for, unmodified.
+    assert.equal(rows[0].scheduled_for, "2026-08-03T14:00:00.000Z");
+  });
+
+  test("every occurrence in a newly created monthly series receives the identical price snapshot", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12, price_cents: 18500, notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
+    assert.equal(rows.length, 3);
+    assert.ok(rows.every((r) => r.price_cents === 18500), "never re-derived from the service default -- every occurrence gets the exact snapshot provided");
+  });
+
+  test("a monthly series assigns the same employees (including multiple) to every generated occurrence", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } }],
+      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
+      appointment_employees: [{ data: null, error: null }, { data: null, error: null }, { data: null, error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12, employee_ids: ["teresa", "roxana"], notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const insertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
+    assert.equal(insertCalls.length, 3, "one assignment-insert call per generated occurrence");
+    for (const call of insertCalls) {
+      const rows = call.args[0] as Array<{ employee_id: string }>;
+      assert.deepEqual(rows.map((r) => r.employee_id), ["teresa", "roxana"]);
+    }
+  });
+
+  test("missing repeat_months on a monthly request is rejected with 400, before any client or appointment write", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ frequency_type: "monthly" })));
+    assert.equal(res.status, 400);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "clients" || c.table === "appointments"), []);
+  });
+
+  for (const bad of [0, -1, 1.5, 13, 100, "12", null]) {
+    test(`repeat_months=${JSON.stringify(bad)} on a monthly request is rejected with 400 -- never silently falls back to a single one-time appointment`, async () => {
+      resetFixtures({
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      });
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: bad })));
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "Repeat interval must be a whole number of months between 1 and 12." });
+      assert.deepEqual(currentFake.calls.filter((c) => c.table === "clients" || c.table === "appointments"), []);
+    });
+  }
+
+  test("a monthly series' notifications are unaffected -- only the first occurrence sends a confirmation, exactly like weekly", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      clients: [{ data: { id: "client-1" } }, { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } }],
+      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12 })));
+    assert.equal(res.status, 200);
+    assert.equal(currentNotify.emailCalls.length, 1, "exactly one confirmation, not one per generated occurrence");
+    assert.equal(currentNotify.smsCalls.length, 1);
+  });
+
+  test("public booking never accepts monthly recurrence even if frequency_type/repeat_months are included in the request body", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { booking_enabled: true } }],
+      services: [{ data: { name: "Haircut", duration_minutes: 45 } }],
+      appointments: [{ data: [] }, ...HAS_COLUMN_OK, { data: [{ id: "appt-public-1" }] }],
+      clients: [
+        { data: null },
+        { data: null },
+        { data: { id: "new-client-1" } },
+        { data: { name: "Jane Public", email: "jane@public.example", phone: "+15559876543", auto_email: true, auto_sms: true } },
+      ],
+      messages_sent: [{ error: null }, { error: null }],
+    });
+    sessionToReturn = { role: "none" };
+    const res = await POST(req(publicBody({ frequency_type: "monthly", repeat_months: 3 })));
+    assert.equal(res.status, 200);
+    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
+    const rows = insertCall!.args[0] as Array<{ frequency_type?: string; repeat_months?: number | null }>;
+    assert.equal(rows.length, 1, "public booking is always a single, unrecurring appointment");
+    assert.equal(rows[0].frequency_type, "one_time");
+    assert.equal(rows[0].repeat_months, null);
   });
 });
 

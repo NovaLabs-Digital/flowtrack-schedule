@@ -109,6 +109,11 @@ function freqLabel(a: Appointment): string {
     if (w === 1) return "Weekly";
     return `Every ${w} wks`;
   }
+  if (a.frequency_type === "monthly") {
+    const m = a.repeat_months ?? 1;
+    if (m === 1) return "Monthly";
+    return `Every ${m} mo`;
+  }
   return "";
 }
 
