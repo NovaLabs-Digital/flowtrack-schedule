@@ -152,9 +152,9 @@ describe("notice block", () => {
 describe("non-mutating desktop controls remain available", () => {
   test("Today/Prev/Next navigation buttons carry no capability guard", () => {
     assert.ok(source.includes("onClick={onGoToday}"));
-    assert.ok(source.includes("onClick={() => onWeekChange(weekOffset - 1)}"));
-    assert.ok(source.includes("onClick={() => onWeekChange(weekOffset + 1)}"));
-    for (const handler of ["onClick={onGoToday}", "onClick={() => onWeekChange(weekOffset - 1)}", "onClick={() => onWeekChange(weekOffset + 1)}"]) {
+    assert.ok(source.includes("onClick={handlePrev}"));
+    assert.ok(source.includes("onClick={handleNext}"));
+    for (const handler of ["onClick={onGoToday}", "onClick={handlePrev}", "onClick={handleNext}"]) {
       const idx = source.indexOf(handler);
       const block = source.slice(Math.max(0, idx - 50), idx);
       assert.ok(!block.includes("canMutateOperationalData"));
@@ -163,6 +163,54 @@ describe("non-mutating desktop controls remain available", () => {
 
   test("Sign Out remains unconditional", () => {
     assert.ok(source.includes("onClick={handleLogout}"));
+  });
+});
+
+describe("Phase 3: Month-view navigation (handlePrev/handleNext branch by viewMode)", () => {
+  test("monthOffset/onMonthChange are optional props, additive to the existing weekOffset/onWeekChange pair", () => {
+    assert.match(source, /monthOffset\?:\s*number;/);
+    assert.match(source, /onMonthChange\?:\s*\(offset: number\) => void;/);
+  });
+
+  test("handlePrev/handleNext call onMonthChange (not onWeekChange) when viewMode is \"month\"", () => {
+    const prevIdx = source.indexOf("function handlePrev()");
+    const prevBody = source.slice(prevIdx, source.indexOf("}", prevIdx));
+    assert.match(prevBody, /if \(viewMode === "month"\) onMonthChange\?\.\(\(monthOffset \?\? 0\) - 1\);/);
+    assert.match(prevBody, /else onWeekChange\(weekOffset - 1\);/);
+
+    const nextIdx = source.indexOf("function handleNext()");
+    const nextBody = source.slice(nextIdx, source.indexOf("}", nextIdx));
+    assert.match(nextBody, /if \(viewMode === "month"\) onMonthChange\?\.\(\(monthOffset \?\? 0\) \+ 1\);/);
+    assert.match(nextBody, /else onWeekChange\(weekOffset \+ 1\);/);
+  });
+
+  test("the mobile branch's Prev/Next buttons are untouched -- still call onWeekChange directly, no month-aware branching (mobile has no Month view)", () => {
+    const mobileBranchStart = source.indexOf("if (isMobile) {");
+    const mobileBranchEnd = source.indexOf("// --- DESKTOP TOP BAR");
+    const mobileBranch = source.slice(mobileBranchStart, mobileBranchEnd);
+    assert.ok(mobileBranch.includes("onClick={() => onWeekChange(weekOffset - 1)}"));
+    assert.ok(mobileBranch.includes("onClick={() => onWeekChange(weekOffset + 1)}"));
+    assert.ok(!mobileBranch.includes("handlePrev"));
+    assert.ok(!mobileBranch.includes("handleNext"));
+  });
+
+  test("DashboardShell passes monthOffset/onMonthChange/viewMode to the desktop TopBar", () => {
+    const idx = shellSource.indexOf("<TopBar");
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /monthOffset=\{monthOffset\}/);
+    assert.match(jsx, /onMonthChange=\{setMonthOffset\}/);
+    assert.match(jsx, /viewMode=\{viewMode\}/);
+    // Confirms this is still the desktop call site, not the mobile toggle
+    // row's separate (unrelated) usage -- isMobile is never passed here.
+    assert.ok(!jsx.includes("isMobile"));
+  });
+
+  test("DashboardShell's handleGoToday resets monthOffset alongside weekOffset -- \"Today\" returns to the current calendar month in Month view", () => {
+    const fnIdx = shellSource.indexOf("function handleGoToday()");
+    const fnBody = shellSource.slice(fnIdx, shellSource.indexOf("\n  }", fnIdx));
+    assert.ok(fnBody.includes("setWeekOffset(0);"));
+    assert.ok(fnBody.includes("setMonthOffset(0);"));
   });
 });
 

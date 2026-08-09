@@ -52,3 +52,30 @@ describe("LeftBar.tsx -- Contact / Need Help? link (post-launch correction)", ()
     assert.ok(!block.includes("CapabilityGatedButton"));
   });
 });
+
+describe("Phase 3: Month appears as a fourth View option, after Day/Weekdays/Week", () => {
+  test("the View section renders exactly four NavButtons: Day, Weekdays, Week, Month, in that order", () => {
+    const viewSectionIdx = source.indexOf('<div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 px-1 mb-2">');
+    const clientsSectionIdx = source.indexOf("{/* Clients */}");
+    assert.notEqual(viewSectionIdx, -1);
+    assert.notEqual(clientsSectionIdx, -1);
+    const viewSection = source.slice(viewSectionIdx, clientsSectionIdx);
+    const labels = [...viewSection.matchAll(/>\s*(Day|Weekdays|Week|Month)\s*<\/NavButton>/g)].map((m) => m[1]);
+    assert.deepEqual(labels, ["Day", "Weekdays", "Week", "Month"]);
+  });
+
+  test("the Month button calls onChangeView(\"month\") and is active only when viewMode is \"month\" and centerMode is \"schedule\"", () => {
+    const idx = source.indexOf('onClick={() => onChangeView("month")}');
+    assert.notEqual(idx, -1);
+    const block = source.slice(Math.max(0, idx - 200), idx);
+    assert.match(block, /active=\{viewMode === "month" && centerMode === "schedule"\}/);
+  });
+
+  test("Month does not silently reuse the Week icon/behavior -- it is its own NavButton entry, not a relabeled duplicate", () => {
+    const weekIdx = source.indexOf('onClick={() => onChangeView("week")}');
+    const monthIdx = source.indexOf('onClick={() => onChangeView("month")}');
+    assert.notEqual(weekIdx, -1);
+    assert.notEqual(monthIdx, -1);
+    assert.ok(weekIdx < monthIdx, "Month must render after Week, not replace it");
+  });
+});

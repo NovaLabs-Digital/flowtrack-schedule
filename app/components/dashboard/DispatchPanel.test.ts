@@ -238,6 +238,24 @@ describe("read-only actions and navigation remain unconditional", () => {
   });
 });
 
+describe("Phase 3 (Month Calendar View): Projected Revenue / Weekly Worked Hours remain fully decoupled from the selected schedule view", () => {
+  test("DashboardShell's <DispatchPanel> call site never passes weekOffset, monthOffset, or viewMode -- rangeStart/rangeEnd are DispatchPanel's own independent state (see the test above), so there is no prop through which Month view (or any view) could influence them", () => {
+    const idx = shellSource.indexOf("<DispatchPanel");
+    assert.notEqual(idx, -1, "DispatchPanel must be rendered in DashboardShell");
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    for (const forbidden of ["weekOffset", "monthOffset", "viewMode"]) {
+      assert.ok(!jsx.includes(forbidden), `DispatchPanel invocation must not receive "${forbidden}"`);
+    }
+  });
+
+  test("this file itself never references monthOffset or a Month-view concept -- Projected Revenue/Weekly Worked Hours logic is completely untouched by Phase 3", () => {
+    assert.ok(!source.includes("monthOffset"));
+    assert.ok(!source.includes("ScheduleMonthGrid"));
+    assert.ok(!source.includes('viewMode === "month"'));
+  });
+});
+
 describe("employee Start/Complete Job actions are untouched (separate component, separate file, separate policy)", () => {
   test("this file does not import EmployeeJobActionButton and does not call the employee job route", () => {
     // Checked against actual usage patterns, not a whole-file substring

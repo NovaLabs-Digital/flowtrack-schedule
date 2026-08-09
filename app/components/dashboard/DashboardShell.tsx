@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import TopBar from "@/app/components/dashboard/TopBar";
 import LeftBar from "@/app/components/dashboard/LeftBar";
 import ScheduleGrid from "@/app/components/dashboard/ScheduleGrid";
+import ScheduleMonthGrid from "@/app/components/dashboard/ScheduleMonthGrid";
 import DashboardSettingsArea from "@/app/components/dashboard/DashboardSettingsArea";
 import ClientPanel from "@/app/components/dashboard/ClientPanel";
 import AppointmentDetailPanel from "@/app/components/dashboard/AppointmentDetailPanel";
@@ -87,6 +88,13 @@ export default function DashboardShell({
   const [modal, setModal] = useState<ModalState | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
+  // Phase 3: months relative to the current calendar month, for Month view
+  // only -- deliberately a separate counter from weekOffset (see TopBar's
+  // handlePrev/handleNext), never mixed into the same week-based
+  // arithmetic. Switching views never resets or synchronizes either
+  // counter against the other (see onChangeView below), matching the
+  // approved "no complicated cross-view state synchronization" scope.
+  const [monthOffset, setMonthOffset] = useState(0);
   const [clientsHidden, setClientsHidden] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
@@ -191,6 +199,12 @@ export default function DashboardShell({
     setCenterMode("schedule");
     setSelectedApptId(null);
     setWeekOffset(0);
+    // Phase 3: harmless no-op outside Month view (monthOffset only affects
+    // ScheduleMonthGrid's rendering) -- resetting it unconditionally here,
+    // alongside weekOffset, is what makes "Today" correctly return to the
+    // current calendar month whenever Month view is active, without any
+    // viewMode branching.
+    setMonthOffset(0);
   }
 
   function handleAdd() {
@@ -343,31 +357,54 @@ export default function DashboardShell({
           onAdd={handleAdd}
           weekOffset={weekOffset}
           onWeekChange={setWeekOffset}
+          monthOffset={monthOffset}
+          onMonthChange={setMonthOffset}
+          viewMode={viewMode}
           canMutateOperationalData={entitlement.canMutateOperationalData}
         />
 
         <div className="flex-1 min-h-0 flex flex-col px-2 pb-2">
           {centerMode === "schedule" ? (
             <>
-              {/* Schedule grid — 68% of available height */}
+              {/* Schedule grid — 68% of available height. Phase 3: Month view
+                  swaps in the dedicated ScheduleMonthGrid overview here;
+                  Day/Weekdays/Week continue to render through the existing
+                  hourly ScheduleGrid, completely unchanged. Everything else
+                  on this page (left bar, top bar, dispatch panel, client/
+                  appointment detail area below) is identical regardless of
+                  which one renders. */}
               <div data-tour="schedule-grid" className="min-h-0 pb-2" style={{ flex: "68 1 0%" }}>
-                <ScheduleGrid
-                  viewMode={viewMode}
-                  clients={clients}
-                  appointments={appointments}
-                  services={services}
-                  employees={employees}
-                  employeeHours={employeeHoursState}
-                  assignments={assignments}
-                  selectedClientId={selectedClientId}
-                  selectedAppointmentId={selectedApptId}
-                  onSelectAppointment={handleSelectAppointment}
-                  onEditAppointment={handleEditAppointment}
-                  onCellClick={handleCellClick}
-                  onDropAppointment={handleDropAppointment}
-                  weekOffset={weekOffset}
-                  canMutateOperationalData={entitlement.canMutateOperationalData}
-                />
+                {viewMode === "month" ? (
+                  <ScheduleMonthGrid
+                    appointments={appointments}
+                    clients={clients}
+                    employees={employees}
+                    assignments={assignments}
+                    selectedClientId={selectedClientId}
+                    selectedAppointmentId={selectedApptId}
+                    onSelectAppointment={handleSelectAppointment}
+                    onEditAppointment={handleEditAppointment}
+                    monthOffset={monthOffset}
+                  />
+                ) : (
+                  <ScheduleGrid
+                    viewMode={viewMode}
+                    clients={clients}
+                    appointments={appointments}
+                    services={services}
+                    employees={employees}
+                    employeeHours={employeeHoursState}
+                    assignments={assignments}
+                    selectedClientId={selectedClientId}
+                    selectedAppointmentId={selectedApptId}
+                    onSelectAppointment={handleSelectAppointment}
+                    onEditAppointment={handleEditAppointment}
+                    onCellClick={handleCellClick}
+                    onDropAppointment={handleDropAppointment}
+                    weekOffset={weekOffset}
+                    canMutateOperationalData={entitlement.canMutateOperationalData}
+                  />
+                )}
               </div>
 
               {/* Client workspace — 32% of available height */}

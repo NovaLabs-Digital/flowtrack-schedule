@@ -100,6 +100,13 @@ export default function LeftBar({
           >
             Week
           </NavButton>
+          <NavButton
+            icon="&#128467;"
+            active={viewMode === "month" && centerMode === "schedule"}
+            onClick={() => onChangeView("month")}
+          >
+            Month
+          </NavButton>
         </div>
       </div>
 

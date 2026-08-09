@@ -18,6 +18,14 @@ export default function TopBar({
   onAdd,
   weekOffset,
   onWeekChange,
+  // Phase 3: months relative to the current calendar month, consulted only
+  // when viewMode === "month" -- kept as its own pair of props rather than
+  // overloading weekOffset/onWeekChange, since month navigation is true
+  // calendar-month arithmetic, not a week-based shift. Both optional so
+  // every other caller (and the mobile branch below, which has no Month
+  // view) is unaffected by their absence.
+  monthOffset,
+  onMonthChange,
   isMobile,
   viewMode,
   onChangeView,
@@ -27,6 +35,8 @@ export default function TopBar({
   onAdd: () => void;
   weekOffset: number;
   onWeekChange: (offset: number) => void;
+  monthOffset?: number;
+  onMonthChange?: (offset: number) => void;
   isMobile?: boolean;
   viewMode?: ViewMode;
   onChangeView?: (m: ViewMode) => void;
@@ -53,6 +63,19 @@ export default function TopBar({
       await fetch("/api/auth/logout", { method: "POST" });
     } catch {}
     router.push("/");
+  }
+
+  // Phase 3: Prev/Next mean "previous/next calendar month" in Month view,
+  // and "previous/next week" everywhere else -- existing Day/Weekdays/Week
+  // behavior (weekOffset-based) is completely unchanged; only Month view
+  // gets a new branch here.
+  function handlePrev() {
+    if (viewMode === "month") onMonthChange?.((monthOffset ?? 0) - 1);
+    else onWeekChange(weekOffset - 1);
+  }
+  function handleNext() {
+    if (viewMode === "month") onMonthChange?.((monthOffset ?? 0) + 1);
+    else onWeekChange(weekOffset + 1);
   }
 
   if (isMobile) {
@@ -141,13 +164,13 @@ export default function TopBar({
             Today
           </button>
           <button
-            onClick={() => onWeekChange(weekOffset - 1)}
+            onClick={handlePrev}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
           >
             ← Prev
           </button>
           <button
-            onClick={() => onWeekChange(weekOffset + 1)}
+            onClick={handleNext}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
           >
             Next →

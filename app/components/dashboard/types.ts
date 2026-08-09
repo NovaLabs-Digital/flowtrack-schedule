@@ -108,6 +108,9 @@ export type AppointmentEmployeeAssignment = {
 };
 
 export type MobileTab = "schedule" | "clients" | "settings" | "map";
-export type ViewMode = "day" | "weekdays" | "week";
+// Phase 3: "month" added for the Month calendar overview -- an explicit,
+// additional view state, never a silent fallback onto "week". See
+// ScheduleMonthGrid.tsx (rendering) and DashboardShell.tsx (navigation).
+export type ViewMode = "day" | "weekdays" | "week" | "month";
 export type CenterMode = "schedule" | "settings";
 export type SettingsSection = "company" | "services" | "staff" | "archived";
