@@ -547,6 +547,13 @@ describe("only the approved routes reference the capability gates -- every other
     // files already appear above (their existing POST/PATCH mutation
     // guards), so only this genuinely new file needs adding here.
     path.join("app", "api", "clients", "archived", "route.ts"),
+    // Block 2B (Automatic Recurring-Series Replenishment) -- the owner
+    // review queue (canViewExistingData, same read-gate precedent as
+    // clients/archived above) and its one mutation, activation
+    // (canMutateOperationalData, same gate every other appointment-adjacent
+    // mutation route uses).
+    path.join("app", "api", "recurring-series", "route.ts"),
+    path.join("app", "api", "recurring-series", "activate", "route.ts"),
   ];
 
   // Server-trusted-workspace gate: no session exists at this call site at

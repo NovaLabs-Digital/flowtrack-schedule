@@ -477,6 +477,11 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation notificat
         { data: [{ id: "appt-1" }, { id: "appt-2" }] }, // target ids query
         { error: null }, // bulk cancel
       ],
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // observe
+        { data: [{ id: "series-1" }] }, // quarantine
+        { data: [{ id: "series-1" }] }, // finalize stopped
+      ],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", mode: "future", notify_channel: "both" }));
@@ -498,12 +503,21 @@ describe("existing cancellation business rules remain unchanged once entitled", 
         { data: [{ id: "appt-1" }, { id: "appt-2" }, { id: "appt-3" }] }, // target ids query
         { error: null }, // bulk cancel
       ],
+      // Block 2B safety correction: "Delete This & Future" observes the
+      // series as active, quarantines it to review_required BEFORE the bulk
+      // cancel, then finalizes it stopped after -- two recurring_series
+      // writes, never best-effort.
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // observe
+        { data: [{ id: "series-1" }] }, // quarantine
+        { data: [{ id: "series-1" }] }, // finalize stopped
+      ],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, cancelled: 3 });
-    assert.equal(writeCalls(currentFake.calls).length, 1); // one bulk update, not one per row
+    assert.equal(writeCalls(currentFake.calls).length, 3); // bulk update to appointments + quarantine + finalize-stopped
   });
 
   test("appointment not found still 404s with the existing message, after entitlement passes", async () => {
@@ -566,5 +580,186 @@ describe("Phase 5.5E-C: the notification gate is source-correctly placed and sco
 
   test("the notification gate uses the same trusted workspaceId already used for the canMutateOperationalData gate, never a new/request-derived value", () => {
     assert.ok(routeSource.includes("const workspaceId = session.workspaceId;"));
+  });
+});
+
+describe("Block 2B safety correction: Delete This & Future is fail-closed around the series' registry row", () => {
+  test("mode='future' with a series_id quarantines then stops that exact series, scoped by id and workspace_id, in that order", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null },
+        { data: [{ id: "appt-1" }] },
+        { error: null },
+      ],
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // observe
+        { data: [{ id: "series-1" }] }, // quarantine
+        { data: [{ id: "series-1" }] }, // finalize stopped
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.warning, undefined);
+
+    const updateCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update");
+    assert.equal(updateCalls.length, 2);
+    assert.equal((updateCalls[0].args[0] as Record<string, unknown>).status, "review_required");
+    assert.equal((updateCalls[1].args[0] as Record<string, unknown>).status, "stopped");
+    const eqCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq");
+    assert.ok(eqCalls.some((c) => (c.args as unknown[])[0] === "id" && (c.args as unknown[])[1] === "series-1"));
+    assert.ok(eqCalls.some((c) => (c.args as unknown[])[0] === "workspace_id" && (c.args as unknown[])[1] === REAL_WORKSPACE_ID));
+
+    // The quarantine (first update) must be recorded before the bulk
+    // appointment cancellation.
+    const quarantineIdx = currentFake.calls.indexOf(updateCalls[0]);
+    const bulkCancelIdx = currentFake.calls.findIndex((c) => c.table === "appointments" && c.method === "update");
+    assert.ok(quarantineIdx < bulkCancelIdx);
+  });
+
+  test("mode='future' with no series_id never touches recurring_series at all", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: null }) },
+        { error: null },
+        { data: [{ id: "appt-1" }] },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+  });
+
+  test("mode='single' (cancelling just one occurrence) never touches recurring_series", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1" }) }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+  });
+
+  test("mode='future' with no live target occurrences at all never touches recurring_series -- nothing was actually mutated", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null },
+        { data: [] }, // no target ids found
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 0 });
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+  });
+
+  test("failure injection: a quarantine failure aborts BEFORE the bulk cancel, 500, zero appointment writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null },
+        { data: [{ id: "appt-1" }] },
+      ],
+      recurring_series: [{ error: { message: "simulated quarantine failure" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 500);
+    const body = await res.json();
+    assert.ok(!JSON.stringify(body).includes("simulated quarantine failure"));
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update"), []);
+  });
+
+  test("race: an expected-active quarantine CAS miss aborts with 409 -- no appointment mutation occurs, and the series is never later reactivated", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null },
+        { data: [{ id: "appt-1" }] },
+      ],
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // observed active
+        { data: [] }, // but the CAS matches nothing -- raced by another request
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 409);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments" && (c.method === "update" || c.method === "insert")), []);
+    assert.equal(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update").length, 1, "only the failed quarantine CAS, no finalize of any kind");
+  });
+
+  test("failure injection: a finalize-stopped failure after a successful bulk cancel still returns success, with a warning", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null },
+        { data: [{ id: "appt-1" }] },
+        { error: null },
+      ],
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // observe
+        { data: [{ id: "series-1" }] }, // quarantine
+        { error: { message: "simulated finalize-stopped failure" } }, // finalize fails
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.cancelled, 1);
+    assert.ok(body.warning);
+    assert.equal(body.warning.code, "recurring_series_review_required");
+  });
+
+  test("race: concurrent lifecycle change during Delete This & Future cannot reactivate a series -- a zero-row finalize-stopped (raced back to something else) warns, never forces the row through another state", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null },
+        { data: [{ id: "appt-1" }] },
+        { error: null },
+      ],
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // observe
+        { data: [{ id: "series-1" }] }, // quarantine succeeds
+        { data: [] }, // finalize-stopped's own compare-and-set matches nothing -- raced
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    // The bulk cancellation already fully succeeded and is never retried or
+    // reported as a failure.
+    assert.equal(body.cancelled, 1);
+    assert.ok(body.warning, "the finalize step silently missed -- must warn, not report silent success");
+    assert.equal(body.warning.code, "recurring_series_review_required");
+    // Exactly the two attempted writes (quarantine + the finalize attempt
+    // that matched zero rows) -- no corrective/forcing write was ever
+    // issued afterward.
+    assert.equal(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update").length, 2);
   });
 });

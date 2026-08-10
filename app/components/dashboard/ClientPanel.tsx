@@ -169,6 +169,10 @@ export default function ClientPanel({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setMessage({ type: "error", text: data?.error || "Failed." }); return; }
+      // Block 2B safety correction: the archive already fully succeeded -- a
+      // registry warning is informational only and must never trigger a
+      // retry of that (already-successful) mutation.
+      if (data?.warning?.message) alert(data.warning.message);
       setMessage({ type: "success", text: action === "archive" ? "Client archived." : "Client restored." });
       onClientUpdated();
     } catch { setMessage({ type: "error", text: "Network error." }); }

@@ -16,6 +16,15 @@ import {
   fetchEmployeeHoursForAppointments,
 } from "@/lib/appointmentEmployees";
 import { validateTeamColorInput } from "@/lib/teamColor";
+import {
+  quarantineIfObservedActive,
+  finalizeSeriesActive,
+  fetchSeriesById,
+  fetchLiveOccurrenceSnapshots,
+  evaluateSeriesConsistency,
+  RECURRING_SERIES_REVIEW_WARNING,
+} from "@/lib/recurringSeries";
+import { effectiveTimezone } from "@/lib/timezone";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -168,6 +177,37 @@ export async function PATCH(req: Request) {
       }
     }
 
+    // Block 2B safety correction: a "This & Future" edit to an appointment
+    // belonging to an ACTIVE series must quarantine that series to
+    // review_required BEFORE any appointment row is mutated -- a "single"
+    // edit never touches the registry at all, matching every other route's
+    // "abort before appointment mutation" invariant. quarantineIfObservedActive
+    // explicitly observes the row's current status first, so a zero-row
+    // compare-and-set result is only ever a safe no-op when that
+    // observation already showed the series wasn't active; if it WAS
+    // observed active and the transition then matches nothing, that's a
+    // genuine concurrent change -- abort with 409 and never touch a single
+    // appointment row. oldSeriesWasActive is remembered so the post-mutation
+    // re-finalize step below only ever attempts to reactivate a series this
+    // same request actually quarantined -- it must never auto-activate a
+    // legacy review_required series just because one of its occurrences
+    // happened to be edited.
+    const seriesInvolved = mode === "future" && !!existingData.series_id;
+    let oldSeriesWasActive = false;
+    if (seriesInvolved) {
+      let outcome: Awaited<ReturnType<typeof quarantineIfObservedActive>>;
+      try {
+        outcome = await quarantineIfObservedActive(existingData.series_id!, workspaceId);
+      } catch (err) {
+        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
+        return json({ error: "Unable to prepare this recurring series for changes right now. Please try again." }, 500);
+      }
+      if (outcome.outcome === "conflict") {
+        return json({ error: "This recurring series was changed by another request. Please refresh and try again." }, 409);
+      }
+      oldSeriesWasActive = outcome.outcome === "quarantined";
+    }
+
     const apptUpdate: Record<string, any> = {};
     if (body.service_type !== undefined)
       apptUpdate.service_type = body.service_type.trim();
@@ -281,6 +321,57 @@ export async function PATCH(req: Request) {
           await applyAssignmentSync(sib.id, workspaceId, sibPlan.toAdd, sibPlan.toRemove);
         }
       }
+
+    }
+
+    // Block 2B safety correction: re-finalize the series ONLY if it was
+    // actually active (and therefore quarantined) at the top of this
+    // request -- a legacy review_required series must never be silently
+    // auto-activated just because one of its occurrences was edited; that
+    // remains exclusively an explicit owner action via
+    // app/api/recurring-series/activate. This is the confirmed template's
+    // fields (service, price, duration, notes, team color, employee
+    // assignments) moving forward via template_appointment_id -- the
+    // registry never duplicates those values itself, it only points at the
+    // appointment row that carries them. Anchor date/time/timezone are
+    // recomputed from the edited appointment's own current scheduled_for,
+    // a no-op when the time didn't actually change.
+    let registryWarning = false;
+    if (seriesInvolved && oldSeriesWasActive) {
+      try {
+        const { data: settings } = await supabaseAdmin
+          .from("company_settings")
+          .select("timezone")
+          .eq("workspace_id", workspaceId)
+          .maybeSingle();
+        const timezone = effectiveTimezone(settings?.timezone);
+
+        const seriesRow = await fetchSeriesById(existingData.series_id!, workspaceId);
+        const liveOccurrences = await fetchLiveOccurrenceSnapshots(existingData.series_id!, workspaceId);
+        const consistency = seriesRow
+          ? evaluateSeriesConsistency(liveOccurrences, appointment_id, seriesRow.frequency_type, timezone, seriesRow.repeat_months)
+          : ({ ok: false, blockers: [] } as const);
+
+        if (consistency.ok) {
+          const outcome = await finalizeSeriesActive({
+            seriesId: existingData.series_id!,
+            workspaceId,
+            clientId: existingData.client_id,
+            templateAppointmentId: appointment_id,
+            scheduledForIso: apptUpdate.scheduled_for ?? existingData.scheduled_for,
+            timezone,
+          });
+          if (outcome.outcome !== "activated") registryWarning = true;
+        } else {
+          // Stays quarantined in review_required -- the resulting live tail
+          // no longer agrees, so this requires explicit owner review rather
+          // than an automatic reactivation.
+          registryWarning = true;
+        }
+      } catch (err) {
+        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
+        registryWarning = true;
+      }
     }
 
     const clientUpdate: Record<string, any> = {};
@@ -362,7 +453,7 @@ export async function PATCH(req: Request) {
       }
     }
 
-    return json({ ok: true });
+    return json({ ok: true, ...(registryWarning ? { warning: RECURRING_SERIES_REVIEW_WARNING } : {}) });
   } catch (e: any) {
     console.error("UPDATE_APPOINTMENT_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);

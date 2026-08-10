@@ -15,6 +15,7 @@ const TABS: { key: SettingsSection; label: string }[] = [
   { key: "services", label: "Services" },
   { key: "staff", label: "Employees" },
   { key: "archived", label: "Archived Clients" },
+  { key: "recurring", label: "Recurring Series" },
 ];
 
 const ANCHOR_TABS: { label: string; anchor: string }[] = [

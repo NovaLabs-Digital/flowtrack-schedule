@@ -15,6 +15,7 @@ import { effectiveTimezone } from "@/lib/timezone";
 import { isValidPriceCents } from "@/lib/money";
 import { dedupeEmployeeIds, deriveLegacyEmployeeId, validateEmployeeIdsInWorkspace, insertAssignments } from "@/lib/appointmentEmployees";
 import { validateTeamColorInput } from "@/lib/teamColor";
+import { insertQuarantinedSeries, finalizeSeriesActive, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -300,6 +301,33 @@ export async function POST(req: Request) {
     const isRecurring = dates.length > 1;
     const seriesId = isRecurring ? crypto.randomUUID() : null;
 
+    // Block 2B safety correction: a new series' registry row is inserted
+    // BEFORE any appointment row -- already quarantined as review_required,
+    // never active. If this insert fails, the request aborts here with zero
+    // appointment/assignment writes, so retrying can never create a
+    // duplicate appointment. clientId is guaranteed non-null here:
+    // isRecurring can only be true via the owner/tester branch (public
+    // bookings always force frequency_type to "one_time"), and that branch
+    // always resolves or creates clientId before reaching this point.
+    if (isRecurring && seriesId && clientId) {
+      try {
+        await insertQuarantinedSeries({
+          seriesId,
+          workspaceId,
+          clientId,
+          isDemo: isTester,
+          frequencyType: frequency_type as "daily" | "weekdays" | "weekly" | "monthly",
+          repeatWeeks: frequency_type === "weekly" ? repeat_weeks : null,
+          repeatMonths: frequency_type === "monthly" ? repeat_months : null,
+          scheduledForIso: scheduled_for,
+          timezone,
+        });
+      } catch (err) {
+        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
+        return json({ error: "Unable to set up this recurring series right now. Please try again." }, 500);
+      }
+    }
+
     // Compute time-of-day offset for scheduled_end
     let endOffsetMs = 0;
     if (scheduled_end) {
@@ -366,6 +394,34 @@ export async function POST(req: Request) {
     }
 
     const firstId = inserted?.[0]?.id;
+
+    // Block 2B safety correction: the appointments/appointment_employees
+    // rows above are already fully committed regardless of what happens
+    // next -- this finalize step never blocks or undoes them. A brand-new
+    // recurring series is explicit owner intent, so on success it moves
+    // straight to active with the first occurrence as its confirmed
+    // template. If this fails, the row (inserted quarantined above) simply
+    // stays review_required -- the appointment creation still succeeded, so
+    // the response is still ok:true, with a non-sensitive warning attached
+    // instead of a generic failure that would invite a client-side retry
+    // and a duplicate appointment.
+    let registryWarning = false;
+    if (isRecurring && seriesId && firstId && clientId) {
+      try {
+        const outcome = await finalizeSeriesActive({
+          seriesId,
+          workspaceId,
+          clientId,
+          templateAppointmentId: firstId,
+          scheduledForIso: scheduled_for,
+          timezone,
+        });
+        if (outcome.outcome !== "activated") registryWarning = true;
+      } catch (err) {
+        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
+        registryWarning = true;
+      }
+    }
 
     // Send confirmation for the first occurrence only — never for demo
     // bookings, regardless of DISABLE_MESSAGES or the client's auto_email/sms.
@@ -434,7 +490,12 @@ export async function POST(req: Request) {
       }
     }
 
-    return json({ ok: true, appointmentId: firstId, created: inserted?.length ?? 1 });
+    return json({
+      ok: true,
+      appointmentId: firstId,
+      created: inserted?.length ?? 1,
+      ...(registryWarning ? { warning: RECURRING_SERIES_REVIEW_WARNING } : {}),
+    });
   } catch (e: any) {
     console.error("CREATE_APPOINTMENT_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);

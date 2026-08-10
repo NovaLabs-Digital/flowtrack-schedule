@@ -523,6 +523,10 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data?.error || `Request failed (${res.status})`); return; }
+      // Block 2B safety correction: the appointment mutation above already
+      // fully succeeded -- a registry warning is informational only and
+      // must never trigger a retry of that (already-successful) mutation.
+      if (data?.warning?.message) alert(data.warning.message);
       if (isEdit && serviceChanged) notifyDemoAction("save-service");
       if (!isEdit) notifyDemoAction("create-appointment");
       onSaved();
@@ -549,6 +553,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data?.error || `Delete failed (${res.status})`); return; }
+      if (data?.warning?.message) alert(data.warning.message);
       onSaved();
     } catch {
       setError("Network error. Please try again.");
@@ -574,6 +579,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data?.error || "Failed to update recurrence."); return; }
+      if (data?.warning?.message) alert(data.warning.message);
       onSaved();
     } catch { setError("Network error."); }
     finally { setSavingRecurrence(false); }

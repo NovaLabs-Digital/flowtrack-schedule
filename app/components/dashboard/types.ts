@@ -113,4 +113,4 @@ export type MobileTab = "schedule" | "clients" | "settings" | "map";
 // ScheduleMonthGrid.tsx (rendering) and DashboardShell.tsx (navigation).
 export type ViewMode = "day" | "weekdays" | "week" | "month";
 export type CenterMode = "schedule" | "settings";
-export type SettingsSection = "company" | "services" | "staff" | "archived";
+export type SettingsSection = "company" | "services" | "staff" | "archived" | "recurring";

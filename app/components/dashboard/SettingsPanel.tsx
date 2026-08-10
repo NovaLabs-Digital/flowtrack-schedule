@@ -5,6 +5,7 @@ import CompanyInfoPanel from "@/app/components/dashboard/CompanyInfoPanel";
 import ServicesPanel from "@/app/components/dashboard/ServicesPanel";
 import StaffPanel from "@/app/components/dashboard/StaffPanel";
 import ArchivedClientsPanel from "@/app/components/dashboard/ArchivedClientsPanel";
+import RecurringSeriesPanel from "@/app/components/dashboard/RecurringSeriesPanel";
 
 export default function SettingsPanel({
   section,
@@ -27,5 +28,6 @@ export default function SettingsPanel({
   if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "staff") return <StaffPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "archived") return <ArchivedClientsPanel canMutateOperationalData={canMutateOperationalData} />;
+  if (section === "recurring") return <RecurringSeriesPanel canMutateOperationalData={canMutateOperationalData} />;
   return null;
 }

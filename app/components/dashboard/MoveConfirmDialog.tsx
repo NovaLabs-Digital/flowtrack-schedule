@@ -72,6 +72,10 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setError(data?.error || `Move failed (${res.status})`); return; }
+      // Block 2B safety correction: the move already fully succeeded -- a
+      // registry warning is informational only and must never trigger a
+      // retry of that (already-successful) mutation.
+      if (data?.warning?.message) alert(data.warning.message);
       onMoved();
     } catch {
       setError("Network error. Please try again.");
