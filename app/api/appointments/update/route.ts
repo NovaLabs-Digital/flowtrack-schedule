@@ -12,13 +12,15 @@ import {
   deriveLegacyEmployeeId,
   validateEmployeeIdsInWorkspace,
   planAssignmentSync,
-  applyAssignmentSync,
+  syncAssignmentsAtomically,
   fetchEmployeeHoursForAppointments,
+  fetchAssignments,
+  type AssignmentSyncOutcome,
 } from "@/lib/appointmentEmployees";
 import { validateTeamColorInput } from "@/lib/teamColor";
 import {
   quarantineIfObservedActive,
-  finalizeSeriesActive,
+  activateSeriesWithSnapshot,
   fetchSeriesById,
   fetchLiveOccurrenceSnapshots,
   evaluateSeriesConsistency,
@@ -36,6 +38,32 @@ async function hasColumn(col: string): Promise<boolean> {
     .select(col)
     .limit(0);
   return !error;
+}
+
+// Block 2C-1: safe, non-raw responses for every non-"synced" outcome
+// sync_appointment_assignments can return. Assignment synchronization is
+// part of this request's own operational mutation, not a best-effort side
+// effect -- every one of these stops the request immediately (see the two
+// call sites below), never reports ok:true, and never leaks a raw
+// SQL/database detail.
+function assignmentSyncErrorResponse(outcome: Exclude<AssignmentSyncOutcome, "synced">) {
+  if (outcome === "employee_not_eligible") {
+    return json(
+      { error: "One or more assigned employees are no longer active or no longer belong to this workspace. Please refresh and try again.", code: "ASSIGNMENT_SYNC_FAILED" },
+      409
+    );
+  }
+  if (outcome === "state_changed") {
+    return json(
+      { error: "This appointment's staff assignments changed since you loaded this page. Please refresh and try again.", code: "ASSIGNMENT_SYNC_FAILED" },
+      409
+    );
+  }
+  // appointment_not_found
+  return json(
+    { error: "This appointment could not be found. Please refresh and try again.", code: "ASSIGNMENT_SYNC_FAILED" },
+    409
+  );
 }
 
 export async function PATCH(req: Request) {
@@ -128,8 +156,8 @@ export async function PATCH(req: Request) {
     // ordinary appointment editing -- if ANY removal anywhere in this
     // request is blocked, the entire request is rejected with zero writes,
     // rather than partially applying some changes and skipping others.
-    let originPlan: { toAdd: string[]; toRemove: string[] } | null = null;
-    const siblingPlans = new Map<string, { toAdd: string[]; toRemove: string[] }>();
+    let originPlan: { toAdd: string[]; toRemove: string[]; currentEmployeeIds: string[] } | null = null;
+    const siblingPlans = new Map<string, { toAdd: string[]; toRemove: string[]; currentEmployeeIds: string[] }>();
 
     if (employee_ids !== undefined) {
       const siblingsForValidation = await fetchSiblings();
@@ -262,7 +290,27 @@ export async function PATCH(req: Request) {
     }
 
     if (originPlan) {
-      await applyAssignmentSync(appointment_id, workspaceId, originPlan.toAdd, originPlan.toRemove);
+      // Block 2C-1: the atomic, shared-lock-coordinated sync -- see
+      // migrations/027a's sync_appointment_assignments for the full
+      // concurrency argument. A non-"synced" outcome stops this request
+      // immediately: the appointment's own scalar fields (apptUpdate,
+      // just above) may already be committed at this point -- this route
+      // makes a sequence of independent PostgREST calls, not one
+      // transaction, so that prior write is NOT rolled back here. What this
+      // check guarantees is narrower but still essential: the request never
+      // reports ok:true while claiming an assignment change that did not
+      // actually apply, and it never proceeds to the recurring-series
+      // registry re-finalize below using a stale or unconfirmed employee
+      // set.
+      const syncResult = await syncAssignmentsAtomically({
+        appointmentId: appointment_id,
+        workspaceId,
+        expectedCurrentEmployeeIds: originPlan.currentEmployeeIds,
+        desiredEmployeeIds: employee_ids!,
+      });
+      if (syncResult.outcome !== "synced") {
+        return assignmentSyncErrorResponse(syncResult.outcome);
+      }
     }
 
     const siblings = await fetchSiblings();
@@ -318,7 +366,23 @@ export async function PATCH(req: Request) {
 
         const sibPlan = siblingPlans.get(sib.id);
         if (sibPlan) {
-          await applyAssignmentSync(sib.id, workspaceId, sibPlan.toAdd, sibPlan.toRemove);
+          // Block 2C-1: same atomic sync as the origin's own call above --
+          // a non-"synced" outcome stops the request immediately, before
+          // any remaining sibling is touched and before the registry
+          // re-finalize step below ever runs. Earlier siblings in this same
+          // loop (and the origin itself) may already be committed -- this
+          // route has never been one transaction, and this correction does
+          // not change that; it only makes THIS one step atomic and its
+          // failure impossible to silently ignore.
+          const syncResult = await syncAssignmentsAtomically({
+            appointmentId: sib.id,
+            workspaceId,
+            expectedCurrentEmployeeIds: sibPlan.currentEmployeeIds,
+            desiredEmployeeIds: employee_ids!,
+          });
+          if (syncResult.outcome !== "synced") {
+            return assignmentSyncErrorResponse(syncResult.outcome);
+          }
         }
       }
 
@@ -353,13 +417,38 @@ export async function PATCH(req: Request) {
           : ({ ok: false, blockers: [] } as const);
 
         if (consistency.ok) {
-          const outcome = await finalizeSeriesActive({
+          // Block 2C-1: re-fetch the edited appointment's own CURRENT, fully
+          // -committed field values -- rather than reconstructing them from
+          // a mix of existingData (pre-update) and apptUpdate's own partial
+          // delta (which only contains fields THIS request happened to
+          // touch). This guarantees the "expected" values passed to the RPC
+          // are a true, fresh reflection of what's actually in the database
+          // right now; the RPC's own lock-and-compare then only has to
+          // prove nothing raced between THIS read and the RPC call itself.
+          const { data: currentAppt, error: currentApptErr } = await supabaseAdmin
+            .from("appointments")
+            .select("service_type, price_cents, duration_minutes, notes, team_color, scheduled_for")
+            .eq("id", appointment_id)
+            .eq("workspace_id", workspaceId)
+            .single();
+          if (currentApptErr) throw currentApptErr;
+          const currentAssignments = await fetchAssignments(appointment_id, workspaceId);
+
+          const outcome = await activateSeriesWithSnapshot({
             seriesId: existingData.series_id!,
             workspaceId,
             clientId: existingData.client_id,
             templateAppointmentId: appointment_id,
-            scheduledForIso: apptUpdate.scheduled_for ?? existingData.scheduled_for,
             timezone,
+            expected: {
+              serviceType: currentAppt.service_type,
+              priceCents: currentAppt.price_cents,
+              durationMinutes: currentAppt.duration_minutes,
+              notes: currentAppt.notes,
+              teamColor: currentAppt.team_color,
+              scheduledForIso: currentAppt.scheduled_for,
+              employeeIds: currentAssignments.map((a) => a.employee_id),
+            },
           });
           if (outcome.outcome !== "activated") registryWarning = true;
         } else {

@@ -249,73 +249,97 @@ export async function finalizeStoppedSeriesByIds(seriesIds: string[], workspaceI
   return ((data as { id: string }[] | null) ?? []).map((r) => r.id);
 }
 
-export type FinalizeActiveOutcome =
-  // The compare-and-set succeeded -- the series is now active.
-  | { outcome: "activated" }
-  // The registry's own client is inactive or archived AT THIS EXACT MOMENT
-  // -- re-checked immediately before the write, not assumed from whatever a
-  // caller observed earlier in its own request. The series stays
-  // review_required; no write is attempted at all. This is what closes the
-  // archive-race window: a client can go active -> (quarantine sweep) ->
-  // inactive while a completely different request is mid-flight trying to
-  // finalize a series for that same client -- this check is what stops that
-  // finalize from ever landing after the fact.
-  | { outcome: "client_not_active" }
-  // The compare-and-set itself matched zero rows -- the series wasn't
-  // review_required anymore (already active, already stopped, or claimed by
-  // a concurrent activation/edit). Never forced through.
-  | { outcome: "conflict" };
+// Block 2C-1: the closed set of outcomes activate_recurring_series (the new
+// PostgreSQL RPC added by migrations/027a) can return. Replaces the prior
+// FinalizeActiveOutcome union one-for-one, plus three new outcomes the
+// RPC's atomic, lock-based validation can now detect that the old
+// application-level compare-and-set never could: "employee_not_eligible"
+// (an assigned employee is no longer active, no longer in this workspace,
+// or no longer exists), "state_changed" (the template appointment's
+// fields, assignments, or identity no longer match what the caller
+// validated -- covers every TOCTOU case a bare application-level
+// read-then-update could never close), and "invalid_timezone" (a
+// production-review hardening: p_anchor_timezone is validated inside the
+// RPC itself, the database's own integrity boundary, never trusted solely
+// from the caller's own effectiveTimezone() resolution).
+export type ActivateSeriesOutcome =
+  | "activated"
+  | "conflict"
+  | "client_not_active"
+  | "employee_not_eligible"
+  | "state_changed"
+  | "invalid_timezone";
 
-// Finalizes a review_required series as active with a confirmed template --
-// the ONLY function anywhere in this codebase that ever sets status to
-// "active". Used identically by owner activation
-// (app/api/recurring-series/activate), a brand-new series's first finalize
-// (Create, Manage Recurrence), and an already-active series's re-finalize
-// after a "This & Future" edit (app/api/appointments/update). Anchor fields
-// are always (re)derived from the given instant -- a no-op overwrite when
-// the instant hasn't actually changed, so callers never need a separate
-// "did the time change" branch.
-//
-// Re-checks the registry's own client status immediately before the write,
-// every single time -- a series must never go active for a client that is
-// inactive/archived at the moment of finalization, regardless of what any
-// caller's own, earlier client check already confirmed. This is the second
-// independent layer (beyond each route's own upfront client check) that
-// closes the specific race where a client is archived while a separate
-// request is concurrently finalizing a series for that same client.
-export async function finalizeSeriesActive(params: {
+// The exact template state TypeScript most recently validated -- passed to
+// activate_recurring_series as explicit, individually-typed parameters
+// (never a concatenated/joined string) so the RPC can compare each field
+// independently, NULL-safely, against the row it locks fresh inside its own
+// transaction. See migrations/027a_add_recurring_series_snapshots.sql's own
+// extensive comment on activate_recurring_series for why a string
+// fingerprint was deliberately rejected (ambiguous the moment notes
+// contains a delimiter character, an empty string, or NULL).
+export type ActivationSnapshotExpected = {
+  serviceType: string;
+  priceCents: number | null;
+  durationMinutes: number | null;
+  notes: string | null;
+  teamColor: string | null;
+  scheduledForIso: string;
+  employeeIds: string[];
+};
+
+// The one canonical ordering rule both TypeScript and the RPC must use for
+// an employee-id set to compare equal -- plain lexicographic sort on the
+// UUID's own text representation, matching evaluateSeriesConsistency's own
+// pre-existing employeeSignature convention and the RPC's
+// `array_agg(... ORDER BY employee_id)` / `array_agg(e ORDER BY e)`.
+export function canonicalizeEmployeeIds(employeeIds: string[]): string[] {
+  return [...employeeIds].sort();
+}
+
+// Activates a review_required series with a confirmed template AND, in the
+// exact same atomic database transaction, captures its immutable
+// snapshot_* fields -- the ONLY function anywhere in this codebase that
+// ever sets recurring_series.status to "active" (delegating entirely to
+// migrations/027a's activate_recurring_series RPC; no application-level
+// read-then-update sequence is ever described as atomic). Used identically
+// by owner activation (app/api/recurring-series/activate), a brand-new
+// series's first activation (Create, Manage Recurrence), and an
+// already-active series's re-activation after a "This & Future" edit
+// (app/api/appointments/update) -- every caller passes the template state
+// it most recently validated (via evaluateSeriesConsistency, for
+// Activation/This & Future; trivially self-consistent for Create/Manage
+// Recurrence, which just built the exact row referenced), and the RPC
+// re-verifies every one of workspace/client/series/template identity,
+// client active status, template liveness, template field equality, and
+// employee eligibility against rows it locks itself, before ever writing
+// anything.
+export async function activateSeriesWithSnapshot(params: {
   seriesId: string;
   workspaceId: string;
   clientId: string;
   templateAppointmentId: string;
-  scheduledForIso: string;
   timezone: string;
-}): Promise<FinalizeActiveOutcome> {
-  const { data: client, error: clientErr } = await supabaseAdmin
-    .from("clients")
-    .select("id, status, archived_at")
-    .eq("id", params.clientId)
-    .eq("workspace_id", params.workspaceId)
-    .maybeSingle();
-  if (clientErr) {
-    throw new RecurringSeriesRegistryError(
-      `Failed to verify client status before activating recurring_series ${params.seriesId}`,
-      clientErr
-    );
-  }
-  if (!client || client.status === "inactive" || client.archived_at) {
-    return { outcome: "client_not_active" };
-  }
-
-  const transitioned = await compareAndSetStatus(params.seriesId, params.workspaceId, "review_required", {
-    template_appointment_id: params.templateAppointmentId,
-    anchor_local_date: zonedDateValue(params.scheduledForIso, params.timezone),
-    anchor_local_time: zonedTimeValue(params.scheduledForIso, params.timezone),
-    anchor_timezone: params.timezone,
-    reviewed_at: new Date().toISOString(),
-    status: "active",
+  expected: ActivationSnapshotExpected;
+}): Promise<{ outcome: ActivateSeriesOutcome }> {
+  const { data, error } = await supabaseAdmin.rpc("activate_recurring_series", {
+    p_series_id: params.seriesId,
+    p_workspace_id: params.workspaceId,
+    p_client_id: params.clientId,
+    p_template_appointment_id: params.templateAppointmentId,
+    p_expected_service_type: params.expected.serviceType,
+    p_expected_price_cents: params.expected.priceCents,
+    p_expected_duration_minutes: params.expected.durationMinutes,
+    p_expected_notes: params.expected.notes,
+    p_expected_team_color: params.expected.teamColor,
+    p_expected_scheduled_for: params.expected.scheduledForIso,
+    p_expected_employee_ids: canonicalizeEmployeeIds(params.expected.employeeIds),
+    p_anchor_timezone: params.timezone,
   });
-  return transitioned ? { outcome: "activated" } : { outcome: "conflict" };
+  if (error) {
+    throw new RecurringSeriesRegistryError(`Failed to activate recurring_series ${params.seriesId}`, error);
+  }
+  return { outcome: data as ActivateSeriesOutcome };
 }
 
 export async function fetchSeriesById(seriesId: string, workspaceId: string): Promise<RecurringSeriesRow | null> {

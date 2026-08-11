@@ -15,7 +15,12 @@ import type { FakeSupabaseFixture } from "./testSupport.ts";
 let currentFake = createFakeSupabaseAdmin({});
 
 mock.module("@/lib/supabaseAdmin", {
-  namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
+  namedExports: {
+    supabaseAdmin: {
+      from: (table: string) => currentFake.supabaseAdmin.from(table),
+      rpc: (fn: string, args?: unknown) => currentFake.supabaseAdmin.rpc(fn, args),
+    },
+  },
 });
 
 const {
@@ -28,13 +33,13 @@ const {
   fetchAssignments,
   fetchEmployeeHoursForAppointments,
   insertAssignments,
-  removeAssignments,
   planAssignmentSync,
-  applyAssignmentSync,
+  syncAssignmentsAtomically,
+  AppointmentAssignmentSyncError,
 } = await import("./appointmentEmployees.ts");
 
-function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
+  currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
 }
 
 describe("deriveLegacyEmployeeId -- appointments.employee_id compatibility mirror", () => {
@@ -180,7 +185,7 @@ describe("fetchAssignments / fetchEmployeeHoursForAppointments -- workspace-scop
   });
 });
 
-describe("insertAssignments / removeAssignments", () => {
+describe("insertAssignments", () => {
   test("insertAssignments with an empty list makes zero calls", async () => {
     resetFixtures({});
     await insertAssignments("appt-1", "ws-1", []);
@@ -199,29 +204,15 @@ describe("insertAssignments / removeAssignments", () => {
     }
     assert.deepEqual(rows.map((r) => r.employee_id), ["emp-1", "emp-2"]);
   });
-  test("removeAssignments with an empty list makes zero calls", async () => {
-    resetFixtures({});
-    await removeAssignments("appt-1", []);
-    assert.equal(currentFake.calls.length, 0);
-  });
-  test("removeAssignments scopes the delete by appointment_id and the specific employee_ids", async () => {
-    resetFixtures({ appointment_employees: [{ data: null, error: null }] });
-    await removeAssignments("appt-1", ["teresa"]);
-    assert.ok(currentFake.calls.some((c) => c.table === "appointment_employees" && c.method === "delete"));
-    const eqCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "eq");
-    assert.deepEqual(eqCall!.args, ["appointment_id", "appt-1"]);
-    const inCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "in");
-    assert.deepEqual(inCall!.args, ["employee_id", ["teresa"]]);
-  });
 });
 
-describe("planAssignmentSync / applyAssignmentSync -- validate-before-mutate", () => {
-  test("a safe diff (no blocked removals) returns ok with the correct add/remove sets", async () => {
+describe("planAssignmentSync -- validate-before-mutate (Block 2C-1: now also surfaces currentEmployeeIds for syncAssignmentsAtomically)", () => {
+  test("a safe diff (no blocked removals) returns ok with the correct add/remove sets AND the exact currentEmployeeIds observed", async () => {
     resetFixtures({
       appointment_employees: [{ data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }],
     });
     const plan = await planAssignmentSync("appt-1", "ws-1", ["alberto"], []);
-    assert.deepEqual(plan, { ok: true, toAdd: ["alberto"], toRemove: ["teresa"] });
+    assert.deepEqual(plan, { ok: true, toAdd: ["alberto"], toRemove: ["teresa"], currentEmployeeIds: ["teresa"] });
   });
 
   test("a blocked removal (recorded work) returns ok:false and makes zero mutating calls", async () => {
@@ -232,16 +223,63 @@ describe("planAssignmentSync / applyAssignmentSync -- validate-before-mutate", (
     assert.deepEqual(plan, { ok: false, blockedEmployeeIds: ["teresa"] });
     assert.equal(writeCalls(currentFake.calls).length, 0);
   });
+});
 
-  test("applyAssignmentSync issues the delete before the insert, and skips empty sides", async () => {
-    resetFixtures({
-      appointment_employees: [
-        { data: null, error: null }, // delete
-        { data: null, error: null }, // insert
-      ],
+describe("syncAssignmentsAtomically -- the ONLY way to add/remove an EXISTING appointment's assignments, delegating entirely to the atomic sync_appointment_assignments RPC", () => {
+  // The RPC's own locking/validation logic is proven exclusively by
+  // migrations/027a_add_recurring_series_snapshots.test.ts's source-level
+  // assertions against the SQL itself (no live database is reachable from
+  // any test in this repository) -- this describe block's only job is to
+  // prove the THIN TypeScript wrapper: it calls .rpc() with the correctly
+  // canonicalized parameters, maps whatever outcome string comes back
+  // verbatim, and never swallows a real RPC-call error.
+  function callParams(overrides: Record<string, unknown> = {}) {
+    return {
+      appointmentId: "appt-1",
+      workspaceId: "ws-1",
+      expectedCurrentEmployeeIds: ["teresa"],
+      desiredEmployeeIds: ["alberto", "teresa"],
+      ...overrides,
+    };
+  }
+
+  test("calls the RPC with both arrays canonicalized (sorted), even when the caller passed them unsorted", async () => {
+    resetFixtures({}, { sync_appointment_assignments: [{ data: "synced" }] });
+    const result = await syncAssignmentsAtomically(
+      callParams({ expectedCurrentEmployeeIds: ["teresa", "alberto"], desiredEmployeeIds: ["zed", "alberto"] })
+    );
+    assert.deepEqual(result, { outcome: "synced" });
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const call = currentFake.rpcCalls[0];
+    assert.equal(call.fn, "sync_appointment_assignments");
+    assert.deepEqual(call.args, {
+      p_appointment_id: "appt-1",
+      p_workspace_id: "ws-1",
+      p_expected_current_employee_ids: ["alberto", "teresa"],
+      p_desired_employee_ids: ["alberto", "zed"],
     });
-    await applyAssignmentSync("appt-1", "ws-1", ["alberto"], ["teresa"]);
-    const mutatingCalls = currentFake.calls.filter((c) => c.method === "delete" || c.method === "insert");
-    assert.deepEqual(mutatingCalls.map((c) => c.method), ["delete", "insert"]);
+  });
+
+  test("a genuinely empty desired set canonicalizes to an empty array, not undefined/null", async () => {
+    resetFixtures({}, { sync_appointment_assignments: [{ data: "synced" }] });
+    await syncAssignmentsAtomically(callParams({ desiredEmployeeIds: [] }));
+    const call = currentFake.rpcCalls[0];
+    assert.deepEqual((call.args as Record<string, unknown>).p_desired_employee_ids, []);
+  });
+
+  for (const outcome of ["appointment_not_found", "state_changed", "employee_not_eligible"] as const) {
+    test(`returns outcome '${outcome}' verbatim when the RPC reports it -- never thrown, never swallowed`, async () => {
+      resetFixtures({}, { sync_appointment_assignments: [{ data: outcome }] });
+      const result = await syncAssignmentsAtomically(callParams());
+      assert.deepEqual(result, { outcome });
+    });
+  }
+
+  test("failure injection: a real RPC-call error throws AppointmentAssignmentSyncError -- never swallowed, never returned as a fake outcome", async () => {
+    resetFixtures({}, { sync_appointment_assignments: [{ error: { message: "simulated rpc failure" } }] });
+    await assert.rejects(
+      () => syncAssignmentsAtomically(callParams()),
+      (err: unknown) => err instanceof AppointmentAssignmentSyncError
+    );
   });
 });

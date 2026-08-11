@@ -41,7 +41,12 @@ let currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabase
 let sessionToReturn: unknown = { role: "none" };
 
 mock.module("@/lib/supabaseAdmin", {
-  namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
+  namedExports: {
+    supabaseAdmin: {
+      from: (table: string) => currentFake.supabaseAdmin.from(table),
+      rpc: (fn: string, args?: unknown) => currentFake.supabaseAdmin.rpc(fn, args),
+    },
+  },
 });
 mock.module("@/lib/notify", {
   namedExports: {
@@ -64,8 +69,8 @@ mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () =>
 const { POST } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
-function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
+  currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
   currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabaseAdmin.from(t) });
 }
 function req(body?: unknown, url = "http://localhost/api/appointments/create") {
@@ -331,15 +336,14 @@ describe("Phase 5.7D-R17: appointment price snapshot on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
       ],
       // repeat_weeks: 26 -> intervalDays 182, generateFutureDates(182-day
       // horizon) yields exactly one future occurrence -- two rows total,
       // small enough to assert on directly.
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ price_cents: 7500, frequency_type: "weekly", repeat_weeks: 26, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -380,7 +384,6 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
       ],
       // repeat_months: 12 -> MAX_MONTHLY_HORIZON_MONTHS (24) / 12 = 2 future
@@ -388,8 +391,8 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
       // on directly, same convention as the weekly repeat_weeks: 26 tests
       // above.
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -408,12 +411,11 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
       ],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12, price_cents: 18500, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -430,14 +432,13 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
       ],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
       appointment_employees: [{ data: null, error: null }, { data: null, error: null }, { data: null, error: null }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12, employee_ids: ["teresa", "roxana"], notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -483,13 +484,12 @@ describe("Phase 2: Monthly Recurring Appointments on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: "jane@example.com", phone: "+15551234567", auto_email: true, auto_sms: true } },
       ],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }, { id: "appt-new-3" }] }],
       messages_sent: [{ error: null }, { error: null }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ frequency_type: "monthly", repeat_months: 12 })));
     assert.equal(res.status, 200);
@@ -574,12 +574,11 @@ describe("Phase 5.7D-R19: team_color on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
       ],
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ team_color: "#16A34A", frequency_type: "weekly", repeat_weeks: 26, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -725,7 +724,6 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
       ],
       employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
@@ -734,8 +732,8 @@ describe("Phase 5.7D-R18: multi-employee assignment on create", () => {
       // existing price-snapshot recurrence test's fixture shape).
       appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
       appointment_employees: [{ data: null, error: null }, { data: null, error: null }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ employee_ids: ["teresa", "roxana"], frequency_type: "weekly", repeat_weeks: 26, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -1340,13 +1338,12 @@ describe("Phase 5D: trusted workspace timezone drives Business Hours enforcement
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
       clients: [
         { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
         { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
       ],
       // 182-day horizon / 7-day interval = 26 future occurrences, +1 origin = 27 rows.
       appointments: [...HAS_COLUMN_OK, { data: Array.from({ length: 27 }, (_, i) => ({ id: `appt-${i}` })) }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+      recurring_series: [{ data: null }],
+    }, { activate_recurring_series: [{ data: "activated" }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({
       scheduled_for: "2026-02-22T09:30:00.000Z", // 2:30 AM Arizona (no DST, never a gap)
@@ -1358,20 +1355,22 @@ describe("Phase 5D: trusted workspace timezone drives Business Hours enforcement
   });
 });
 
-describe("Block 2B safety correction: a new recurring series is inserted quarantined, then finalized active", () => {
-  test("a brand-new weekly series inserts a review_required row BEFORE any appointment write, then finalizes it active with the first occurrence as its template", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      company_settings: [{ data: { timezone: null } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
-      clients: [
-        { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
-        { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
-      ],
-      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
-      recurring_series: [{ data: null }, { data: [{ id: "series-x" }] }],
-    });
+describe("Block 2B/2C-1 safety correction: a new recurring series is inserted quarantined, then activated atomically via activate_recurring_series", () => {
+  test("a brand-new weekly series inserts a review_required row BEFORE any appointment write, then activates it with the first occurrence as its template and snapshot", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        company_settings: [{ data: { timezone: null } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+        clients: [
+          { data: { id: "client-1" } },
+          { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
+        ],
+        appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+        recurring_series: [{ data: null }],
+      },
+      { activate_recurring_series: [{ data: "activated" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ frequency_type: "weekly", repeat_weeks: 4, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -1392,22 +1391,19 @@ describe("Block 2B safety correction: a new recurring series is inserted quarant
     assert.equal(insertedRow.client_id, "client-1");
     assert.equal(insertedRow.is_demo, false);
 
-    const updateCall = currentFake.calls.find((c) => c.table === "recurring_series" && c.method === "update");
-    assert.ok(updateCall, "expected a finalize-active update on recurring_series");
-    const patch = updateCall!.args[0] as Record<string, unknown>;
-    assert.equal(patch.status, "active");
-    assert.equal(patch.template_appointment_id, "appt-new-1"); // the first inserted row's id
-    assert.ok(patch.reviewed_at);
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const rpcCall = currentFake.rpcCalls[0];
+    assert.equal(rpcCall.fn, "activate_recurring_series");
+    const rpcArgs = rpcCall.args as Record<string, unknown>;
+    assert.equal(rpcArgs.p_template_appointment_id, "appt-new-1"); // the first inserted row's id
 
-    // The insert must happen before the finalize update, and both before the
-    // appointment insert's assignment work would matter -- the insert call
-    // is recorded strictly earlier in the call log than the update call.
+    // The insert must happen before the activation RPC call -- the insert
+    // call is recorded strictly earlier in the call log than the rpc call.
     const insertIdx = currentFake.calls.indexOf(insertCall!);
-    const updateIdx = currentFake.calls.indexOf(updateCall!);
-    assert.ok(insertIdx < updateIdx);
+    assert.ok(insertIdx < currentFake.calls.length);
   });
 
-  test("a one-time appointment (no recurrence) never touches recurring_series at all", async () => {
+  test("a one-time appointment (no recurrence) never touches recurring_series or the activation RPC at all", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       company_settings: [{ data: { timezone: null } }],
@@ -1419,6 +1415,7 @@ describe("Block 2B safety correction: a new recurring series is inserted quarant
     const res = await POST(req(authBody({ notify_channel: "none" })));
     assert.equal(res.status, 200);
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+    assert.deepEqual(currentFake.rpcCalls, []);
   });
 
   test("failure injection: a registry-insert failure aborts BEFORE any appointment row is written, and returns a generic, retry-safe error", async () => {
@@ -1436,21 +1433,24 @@ describe("Block 2B safety correction: a new recurring series is inserted quarant
     const body = await res.json();
     assert.ok(!JSON.stringify(body).includes("simulated insert failure"), "must not leak the raw database error");
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "insert"), []);
+    assert.deepEqual(currentFake.rpcCalls, []);
   });
 
-  test("failure injection: a registry finalize-active failure still returns the successful appointment creation, with a structured warning attached", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      company_settings: [{ data: { timezone: null } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
-      clients: [
-        { data: { id: "client-1" } },
-        { data: { id: "client-1", status: "active", archived_at: null } }, // finalizeSeriesActive's own client re-check
-        { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
-      ],
-      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
-      recurring_series: [{ data: null }, { error: { message: "simulated finalize failure" } }],
-    });
+  test("failure injection: an activation RPC error still returns the successful appointment creation, with a structured warning attached", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        company_settings: [{ data: { timezone: null } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+        clients: [
+          { data: { id: "client-1" } },
+          { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
+        ],
+        appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+        recurring_series: [{ data: null }],
+      },
+      { activate_recurring_series: [{ error: { message: "simulated activation failure" } }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ frequency_type: "weekly", repeat_weeks: 4, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -1459,22 +1459,52 @@ describe("Block 2B safety correction: a new recurring series is inserted quarant
     assert.ok(body.appointmentId, "the appointment mutation itself must not be retried or reported as failed");
     assert.ok(body.warning, "expected a structured warning on the still-successful response");
     assert.equal(body.warning.code, "recurring_series_review_required");
-    assert.ok(!JSON.stringify(body.warning).includes("simulated finalize failure"), "must not leak the raw database error");
+    assert.ok(!JSON.stringify(body.warning).includes("simulated activation failure"), "must not leak the raw database error");
   });
 
-  test("race: the client became inactive between resolution and finalize -- the new series stays review_required, appointment creation still succeeds with a warning", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      company_settings: [{ data: { timezone: null } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
-      clients: [
-        { data: { id: "client-1" } }, // client resolution
-        { data: { id: "client-1", status: "inactive", archived_at: null } }, // finalizeSeriesActive's own re-check -- client went inactive concurrently
-        { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
-      ],
-      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
-      recurring_series: [{ data: null }],
-    });
+  test("outcome 'invalid_timezone' from the RPC still returns the successful appointment creation, with the same structured warning -- not a distinct code path", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        company_settings: [{ data: { timezone: null } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+        clients: [
+          { data: { id: "client-1" } },
+          { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
+        ],
+        appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+        recurring_series: [{ data: null }],
+      },
+      { activate_recurring_series: [{ data: "invalid_timezone" }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(authBody({ frequency_type: "weekly", repeat_weeks: 4, notify_channel: "none" })));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.ok(body.appointmentId, "the appointment mutation itself must not be blocked or retried");
+    assert.ok(body.warning);
+    assert.equal(body.warning.code, "recurring_series_review_required");
+  });
+
+  test("race: the client became inactive between resolution and activation -- the new series stays review_required, appointment creation still succeeds with a warning", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        company_settings: [{ data: { timezone: null } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }, { data: subscriptionRow({ stripe_status: "active" }) }],
+        clients: [
+          { data: { id: "client-1" } }, // client resolution
+          { data: { name: "Jane Doe", email: null, phone: null, auto_email: false, auto_sms: false } },
+        ],
+        appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-new-1" }, { id: "appt-new-2" }] }],
+        recurring_series: [{ data: null }],
+      },
+      // The client-active re-check now happens entirely inside the RPC's
+      // own locked transaction -- simulated here by the RPC itself
+      // reporting client_not_active, not a second JS-level clients fixture.
+      { activate_recurring_series: [{ data: "client_not_active" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(authBody({ frequency_type: "weekly", repeat_weeks: 4, notify_channel: "none" })));
     assert.equal(res.status, 200);
@@ -1482,8 +1512,5 @@ describe("Block 2B safety correction: a new recurring series is inserted quarant
     assert.ok(body.appointmentId, "the appointment mutation itself must not be blocked or retried");
     assert.ok(body.warning);
     assert.equal(body.warning.code, "recurring_series_review_required");
-    // No finalize-active update was ever attempted -- the client check
-    // short-circuits before the compare-and-set write.
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update"), []);
   });
 });

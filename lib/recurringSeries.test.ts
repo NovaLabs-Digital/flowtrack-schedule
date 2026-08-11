@@ -18,7 +18,12 @@ import type { FakeSupabaseFixture } from "./testSupport.ts";
 let currentFake = createFakeSupabaseAdmin({});
 
 mock.module("@/lib/supabaseAdmin", {
-  namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
+  namedExports: {
+    supabaseAdmin: {
+      from: (table: string) => currentFake.supabaseAdmin.from(table),
+      rpc: (fn: string, args?: unknown) => currentFake.supabaseAdmin.rpc(fn, args),
+    },
+  },
 });
 
 const {
@@ -31,13 +36,14 @@ const {
   quarantineActiveSeriesForClient,
   finalizeSeriesStopped,
   finalizeStoppedSeriesByIds,
-  finalizeSeriesActive,
+  canonicalizeEmployeeIds,
+  activateSeriesWithSnapshot,
   fetchSeriesById,
   fetchLiveOccurrenceSnapshots,
 } = await import("./recurringSeries.ts");
 
-function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
+  currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
 }
 
 type OccOverrides = Partial<{
@@ -493,87 +499,93 @@ describe("finalizeStoppedSeriesByIds -- bulk, scoped to an exact id set, returns
   });
 });
 
-describe("finalizeSeriesActive -- review_required -> active compare-and-set, the ONLY path to active", () => {
+describe("canonicalizeEmployeeIds -- deterministic lexicographic ordering, matching evaluateSeriesConsistency's own employeeSignature convention", () => {
+  test("sorts a shuffled id list into stable ascending order", () => {
+    assert.deepEqual(canonicalizeEmployeeIds(["emp-3", "emp-1", "emp-2"]), ["emp-1", "emp-2", "emp-3"]);
+  });
+
+  test("an already-sorted list is unchanged, and the input array is never mutated", () => {
+    const input = ["emp-1", "emp-2"];
+    const result = canonicalizeEmployeeIds(input);
+    assert.deepEqual(result, ["emp-1", "emp-2"]);
+    assert.notEqual(result, input);
+  });
+
+  test("an empty list canonicalizes to an empty list", () => {
+    assert.deepEqual(canonicalizeEmployeeIds([]), []);
+  });
+});
+
+describe("activateSeriesWithSnapshot -- the ONLY path to active, delegating entirely to the atomic activate_recurring_series RPC", () => {
+  // The RPC's own validation/locking/state-transition logic is proven
+  // exclusively by migrations/027a_add_recurring_series_snapshots.test.ts's
+  // source-level assertions against the SQL itself (no live database is
+  // reachable from any test in this repository) -- this describe block's
+  // only job is to prove the THIN TypeScript wrapper: it calls .rpc() with
+  // the correctly-shaped, canonicalized parameters, maps whatever outcome
+  // string comes back verbatim, and never swallows a real RPC-call error.
   function callParams(overrides: Record<string, unknown> = {}) {
     return {
       seriesId: "series-1",
       workspaceId: "ws-1",
       clientId: "client-1",
       templateAppointmentId: "appt-1",
-      scheduledForIso: "2026-06-02T13:00:00.000Z",
       timezone: "America/New_York",
+      expected: {
+        serviceType: "Regular Cleaning",
+        priceCents: 10000,
+        durationMinutes: 60,
+        notes: null,
+        teamColor: null,
+        scheduledForIso: "2026-06-02T13:00:00.000Z",
+        employeeIds: ["emp-3", "emp-1"],
+      },
       ...overrides,
     };
   }
-  function activeClient(overrides: Record<string, unknown> = {}) {
-    return { id: "client-1", status: "active", archived_at: null, ...overrides };
+
+  test("calls the RPC with every expected field mapped to its p_-prefixed parameter, employee ids canonicalized", async () => {
+    resetFixtures({}, { activate_recurring_series: [{ data: "activated" }] });
+    const result = await activateSeriesWithSnapshot(callParams());
+    assert.deepEqual(result, { outcome: "activated" });
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const call = currentFake.rpcCalls[0];
+    assert.equal(call.fn, "activate_recurring_series");
+    assert.deepEqual(call.args, {
+      p_series_id: "series-1",
+      p_workspace_id: "ws-1",
+      p_client_id: "client-1",
+      p_template_appointment_id: "appt-1",
+      p_expected_service_type: "Regular Cleaning",
+      p_expected_price_cents: 10000,
+      p_expected_duration_minutes: 60,
+      p_expected_notes: null,
+      p_expected_team_color: null,
+      p_expected_scheduled_for: "2026-06-02T13:00:00.000Z",
+      p_expected_employee_ids: ["emp-1", "emp-3"],
+      p_anchor_timezone: "America/New_York",
+    });
+  });
+
+  for (const outcome of ["conflict", "client_not_active", "employee_not_eligible", "state_changed", "invalid_timezone"] as const) {
+    test(`returns outcome '${outcome}' verbatim when the RPC reports it -- never thrown, never swallowed`, async () => {
+      resetFixtures({}, { activate_recurring_series: [{ data: outcome }] });
+      const result = await activateSeriesWithSnapshot(callParams());
+      assert.deepEqual(result, { outcome });
+    });
   }
 
-  test("sets template/anchor/reviewed_at/status together and returns outcome 'activated' when the client is active", async () => {
-    resetFixtures({
-      clients: [{ data: activeClient() }],
-      recurring_series: [{ data: [{ id: "series-1" }] }],
-    });
-    const result = await finalizeSeriesActive(callParams());
-    assert.deepEqual(result, { outcome: "activated" });
-    const updateCall = currentFake.calls.find((c) => c.table === "recurring_series" && c.method === "update");
-    const patch = updateCall!.args[0] as Record<string, unknown>;
-    assert.equal(patch.status, "active");
-    assert.equal(patch.template_appointment_id, "appt-1");
-    assert.equal(patch.anchor_local_date, "2026-06-02");
-    assert.equal(patch.anchor_local_time, "09:00");
-    assert.ok(patch.reviewed_at);
-    const eqCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq");
-    assert.ok(eqCalls.some((c) => (c.args as unknown[])[0] === "status" && (c.args as unknown[])[1] === "review_required"));
+  test("a genuinely empty employee set canonicalizes to an empty array, not undefined/null", async () => {
+    resetFixtures({}, { activate_recurring_series: [{ data: "activated" }] });
+    await activateSeriesWithSnapshot(callParams({ expected: { ...callParams().expected, employeeIds: [] } }));
+    const call = currentFake.rpcCalls[0];
+    assert.deepEqual((call.args as Record<string, unknown>).p_expected_employee_ids, []);
   });
 
-  test("a no-op (row wasn't review_required -- already active, already stopped, or claimed by a concurrent request) returns outcome 'conflict', not an error", async () => {
-    resetFixtures({ clients: [{ data: activeClient() }], recurring_series: [{ data: [] }] });
-    const result = await finalizeSeriesActive(callParams());
-    assert.deepEqual(result, { outcome: "conflict" });
-  });
-
-  test("race: the client became inactive concurrently -- outcome 'client_not_active', no compare-and-set write attempted at all", async () => {
-    resetFixtures({ clients: [{ data: { id: "client-1", status: "inactive", archived_at: null } }] });
-    const result = await finalizeSeriesActive(callParams());
-    assert.deepEqual(result, { outcome: "client_not_active" });
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
-  });
-
-  test("race: the client became archived concurrently -- outcome 'client_not_active', regardless of its status field", async () => {
-    resetFixtures({ clients: [{ data: { id: "client-1", status: "active", archived_at: "2026-08-10T00:00:00.000Z" } }] });
-    const result = await finalizeSeriesActive(callParams());
-    assert.deepEqual(result, { outcome: "client_not_active" });
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
-  });
-
-  test("the client no longer exists at all -- outcome 'client_not_active', fails closed rather than assuming eligibility", async () => {
-    resetFixtures({ clients: [{ data: null }] });
-    const result = await finalizeSeriesActive(callParams());
-    assert.deepEqual(result, { outcome: "client_not_active" });
-  });
-
-  test("the client check is scoped by both client_id and workspace_id", async () => {
-    resetFixtures({ clients: [{ data: activeClient() }], recurring_series: [{ data: [{ id: "series-1" }] }] });
-    await finalizeSeriesActive(callParams({ clientId: "client-check" }));
-    const eqCalls = currentFake.calls.filter((c) => c.table === "clients" && c.method === "eq");
-    assert.ok(eqCalls.some((c) => (c.args as unknown[])[0] === "id" && (c.args as unknown[])[1] === "client-check"));
-    assert.ok(eqCalls.some((c) => (c.args as unknown[])[0] === "workspace_id" && (c.args as unknown[])[1] === "ws-1"));
-  });
-
-  test("failure injection: a database error reading the client throws RecurringSeriesRegistryError -- the series stays review_required, never silently active", async () => {
-    resetFixtures({ clients: [{ error: { message: "client read failed" } }] });
+  test("failure injection: a real RPC-call error throws RecurringSeriesRegistryError -- never swallowed, never returned as a fake outcome", async () => {
+    resetFixtures({}, { activate_recurring_series: [{ error: { message: "simulated rpc failure" } }] });
     await assert.rejects(
-      () => finalizeSeriesActive(callParams()),
-      (err: unknown) => err instanceof RecurringSeriesRegistryError
-    );
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
-  });
-
-  test("failure injection: a database error on the compare-and-set itself throws RecurringSeriesRegistryError -- the series stays review_required, never silently active", async () => {
-    resetFixtures({ clients: [{ data: activeClient() }], recurring_series: [{ error: { message: "update failed" } }] });
-    await assert.rejects(
-      () => finalizeSeriesActive(callParams()),
+      () => activateSeriesWithSnapshot(callParams()),
       (err: unknown) => err instanceof RecurringSeriesRegistryError
     );
   });

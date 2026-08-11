@@ -15,7 +15,7 @@ import { effectiveTimezone } from "@/lib/timezone";
 import { isValidPriceCents } from "@/lib/money";
 import { dedupeEmployeeIds, deriveLegacyEmployeeId, validateEmployeeIdsInWorkspace, insertAssignments } from "@/lib/appointmentEmployees";
 import { validateTeamColorInput } from "@/lib/teamColor";
-import { insertQuarantinedSeries, finalizeSeriesActive, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
+import { insertQuarantinedSeries, activateSeriesWithSnapshot, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -408,13 +408,27 @@ export async function POST(req: Request) {
     let registryWarning = false;
     if (isRecurring && seriesId && firstId && clientId) {
       try {
-        const outcome = await finalizeSeriesActive({
+        // Block 2C-1: the exact snapshot values just used to build every row
+        // in `rows` above -- this request is the one that just authored
+        // them, so they're trivially self-consistent; the RPC still
+        // re-verifies them fresh against the actually-committed template row
+        // under its own lock before writing anything, the same as every
+        // other caller of activateSeriesWithSnapshot.
+        const outcome = await activateSeriesWithSnapshot({
           seriesId,
           workspaceId,
           clientId,
           templateAppointmentId: firstId,
-          scheduledForIso: scheduled_for,
           timezone,
+          expected: {
+            serviceType: service_type,
+            priceCents: price_cents,
+            durationMinutes: duration_minutes,
+            notes: notes || null,
+            teamColor: team_color,
+            scheduledForIso: startDate.toISOString(),
+            employeeIds: employee_ids,
+          },
         });
         if (outcome.outcome !== "activated") registryWarning = true;
       } catch (err) {

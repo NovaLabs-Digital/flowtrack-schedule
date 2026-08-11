@@ -27,17 +27,48 @@ const WRITE_METHODS = new Set(["insert", "update", "delete", "upsert"]);
 // An exhausted queue throws loudly rather than returning a guessed default
 // -- an unexpected extra query is a real signal something is wrong, not
 // something to silently paper over.
-export function createFakeSupabaseAdmin(responses: Record<string, FakeSupabaseFixture[]>) {
+//
+// Block 2C-1: rpcResponses is the identical FIFO-queue-per-name pattern,
+// applied to .rpc(fnName, args) calls instead of .from(table) calls -- the
+// activate_recurring_series Postgres function's own internal locking/
+// validation logic is opaque to this fake (it runs entirely inside the SQL
+// migration, proved by migrations/027a's own source-level tests, never by a
+// live database here); route-level tests queue whatever outcome string the
+// RPC would have returned and assert on rpcCalls (the exact fn name and
+// args passed), exactly mirroring how `calls` already lets a test assert on
+// a .from(table) call's exact arguments.
+export interface FakeSupabaseRpcCall {
+  fn: string;
+  args: unknown;
+}
+
+export function createFakeSupabaseAdmin(
+  responses: Record<string, FakeSupabaseFixture[]>,
+  rpcResponses: Record<string, FakeSupabaseFixture[]> = {}
+) {
   const calls: FakeSupabaseCall[] = [];
+  const rpcCalls: FakeSupabaseRpcCall[] = [];
   const queues: Record<string, FakeSupabaseFixture[]> = {};
   for (const [table, list] of Object.entries(responses)) {
     queues[table] = [...list];
+  }
+  const rpcQueues: Record<string, FakeSupabaseFixture[]> = {};
+  for (const [fn, list] of Object.entries(rpcResponses)) {
+    rpcQueues[fn] = [...list];
   }
 
   function nextFixture(table: string): FakeSupabaseFixture {
     const q = queues[table];
     if (!q || q.length === 0) {
       throw new Error(`FAKE_SUPABASE_NO_QUEUED_RESPONSE for table "${table}" -- test fixture exhausted`);
+    }
+    return q.shift()!;
+  }
+
+  function nextRpcFixture(fn: string): FakeSupabaseFixture {
+    const q = rpcQueues[fn];
+    if (!q || q.length === 0) {
+      throw new Error(`FAKE_SUPABASE_NO_QUEUED_RESPONSE for rpc "${fn}" -- test fixture exhausted`);
     }
     return q.shift()!;
   }
@@ -82,9 +113,14 @@ export function createFakeSupabaseAdmin(responses: Record<string, FakeSupabaseFi
       calls.push({ table, method: "from", args: [] });
       return makeBuilder(table);
     },
+    rpc: (fn: string, args?: unknown) => {
+      rpcCalls.push({ fn, args });
+      const fixture = nextRpcFixture(fn);
+      return Promise.resolve({ data: fixture.data ?? null, error: fixture.error ?? null });
+    },
   };
 
-  return { supabaseAdmin, calls };
+  return { supabaseAdmin, calls, rpcCalls };
 }
 
 export function writeCalls(calls: FakeSupabaseCall[]): FakeSupabaseCall[] {

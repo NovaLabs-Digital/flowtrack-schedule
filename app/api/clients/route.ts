@@ -181,8 +181,10 @@ export async function POST(req: Request) {
       // active for this exact client in the narrow window between that
       // first quarantine and the client update just above -- each of those
       // finalize paths now independently re-checks client status right
-      // before writing (see finalizeSeriesActive), so this cannot actually
-      // happen anymore, but this sweep is the second, independent layer of
+      // before writing (see activate_recurring_series, migrations/027a --
+      // locked and re-verified inside the same atomic transaction as the
+      // rest of that activation), so this cannot actually happen anymore,
+      // but this sweep is the second, independent layer of
       // defense against it regardless, catching anything that slips through
       // by any other path. The client itself is already safely inactive by
       // this point either way -- a failure here is never rolled back and

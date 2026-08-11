@@ -8,6 +8,20 @@
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type { AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 
+// Block 2C-1 concurrency correction: mirrors lib/recurringSeries.ts's own
+// RecurringSeriesRegistryError shape exactly -- a safe, hardcoded top-level
+// message (never leaked to a client beyond the route's own generic 500
+// fallback), with the real Supabase/Postgres error preserved only as
+// `.cause`, for logging.
+export class AppointmentAssignmentSyncError extends Error {
+  readonly cause?: unknown;
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "AppointmentAssignmentSyncError";
+    this.cause = cause;
+  }
+}
+
 // Defensive existence probe, matching the established hasColumn() pattern
 // already used in the appointments create/update routes for not-yet-
 // migrated columns -- here applied to a not-yet-migrated TABLE. Read paths
@@ -133,29 +147,26 @@ export async function insertAssignments(appointmentId: string, workspaceId: stri
   if (error) throw error;
 }
 
-export async function removeAssignments(appointmentId: string, employeeIds: string[]): Promise<void> {
-  if (employeeIds.length === 0) return;
-  const { error } = await supabaseAdmin
-    .from("appointment_employees")
-    .delete()
-    .eq("appointment_id", appointmentId)
-    .in("employee_id", employeeIds);
-  if (error) throw error;
-}
-
 // Plans an appointment's assignment change against its CURRENT rows,
 // without mutating anything -- callers (the update route) run this for the
 // origin appointment and, in "future" mode, every sibling BEFORE applying
 // any mutation anywhere, so a blocked removal on any one of them aborts the
 // whole request cleanly rather than leaving some appointments changed and
 // others not.
+//
+// Block 2C-1: the ok:true branch also returns the exact currentEmployeeIds
+// this call observed (unchanged from before, just now surfaced) -- the
+// caller passes it straight through to syncAssignmentsAtomically below as
+// p_expected_current_employee_ids, so the atomic RPC can prove nothing
+// changed between this observation and the actual write, instead of
+// silently trusting toAdd/toRemove as still valid.
 export async function planAssignmentSync(
   appointmentId: string,
   workspaceId: string,
   desiredEmployeeIds: string[],
   employeeHoursForAppointment: Pick<EmployeeHours, "employee_id">[]
 ): Promise<
-  | { ok: true; toAdd: string[]; toRemove: string[] }
+  | { ok: true; toAdd: string[]; toRemove: string[]; currentEmployeeIds: string[] }
   | { ok: false; blockedEmployeeIds: string[] }
 > {
   const currentAssignments = await fetchAssignments(appointmentId, workspaceId);
@@ -163,10 +174,40 @@ export async function planAssignmentSync(
   const { toAdd, toRemove } = computeAssignmentDiff(currentEmployeeIds, desiredEmployeeIds);
   const blocked = findBlockedRemovals(toRemove, currentAssignments, employeeHoursForAppointment);
   if (blocked.length > 0) return { ok: false, blockedEmployeeIds: blocked };
-  return { ok: true, toAdd, toRemove };
+  return { ok: true, toAdd, toRemove, currentEmployeeIds };
 }
 
-export async function applyAssignmentSync(appointmentId: string, workspaceId: string, toAdd: string[], toRemove: string[]): Promise<void> {
-  if (toRemove.length > 0) await removeAssignments(appointmentId, toRemove);
-  if (toAdd.length > 0) await insertAssignments(appointmentId, workspaceId, toAdd);
+// Block 2C-1 concurrency correction: the ONLY safe way to add/remove
+// assignments on an EXISTING appointment that can plausibly race a
+// concurrent activate_recurring_series call for the same appointment (see
+// migrations/027a_add_recurring_series_snapshots.sql's own extensive
+// comment on sync_appointment_assignments for the full concurrency
+// argument). Delegates entirely to that RPC -- no application-level
+// read-then-write sequence here is ever described as atomic.
+//
+// Callers must pass the EXACT currentEmployeeIds a preceding
+// planAssignmentSync call observed (never a value re-derived or assumed),
+// and the FULL desired set (not a diff) -- the RPC computes and applies its
+// own add/remove internally, against the state it locks fresh.
+export type AssignmentSyncOutcome = "synced" | "appointment_not_found" | "state_changed" | "employee_not_eligible";
+
+export async function syncAssignmentsAtomically(params: {
+  appointmentId: string;
+  workspaceId: string;
+  expectedCurrentEmployeeIds: string[];
+  desiredEmployeeIds: string[];
+}): Promise<{ outcome: AssignmentSyncOutcome }> {
+  const { data, error } = await supabaseAdmin.rpc("sync_appointment_assignments", {
+    p_appointment_id: params.appointmentId,
+    p_workspace_id: params.workspaceId,
+    p_expected_current_employee_ids: [...params.expectedCurrentEmployeeIds].sort(),
+    p_desired_employee_ids: [...params.desiredEmployeeIds].sort(),
+  });
+  if (error) {
+    throw new AppointmentAssignmentSyncError(
+      `Failed to sync appointment_employees for appointment ${params.appointmentId}`,
+      error
+    );
+  }
+  return { outcome: data as AssignmentSyncOutcome };
 }

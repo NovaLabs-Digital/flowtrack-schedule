@@ -12,7 +12,7 @@ import {
   quarantineIfObservedActive,
   finalizeSeriesStopped,
   insertQuarantinedSeries,
-  finalizeSeriesActive,
+  activateSeriesWithSnapshot,
   RECURRING_SERIES_REVIEW_WARNING,
 } from "@/lib/recurringSeries";
 
@@ -279,13 +279,28 @@ export async function POST(req: Request) {
           scheduledForIso: appt.scheduled_for,
           timezone,
         });
-        const outcome = await finalizeSeriesActive({
+        // Block 2C-1: appt's own fields are the CURRENT state of the
+        // template row -- this route never mutates service_type/price_cents/
+        // duration_minutes/notes/team_color on the edited appointment
+        // itself, only frequency_type/repeat_weeks/repeat_months/series_id,
+        // so appt.* still faithfully reflects what's actually committed. The
+        // RPC re-verifies this fresh under lock regardless, exactly like
+        // every other caller of activateSeriesWithSnapshot.
+        const outcome = await activateSeriesWithSnapshot({
           seriesId: newSeriesId!,
           workspaceId,
           clientId: appt.client_id,
           templateAppointmentId: appointmentId,
-          scheduledForIso: appt.scheduled_for,
           timezone,
+          expected: {
+            serviceType: appt.service_type,
+            priceCents: appt.price_cents,
+            durationMinutes: appt.duration_minutes,
+            notes: appt.notes,
+            teamColor: appt.team_color,
+            scheduledForIso: appt.scheduled_for,
+            employeeIds,
+          },
         });
         if (outcome.outcome !== "activated") registryWarning = true;
       } catch (err) {

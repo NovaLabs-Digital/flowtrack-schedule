@@ -5,7 +5,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
 import { effectiveTimezone } from "@/lib/timezone";
-import { fetchSeriesById, evaluateSeriesConsistency, fetchLiveOccurrenceSnapshots, finalizeSeriesActive } from "@/lib/recurringSeries";
+import { fetchSeriesById, evaluateSeriesConsistency, fetchLiveOccurrenceSnapshots, activateSeriesWithSnapshot } from "@/lib/recurringSeries";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -86,7 +86,7 @@ export async function POST(req: Request) {
     // matching row, 400 template_not_in_series.
     const { data: templateRow, error: templateErr } = await supabaseAdmin
       .from("appointments")
-      .select("id")
+      .select("id, notes")
       .eq("id", templateAppointmentId)
       .eq("workspace_id", workspaceId)
       .eq("series_id", seriesId)
@@ -134,33 +134,67 @@ export async function POST(req: Request) {
 
     const templateAppt = occurrenceSnapshots.find((o) => o.id === templateAppointmentId)!;
 
-    // Compare-and-set: template, anchor, reviewed_at, and status all move
-    // together, and only from review_required -- matches the DB CHECK
-    // constraint that active status requires template_appointment_id and
-    // reviewed_at together, and re-checks status='review_required' as the
-    // WHERE-clause condition itself, the defensive guard against a
-    // concurrent duplicate activation or any other lifecycle change that
-    // may have raced this request.
-    const outcome = await finalizeSeriesActive({
+    // Block 2C-1: template, anchor, reviewed_at, status, and every snapshot_*
+    // column all move together atomically inside activate_recurring_series
+    // -- the RPC locks and re-verifies the template appointment, its
+    // assignments, the client, and the registry row itself fresh, before
+    // ever writing anything, rather than trusting the occurrenceSnapshots/
+    // client data this route already read moments ago.
+    const outcome = await activateSeriesWithSnapshot({
       seriesId,
       workspaceId,
       clientId: series.client_id,
       templateAppointmentId,
-      scheduledForIso: templateAppt.scheduledFor,
       timezone,
+      expected: {
+        serviceType: templateAppt.serviceType,
+        priceCents: templateAppt.priceCents,
+        durationMinutes: templateAppt.durationMinutes,
+        notes: templateRow.notes,
+        teamColor: templateAppt.teamColor,
+        scheduledForIso: templateAppt.scheduledFor,
+        employeeIds: templateAppt.employeeIds,
+      },
     });
-    // Re-checked immediately before the write (see finalizeSeriesActive) --
-    // the client-inactive check above already ran once, but a client can go
-    // inactive/archived in the window between that check and this one. No
-    // appointment is ever touched by this route either way.
-    if (outcome.outcome === "client_not_active") {
-      return json({ error: "This series' client is inactive or archived and cannot be activated." }, 409);
+    // Every one of these is re-checked immediately before the write, inside
+    // the RPC's own transaction -- the upfront checks above already ran
+    // once, but the underlying state can still change in the window between
+    // those reads and this call. No appointment is ever touched by this
+    // route either way.
+    //
+    // Deliberately a switch with an exhaustive `never` default, not a chain
+    // of `if (outcome.outcome === ...)` checks that falls through to
+    // `ok:true` by default -- a chain like that would have silently
+    // reported success for any NEW outcome value added later (exactly what
+    // happened here once already: "invalid_timezone" was added to
+    // ActivateSeriesOutcome without an explicit branch, and the old
+    // fall-through structure would have returned 200 ok:true for it). This
+    // structure makes that class of bug a TypeScript compile error instead:
+    // adding a new outcome without a matching case here fails `tsc`.
+    switch (outcome.outcome) {
+      case "activated":
+        return json({ ok: true, timePattern: consistency.timePattern });
+      case "client_not_active":
+        return json({ error: "This series' client is inactive or archived and cannot be activated." }, 409);
+      case "conflict":
+        return json({ error: "This series was already reviewed by someone else. Please refresh and try again." }, 409);
+      case "employee_not_eligible":
+        return json(
+          { error: "One or more assigned employees are no longer active or no longer belong to this workspace. Update the assignment and try again." },
+          409
+        );
+      case "state_changed":
+        return json({ error: "This appointment's details changed since you loaded this page. Please refresh and try again." }, 409);
+      case "invalid_timezone":
+        return json(
+          { error: "This workspace's saved timezone isn't currently supported. Please update it in Settings and try again." },
+          400
+        );
+      default: {
+        const _exhaustive: never = outcome.outcome;
+        throw new Error(`Unhandled activate_recurring_series outcome: ${_exhaustive}`);
+      }
     }
-    if (outcome.outcome === "conflict") {
-      return json({ error: "This series was already reviewed by someone else. Please refresh and try again." }, 409);
-    }
-
-    return json({ ok: true, timePattern: consistency.timePattern });
   } catch (e: any) {
     console.error("RECURRING_SERIES_ACTIVATE_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);

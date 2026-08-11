@@ -35,7 +35,12 @@ let currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabase
 let sessionToReturn: unknown = { role: "none" };
 
 mock.module("@/lib/supabaseAdmin", {
-  namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
+  namedExports: {
+    supabaseAdmin: {
+      from: (table: string) => currentFake.supabaseAdmin.from(table),
+      rpc: (fn: string, args?: unknown) => currentFake.supabaseAdmin.rpc(fn, args),
+    },
+  },
 });
 mock.module("@/lib/notify", {
   namedExports: {
@@ -61,8 +66,8 @@ mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () =>
 const { PATCH } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
-function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
+  currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
   currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabaseAdmin.from(t) });
 }
 function req(body?: unknown, url = "http://localhost/api/appointments/update") {
@@ -1101,72 +1106,86 @@ describe("Phase 5.7D-R19: team_color on edit", () => {
 });
 
 describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
-  test("adding a second employee (Roxana) while Teresa remains -- only an insert, no removal", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
-      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
-      appointment_employee_hours: [{ data: [] }],
-      appointment_employees: [
-        { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
-        { data: null, error: null },
-      ],
-    });
+  test("adding a second employee (Roxana) while Teresa remains -- the atomic sync RPC is called with the full desired set and the exact observed current set", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [
+          { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // planAssignmentSync's own fetchAssignments
+        ],
+      },
+      { sync_appointment_assignments: [{ data: "synced" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["teresa", "roxana"] }));
     assert.equal(res.status, 200);
-    const insertCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "insert");
-    assert.ok(insertCall);
-    const rows = insertCall!.args[0] as Array<{ employee_id: string }>;
-    assert.deepEqual(rows.map((r) => r.employee_id), ["roxana"]);
-    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "delete").length, 0);
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const call = currentFake.rpcCalls[0];
+    assert.equal(call.fn, "sync_appointment_assignments");
+    assert.deepEqual(call.args, {
+      p_appointment_id: "appt-1",
+      p_workspace_id: REAL_WORKSPACE_ID,
+      p_expected_current_employee_ids: ["teresa"],
+      p_desired_employee_ids: ["roxana", "teresa"],
+    });
+    // No direct .insert()/.delete() against appointment_employees anymore --
+    // the atomic RPC is the only path, never a plain Supabase-client write.
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && (c.method === "insert" || c.method === "delete")).length, 0);
   });
 
-  test("removing Teresa while Alberto remains -- removes only Teresa's assignment, keeps Alberto", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
-      employees: [{ data: [{ id: "alberto" }] }],
-      appointment_employee_hours: [{ data: [] }],
-      appointment_employees: [
-        {
-          data: [
-            { id: "ae-1", appointment_id: "appt-1", employee_id: "alberto", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
-            { id: "ae-2", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
-          ],
-        },
-        { data: null, error: null },
-      ],
-    });
+  test("removing Teresa while Alberto remains -- the atomic sync RPC receives the full desired set (Alberto only)", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        employees: [{ data: [{ id: "alberto" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [
+          {
+            data: [
+              { id: "ae-1", appointment_id: "appt-1", employee_id: "alberto", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+              { id: "ae-2", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+            ],
+          },
+        ],
+      },
+      { sync_appointment_assignments: [{ data: "synced" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["alberto"] }));
     assert.equal(res.status, 200);
-    const deleteCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "delete");
-    assert.ok(deleteCall);
-    const inCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "in");
-    assert.deepEqual(inCall!.args, ["employee_id", ["teresa"]]);
-    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert").length, 0);
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const call = currentFake.rpcCalls[0].args as Record<string, unknown>;
+    assert.deepEqual(call.p_expected_current_employee_ids, ["alberto", "teresa"]);
+    assert.deepEqual(call.p_desired_employee_ids, ["alberto"]);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && (c.method === "insert" || c.method === "delete")).length, 0);
   });
 
   test("removing the last employee is allowed at the API level -- last-employee confirmation is a client-side (AppointmentModal) concern", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
-      appointment_employee_hours: [{ data: [] }],
-      appointment_employees: [
-        { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
-        { data: null, error: null },
-      ],
-    });
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [
+          { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
+        ],
+      },
+      { sync_appointment_assignments: [{ data: "synced" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: [] }));
     assert.equal(res.status, 200);
     const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
     assert.equal((updateCall!.args[0] as { employee_id?: string | null }).employee_id, null);
-    assert.ok(currentFake.calls.some((c) => c.table === "appointment_employees" && c.method === "delete"));
+    const call = currentFake.rpcCalls[0].args as Record<string, unknown>;
+    assert.deepEqual(call.p_desired_employee_ids, []);
   });
 
   test("a blocked removal (recorded work) rejects the entire request with 409, zero mutation of any kind -- not even an unrelated field change", async () => {
@@ -1188,37 +1207,40 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
     assert.equal(writeCalls(currentFake.calls).length, 0, "no mutation anywhere -- not even the unrelated service_type change");
   });
 
-  test("mode: future propagates a newly added employee to every future sibling, without duplicating the existing employee's assignment", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: existingAppt({ series_id: "series-1" }) }, // existing fetch
-        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings (fetched early for validation)
-        { error: null }, // hasColumn("employee_id")
-        { error: null }, // update origin
-        { error: null }, // update sibling
-      ],
-      employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
-      appointment_employee_hours: [{ data: [] }],
-      appointment_employees: [
-        { data: [{ id: "ae-o", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // fetchAssignments(origin)
-        { data: [{ id: "ae-s", appointment_id: "sib-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // fetchAssignments(sib-1)
-        { data: null, error: null }, // insertAssignments(origin, roxana)
-        { data: null, error: null }, // insertAssignments(sib-1, roxana)
-      ],
-      recurring_series: [{ data: null }],
-    });
+  test("mode: future propagates a newly added employee to every future sibling -- the atomic sync RPC is called once per appointment (origin + each sibling), each with its own observed current set", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) }, // existing fetch
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings (fetched early for validation)
+          { error: null }, // hasColumn("employee_id")
+          { error: null }, // update origin
+          { error: null }, // update sibling
+        ],
+        employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [
+          { data: [{ id: "ae-o", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // planAssignmentSync's own fetchAssignments(origin)
+          { data: [{ id: "ae-s", appointment_id: "sib-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // planAssignmentSync's own fetchAssignments(sib-1)
+        ],
+        recurring_series: [{ data: null }],
+      },
+      { sync_appointment_assignments: [{ data: "synced" }, { data: "synced" }] } // origin, then sib-1
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", employee_ids: ["teresa", "roxana"] }));
     assert.equal(res.status, 200);
-    const insertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
-    assert.equal(insertCalls.length, 2);
-    for (const call of insertCalls) {
-      const rows = call.args[0] as Array<{ employee_id: string }>;
-      assert.deepEqual(rows.map((r) => r.employee_id), ["roxana"]);
-    }
-    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "delete").length, 0);
+    assert.equal(currentFake.rpcCalls.length, 2);
+    const [originCall, sibCall] = currentFake.rpcCalls.map((c) => c.args as Record<string, unknown>);
+    assert.equal(originCall.p_appointment_id, "appt-1");
+    assert.deepEqual(originCall.p_expected_current_employee_ids, ["teresa"]);
+    assert.deepEqual(originCall.p_desired_employee_ids, ["roxana", "teresa"]);
+    assert.equal(sibCall.p_appointment_id, "sib-1");
+    assert.deepEqual(sibCall.p_expected_current_employee_ids, ["teresa"]);
+    assert.deepEqual(sibCall.p_desired_employee_ids, ["roxana", "teresa"]);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && (c.method === "insert" || c.method === "delete")).length, 0);
   });
 
   test("mode: future -- a blocked removal on ANY sibling aborts the whole request, including the origin's own (unblocked) change", async () => {
@@ -1268,6 +1290,144 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
     assert.equal(currentFake.calls.filter((c) => c.table === "employees").length, 0);
     const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
     assert.equal("employee_id" in (updateCall!.args[0] as object), false);
+  });
+});
+
+describe("Block 2C-1: assignment sync failure stops the request safely -- never reports success, never reactivates a series with an unconfirmed employee set", () => {
+  test("outcome 'state_changed' from the sync RPC returns 409 ASSIGNMENT_SYNC_FAILED, not ok:true", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        employees: [{ data: [{ id: "teresa" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [{ data: [] }],
+      },
+      { sync_appointment_assignments: [{ data: "state_changed" }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["teresa"] }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "ASSIGNMENT_SYNC_FAILED");
+    assert.equal(body.ok, undefined);
+  });
+
+  test("outcome 'employee_not_eligible' from the sync RPC returns 409 ASSIGNMENT_SYNC_FAILED", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        employees: [{ data: [{ id: "teresa" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [{ data: [] }],
+      },
+      { sync_appointment_assignments: [{ data: "employee_not_eligible" }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["teresa"] }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "ASSIGNMENT_SYNC_FAILED");
+  });
+
+  test("outcome 'appointment_not_found' from the sync RPC returns 409 ASSIGNMENT_SYNC_FAILED", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        employees: [{ data: [{ id: "teresa" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [{ data: [] }],
+      },
+      { sync_appointment_assignments: [{ data: "appointment_not_found" }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["teresa"] }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "ASSIGNMENT_SYNC_FAILED");
+  });
+
+  test("a real sync RPC-call error propagates as a generic 500, never a raw database detail", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        employees: [{ data: [{ id: "teresa" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [{ data: [] }],
+      },
+      { sync_appointment_assignments: [{ error: { message: "simulated sync rpc failure" } }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["teresa"] }));
+    assert.equal(res.status, 500);
+    const body = await res.json();
+    assert.ok(!JSON.stringify(body).includes("simulated sync rpc failure"));
+  });
+
+  test("disclosed partial-mutation limitation: the appointment's own scalar field change already committed (a separate, independent PostgREST call) BEFORE the sync failure is detected -- this route is a sequence of independent calls, not one transaction, and this correction does not change that", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
+        employees: [{ data: [{ id: "teresa" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [{ data: [] }],
+      },
+      { sync_appointment_assignments: [{ data: "state_changed" }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", employee_ids: ["teresa"], service_type: "Deep Cleaning" }));
+    assert.equal(res.status, 409);
+    // The scalar field update DID already happen -- proving it is not, and
+    // cannot be, rolled back by this correction alone.
+    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.ok(updateCall, "the appointment's own scalar field update already committed before the sync failure was detected");
+    assert.equal((updateCall!.args[0] as { service_type?: string }).service_type, "Deep Cleaning");
+  });
+
+  test("mode: future -- a sibling's sync failure aborts before ANY registry re-finalize is attempted, so a failed sync can never reactivate a series with an unconfirmed employee set", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) },
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+          { error: null }, // hasColumn("employee_id")
+          { error: null }, // update origin
+          { error: null }, // update sibling
+        ],
+        employees: [{ data: [{ id: "teresa" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [
+          { data: [] }, // planAssignmentSync fetchAssignments(origin)
+          { data: [] }, // planAssignmentSync fetchAssignments(sib-1)
+        ],
+        recurring_series: [
+          { data: { id: "series-1", status: "active" } }, // observe old series status
+          { data: [{ id: "series-1" }] }, // quarantine (active -> review_required)
+        ],
+      },
+      { sync_appointment_assignments: [{ data: "synced" }, { data: "state_changed" }] } // origin ok, sibling fails
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", employee_ids: ["teresa"] }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "ASSIGNMENT_SYNC_FAILED");
+    // The registry re-finalize step never ran -- no activate_recurring_series
+    // RPC call was ever attempted, so the series stays quarantined in
+    // review_required rather than being reactivated using an employee set a
+    // sync failure just proved could not be confirmed.
+    assert.deepEqual(currentFake.rpcCalls.filter((c) => c.fn === "activate_recurring_series"), []);
   });
 });
 
@@ -1358,27 +1518,35 @@ function liveOcc(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Block 2B safety correction: This & Future quarantines an ACTIVE series before mutation, then re-validates and reactivates it after", () => {
-  test("an active series: quarantines before mutation, then re-finalizes active with the edited appointment as template and the refreshed anchor", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: existingAppt({ series_id: "series-1" }) }, // fetch existing
-        { error: null }, // update source
-        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings
-        { error: null }, // update sibling
-        { data: [liveOcc()] }, // fetchLiveOccurrenceSnapshots -- just the edited appointment, still scheduled/future
-      ],
-      appointment_employees: [{ data: [] }], // fetchAssignments(appt-1) inside fetchLiveOccurrenceSnapshots
-      company_settings: [{ data: { timezone: null } }],
-      clients: [{ data: { id: "client-1", status: "active", archived_at: null } }], // finalizeSeriesActive's own client re-check
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe old series status
-        { data: [{ id: "series-1" }] }, // quarantine (active -> review_required)
-        { data: seriesRow() }, // fetchSeriesById (post-mutation, for consistency check)
-        { data: [{ id: "series-1" }] }, // finalize active
-      ],
-    });
+  test("an active series: quarantines before mutation, then re-activates atomically with the edited appointment as template and the refreshed anchor", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) }, // fetch existing
+          { error: null }, // update source
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings
+          { error: null }, // update sibling
+          { data: [liveOcc()] }, // fetchLiveOccurrenceSnapshots -- just the edited appointment, still scheduled/future
+          // Block 2C-1: re-fetch the edited appointment's own current,
+          // fully-committed fields immediately before the activation RPC.
+          { data: { service_type: "Haircut", price_cents: 5000, duration_minutes: 60, notes: null, team_color: null, scheduled_for: "2026-08-03T15:00:00.000Z" } },
+        ],
+        // fetchAssignments(appt-1) inside fetchLiveOccurrenceSnapshots, then
+        // again immediately before the activation RPC (Block 2C-1) -- the
+        // second read proves the RPC's expected employee set reflects the
+        // CURRENT assignment state, not a stale earlier snapshot.
+        appointment_employees: [{ data: [] }, { data: [] }],
+        company_settings: [{ data: { timezone: null } }],
+        recurring_series: [
+          { data: { id: "series-1", status: "active" } }, // observe old series status
+          { data: [{ id: "series-1" }] }, // quarantine (active -> review_required)
+          { data: seriesRow() }, // fetchSeriesById (post-mutation, for consistency check)
+        ],
+      },
+      { activate_recurring_series: [{ data: "activated" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: "2026-08-03T15:00:00.000Z" }));
     assert.equal(res.status, 200);
@@ -1386,14 +1554,15 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
     assert.equal(body.warning, undefined);
 
     const updateCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update");
-    assert.equal(updateCalls.length, 2, "quarantine then finalize-active");
+    assert.equal(updateCalls.length, 1, "quarantine only -- activation now happens entirely inside the RPC");
     assert.equal((updateCalls[0].args[0] as Record<string, unknown>).status, "review_required");
-    const finalizePatch = updateCalls[1].args[0] as Record<string, unknown>;
-    assert.equal(finalizePatch.status, "active");
-    assert.equal(finalizePatch.template_appointment_id, "appt-1");
-    assert.equal(finalizePatch.anchor_local_date, "2026-08-03");
-    assert.equal(finalizePatch.anchor_local_time, "11:00"); // 15:00 UTC -> 11:00 America/New_York (EDT)
-    assert.ok(finalizePatch.reviewed_at);
+
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const rpcArgs = currentFake.rpcCalls[0].args as Record<string, unknown>;
+    assert.equal(currentFake.rpcCalls[0].fn, "activate_recurring_series");
+    assert.equal(rpcArgs.p_template_appointment_id, "appt-1");
+    assert.equal(rpcArgs.p_expected_scheduled_for, "2026-08-03T15:00:00.000Z");
+    assert.equal(rpcArgs.p_anchor_timezone, "America/New_York");
 
     // Quarantine must be recorded before the origin appointment's own update.
     const quarantineIdx = currentFake.calls.indexOf(updateCalls[0]);
@@ -1402,36 +1571,39 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
   });
 
   test("a future-mode edit with NO time change (only a field like price) still quarantines-then-reactivates an active series -- template repoints even without a time shift", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: existingAppt({ series_id: "series-1" }) },
-        { error: null },
-        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
-        { error: null },
-        { data: [liveOcc({ scheduled_for: "2026-08-03T14:00:00.000Z", price_cents: 7500 })] },
-      ],
-      appointment_employees: [{ data: [] }],
-      company_settings: [{ data: { timezone: null } }],
-      clients: [{ data: { id: "client-1", status: "active", archived_at: null } }], // finalizeSeriesActive's own client re-check
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe
-        { data: [{ id: "series-1" }] }, // quarantine
-        { data: seriesRow() }, // fetchSeriesById
-        { data: [{ id: "series-1" }] }, // finalize active
-      ],
-    });
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) },
+          { error: null },
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+          { error: null },
+          { data: [liveOcc({ scheduled_for: "2026-08-03T14:00:00.000Z", price_cents: 7500 })] },
+          { data: { service_type: "Haircut", price_cents: 7500, duration_minutes: 60, notes: null, team_color: null, scheduled_for: "2026-08-03T14:00:00.000Z" } },
+        ],
+        appointment_employees: [{ data: [] }, { data: [] }],
+        company_settings: [{ data: { timezone: null } }],
+        recurring_series: [
+          { data: { id: "series-1", status: "active" } }, // observe
+          { data: [{ id: "series-1" }] }, // quarantine
+          { data: seriesRow() }, // fetchSeriesById
+        ],
+      },
+      { activate_recurring_series: [{ data: "activated" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", price_cents: 7500 }));
     assert.equal(res.status, 200);
     const updateCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update");
-    assert.equal(updateCalls.length, 2);
-    const finalizePatch = updateCalls[1].args[0] as Record<string, unknown>;
-    assert.equal(finalizePatch.template_appointment_id, "appt-1");
+    assert.equal(updateCalls.length, 1);
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const rpcArgs = currentFake.rpcCalls[0].args as Record<string, unknown>;
+    assert.equal(rpcArgs.p_template_appointment_id, "appt-1");
     // The anchor is recomputed from the (unchanged) scheduled_for -- a no-op
     // overwrite, not a special-cased skip.
-    assert.equal(finalizePatch.anchor_local_date, "2026-08-03");
+    assert.equal(rpcArgs.p_expected_scheduled_for, "2026-08-03T14:00:00.000Z");
   });
 
   test("a series that wasn't active to begin with (review_required legacy, or none at all) is left completely untouched -- never auto-activated by an unrelated edit", async () => {
@@ -1470,6 +1642,48 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
     const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-03T15:00:00.000Z" }));
     assert.equal(res.status, 200);
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+    assert.deepEqual(currentFake.rpcCalls, []);
+  });
+
+  // Block 2C-1 regression: under the durable-snapshot design,
+  // recurring_series.template_appointment_id is purely historical/
+  // informational once a series is active -- an Only This edit to the exact
+  // appointment a series' template_appointment_id happens to point at must
+  // never re-run activate_recurring_series and must never alter that
+  // series' snapshot_* columns, even though the edited row's own live
+  // fields (price/service/duration/notes/team_color) just changed. This is
+  // the direct, named counter-example to the "single edit could silently
+  // alter what future replenishment copies" risk identified in the Block 2C
+  // architecture review.
+  test("Block 2C-1 regression: an Only This edit of a series' own historical template_appointment_id leaves that series' snapshot completely untouched", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      // appt-1 is simultaneously (a) the row being edited here via mode:
+      // "single" and (b) some OTHER already-active series' own
+      // template_appointment_id -- established purely by convention (its id
+      // matching what a real series' template_appointment_id would be), not
+      // by any fixture the route itself reads, since mode:"single" never
+      // looks up which series (if any) an appointment happens to be a
+      // template for.
+      appointments: [
+        { data: existingAppt({ series_id: null }) }, // fetch existing -- note: this specific appointment need not even carry a series_id itself to be some OTHER series' historical template pointer
+        { error: null }, // update source (price/service/etc change)
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    // service_type/notes deliberately avoid any hasColumn()-probed field
+    // (price_cents/duration_minutes/team_color/scheduled_end/employee_id),
+    // keeping the fixture list exactly two entries: fetch existing, then
+    // the update itself.
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", service_type: "Deep Clean", notes: "Different scope of work entirely" }));
+    assert.equal(res.status, 200);
+    // The definitive proof: zero reads AND zero writes against
+    // recurring_series, and zero activation RPC calls -- structurally
+    // impossible for this route to have altered any series' snapshot_*
+    // columns, template_appointment_id, or any other registry field.
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+    assert.deepEqual(currentFake.rpcCalls, []);
   });
 
   test("failure injection: a quarantine failure on an active series aborts BEFORE any appointment mutation, 500, zero appointment writes", async () => {
@@ -1519,56 +1733,95 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
     assert.equal(updateCalls.length, 1, "only the quarantine update -- no finalize-active update was ever attempted");
   });
 
-  test("failure injection: a finalize-active failure after a successful mutation still returns success, with a warning", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: existingAppt({ series_id: "series-1" }) },
-        { error: null },
-        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
-        { error: null },
-        { data: [liveOcc()] },
-      ],
-      appointment_employees: [{ data: [] }],
-      company_settings: [{ data: { timezone: null } }],
-      clients: [{ data: { id: "client-1", status: "active", archived_at: null } }], // finalizeSeriesActive's own client re-check
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe
-        { data: [{ id: "series-1" }] }, // quarantine
-        { data: seriesRow() }, // fetchSeriesById
-        { error: { message: "simulated finalize-active failure" } },
-      ],
-    });
+  test("failure injection: an activation RPC error after a successful mutation still returns success, with a warning", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) },
+          { error: null },
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+          { error: null },
+          { data: [liveOcc()] },
+          { data: { service_type: "Haircut", price_cents: 5000, duration_minutes: 60, notes: null, team_color: null, scheduled_for: "2026-08-03T15:00:00.000Z" } },
+        ],
+        appointment_employees: [{ data: [] }, { data: [] }],
+        company_settings: [{ data: { timezone: null } }],
+        recurring_series: [
+          { data: { id: "series-1", status: "active" } }, // observe
+          { data: [{ id: "series-1" }] }, // quarantine
+          { data: seriesRow() }, // fetchSeriesById
+        ],
+      },
+      { activate_recurring_series: [{ error: { message: "simulated activation failure" } }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: "2026-08-03T15:00:00.000Z" }));
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.ok(body.warning);
     assert.equal(body.warning.code, "recurring_series_review_required");
-    assert.ok(!JSON.stringify(body.warning).includes("simulated finalize-active failure"));
+    assert.ok(!JSON.stringify(body.warning).includes("simulated activation failure"));
   });
 
-  test("race: finalizing an updated series cannot activate it after its client becomes inactive -- stays review_required, appointment mutation still succeeds with a warning", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: existingAppt({ series_id: "series-1" }) },
-        { error: null },
-        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
-        { error: null },
-        { data: [liveOcc()] },
-      ],
-      appointment_employees: [{ data: [] }],
-      company_settings: [{ data: { timezone: null } }],
-      clients: [{ data: { id: "client-1", status: "inactive", archived_at: null } }], // finalizeSeriesActive's own re-check -- client went inactive concurrently
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe
-        { data: [{ id: "series-1" }] }, // quarantine
-        { data: seriesRow() }, // fetchSeriesById
-      ],
-    });
+  test("outcome 'invalid_timezone' from the RPC still returns success, with the same structured warning", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) },
+          { error: null },
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+          { error: null },
+          { data: [liveOcc()] },
+          { data: { service_type: "Haircut", price_cents: 5000, duration_minutes: 60, notes: null, team_color: null, scheduled_for: "2026-08-03T15:00:00.000Z" } },
+        ],
+        appointment_employees: [{ data: [] }, { data: [] }],
+        company_settings: [{ data: { timezone: null } }],
+        recurring_series: [
+          { data: { id: "series-1", status: "active" } }, // observe
+          { data: [{ id: "series-1" }] }, // quarantine
+          { data: seriesRow() }, // fetchSeriesById
+        ],
+      },
+      { activate_recurring_series: [{ data: "invalid_timezone" }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: "2026-08-03T15:00:00.000Z" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.warning);
+    assert.equal(body.warning.code, "recurring_series_review_required");
+  });
+
+  test("race: activating an updated series cannot succeed after its client becomes inactive -- stays review_required, appointment mutation still succeeds with a warning", async () => {
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) },
+          { error: null },
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+          { error: null },
+          { data: [liveOcc()] },
+          { data: { service_type: "Haircut", price_cents: 5000, duration_minutes: 60, notes: null, team_color: null, scheduled_for: "2026-08-03T15:00:00.000Z" } },
+        ],
+        appointment_employees: [{ data: [] }, { data: [] }],
+        company_settings: [{ data: { timezone: null } }],
+        recurring_series: [
+          { data: { id: "series-1", status: "active" } }, // observe
+          { data: [{ id: "series-1" }] }, // quarantine
+          { data: seriesRow() }, // fetchSeriesById
+        ],
+      },
+      // The client-active re-check now happens entirely inside the RPC's
+      // own locked transaction -- simulated here by the RPC itself
+      // reporting client_not_active, not a second JS-level clients fixture.
+      { activate_recurring_series: [{ data: "client_not_active" }] }
+    );
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: "2026-08-03T15:00:00.000Z" }));
     assert.equal(res.status, 200);
