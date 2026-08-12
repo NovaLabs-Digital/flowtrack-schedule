@@ -35,6 +35,42 @@ const {
   MAX_OCCURRENCES_PER_SERIES_PER_RUN,
   MAX_SERIES_PROCESSED_PER_RUN,
 } = await import("./recurringSeriesReplenishmentOrchestrator.ts");
+const { resolveEntitlement, resolveWorkspaceEntitlement, noDataResult } = await import("./entitlement.ts");
+const { DEMO_WORKSPACE_ID } = await import("./workspace.ts");
+import type { EntitlementResult, SubscriptionRecord } from "./entitlement.ts";
+
+// Block 2C-2F: every PRE-EXISTING test in this file below was written
+// before the entitlement gate existed and is about selection/coverage/
+// generation/RPC-outcome/DST/idempotency behavior, not about entitlement
+// itself -- so every one of them injects this "always permitted" fetcher
+// (built from the REAL resolveEntitlement, an internal-mode record, exactly
+// as lib/entitlement.ts itself resolves it -- not a hand-rolled shortcut)
+// so their pre-existing assertions keep exercising exactly what they always
+// tested. The entitlement GATE's own behavior (cache, dry-run/live
+// counting, every capability state, privacy) is exhaustively covered by its
+// own dedicated describe blocks further below, which each construct their
+// own specific fetchEntitlement.
+function internalSubscriptionRecord(): SubscriptionRecord {
+  return {
+    billingMode: "internal",
+    stripeStatus: null,
+    trialEnd: null,
+    currentPeriodEnd: null,
+    graceUntil: null,
+    cancelAtPeriodEnd: false,
+    canceledAt: null,
+    accessEndedAt: null,
+    trialConsumedAt: null,
+    hasStripeIdentity: false,
+  };
+}
+// A fixed, arbitrary instant -- the "internal" branch resolveEntitlement()
+// takes never actually reads `now` (see lib/entitlement.ts), so this value
+// is inert; a literal is used here (rather than the file's own NOW()) only
+// because this constant is constructed before NOW_ISO/NOW are declared
+// below.
+const ALWAYS_PERMITTED_ENTITLEMENT: EntitlementResult = resolveEntitlement(internalSubscriptionRecord(), new Date("2026-01-01T00:00:00.000Z"));
+const ALWAYS_PERMITTED_FETCH_ENTITLEMENT = async (_workspaceId: string): Promise<EntitlementResult> => ALWAYS_PERMITTED_ENTITLEMENT;
 
 function resetFixtures(
   responses: Record<string, FakeSupabaseFixture[]>,
@@ -103,7 +139,7 @@ describe("source-level proof: this module never writes directly to appointments/
       recurring_series: queueSelection([activeSeriesRow()]),
       appointments: queueOccurrences([]),
     });
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const writeMethods = new Set(["insert", "update", "delete", "upsert"]);
     const directWrites = currentFake.calls.filter((c) => writeMethods.has(c.method));
     assert.deepEqual(directWrites, []);
@@ -115,7 +151,7 @@ describe("selection query shape", () => {
     resetFixtures({
       recurring_series: queueSelection([]),
     });
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const eqCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq");
     assert.deepEqual(eqCalls[0].args, ["status", "active"]);
     assert.deepEqual(eqCalls[1].args, ["is_demo", false]);
@@ -130,7 +166,7 @@ describe("selection query shape", () => {
     resetFixtures({
       recurring_series: queueSelection([]),
     });
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(currentFake.rpcCalls.length, 0);
     assert.ok(!currentFake.calls.some((c) => c.table === "appointments"));
     assert.deepEqual(summary.counts, {
@@ -147,6 +183,7 @@ describe("selection query shape", () => {
       safeFailures: 0,
       truncatedSeries: 0,
       deferredByProcessingLimit: 0,
+      skippedEntitlementRestricted: 0,
     });
   });
 
@@ -155,7 +192,7 @@ describe("selection query shape", () => {
       recurring_series: queueSelection([activeSeriesRow({ id: "s1" })], 137),
       appointments: queueOccurrences([]),
     });
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.activeSeriesExamined, 1);
     assert.equal(summary.counts.deferredByProcessingLimit, 136);
   });
@@ -166,7 +203,7 @@ describe("demo policy: is_demo=true is excluded at the query level, never proces
     resetFixtures({
       recurring_series: queueSelection([]),
     });
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const eqCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq");
     assert.ok(eqCalls.some((c) => c.args[0] === "is_demo" && c.args[1] === false));
   });
@@ -180,7 +217,7 @@ describe("coverage computation and window boundaries", () => {
         { series_id: "series-1", workspace_id: "ws-1", scheduled_for: daysFromNow(REPLENISH_THRESHOLD_DAYS + 5) },
       ]),
     });
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.skippedSufficientCoverage, 1);
     assert.equal(summary.counts.replenished, 0);
     assert.equal(currentFake.rpcCalls.length, 0);
@@ -195,7 +232,7 @@ describe("coverage computation and window boundaries", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(currentFake.rpcCalls.length, 1);
     const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     const targetThrough = daysFromNow(REPLENISH_TARGET_COVERAGE_DAYS);
@@ -213,7 +250,7 @@ describe("coverage computation and window boundaries", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(currentFake.rpcCalls.length, 1);
     const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     for (const occ of args.p_occurrences) {
@@ -236,7 +273,7 @@ describe("coverage computation and window boundaries", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const occCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "status");
     assert.deepEqual(occCall!.args, ["status", "scheduled"]);
     const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
@@ -258,7 +295,7 @@ describe("coverage computation and window boundaries", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     // Treated as having NO live coverage (mismatched row ignored) -- so it
     // still gets replenished starting from "now", not skipped.
     assert.equal(summary.counts.skippedSufficientCoverage, 0);
@@ -284,7 +321,7 @@ describe("coverage computation and window boundaries", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     // s1 has no valid coverage (its only row was mismatched) -> replenished.
     // s2 has genuine sufficient coverage -> skipped. Exactly one RPC call.
     assert.equal(summary.counts.replenished, 1);
@@ -310,7 +347,7 @@ describe("per-frequency generation wiring (generator itself is exhaustively test
         },
         { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
       );
-      const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+      const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
       assert.equal(summary.counts.replenished, 1);
       assert.equal(currentFake.rpcCalls.length, 1);
     });
@@ -324,7 +361,7 @@ describe("per-frequency generation wiring (generator itself is exhaustively test
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: MAX_OCCURRENCES_PER_SERIES_PER_RUN, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     assert.ok(args.p_occurrences.length <= MAX_OCCURRENCES_PER_SERIES_PER_RUN);
     // A 60-day daily window has ~60 real candidates, well beyond the cap --
@@ -354,7 +391,7 @@ describe("DST gap handling: quarantine RPC only, never replenish", () => {
       },
       { quarantine_recurring_series_for_replenishment: [{ data: "quarantined" }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.quarantinedDstGap, 1);
     assert.equal(summary.counts.replenished, 0);
     assert.equal(currentFake.rpcCalls.length, 1);
@@ -377,7 +414,7 @@ describe("DST gap handling: quarantine RPC only, never replenish", () => {
       },
       { quarantine_recurring_series_for_replenishment: [{ data: "conflict" }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.conflicts, 1);
     assert.equal(summary.counts.quarantinedDstGap, 0);
     assert.equal(currentFake.rpcCalls.length, 1);
@@ -393,7 +430,7 @@ describe("DST gap handling: quarantine RPC only, never replenish", () => {
       },
       { quarantine_recurring_series_for_replenishment: [{ error: { message: "simulated" } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.safeFailures, 1);
   });
 
@@ -404,7 +441,7 @@ describe("DST gap handling: quarantine RPC only, never replenish", () => {
       ]),
       appointments: queueOccurrences([]),
     });
-    const summary = await runReplenishmentPass({ dryRun: true, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.quarantinedDstGap, 1);
     assert.equal(currentFake.rpcCalls.length, 0);
   });
@@ -429,7 +466,7 @@ describe("generation failures other than dst_gap: fail closed, no quarantine RPC
       ]),
       appointments: queueOccurrences([]),
     });
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.safeFailures, 1);
     assert.equal(summary.counts.replenished, 0);
     assert.equal(summary.counts.quarantinedDstGap, 0);
@@ -441,7 +478,7 @@ describe("generation failures other than dst_gap: fail closed, no quarantine RPC
       recurring_series: queueSelection([activeSeriesRow({ snapshot_updated_at: null })]),
       appointments: queueOccurrences([]),
     });
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.safeFailures, 1);
     assert.equal(currentFake.rpcCalls.length, 0);
   });
@@ -465,7 +502,7 @@ describe("replenish_recurring_series outcome handling -- every closed outcome ex
         },
         { replenish_recurring_series: [{ data: fixture }] }
       );
-      const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+      const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
       assert.equal((summary.counts as unknown as Record<string, number>)[expectedCountKey], 1);
     });
   }
@@ -478,7 +515,7 @@ describe("replenish_recurring_series outcome handling -- every closed outcome ex
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 4, skipped_count: 6 } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.occurrencesInserted, 4);
     assert.equal(summary.counts.occurrencesSkippedIdempotent, 6);
   });
@@ -491,7 +528,7 @@ describe("replenish_recurring_series outcome handling -- every closed outcome ex
       },
       { replenish_recurring_series: [{ data: { outcome: "not_a_real_outcome", inserted_count: 0, skipped_count: 0 } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.safeFailures, 1);
   });
 
@@ -503,7 +540,7 @@ describe("replenish_recurring_series outcome handling -- every closed outcome ex
       },
       { replenish_recurring_series: [{ error: { message: "simulated db failure" } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.safeFailures, 1);
   });
 });
@@ -517,7 +554,7 @@ describe("idempotency and concurrency proofs", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 0, skipped_count: 5 } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.replenished, 1);
     assert.equal(summary.counts.occurrencesInserted, 0);
     assert.equal(summary.counts.occurrencesSkippedIdempotent, 5);
@@ -531,7 +568,7 @@ describe("idempotency and concurrency proofs", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "conflict", inserted_count: 0, skipped_count: 0 } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.conflicts, 1);
     assert.equal(summary.counts.replenished, 0);
   });
@@ -544,7 +581,7 @@ describe("idempotency and concurrency proofs", () => {
       },
       { replenish_recurring_series: [{ data: { outcome: "conflict", inserted_count: 0, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(currentFake.rpcCalls.length, 1);
   });
 
@@ -564,7 +601,7 @@ describe("idempotency and concurrency proofs", () => {
         ],
       }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(currentFake.rpcCalls.length, 2);
     assert.equal(summary.counts.replenished, 2);
   });
@@ -579,7 +616,7 @@ describe("dry run: identical selection/generation decisions, zero writes, zero R
       ]),
       appointments: queueOccurrences([]),
     });
-    const summary = await runReplenishmentPass({ dryRun: true, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(currentFake.rpcCalls.length, 0);
     assert.equal(summary.counts.replenished, 1);
     assert.equal(summary.counts.quarantinedDstGap, 1);
@@ -593,7 +630,7 @@ describe("dry run: identical selection/generation decisions, zero writes, zero R
       ]),
       appointments: queueOccurrences([]),
     });
-    const dry = await runReplenishmentPass({ dryRun: true, now: NOW });
+    const dry = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(dry.counts.replenished, 2);
     assert.ok(dry.counts.wouldRequestOccurrencesTotal > 0);
     // The response is JSON-serializable with no series/workspace identifier
@@ -611,7 +648,7 @@ describe("dry run: identical selection/generation decisions, zero writes, zero R
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    const live = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const live = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     // Live mode never populates the dry-run-only aggregate -- it reports the
     // RPC's own real occurrencesInserted/occurrencesSkippedIdempotent
     // instead.
@@ -623,7 +660,7 @@ describe("dry run: identical selection/generation decisions, zero writes, zero R
       recurring_series: queueSelection([activeSeriesRow()]),
       appointments: queueOccurrences([]),
     });
-    await runReplenishmentPass({ dryRun: true, now: NOW });
+    await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const writeMethods = new Set(["insert", "update", "delete", "upsert"]);
     assert.deepEqual(currentFake.calls.filter((c) => writeMethods.has(c.method)), []);
     assert.equal(currentFake.rpcCalls.length, 0);
@@ -641,7 +678,7 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     const firstRequested = new Date(args.p_occurrences[0]).getTime();
     const nowMs = new Date(NOW_ISO).getTime();
@@ -656,7 +693,7 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
       recurring_series: queueSelection([activeSeriesRow({ anchor_local_date: "2026-01-31", anchor_local_time: "09:00" })]),
       appointments: queueOccurrences([]),
     });
-    const dry = await runReplenishmentPass({ dryRun: true, now: NOW });
+    const dry = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(dry.counts.replenished, 1);
     assert.ok(dry.counts.wouldRequestOccurrencesTotal > 0 && dry.counts.wouldRequestOccurrencesTotal <= MAX_OCCURRENCES_PER_SERIES_PER_RUN);
   });
@@ -670,7 +707,7 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: MAX_OCCURRENCES_PER_SERIES_PER_RUN, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const run1Args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     assert.equal(run1Args.p_occurrences.length, MAX_OCCURRENCES_PER_SERIES_PER_RUN);
     const run1LastOccurrence = run1Args.p_occurrences[run1Args.p_occurrences.length - 1];
@@ -686,7 +723,7 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: MAX_OCCURRENCES_PER_SERIES_PER_RUN, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const run2Args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     assert.ok(run2Args.p_occurrences[0] > run1LastOccurrence, "run 2 must start strictly after run 1's last occurrence");
   });
@@ -700,7 +737,7 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     assert.ok(args.p_occurrences[0] > latestScheduled);
     assert.ok(args.p_occurrences[0] > NOW_ISO);
@@ -719,7 +756,7 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
         },
         { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
       );
-      await runReplenishmentPass({ dryRun: false, now: NOW });
+      await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
       const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
       for (const occ of args.p_occurrences) {
         assert.ok(occ > NOW_ISO, `${overrides.frequency_type}: occurrence ${occ} must be strictly after now`);
@@ -737,14 +774,14 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: MAX_OCCURRENCES_PER_SERIES_PER_RUN, skipped_count: 0 } }] }
     );
-    const live = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const live = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(live.counts.truncatedSeries, 1);
 
     resetFixtures({
       recurring_series: queueSelection([activeSeriesRow({ anchor_local_date: "2026-01-31", anchor_local_time: "09:00" })]),
       appointments: queueOccurrences([]),
     });
-    const dry = await runReplenishmentPass({ dryRun: true, now: NOW });
+    const dry = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(dry.counts.truncatedSeries, 1);
   });
 
@@ -755,7 +792,7 @@ describe("empty-tail and incremental-coverage behavior (production-review correc
         { series_id: "series-1", workspace_id: "ws-1", scheduled_for: daysFromNow(REPLENISH_THRESHOLD_DAYS + 5) },
       ]),
     });
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.truncatedSeries, 0);
   });
 });
@@ -781,7 +818,7 @@ describe("time math: elapsed-duration policy for the 30-day/60-day boundaries, i
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: DST_NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: DST_NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.replenished, 1);
     assert.equal(summary.counts.skippedSufficientCoverage, 0);
   });
@@ -791,7 +828,7 @@ describe("time math: elapsed-duration policy for the 30-day/60-day boundaries, i
       recurring_series: queueSelection([activeSeriesRow()]),
       appointments: queueOccurrences([{ series_id: "series-1", workspace_id: "ws-1", scheduled_for: dstDaysFromNow(REPLENISH_THRESHOLD_DAYS) }]),
     });
-    const summary = await runReplenishmentPass({ dryRun: false, now: DST_NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: DST_NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.skippedSufficientCoverage, 1);
     assert.equal(currentFake.rpcCalls.length, 0);
   });
@@ -804,7 +841,7 @@ describe("time math: elapsed-duration policy for the 30-day/60-day boundaries, i
       },
       { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
     );
-    await runReplenishmentPass({ dryRun: false, now: DST_NOW });
+    await runReplenishmentPass({ dryRun: false, now: DST_NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const args = currentFake.rpcCalls[0].args as { p_occurrences: string[] };
     const exactTarget = dstDaysFromNow(REPLENISH_TARGET_COVERAGE_DAYS);
     for (const occ of args.p_occurrences) {
@@ -830,7 +867,7 @@ describe("reporting: one series' failure never corrupts another's outcome", () =
         ],
       }
     );
-    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(summary.counts.safeFailures, 1);
     assert.equal(summary.counts.replenished, 1);
     assert.equal(currentFake.rpcCalls.length, 2);
@@ -852,11 +889,459 @@ describe("reporting: one series' failure never corrupts another's outcome", () =
         ],
       }
     );
-    await runReplenishmentPass({ dryRun: false, now: NOW });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     const [call1, call2] = currentFake.rpcCalls as Array<{ args: { p_series_id: string; p_workspace_id: string } }>;
     assert.equal(call1.args.p_series_id, "s1");
     assert.equal(call1.args.p_workspace_id, "ws-alpha");
     assert.equal(call2.args.p_series_id, "s2");
     assert.equal(call2.args.p_workspace_id, "ws-beta");
+  });
+});
+
+// ============================================================================
+// Block 2C-2F: recurring-replenishment entitlement gate.
+// ============================================================================
+
+function stripeSubscriptionRecord(overrides: Partial<SubscriptionRecord> = {}): SubscriptionRecord {
+  return {
+    billingMode: "stripe",
+    stripeStatus: "active",
+    trialEnd: null,
+    currentPeriodEnd: null,
+    graceUntil: null,
+    cancelAtPeriodEnd: false,
+    canceledAt: null,
+    accessEndedAt: null,
+    trialConsumedAt: null,
+    hasStripeIdentity: true,
+    ...overrides,
+  };
+}
+
+// A single, well-past-30-days-ago canceled subscription -- unambiguously
+// "locked" (canMutateOperationalData: false) for every test below that just
+// needs *a* restricted result, without re-deriving the exact lifecycle
+// state each time. Dedicated capability-state coverage (which state, why)
+// lives in its own describe block further below.
+const RESTRICTED_ENTITLEMENT: EntitlementResult = resolveEntitlement(
+  stripeSubscriptionRecord({ stripeStatus: "canceled", canceledAt: new Date("2020-01-01T00:00:00.000Z") }),
+  NOW()
+);
+
+function fetcherFor(result: EntitlementResult) {
+  return async (_workspaceId: string): Promise<EntitlementResult> => result;
+}
+
+function countingFetcher(fn: (workspaceId: string) => EntitlementResult) {
+  const calls: string[] = [];
+  const fetcher = async (workspaceId: string): Promise<EntitlementResult> => {
+    calls.push(workspaceId);
+    return fn(workspaceId);
+  };
+  return { fetcher, calls };
+}
+
+describe("entitlement gate: per-run lookup and caching behavior", () => {
+  test("a series with sufficient coverage never triggers an entitlement lookup at all", async () => {
+    const { fetcher, calls } = countingFetcher(() => ALWAYS_PERMITTED_ENTITLEMENT);
+    resetFixtures({
+      recurring_series: queueSelection([activeSeriesRow()]),
+      appointments: queueOccurrences([
+        { series_id: "series-1", workspace_id: "ws-1", scheduled_for: daysFromNow(REPLENISH_THRESHOLD_DAYS + 5) },
+      ]),
+    });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.equal(calls.length, 0);
+    assert.equal(summary.counts.skippedSufficientCoverage, 1);
+  });
+
+  test("a series whose generation fails for a non-dst_gap reason never triggers an entitlement lookup", async () => {
+    const { fetcher, calls } = countingFetcher(() => ALWAYS_PERMITTED_ENTITLEMENT);
+    resetFixtures({
+      recurring_series: queueSelection([activeSeriesRow({ frequency_type: "weekly", repeat_weeks: 99, repeat_months: null })]),
+      appointments: queueOccurrences([]),
+    });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.equal(calls.length, 0);
+    assert.equal(summary.counts.safeFailures, 1);
+  });
+
+  test("exactly one lookup for exactly one actionable series", async () => {
+    const { fetcher, calls } = countingFetcher(() => ALWAYS_PERMITTED_ENTITLEMENT);
+    resetFixtures(
+      { recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
+    );
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.deepEqual(calls, ["ws-1"]);
+  });
+
+  test("multiple actionable series in the SAME workspace reuse one cached lookup -- the fetcher is called exactly once, not once per series", async () => {
+    const { fetcher, calls } = countingFetcher(() => ALWAYS_PERMITTED_ENTITLEMENT);
+    resetFixtures(
+      {
+        recurring_series: queueSelection([
+          activeSeriesRow({ id: "s1", workspace_id: "ws-1" }),
+          activeSeriesRow({ id: "s2", workspace_id: "ws-1" }),
+          activeSeriesRow({ id: "s3", workspace_id: "ws-1" }),
+        ]),
+        appointments: queueOccurrences([]),
+      },
+      {
+        replenish_recurring_series: [
+          { data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } },
+          { data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } },
+          { data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } },
+        ],
+      }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.deepEqual(calls, ["ws-1"]);
+    assert.equal(summary.counts.replenished, 3);
+    assert.equal(currentFake.rpcCalls.length, 3);
+  });
+
+  test("distinct workspaces each receive their own distinct lookup", async () => {
+    const { fetcher, calls } = countingFetcher(() => ALWAYS_PERMITTED_ENTITLEMENT);
+    resetFixtures(
+      {
+        recurring_series: queueSelection([
+          activeSeriesRow({ id: "s1", workspace_id: "ws-alpha" }),
+          activeSeriesRow({ id: "s2", workspace_id: "ws-beta" }),
+        ]),
+        appointments: queueOccurrences([]),
+      },
+      {
+        replenish_recurring_series: [
+          { data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } },
+          { data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } },
+        ],
+      }
+    );
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.deepEqual(calls, ["ws-alpha", "ws-beta"]);
+  });
+
+  test("a RESTRICTED result is also cached -- a second actionable series in the same restricted workspace does not trigger a second lookup", async () => {
+    const { fetcher, calls } = countingFetcher(() => RESTRICTED_ENTITLEMENT);
+    resetFixtures({
+      recurring_series: queueSelection([
+        activeSeriesRow({ id: "s1", workspace_id: "ws-1" }),
+        activeSeriesRow({ id: "s2", workspace_id: "ws-1" }),
+      ]),
+      appointments: queueOccurrences([]),
+    });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.deepEqual(calls, ["ws-1"]);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 2);
+    assert.equal(currentFake.rpcCalls.length, 0);
+  });
+
+  test("the cache is per-RUN, not module-global -- two separate invocations for the same workspace each trigger their own fresh lookup", async () => {
+    const { fetcher, calls } = countingFetcher(() => ALWAYS_PERMITTED_ENTITLEMENT);
+    resetFixtures(
+      { recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
+    );
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    resetFixtures(
+      { recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
+    );
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.deepEqual(calls, ["ws-1", "ws-1"]);
+  });
+
+  test("a thrown/misbehaving fetcher fails closed as a safe failure and is NOT cached -- the next actionable series in the same workspace retries the lookup", async () => {
+    let call = 0;
+    const fetcher = async (_workspaceId: string): Promise<EntitlementResult> => {
+      call++;
+      throw new Error("simulated fetcher failure");
+    };
+    resetFixtures({
+      recurring_series: queueSelection([
+        activeSeriesRow({ id: "s1", workspace_id: "ws-1" }),
+        activeSeriesRow({ id: "s2", workspace_id: "ws-1" }),
+      ]),
+      appointments: queueOccurrences([]),
+    });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.equal(call, 2, "a failed lookup must not be cached -- the next series retries it");
+    assert.equal(summary.counts.safeFailures, 2);
+    assert.equal(currentFake.rpcCalls.length, 0);
+  });
+});
+
+describe("entitlement gate: dry-run behavior", () => {
+  test("a permitted series contributes to wouldRequestOccurrencesTotal exactly as before the gate existed", async () => {
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.replenished, 1);
+    assert.ok(summary.counts.wouldRequestOccurrencesTotal > 0);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 0);
+    assert.equal(currentFake.rpcCalls.length, 0);
+  });
+
+  test("a restricted series contributes ONLY to skippedEntitlementRestricted -- never wouldRequestOccurrencesTotal, never replenished", async () => {
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: fetcherFor(RESTRICTED_ENTITLEMENT) });
+    assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+    assert.equal(summary.counts.wouldRequestOccurrencesTotal, 0);
+    assert.equal(summary.counts.replenished, 0);
+    assert.equal(currentFake.rpcCalls.length, 0);
+  });
+
+  test("a restricted DST-gap series is counted as skippedEntitlementRestricted, never as quarantinedDstGap", async () => {
+    resetFixtures({
+      recurring_series: queueSelection([activeSeriesRow({ anchor_local_date: "2026-03-01", anchor_local_time: "02:30" })]),
+      appointments: queueOccurrences([]),
+    });
+    const summary = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: fetcherFor(RESTRICTED_ENTITLEMENT) });
+    assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+    assert.equal(summary.counts.quarantinedDstGap, 0);
+    assert.equal(currentFake.rpcCalls.length, 0);
+  });
+
+  test("a restricted dry run performs zero Supabase writes and zero RPC calls of either kind", async () => {
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+    await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: fetcherFor(RESTRICTED_ENTITLEMENT) });
+    const writeMethods = new Set(["insert", "update", "delete", "upsert"]);
+    assert.deepEqual(currentFake.calls.filter((c) => writeMethods.has(c.method)), []);
+    assert.equal(currentFake.rpcCalls.length, 0);
+  });
+
+  test("the response stays aggregate-only -- no series/workspace identifier anywhere, even with a mixed permitted/restricted batch", async () => {
+    resetFixtures({
+      recurring_series: queueSelection([
+        activeSeriesRow({ id: "s1", workspace_id: "ws-permitted" }),
+        activeSeriesRow({ id: "s2", workspace_id: "ws-restricted" }),
+      ]),
+      appointments: queueOccurrences([]),
+    });
+    const summary = await runReplenishmentPass({
+      dryRun: true,
+      now: NOW,
+      fetchEntitlement: async (workspaceId: string) => (workspaceId === "ws-restricted" ? RESTRICTED_ENTITLEMENT : ALWAYS_PERMITTED_ENTITLEMENT),
+    });
+    assert.equal(summary.counts.replenished, 1);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+    const serialized = JSON.stringify(summary);
+    for (const forbidden of ["s1", "s2", "ws-permitted", "ws-restricted"]) {
+      assert.ok(!serialized.includes(forbidden), `response must never contain "${forbidden}"`);
+    }
+    assert.deepEqual(Object.keys(summary).sort(), ["counts", "dryRun"]);
+  });
+});
+
+describe("entitlement gate: live-mode behavior", () => {
+  test("permitted replenish path calls exactly one replenish RPC", async () => {
+    resetFixtures(
+      { recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(currentFake.rpcCalls.length, 1);
+    assert.equal(currentFake.rpcCalls[0].fn, "replenish_recurring_series");
+    assert.equal(summary.counts.replenished, 1);
+  });
+
+  test("permitted DST path calls exactly one quarantine RPC", async () => {
+    resetFixtures(
+      {
+        recurring_series: queueSelection([activeSeriesRow({ anchor_local_date: "2026-03-01", anchor_local_time: "02:30" })]),
+        appointments: queueOccurrences([]),
+      },
+      { quarantine_recurring_series_for_replenishment: [{ data: "quarantined" }] }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(currentFake.rpcCalls.length, 1);
+    assert.equal(currentFake.rpcCalls[0].fn, "quarantine_recurring_series_for_replenishment");
+    assert.equal(summary.counts.quarantinedDstGap, 1);
+  });
+
+  test("restricted replenish path calls NEITHER RPC", async () => {
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcherFor(RESTRICTED_ENTITLEMENT) });
+    assert.equal(currentFake.rpcCalls.length, 0);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+  });
+
+  test("restricted DST path calls NEITHER RPC -- a restricted workspace is never mutated merely to record a quarantine reason", async () => {
+    resetFixtures({
+      recurring_series: queueSelection([activeSeriesRow({ anchor_local_date: "2026-03-01", anchor_local_time: "02:30" })]),
+      appointments: queueOccurrences([]),
+    });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcherFor(RESTRICTED_ENTITLEMENT) });
+    assert.equal(currentFake.rpcCalls.length, 0);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+    assert.equal(summary.counts.quarantinedDstGap, 0);
+  });
+
+  test("a resolver failure (thrown fetcher) calls neither RPC", async () => {
+    const fetcher = async (_workspaceId: string): Promise<EntitlementResult> => {
+      throw new Error("simulated");
+    };
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    assert.equal(currentFake.rpcCalls.length, 0);
+    assert.equal(summary.counts.safeFailures, 1);
+  });
+
+  test("one restricted series does not prevent another, entitled workspace's series from processing in the same run", async () => {
+    resetFixtures(
+      {
+        recurring_series: queueSelection([
+          activeSeriesRow({ id: "s-restricted", workspace_id: "ws-restricted" }),
+          activeSeriesRow({ id: "s-permitted", workspace_id: "ws-permitted" }),
+        ]),
+        appointments: queueOccurrences([]),
+      },
+      { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
+    );
+    const summary = await runReplenishmentPass({
+      dryRun: false,
+      now: NOW,
+      fetchEntitlement: async (workspaceId: string) => (workspaceId === "ws-restricted" ? RESTRICTED_ENTITLEMENT : ALWAYS_PERMITTED_ENTITLEMENT),
+    });
+    assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+    assert.equal(summary.counts.replenished, 1);
+    assert.equal(currentFake.rpcCalls.length, 1);
+    const args = currentFake.rpcCalls[0].args as { p_series_id: string };
+    assert.equal(args.p_series_id, "s-permitted");
+  });
+});
+
+describe("entitlement gate: capability states via the real resolver (lib/entitlement.ts) -- no billing string re-implemented here", () => {
+  const PERMITTED_CASES: Array<[string, EntitlementResult]> = [
+    ["internal", resolveEntitlement(internalSubscriptionRecord(), NOW())],
+    ["trialing", resolveEntitlement(stripeSubscriptionRecord({ stripeStatus: "trialing" }), NOW())],
+    ["active", resolveEntitlement(stripeSubscriptionRecord({ stripeStatus: "active" }), NOW())],
+    [
+      "past_due, still inside the 3-day grace window",
+      resolveEntitlement(stripeSubscriptionRecord({ stripeStatus: "past_due", graceUntil: new Date("2026-03-01T00:00:00.000Z") }), NOW()),
+    ],
+  ];
+  for (const [label, entitlement] of PERMITTED_CASES) {
+    test(`${label} (canMutateOperationalData=true) proceeds: RPC is called, nothing counted as restricted`, async () => {
+      assert.equal(entitlement.canMutateOperationalData, true, "test fixture sanity check");
+      resetFixtures(
+        { recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) },
+        { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
+      );
+      const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcherFor(entitlement) });
+      assert.equal(currentFake.rpcCalls.length, 1);
+      assert.equal(summary.counts.replenished, 1);
+      assert.equal(summary.counts.skippedEntitlementRestricted, 0);
+    });
+  }
+
+  const RESTRICTED_CASES: Array<[string, EntitlementResult]> = [
+    [
+      "past_due, past the 30-day read-only window (locked)",
+      resolveEntitlement(stripeSubscriptionRecord({ stripeStatus: "past_due", graceUntil: new Date("2020-01-01T00:00:00.000Z") }), NOW()),
+    ],
+    [
+      "past_due, inside the 30-day read-only window",
+      resolveEntitlement(stripeSubscriptionRecord({ stripeStatus: "past_due", graceUntil: new Date("2026-01-20T00:00:00.000Z") }), NOW()),
+    ],
+    [
+      "canceled, well past the 30-day read-only window (locked)",
+      resolveEntitlement(stripeSubscriptionRecord({ stripeStatus: "canceled", canceledAt: new Date("2020-01-01T00:00:00.000Z") }), NOW()),
+    ],
+    ["no_subscription (missing row)", resolveEntitlement(null, NOW())],
+    ["malformed (unrecognized stripe_status)", resolveEntitlement(stripeSubscriptionRecord({ stripeStatus: "totally_bogus_status" }), NOW())],
+  ];
+  for (const [label, entitlement] of RESTRICTED_CASES) {
+    test(`${label} (canMutateOperationalData=false, an AUTHORITATIVE determination) is skipped: zero RPC calls, counted as skippedEntitlementRestricted`, async () => {
+      assert.equal(entitlement.canMutateOperationalData, false, "test fixture sanity check");
+      resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+      const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcherFor(entitlement) });
+      assert.equal(currentFake.rpcCalls.length, 0);
+      assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+      assert.equal(summary.counts.replenished, 0);
+      assert.equal(summary.counts.safeFailures, 0);
+    });
+  }
+
+  test("service_unavailable (a transient query_error) is NOT counted as an authoritative restriction -- zero RPC calls, safeFailures instead", async () => {
+    const serviceUnavailable = noDataResult("query_error");
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcherFor(serviceUnavailable) });
+    assert.equal(currentFake.rpcCalls.length, 0);
+    assert.equal(summary.counts.safeFailures, 1);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 0);
+  });
+
+  test("service_unavailable end-to-end via the REAL default fetchEntitlementForWorkspace (a genuine Supabase query error reading the subscriptions table)", async () => {
+    resetFixtures({
+      recurring_series: queueSelection([activeSeriesRow()]),
+      appointments: queueOccurrences([]),
+      subscriptions: [{ error: { message: "simulated infrastructure failure" } }],
+    });
+    // No fetchEntitlement override -- exercises the true production default.
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    assert.equal(currentFake.rpcCalls.length, 0);
+    assert.equal(summary.counts.safeFailures, 1);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 0);
+  });
+
+  test("no_subscription end-to-end via the REAL default fetchEntitlementForWorkspace (a genuinely missing subscriptions row)", async () => {
+    resetFixtures({
+      recurring_series: queueSelection([activeSeriesRow()]),
+      appointments: queueOccurrences([]),
+      subscriptions: [{ data: null }],
+    });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW });
+    assert.equal(currentFake.rpcCalls.length, 0);
+    assert.equal(summary.counts.skippedEntitlementRestricted, 1);
+  });
+
+  test("the demo workspace's entitlement (if ever selected) resolves to full permitted capabilities with no demo-specific code in this module", async () => {
+    const demoEntitlement = resolveWorkspaceEntitlement(DEMO_WORKSPACE_ID, null, NOW());
+    resetFixtures(
+      { recurring_series: queueSelection([activeSeriesRow({ workspace_id: DEMO_WORKSPACE_ID })]), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: [{ data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } }] }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcherFor(demoEntitlement) });
+    assert.equal(currentFake.rpcCalls.length, 1);
+    assert.equal(summary.counts.replenished, 1);
+  });
+});
+
+describe("entitlement gate: privacy", () => {
+  test("every console.error tag reachable through entitlement gating is a single fixed string -- never a workspace id, never a raw error", async () => {
+    const originalError = console.error;
+    const logged: unknown[][] = [];
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      const fetcher = async (_workspaceId: string): Promise<EntitlementResult> => {
+        throw new Error("simulated fetcher failure for ws-super-secret-workspace");
+      };
+      resetFixtures({
+        recurring_series: queueSelection([activeSeriesRow({ workspace_id: "ws-super-secret-workspace" })]),
+        appointments: queueOccurrences([]),
+      });
+      await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcher });
+    } finally {
+      console.error = originalError;
+    }
+    assert.ok(logged.length > 0, "expected the lookup-error tag to fire");
+    for (const args of logged) {
+      assert.equal(args.length, 1, "must pass exactly one fixed string, never a second raw-value argument");
+      assert.equal(typeof args[0], "string");
+      assert.ok(!String(args[0]).includes("ws-super-secret-workspace"));
+      assert.ok(!String(args[0]).includes("simulated"));
+    }
+  });
+
+  test("a restricted run's serialized summary never contains a Stripe identifier, billing status string, or workspace/series id", async () => {
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: fetcherFor(RESTRICTED_ENTITLEMENT) });
+    const serialized = JSON.stringify(summary);
+    for (const forbidden of ["canceled", "stripe", "cus_", "sub_", "ws-1", "series-1"]) {
+      assert.ok(!serialized.toLowerCase().includes(forbidden.toLowerCase()), `response must never contain "${forbidden}"`);
+    }
   });
 });

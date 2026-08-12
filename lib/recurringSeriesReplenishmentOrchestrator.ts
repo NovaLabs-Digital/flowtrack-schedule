@@ -23,6 +23,20 @@ import {
   RecurringSeriesReplenishmentRpcError,
 } from "@/lib/recurringSeriesReplenishmentRpc";
 import type { RecurringFrequency } from "@/lib/recurringSeries";
+// Block 2C-2F: the ONE source of truth for "is this workspace currently
+// allowed to have operational data mutated," already used everywhere else in
+// this app (route/session enforcement in lib/entitlementServer.ts itself).
+// No billing rule of any kind is reimplemented here -- this module only ever
+// consumes fetchEntitlementForWorkspace's own resolved
+// EntitlementResult.canMutateOperationalData, exactly as every other caller
+// does. Injectable (see RunReplenishmentPassOptions.fetchEntitlement below)
+// purely for testability, matching this file's own existing `now?`
+// convention and lib/entitlementServer.ts's own EntitlementFetcher pattern
+// -- every real invocation omits the override and gets this true default.
+import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
+import type { EntitlementResult } from "@/lib/entitlement";
+
+type EntitlementFetcherFn = (workspaceId: string) => Promise<EntitlementResult>;
 
 // ============================================================================
 // Rolling-horizon policy -- named constants, centrally encoded, per the
@@ -71,14 +85,21 @@ export const MAX_OCCURRENCES_PER_SERIES_PER_RUN = 20;
 //   - exactly 3 bounded SELECT-side queries per run, regardless of batch
 //     size: the active-series list, an exact COUNT for the deferred-count,
 //     and one batched latest-occurrence query;
+//   - PLUS, in EITHER mode, at most one entitlement lookup per DISTINCT
+//     workspace among the series that actually need a mutation decision
+//     this run (sufficient-coverage and generation-failure series never
+//     reach this lookup at all -- see the entitlement cache below) --
+//     bounded above by min(distinct workspaces among the selected batch,
+//     MAX_SERIES_PROCESSED_PER_RUN), so at most 100, never more;
 //   - PLUS, in LIVE mode only, at most one mutation RPC call per series
-//     that is actually eligible for replenishment this run (i.e. per
-//     series that failed its coverage check) -- NOT per series merely
-//     examined, and bounded above by MAX_SERIES_PROCESSED_PER_RUN (so at
-//     most 100 RPC calls in the worst case, never more);
+//     that is actually eligible for replenishment this run AND whose
+//     workspace's entitlement permits the mutation -- NOT per series
+//     merely examined, and bounded above by MAX_SERIES_PROCESSED_PER_RUN
+//     (so at most 100 RPC calls in the worst case, never more);
 //   - ZERO mutation RPC calls in DRY-RUN mode, for any number of series.
-// 3 (reads) + up to 100 (writes, live mode only) stays comfortably within
-// the 60s budget even at the full batch size.
+// 3 (reads) + up to 100 (entitlement lookups) + up to 100 (writes, live
+// mode only) stays comfortably within the 60s budget even at the full
+// batch size.
 export const MAX_SERIES_PROCESSED_PER_RUN = 100;
 
 // ============================================================================
@@ -122,6 +143,18 @@ export interface ReplenishmentRunCounts {
   // (self-correcting) on a later run.
   truncatedSeries: number;
   deferredByProcessingLimit: number;
+  // Block 2C-2F: a series that WOULD otherwise be replenished or
+  // DST-quarantined this run (in either mode), but whose workspace's
+  // current entitlement (lib/entitlement.ts's own
+  // canMutateOperationalData, the same single source of truth every other
+  // route in this app already gates on) does not permit an operational
+  // mutation right now. Neither RPC is ever called for a series counted
+  // here -- see resolveCachedEntitlement/isMutationPermitted below. Never
+  // incremented for a series that needed no mutation in the first place
+  // (sufficient coverage, or a non-dst_gap generation failure) -- an
+  // entitlement lookup is never even attempted for those, so they cannot
+  // be miscounted as "restricted."
+  skippedEntitlementRestricted: number;
 }
 
 function emptyCounts(): ReplenishmentRunCounts {
@@ -139,6 +172,7 @@ function emptyCounts(): ReplenishmentRunCounts {
     safeFailures: 0,
     truncatedSeries: 0,
     deferredByProcessingLimit: 0,
+    skippedEntitlementRestricted: 0,
   };
 }
 
@@ -266,7 +300,8 @@ type ProcessOutcome =
   | { kind: "stopped_client_inactive" }
   | { kind: "quarantined_employee_ineligible" }
   | { kind: "quarantined_dst_gap" }
-  | { kind: "safe_failure" };
+  | { kind: "safe_failure" }
+  | { kind: "skipped_entitlement_restricted" };
 
 function applyOutcome(counts: ReplenishmentRunCounts, outcome: ProcessOutcome): void {
   switch (outcome.kind) {
@@ -303,6 +338,9 @@ function applyOutcome(counts: ReplenishmentRunCounts, outcome: ProcessOutcome): 
     case "safe_failure":
       counts.safeFailures++;
       return;
+    case "skipped_entitlement_restricted":
+      counts.skippedEntitlementRestricted++;
+      return;
     default: {
       // Exhaustiveness guard -- a new ProcessOutcome kind added above without
       // a corresponding case here fails to compile.
@@ -329,6 +367,81 @@ export interface RunReplenishmentPassOptions {
   // ReconcileDeps.now? convention exactly -- defaults to the true wall
   // clock. Tests supply a fixed instant for deterministic threshold math.
   now?: () => Date;
+  // Block 2C-2F: injectable entitlement lookup, defaulting to the real
+  // fetchEntitlementForWorkspace (lib/entitlementServer.ts) -- the same
+  // production entry point every other server route already uses. Tests
+  // supply a fake built from the real, already-tested resolveEntitlement/
+  // resolveWorkspaceEntitlement (lib/entitlement.ts) so the GATING logic
+  // here is exercised against genuine EntitlementResult shapes without a
+  // live Supabase/Stripe dependency.
+  fetchEntitlement?: EntitlementFetcherFn;
+}
+
+// Block 2C-2F: per-RUN entitlement cache -- a plain Map created fresh
+// inside runReplenishmentPass() below (never a module-level variable), so
+// it can never survive across requests/serverless invocations and can
+// never leak a lookup from one run into another. Keyed by the series'
+// own trusted workspace_id (never client input), so a result can never be
+// applied to a different workspace than the one it was resolved for.
+// Caches BOTH permitted and restricted results -- a workspace that comes
+// back restricted for its first actionable series in this run must not be
+// looked up again for its second, third, etc. actionable series in the
+// SAME run. A lookup that throws (the real fetchEntitlementForWorkspace
+// never does -- see below -- this only matters for a misbehaving injected
+// test fake) is deliberately NOT cached, so a transient failure doesn't
+// wrongly lock out the rest of the run for that workspace.
+async function resolveCachedEntitlement(
+  workspaceId: string,
+  cache: Map<string, EntitlementResult>,
+  fetchEntitlement: EntitlementFetcherFn
+): Promise<EntitlementResult | "lookup_error"> {
+  const cached = cache.get(workspaceId);
+  if (cached) return cached;
+  let result: EntitlementResult;
+  try {
+    result = await fetchEntitlement(workspaceId);
+  } catch {
+    // The real fetchEntitlementForWorkspace already catches its own
+    // Supabase query error internally and resolves to the dedicated
+    // "service_unavailable" state (see lib/entitlement.ts's noDataResult)
+    // rather than ever throwing -- so this branch is only reachable via a
+    // misbehaving injected fetcher in a test. Handled defensively anyway,
+    // matching this file's established style, and fails closed exactly
+    // like a resolved "service_unavailable" result would.
+    console.error("CRON_REPLENISH_ENTITLEMENT_LOOKUP_ERROR");
+    return "lookup_error";
+  }
+  cache.set(workspaceId, result);
+  return result;
+}
+
+// The ONE place this module ever asks "is a mutation allowed" -- reads
+// exactly one already-resolved field (canMutateOperationalData) off the
+// pure resolver's own output. No billing string (billingMode/stripeStatus/
+// state/reason) is ever pattern-matched here -- that would risk silently
+// drifting from lib/entitlement.ts's own policy. See the module-level
+// comment above this file's imports.
+function isMutationPermitted(entitlement: EntitlementResult): boolean {
+  return entitlement.canMutateOperationalData === true;
+}
+
+// Block 2C-2F: distinguishes an AUTHORITATIVE "this workspace's billing
+// state does not currently permit a mutation" determination (every
+// EntitlementState except "service_unavailable" -- including "malformed"
+// and "no_subscription", which lib/entitlement.ts's own module header
+// explicitly documents as folded into the same LOCKED_CAPABILITIES
+// treatment as a genuine locked lifecycle state, not as a transient
+// failure) from a genuine, non-authoritative infrastructure hiccup
+// ("service_unavailable", reason "query_error" -- lib/entitlement.ts's own
+// header: "a transient failure in OUR OWN infrastructure is not
+// authoritative evidence of anything about the workspace's real
+// lifecycle"). Only the latter -- plus an injected fetcher's own thrown
+// error, see resolveCachedEntitlement above -- is counted as a
+// safeFailure; every other capability denial is counted as
+// skippedEntitlementRestricted. This mirrors, rather than invents, the
+// one distinction the resolver's own contract already draws.
+function isEntitlementLookupUnavailable(entitlement: EntitlementResult): boolean {
+  return entitlement.state === "service_unavailable";
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -360,6 +473,11 @@ export async function runReplenishmentPass(options: RunReplenishmentPassOptions)
   const nowDate = (options.now ?? (() => new Date()))();
   const nowIso = nowDate.toISOString();
   const dryRun = options.dryRun;
+  const fetchEntitlement = options.fetchEntitlement ?? fetchEntitlementForWorkspace;
+  // Fresh, local to this one invocation only -- see the cache's own
+  // documentation above RunReplenishmentPassOptions for why this must never
+  // be hoisted to module scope.
+  const entitlementCache = new Map<string, EntitlementResult>();
 
   const counts = emptyCounts();
 
@@ -416,6 +534,26 @@ export async function runReplenishmentPass(options: RunReplenishmentPassOptions)
 
       if (!genResult.ok) {
         if (genResult.reason === "dst_gap") {
+          // Block 2C-2F: a DST-gap quarantine is still an operational write
+          // (quarantine_recurring_series_for_replenishment mutates the
+          // series row) -- it is gated exactly like a normal replenishment,
+          // never mutated merely to record a quarantine reason for a
+          // workspace whose billing access currently forbids it. The
+          // registry itself is left untouched (still status='active') so
+          // this series is naturally re-examined on a later run once access
+          // is restored.
+          const entitlement = await resolveCachedEntitlement(series.workspace_id, entitlementCache, fetchEntitlement);
+          if (entitlement === "lookup_error") {
+            applyOutcome(counts, { kind: "safe_failure" });
+            continue;
+          }
+          if (!isMutationPermitted(entitlement)) {
+            applyOutcome(counts, {
+              kind: isEntitlementLookupUnavailable(entitlement) ? "safe_failure" : "skipped_entitlement_restricted",
+            });
+            continue;
+          }
+
           if (dryRun) {
             applyOutcome(counts, { kind: "would_quarantine_dst_gap" });
             continue;
@@ -470,6 +608,25 @@ export async function runReplenishmentPass(options: RunReplenishmentPassOptions)
         // Window was valid but empty (e.g. the only candidates land exactly
         // on already-materialized slots) -- nothing to request this run.
         applyOutcome(counts, { kind: "skipped_sufficient_coverage" });
+        continue;
+      }
+
+      // Block 2C-2F: entitlement is resolved here -- only once a real
+      // mutation (replenishment) is actually about to be proposed/attempted
+      // -- never earlier. A series that never reaches this line (sufficient
+      // coverage, or a non-dst_gap generation failure) never triggers an
+      // entitlement lookup at all, keeping the added query count bounded to
+      // series that actually need a mutation decision this run, per
+      // workspace, via the cache above.
+      const entitlement = await resolveCachedEntitlement(series.workspace_id, entitlementCache, fetchEntitlement);
+      if (entitlement === "lookup_error") {
+        applyOutcome(counts, { kind: "safe_failure" });
+        continue;
+      }
+      if (!isMutationPermitted(entitlement)) {
+        applyOutcome(counts, {
+          kind: isEntitlementLookupUnavailable(entitlement) ? "safe_failure" : "skipped_entitlement_restricted",
+        });
         continue;
       }
 
