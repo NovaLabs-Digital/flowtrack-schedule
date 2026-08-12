@@ -650,14 +650,13 @@ describe("Block 2B safety correction: Delete This & Future is fail-closed around
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
   });
 
-  test("mode='future' with no live target occurrences at all never touches recurring_series -- nothing was actually mutated", async () => {
+  test("mode='future' with no series_id never touches recurring_series", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
-        { data: existingAppt({ series_id: "series-1" }) },
-        { error: null },
-        { data: [] }, // no target ids found
+        { data: existingAppt({ series_id: null }) },
+        { data: [] }, // no target ids found (client_id/service_type fallback query)
       ],
     });
     sessionToReturn = OWNER_SESSION;
@@ -665,6 +664,71 @@ describe("Block 2B safety correction: Delete This & Future is fail-closed around
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, cancelled: 0 });
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+  });
+
+  test("production-review correction: mode='future' with a series_id but NO live target occurrences still quarantines-then-stops the series -- a quarantined series is never left stuck in review_required just because nothing was left to cancel", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) }, // fetch existing
+        { error: null }, // hasColumn("series_id") probe
+        { data: [] }, // target ids query -- empty (every remaining occurrence already independently cancelled)
+      ],
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // observe
+        { data: [{ id: "series-1" }] }, // quarantine
+        { data: [{ id: "series-1" }] }, // finalize stopped
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 0 });
+    const seriesFromCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "from");
+    assert.equal(seriesFromCalls.length, 3, "expected observe + quarantine + finalize-stopped, even with zero cancelled appointments");
+  });
+
+  test("production-review correction: the target-id query runs AFTER quarantineIfObservedActive, never before it -- proves the fetch-order fix directly via the real .from() call sequence, not just its outcome", async () => {
+    // resetFixtures's own fixture ARRAYS are all constructed up front, at
+    // this call, before the route ever runs -- they cannot themselves prove
+    // real invocation order (a fixture value's own position in its array is
+    // fixed at construction time, regardless of when the route actually
+    // consumes it). currentFake.calls, by contrast, is one shared array the
+    // fake client pushes to live, in the route's own real chronological
+    // .from() call order across every table -- the only reliable way to
+    // prove this ordering property.
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) }, // 1: existing fetch
+        { error: null }, // 4: hasColumn probe
+        { data: [{ id: "appt-2" }] }, // 5: target ids query
+        { error: null }, // 6: bulk cancel
+      ],
+      recurring_series: [
+        { data: { id: "series-1", status: "active" } }, // 2: quarantine observe
+        { data: [{ id: "series-1" }] }, // 3: quarantine
+        { data: [{ id: "series-1" }] }, // 7: finalize stopped
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 200);
+
+    const fromSequence = currentFake.calls
+      .filter((c) => c.method === "from" && (c.table === "appointments" || c.table === "recurring_series"))
+      .map((c) => c.table);
+    assert.deepEqual(fromSequence, [
+      "appointments", // existing fetch
+      "recurring_series", // quarantine observe
+      "recurring_series", // quarantine UPDATE
+      "appointments", // hasColumn probe
+      "appointments", // target ids query -- AFTER both recurring_series calls above
+      "appointments", // bulk cancel
+      "recurring_series", // finalize stopped
+    ]);
   });
 
   test("failure injection: a quarantine failure aborts BEFORE the bulk cancel, 500, zero appointment writes", async () => {

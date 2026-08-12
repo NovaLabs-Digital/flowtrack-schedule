@@ -1217,6 +1217,13 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
           { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings (fetched early for validation)
           { error: null }, // hasColumn("employee_id")
           { error: null }, // update origin
+          // Production-review correction (Block 2C-2B lifecycle-concurrency
+          // audit): fetchSiblings() is no longer memoized -- the mutation
+          // loop below now re-queries siblings fresh, AFTER the series was
+          // quarantined above, rather than reusing the early validation
+          // fetch's own (potentially stale) result. See update/route.ts's
+          // own comment on this correction.
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings (re-fetched fresh for mutation)
           { error: null }, // update sibling
         ],
         employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
@@ -1241,6 +1248,53 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
     assert.deepEqual(sibCall.p_expected_current_employee_ids, ["teresa"]);
     assert.deepEqual(sibCall.p_desired_employee_ids, ["roxana", "teresa"]);
     assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && (c.method === "insert" || c.method === "delete")).length, 0);
+  });
+
+  test("production-review correction: the sibling list used for MUTATION is fetched fresh, AFTER quarantineIfObservedActive -- never the early, pre-quarantine validation fetch's own (potentially stale) result", async () => {
+    // Proves the fetchSiblings() de-memoization fix directly via the real
+    // .from() call sequence, not just its outcome -- resetFixtures's own
+    // fixture arrays are constructed up front and cannot themselves prove
+    // real invocation order; currentFake.calls is the one shared array the
+    // fake client pushes to live, in the route's own real chronological
+    // .from() call order across every table.
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [
+          { data: existingAppt({ series_id: "series-1" }) }, // 1: existing fetch
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // 2: siblings (early validation fetch)
+          { error: null }, // 5: hasColumn("employee_id")
+          { error: null }, // 6: update origin
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // 7: siblings (fresh mutation fetch)
+          { error: null }, // 8: update sibling
+        ],
+        employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
+        appointment_employee_hours: [{ data: [] }],
+        appointment_employees: [
+          { data: [{ id: "ae-o", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
+          { data: [{ id: "ae-s", appointment_id: "sib-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
+        ],
+        recurring_series: [{ data: null }], // 3: quarantine observe (not found -- keeps this test focused on ordering, not reactivation)
+      },
+      { sync_appointment_assignments: [{ data: "synced" }, { data: "synced" }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", employee_ids: ["teresa", "roxana"] }));
+    assert.equal(res.status, 200);
+
+    const fromSequence = currentFake.calls
+      .filter((c) => c.method === "from" && (c.table === "appointments" || c.table === "recurring_series"))
+      .map((c) => c.table);
+    assert.deepEqual(fromSequence, [
+      "appointments", // 1: existing fetch
+      "appointments", // 2: siblings (early validation fetch)
+      "recurring_series", // 3: quarantine observe
+      "appointments", // 5: hasColumn probe
+      "appointments", // 6: update origin
+      "appointments", // 7: siblings (fresh mutation fetch) -- AFTER quarantine observe (position 3)
+      "appointments", // 8: update sibling
+    ]);
   });
 
   test("mode: future -- a blocked removal on ANY sibling aborts the whole request, including the origin's own (unblocked) change", async () => {
@@ -1400,9 +1454,14 @@ describe("Block 2C-1: assignment sync failure stops the request safely -- never 
         subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
         appointments: [
           { data: existingAppt({ series_id: "series-1" }) },
-          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings (fetched early for validation)
           { error: null }, // hasColumn("employee_id")
           { error: null }, // update origin
+          // Production-review correction (Block 2C-2B lifecycle-concurrency
+          // audit): fetchSiblings() is no longer memoized -- see this
+          // file's other updated fixtures and update/route.ts's own
+          // comment on this correction.
+          { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings (re-fetched fresh for mutation)
           { error: null }, // update sibling
         ],
         employees: [{ data: [{ id: "teresa" }] }],

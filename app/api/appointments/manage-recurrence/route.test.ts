@@ -827,6 +827,41 @@ describe("Block 2B safety correction: recurring_series registry lifecycle is fai
     assert.ok(quarantineCallIdx < firstApptWriteIdx);
   });
 
+  test("production-review correction (Block 2C-2B lifecycle-concurrency audit): this route was ALREADY correctly ordered -- the sibling-id READ query (not just the later write) also occurs strictly after quarantineIfObservedActive's own observe call, proven via the real .from() call sequence", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: { ...oneTimeAppt(), series_id: "series-old", frequency_type: "weekly" } }, // 1: fetch origin
+        { data: [{ id: "sib-1" }] }, // 4: sibling-id query
+        { error: null }, // 5: cancel siblings
+        { error: null }, // 6: update origin (frequency_type -> one_time)
+      ],
+      appointment_employees: [{ data: [] }],
+      recurring_series: [
+        { data: { id: "series-old", status: "active" } }, // 2: quarantine observe
+        { data: [{ id: "series-old" }] }, // 3: quarantine UPDATE
+        { data: [{ id: "series-old" }] }, // 7: finalize stopped
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    assert.equal(res.status, 200);
+
+    const fromSequence = currentFake.calls
+      .filter((c) => c.method === "from" && (c.table === "appointments" || c.table === "recurring_series"))
+      .map((c) => c.table);
+    assert.deepEqual(fromSequence, [
+      "appointments", // 1: fetch origin
+      "recurring_series", // 2: quarantine observe
+      "recurring_series", // 3: quarantine UPDATE
+      "appointments", // 4: sibling-id query -- AFTER both quarantine calls above
+      "appointments", // 5: cancel siblings
+      "appointments", // 6: update origin
+      "recurring_series", // 7: finalize stopped
+    ]);
+  });
+
   test("failure injection: a quarantine failure on the OLD series aborts BEFORE any appointment mutation, 500, zero appointment writes", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],

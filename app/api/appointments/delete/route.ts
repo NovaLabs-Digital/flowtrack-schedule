@@ -138,7 +138,51 @@ export async function POST(req: Request) {
     }
 
     // mode === "future"
-    // Prefer series_id if the appointment belongs to a series
+    //
+    // Production-review correction (Block 2C-2B lifecycle-concurrency
+    // audit): the target-id query used to run BEFORE quarantineIfObservedActive
+    // below, and that pre-quarantine list was what actually got cancelled --
+    // a future occurrence inserted by a concurrent replenish_recurring_series
+    // call in the narrow window between that read and the quarantine call
+    // would be silently absent from `ids`, left live and un-cancelled, even
+    // though the series itself was about to be stopped -- a genuinely
+    // orphaned appointment with no series left to ever reconsider it. The
+    // fix is to quarantine FIRST (unconditionally, whenever this appointment
+    // belongs to a series), THEN query the authoritative target set fresh --
+    // so any occurrence a concurrent replenishment call already committed
+    // before this quarantine takes effect is correctly swept up and
+    // cancelled here, and any occurrence a concurrent call attempts AFTER
+    // this quarantine commits is independently rejected by
+    // replenish_recurring_series's own fresh status check (it requires
+    // status = 'active', which this quarantine has already cleared).
+    let registryWarning = false;
+    let oldSeriesWasActive = false;
+
+    if (appt.series_id) {
+      // Block 2B safety correction: "Delete This & Future" is explicit
+      // owner intent to stop the series -- quarantined to review_required
+      // BEFORE any appointment row is touched. quarantineIfObservedActive
+      // explicitly observes the row's current status first, so a zero-row
+      // compare-and-set result is only ever a safe no-op when that
+      // observation already showed the series wasn't active; if it WAS
+      // observed active and the transition then matches nothing, that's a
+      // genuine concurrent change and the whole cancellation must abort
+      // with 409, never silently proceed.
+      let outcome: Awaited<ReturnType<typeof quarantineIfObservedActive>>;
+      try {
+        outcome = await quarantineIfObservedActive(appt.series_id, workspaceId);
+      } catch (err) {
+        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
+        return json({ error: "Unable to prepare this recurring series for changes right now. Please try again." }, 500);
+      }
+      if (outcome.outcome === "conflict") {
+        return json({ error: "This recurring series was changed by another request. Please refresh and try again." }, 409);
+      }
+      oldSeriesWasActive = outcome.outcome === "quarantined";
+    }
+
+    // Prefer series_id if the appointment belongs to a series -- queried
+    // fresh here, AFTER the quarantine above, never before it.
     let query = supabaseAdmin
       .from("appointments")
       .select("id")
@@ -157,33 +201,8 @@ export async function POST(req: Request) {
     if (qErr) throw qErr;
 
     const ids = (targets ?? []).map((t: any) => t.id);
-    let registryWarning = false;
 
     if (ids.length > 0) {
-      // Block 2B safety correction: "Delete This & Future" is explicit
-      // owner intent to stop the series -- quarantined to review_required
-      // BEFORE the bulk cancel below. quarantineIfObservedActive explicitly
-      // observes the row's current status first, so a zero-row
-      // compare-and-set result is only ever a safe no-op when that
-      // observation already showed the series wasn't active; if it WAS
-      // observed active and the transition then matches nothing, that's a
-      // genuine concurrent change and the whole cancellation must abort
-      // with 409, never silently proceed.
-      let oldSeriesWasActive = false;
-      if (appt.series_id) {
-        let outcome: Awaited<ReturnType<typeof quarantineIfObservedActive>>;
-        try {
-          outcome = await quarantineIfObservedActive(appt.series_id, workspaceId);
-        } catch (err) {
-          console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
-          return json({ error: "Unable to prepare this recurring series for changes right now. Please try again." }, 500);
-        }
-        if (outcome.outcome === "conflict") {
-          return json({ error: "This recurring series was changed by another request. Please refresh and try again." }, 409);
-        }
-        oldSeriesWasActive = outcome.outcome === "quarantined";
-      }
-
       const { error } = await supabaseAdmin
         .from("appointments")
         .update({ status: "cancelled" })
@@ -191,25 +210,31 @@ export async function POST(req: Request) {
         .eq("workspace_id", workspaceId);
       if (error) throw error;
 
-      // Finalize the quarantined series as stopped -- only after the
-      // cancellation above has already fully succeeded, and only ever
-      // attempted when THIS request actually quarantined it a moment ago.
-      // A failure (thrown error, or a zero-row compare-and-set -- e.g. some
-      // other concurrent request already changed its status again) leaves
-      // the series in review_required (never forced into any other state)
-      // and surfaces as a non-sensitive warning on this still-successful
-      // response.
-      if (oldSeriesWasActive) {
-        try {
-          const transitioned = await finalizeSeriesStopped(appt.series_id, workspaceId);
-          if (!transitioned) registryWarning = true;
-        } catch (err) {
-          console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
-          registryWarning = true;
-        }
-      }
-
       await notifyCancellation();
+    }
+
+    // Finalize the quarantined series as stopped -- only after the
+    // cancellation above has already fully succeeded (or was correctly
+    // skipped because there was nothing left to cancel), and only ever
+    // attempted when THIS request actually quarantined it a moment ago.
+    // Deliberately NOT gated on ids.length > 0 (unlike before this
+    // correction) -- a series this request quarantined must always be
+    // finalized as stopped, even in the rare case where the freshly
+    // re-queried target set came back empty, rather than being left stuck
+    // in review_required with no appointment mutation left to explain why.
+    // A failure (thrown error, or a zero-row compare-and-set -- e.g. some
+    // other concurrent request already changed its status again) leaves
+    // the series in review_required (never forced into any other state)
+    // and surfaces as a non-sensitive warning on this still-successful
+    // response.
+    if (oldSeriesWasActive) {
+      try {
+        const transitioned = await finalizeSeriesStopped(appt.series_id, workspaceId);
+        if (!transitioned) registryWarning = true;
+      } catch (err) {
+        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
+        registryWarning = true;
+      }
     }
 
     return json({ ok: true, cancelled: ids.length, ...(registryWarning ? { warning: RECURRING_SERIES_REVIEW_WARNING } : {}) });

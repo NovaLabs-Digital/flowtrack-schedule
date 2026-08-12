@@ -122,19 +122,30 @@ export async function PATCH(req: Request) {
     // Siblings (for "future" mode) are needed both for the pre-R18
     // time-shift logic below (unchanged) and, when employee_ids is part of
     // this request, for assignment-removal safety validation that must run
-    // BEFORE any mutation. fetchSiblings() is memoized so it issues exactly
-    // one query regardless of how many times it's called -- when
-    // employee_ids is absent (the common case: rescheduling, renaming,
-    // etc.), it's still only ever called once, at the original point in the
-    // flow, preserving the exact pre-R18 call order/count for every request
-    // that doesn't touch assignments.
+    // BEFORE any mutation.
+    //
+    // Production-review correction (Block 2C-2B lifecycle-concurrency
+    // audit): this used to be memoized (cached after its first call), which
+    // meant that whenever employee_ids was part of the request, the EARLY
+    // call below (for assignment-removal validation, before the series is
+    // quarantined) silently served its cached, now-stale result to the
+    // LATER call further down -- the one that actually decides which
+    // sibling rows get mutated -- even though that later call happens
+    // AFTER quarantineIfObservedActive has already run. A recurring-series
+    // occurrence inserted by a concurrent replenish_recurring_series call
+    // in the narrow window between the early fetch and the quarantine call
+    // would then be silently absent from the mutation loop, while still
+    // being live and (via evaluateSeriesConsistency's own separate, always-
+    // fresh fetch) potentially causing an otherwise-successful edit to be
+    // unnecessarily flagged for review. Removing the cache means every call
+    // always queries fresh -- the common case (employee_ids absent) still
+    // issues exactly one query, at the same point as before; only the
+    // employee_ids-present case now correctly re-queries after quarantine,
+    // which is the one case that actually needed it.
     type Sibling = { id: string; scheduled_for: string; scheduled_end: string | null };
-    let siblingsCache: Sibling[] | null = null;
     async function fetchSiblings(): Promise<Sibling[]> {
-      if (siblingsCache) return siblingsCache;
       if (mode !== "future" || !existingData.series_id) {
-        siblingsCache = [];
-        return siblingsCache;
+        return [];
       }
       const { data, error: sibErr } = await supabaseAdmin
         .from("appointments")
@@ -145,8 +156,7 @@ export async function PATCH(req: Request) {
         .gt("scheduled_for", existingData.scheduled_for)
         .order("scheduled_for", { ascending: true });
       if (sibErr) throw sibErr;
-      siblingsCache = data ?? [];
-      return siblingsCache;
+      return data ?? [];
     }
 
     // Phase 5.7D-R18: validate every assignment change (origin + every
