@@ -51,6 +51,7 @@ const EXEMPT: Record<string, string> = {
   "contact/route.ts": "fully public: no account/session required to send a message, recipient and sender are fixed server-side constants, never workspace-scoped",
   "cron/reconcile-subscriptions/route.ts": "authenticated by CRON_SECRET, not a user session of any kind",
   "cron/reminders/route.ts": "authenticated by CRON_SECRET, not a user session of any kind (per-appointment workspace checks use requireCapabilityForWorkspace with a server-derived workspace id, not a session)",
+  "cron/replenish-recurring-series/route.ts": "authenticated by CRON_SECRET, not a user session of any kind (Block 2C-2C)",
   "stripe/webhook/route.ts": "authenticated by Stripe's own signature verification, not a user session of any kind",
   "auth/employee/select-workspace/route.ts":
     "pre-session: the second step of the multi-workspace employee login hand-off (see auth/login/route.ts), authenticated by the separate, structurally distinct sft_employee_workspace_pending challenge cookie -- it never reads sft_session, and is the route that mints an employee-scoped sft_session, so it cannot itself already hold a validated one; also structurally unreachable by an owner session since the challenge is only ever issued for the employee role",
