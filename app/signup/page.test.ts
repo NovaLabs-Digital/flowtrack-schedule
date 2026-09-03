@@ -95,6 +95,37 @@ describe("app/signup/page.tsx -- generic company-name placeholder (Phase 5.7D-R8
   });
 });
 
+describe("app/signup/page.tsx -- transparent pricing disclosure before account creation (Phase 5.7D-R13)", () => {
+  test("imports the shared, non-secret price/trial display constants -- not a locally hardcoded literal", () => {
+    assert.ok(
+      source.includes(
+        'import { SUBSCRIPTION_PRICE_DISPLAY, SUBSCRIPTION_TRIAL_DAYS } from "@/lib/billingDisplay";'
+      )
+    );
+    assert.ok(source.includes("{SUBSCRIPTION_PRICE_DISPLAY}"));
+    assert.ok(source.includes("{SUBSCRIPTION_TRIAL_DAYS}"));
+  });
+
+  test("discloses trial length, price, payment-method requirement, and cancellation terms, appearing before the submit button", () => {
+    const disclosureIdx = source.indexOf("days free, then");
+    const buttonIdx = source.indexOf('type="submit"');
+    assert.notEqual(disclosureIdx, -1);
+    assert.notEqual(buttonIdx, -1);
+    assert.ok(disclosureIdx < buttonIdx, "the billing disclosure must appear before the Create Account button, not after");
+
+    const disclosureBlock = source.slice(disclosureIdx, buttonIdx);
+    assert.ok(disclosureBlock.includes("/month."));
+    assert.ok(disclosureBlock.includes("Payment method"));
+    assert.ok(disclosureBlock.includes("required to start the trial"));
+    assert.ok(disclosureBlock.includes("Cancel anytime."));
+  });
+
+  test("never implies the product is free or that no payment method is needed", () => {
+    assert.ok(!/\bfree\s+forever\b/i.test(source));
+    assert.ok(!/no\s+(payment|credit)\s+method\s+(required|needed)/i.test(source));
+  });
+});
+
 describe("app/signup/page.tsx -- footer Contact Us link (replaces the old Support mailto link)", () => {
   test("the footer renders a Contact Us link pointing to /contact, near Terms of Service / Privacy Policy", () => {
     const footerIdx = source.lastIndexOf("Terms of Service");

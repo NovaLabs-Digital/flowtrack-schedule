@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PasswordInput from "@/app/components/PasswordInput";
+import { SUBSCRIPTION_PRICE_DISPLAY, SUBSCRIPTION_TRIAL_DAYS } from "@/lib/billingDisplay";
 
 const MIN_PASSWORD_LENGTH = 12;
 
@@ -192,6 +193,11 @@ export default function SignupPage() {
                       {error}
                     </div>
                   )}
+
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    {SUBSCRIPTION_TRIAL_DAYS} days free, then {SUBSCRIPTION_PRICE_DISPLAY}/month. Payment method
+                    required to start the trial. Cancel anytime.
+                  </p>
 
                   <button
                     type="submit"

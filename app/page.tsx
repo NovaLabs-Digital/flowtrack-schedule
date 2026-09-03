@@ -1,5 +1,6 @@
 import Link from "next/link";
 import TryDemoButton from "@/app/components/TryDemoButton";
+import { SUBSCRIPTION_PRICE_DISPLAY, SUBSCRIPTION_TRIAL_DAYS } from "@/lib/billingDisplay";
 
 export default function LandingPage() {
   return (
@@ -41,17 +42,26 @@ export default function LandingPage() {
         <p className="mt-5 text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed">
           Manage clients, recurring appointments, notes, and service history without complicated software. Built by a cleaning company owner, for service business owners.
         </p>
-        <div className="mt-8 flex items-center justify-center gap-3">
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
           <Link
-            href="/login"
+            href="/signup"
             className="rounded-lg bg-[#0f172a] px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-colors shadow-sm"
           >
-            Login
+            Start Free Trial
           </Link>
           <TryDemoButton className="rounded-lg border border-slate-300 px-6 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
             Try Live Demo
           </TryDemoButton>
+          <Link
+            href="/login"
+            className="px-3 py-3 text-sm font-medium text-slate-500 hover:text-slate-900 transition-colors"
+          >
+            Login
+          </Link>
         </div>
+        <p className="mt-4 text-xs text-slate-500">
+          {SUBSCRIPTION_TRIAL_DAYS} days free, then {SUBSCRIPTION_PRICE_DISPLAY}/month. Cancel anytime.
+        </p>
       </section>
 
       {/* Features */}
@@ -107,6 +117,41 @@ export default function LandingPage() {
             <div className="text-sm font-semibold text-slate-700">Schedule FlowTrack</div>
             <div className="mt-1 text-xs text-slate-500">Your week, organized.</div>
           </div>
+        </div>
+      </section>
+
+      {/* Pricing */}
+      <section className="max-w-6xl mx-auto px-6 py-16">
+        <div className="max-w-md mx-auto rounded-2xl border border-slate-200 bg-white p-8 shadow-sm text-center">
+          <h2 className="text-lg font-semibold text-slate-900">ScheduleFlowTrack Pro</h2>
+          <div className="mt-3">
+            <span className="text-4xl font-bold text-slate-900">{SUBSCRIPTION_PRICE_DISPLAY}</span>
+            <span className="text-sm text-slate-500"> / month</span>
+          </div>
+          <p className="mt-1 text-sm text-slate-500">{SUBSCRIPTION_TRIAL_DAYS}-day free trial</p>
+          <ul className="mt-6 space-y-2.5 text-left text-sm text-slate-700">
+            {[
+              "Complete scheduling dashboard",
+              "Recurring appointments",
+              "Client and service management",
+              "Projected revenue",
+              "Employee worked hours",
+              "Email and SMS notification controls",
+              "Desktop and mobile access",
+            ].map((feature) => (
+              <li key={feature} className="flex items-start gap-2.5">
+                <span className="mt-0.5 flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs shrink-0">✓</span>
+                <span>{feature}</span>
+              </li>
+            ))}
+          </ul>
+          <Link
+            href="/signup"
+            className="mt-7 block w-full rounded-lg bg-[#0f172a] px-6 py-3 text-sm font-medium text-white hover:bg-slate-800 transition-colors shadow-sm"
+          >
+            Start Free Trial
+          </Link>
+          <p className="mt-3 text-xs text-slate-500">No annual contract. Cancel anytime.</p>
         </div>
       </section>
 
