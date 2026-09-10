@@ -43,6 +43,7 @@ function assignment(overrides: Partial<AppointmentEmployeeAssignment> = {}): App
     employee_id: "emp-1",
     actual_started_at: null,
     actual_completed_at: null,
+    job_notes: null,
     created_at: "2026-07-01T00:00:00.000Z",
     updated_at: "2026-07-01T00:00:00.000Z",
     ...overrides,

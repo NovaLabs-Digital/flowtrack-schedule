@@ -197,7 +197,7 @@ export default async function DashboardPage() {
     // alone survives every intermediate grouping/filtering step.
     const assignRes = await supabaseAdmin
       .from("appointment_employees")
-      .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, created_at, updated_at")
+      .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, job_notes, created_at, updated_at")
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: true })
       .order("id", { ascending: true });

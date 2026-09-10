@@ -28,6 +28,14 @@ describe("app/schedule/page.tsx -- resolves assigned appointments from appointme
     assert.ok(block![0].includes('.eq("workspace_id", workspaceId)'));
   });
 
+  test("the appointment_employees select includes job_notes, alongside the two tracking timestamps", () => {
+    const selectMatch = source.match(/\.from\("appointment_employees"\)\s*\n\s*\.select\("([^"]*)"\)/);
+    assert.ok(selectMatch, "expected to find the appointment_employees .from(...).select(...) call");
+    for (const col of ["actual_started_at", "actual_completed_at", "job_notes"]) {
+      assert.ok(selectMatch![1].includes(col), `must select "${col}"`);
+    }
+  });
+
   test("the appointments query filters by the assigned appointment IDs (.in), never by .eq(\"employee_id\", employeeId)", () => {
     assert.ok(source.includes('.in("id", chunk)'));
     assert.ok(!source.includes('.eq("employee_id", employeeId)\n      .eq("workspace_id", workspaceId)\n      .eq("status", "scheduled")'), "must not still filter appointments directly by employee_id");
@@ -44,6 +52,12 @@ describe("app/schedule/page.tsx -- resolves assigned appointments from appointme
     assert.ok(mapBlock![0].includes("assignmentByApptId.get(a.id)"));
     assert.ok(mapBlock![0].includes("actual_started_at: mine?.actual_started_at ?? null"));
     assert.ok(mapBlock![0].includes("actual_completed_at: mine?.actual_completed_at ?? null"));
+  });
+
+  test("each appointment's job_notes is overwritten from this employee's own assignment too -- so a reload seeds the textarea with the previously saved note", () => {
+    const mapBlock = source.match(/appts = appts\s*\.map\(\(a\) => \{[\s\S]*?\}\)/);
+    assert.ok(mapBlock);
+    assert.ok(mapBlock![0].includes("job_notes: mine?.job_notes ?? null"));
   });
 
   test("computePayrollRows is called with this employee's own assignments for both this-week and last-week totals", () => {

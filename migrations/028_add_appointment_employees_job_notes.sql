@@ -1,0 +1,36 @@
+-- 028: Employee Job Notes -- optional, per-assignment free text an
+-- employee can record while a job is active (see app/api/appointments/job
+-- /route.ts's "save_notes" action).
+--
+-- Adds exactly one new, additive, nullable column: appointment_employees.
+-- job_notes. No existing column, row, index, policy, or other table is
+-- touched. No row is deleted or rewritten. Safely re-runnable (ADD COLUMN
+-- IF NOT EXISTS).
+--
+-- Deliberately NOT appointments.notes, NOT clients.notes, and NOT
+-- appointment_employee_hours.note -- each of those is authored by the
+-- OWNER for a different purpose (scheduling-time description, client
+-- record, manual hours-correction reason, respectively) and none of them
+-- has any employee write path. Job execution notes are authored by the
+-- ASSIGNED EMPLOYEE, belong to that employee's own assignment on that one
+-- appointment (not the appointment as a whole, and not the client), and
+-- must coexist independently alongside appointments.notes without
+-- overwriting or being conflated with it. This mirrors why
+-- actual_started_at/actual_completed_at already live here instead of on
+-- appointments (migration 021): an appointment can have multiple assigned
+-- employees, each with their own independent job-tracking state.
+--
+-- NULL means "no note entered" -- every existing appointment_employees row
+-- simply has job_notes = NULL after this migration. No backfill is
+-- performed or needed; there is no prior data this column could be
+-- derived from.
+
+ALTER TABLE appointment_employees ADD COLUMN IF NOT EXISTS job_notes TEXT;
+
+-- =============================================================================
+-- Backfill.
+--
+-- None. Every existing appointment_employees row simply has job_notes =
+-- NULL after this migration -- exactly the pre-existing "no note recorded"
+-- state this feature is designed to represent.
+-- =============================================================================

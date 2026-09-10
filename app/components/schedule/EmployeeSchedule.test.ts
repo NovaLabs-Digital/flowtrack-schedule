@@ -138,6 +138,102 @@ describe("Phase 5C: workspace-timezone-aware today/appointment display -- the sa
   });
 });
 
+describe("Employee Job Notes -- textarea appears only between Start and Complete", () => {
+  function jobNotesBlock(): string {
+    const idx = source.indexOf("{isStarted && !isCompleted && (");
+    assert.notEqual(idx, -1, "expected the Job Notes block's gating condition to exist");
+    const buttonIdx = source.indexOf("{/* Job action button */}", idx);
+    assert.notEqual(buttonIdx, -1);
+    return source.slice(idx, buttonIdx);
+  }
+
+  test("the Job Notes block is gated on isStarted && !isCompleted -- not visible before Start or after Complete", () => {
+    // Exactly one such gate in the whole file (this one) -- Start/Complete
+    // itself is gated only on isCompleted (see the "only completion status
+    // gates the job-action control" test above), so this is a distinct,
+    // narrower condition than the button's own.
+    const occurrences = [...source.matchAll(/\{isStarted && !isCompleted && \(/g)];
+    assert.equal(occurrences.length, 1);
+  });
+
+  test("the Job Notes block sits between the 'Actual times' block and the job-action button, matching START -> JOB NOTES -> COMPLETE", () => {
+    const actualTimesIdx = source.indexOf("{/* Actual times */}");
+    const jobNotesGateIdx = source.indexOf("{isStarted && !isCompleted && (");
+    const buttonCommentIdx = source.indexOf("{/* Job action button */}");
+    assert.notEqual(actualTimesIdx, -1);
+    assert.notEqual(jobNotesGateIdx, -1);
+    assert.notEqual(buttonCommentIdx, -1);
+    assert.ok(actualTimesIdx < jobNotesGateIdx, "Job Notes must come after Actual times");
+    assert.ok(jobNotesGateIdx < buttonCommentIdx, "Job Notes must come before the job-action button");
+  });
+
+  test("the textarea is optional (no required attribute), capped at 2000 characters, and seeded from jobNotes state", () => {
+    const block = jobNotesBlock();
+    assert.ok(block.includes("<textarea"));
+    assert.ok(!/\brequired\b/.test(block), "the textarea must not be required -- notes are optional");
+    assert.ok(block.includes("maxLength={2000}"));
+    assert.ok(block.includes('value={jobNotes[a.id] ?? ""}'));
+  });
+
+  test("a 'Save Note' button calls handleSaveNote(a.id) -- a distinct action from Start/Complete", () => {
+    const block = jobNotesBlock();
+    assert.ok(block.includes("onClick={() => handleSaveNote(a.id)}"));
+    assert.ok(block.includes("Save Note"));
+  });
+
+  test("a 'Note saved' confirmation is shown once the live value matches the last-saved value for an appointment that has actually been saved", () => {
+    const block = jobNotesBlock();
+    assert.ok(block.includes("Note saved"));
+    assert.ok(block.includes("Object.prototype.hasOwnProperty.call(savedJobNotes, a.id)"));
+    assert.ok(block.includes("(jobNotes[a.id] ?? \"\") === savedJobNotes[a.id]"));
+  });
+
+  test("no autosave, draft-persistence, or timer exists -- saving happens only via the explicit button click", () => {
+    for (const forbidden of ["setTimeout", "setInterval", "onBlur", "debounce", "localStorage"]) {
+      assert.ok(!source.includes(forbidden), `must not contain "${forbidden}" (V1 has no autosave/drafts/timers)`);
+    }
+  });
+});
+
+describe("Employee Job Notes -- persistence via handleSaveNote", () => {
+  test("handleSaveNote posts action: 'save_notes' to the same /api/appointments/job endpoint used by Start/Complete", () => {
+    const idx = source.indexOf("async function handleSaveNote(appointmentId: string)");
+    assert.notEqual(idx, -1);
+    const nextFnIdx = source.indexOf("\n  return (", idx);
+    const block = source.slice(idx, nextFnIdx === -1 ? undefined : nextFnIdx);
+    assert.ok(block.includes('fetch("/api/appointments/job"'));
+    assert.ok(block.includes('action: "save_notes"'));
+    assert.ok(block.includes("notes: value"));
+  });
+
+  test("on success, both jobNotes and savedJobNotes are updated from the server's own normalized job_notes value", () => {
+    const idx = source.indexOf("async function handleSaveNote(appointmentId: string)");
+    const nextFnIdx = source.indexOf("\n  return (", idx);
+    const block = source.slice(idx, nextFnIdx === -1 ? undefined : nextFnIdx);
+    assert.ok(block.includes("const saved: string = data.job_notes ?? \"\";"));
+    assert.ok(block.includes("setJobNotes((prev) => ({ ...prev, [appointmentId]: saved }));"));
+    assert.ok(block.includes("setSavedJobNotes((prev) => ({ ...prev, [appointmentId]: saved }));"));
+  });
+
+  test("jobNotes and savedJobNotes are both seeded from appointments[].job_notes at mount -- a reload initializes the textarea with the previously saved value", () => {
+    const jobNotesInit = source.indexOf("const [jobNotes, setJobNotes] = useState");
+    const savedInit = source.indexOf("const [savedJobNotes, setSavedJobNotes] = useState");
+    assert.notEqual(jobNotesInit, -1);
+    assert.notEqual(savedInit, -1);
+    const jobNotesBlock2 = source.slice(jobNotesInit, savedInit);
+    assert.ok(jobNotesBlock2.includes("if (a.job_notes) map[a.id] = a.job_notes;"));
+    const savedBlock = source.slice(savedInit, source.indexOf("const [savingNote, setSavingNote]"));
+    assert.ok(savedBlock.includes("if (a.job_notes) map[a.id] = a.job_notes;"));
+  });
+
+  test("handleSaveNote is reentrancy-guarded the same way handleJobAction already is (inFlightRef)", () => {
+    const idx = source.indexOf("async function handleSaveNote(appointmentId: string)");
+    const block = source.slice(idx, idx + 400);
+    assert.ok(block.includes("if (inFlightRef.current.has(appointmentId)) return;"));
+    assert.ok(block.includes("inFlightRef.current.add(appointmentId);"));
+  });
+});
+
 describe("Phase 5E: job-tracking Started/Completed display uses the workspace's own resolved timezone, not the employee's device timezone", () => {
   test("startedAt/completedAt (display) are resolved via toBusinessLocal with the explicit timezone prop, while rawStartedAt/rawCompletedAt (the real instants) drive the duration delta", () => {
     assert.ok(source.includes("const rawStartedAt = times?.started ? new Date(times.started) : null;"));

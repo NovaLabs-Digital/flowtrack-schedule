@@ -402,6 +402,22 @@ describe("Phase 5.7D-R18: multi-employee editor (source-level proof)", () => {
     assert.equal(priceInputCount, 1);
   });
 
+  test("Employee Job Notes: assignment.job_notes is displayed, read-only, inside the same per-employee Worked Hours card -- distinct from the appointment's own notes and from a manual hours entry's reason", () => {
+    const workedHoursIdx = source.indexOf('<div className="text-xs font-medium text-slate-600">Worked Hours</div>');
+    const mapEndIdx = source.indexOf("})}", workedHoursIdx);
+    assert.ok(workedHoursIdx > -1 && mapEndIdx > -1);
+    const cardBlock = source.slice(workedHoursIdx, mapEndIdx);
+    assert.ok(cardBlock.includes("{assignment.job_notes && ("), "expected assignment.job_notes to be conditionally rendered inside the Worked Hours card");
+    assert.ok(cardBlock.includes("Job Notes:"));
+    assert.ok(cardBlock.includes("{assignment.job_notes}"));
+    // No input/textarea/onChange anywhere near this display -- read-only
+    // for the owner in V1, per the approved architecture.
+    const jobNotesIdx = cardBlock.indexOf("{assignment.job_notes && (");
+    const jobNotesBlock = cardBlock.slice(jobNotesIdx, jobNotesIdx + 300);
+    assert.ok(!jobNotesBlock.includes("<textarea"));
+    assert.ok(!jobNotesBlock.includes("onChange"));
+  });
+
   test("assignments prop is documented as authoritative, filtered internally to this appointment -- never pre-filtered by the caller", () => {
     assert.ok(source.includes("assignments: AppointmentEmployeeAssignment[];"));
   });

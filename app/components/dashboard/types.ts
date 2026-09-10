@@ -45,6 +45,14 @@ export type Appointment = {
   // below instead.
   actual_started_at?: string | null;
   actual_completed_at?: string | null;
+  // Employee Job Notes: mirrors actual_started_at/actual_completed_at
+  // immediately above -- app/schedule/page.tsx overlays THIS employee's own
+  // appointment_employees.job_notes onto the Appointment object it passes
+  // to EmployeeSchedule, exactly like it already does for the two
+  // timestamps. Not the appointment-level `notes` field above (owner-
+  // authored, a different concept) -- see AppointmentEmployeeAssignment
+  // below for the authoritative, per-assignment source of this value.
+  job_notes?: string | null;
   // Phase 5.7D-R17: an independent price snapshot taken at create/edit time
   // (see migrations/020) -- never recomputed from the service's current
   // default price. null means no price was ever set for this appointment.
@@ -103,6 +111,13 @@ export type AppointmentEmployeeAssignment = {
   employee_id: string;
   actual_started_at: string | null;
   actual_completed_at: string | null;
+  // Employee Job Notes (migrations/028): optional free text this employee
+  // recorded about how their portion of the job went, via the "save_notes"
+  // action on app/api/appointments/job/route.ts. NULL means no note was
+  // ever saved. Read-only for the owner (shown in AppointmentModal.tsx's
+  // Worked Hours card); writable only by the assigned employee, only while
+  // their own actual_started_at is set and actual_completed_at is not.
+  job_notes: string | null;
   created_at: string;
   updated_at: string;
 };

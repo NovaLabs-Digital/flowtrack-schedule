@@ -28,8 +28,26 @@ export async function POST(req: Request) {
     const action = (body.action || "").trim();
 
     if (!appointmentId) return json({ error: "Missing appointment_id" }, 400);
-    if (action !== "start" && action !== "complete") {
-      return json({ error: "Action must be 'start' or 'complete'" }, 400);
+    if (action !== "start" && action !== "complete" && action !== "save_notes") {
+      return json({ error: "Action must be 'start', 'complete', or 'save_notes'" }, 400);
+    }
+
+    // Employee Job Notes: validated before the assignment lookup below so a
+    // malformed request never reaches the database at all -- matches the
+    // "mutation-specific validation runs only after auth/role/entitlement"
+    // ordering already established for appointment_id/action above. Trimmed
+    // server-side (never trusts client-side trimming); NULL, not "", is the
+    // stored representation of "no note" -- consistent with
+    // apptUpdate.notes's existing `body.notes.trim() || null` convention in
+    // app/api/appointments/update/route.ts.
+    let jobNotes: string | null = null;
+    if (action === "save_notes") {
+      const rawNotes = typeof body.notes === "string" ? body.notes : "";
+      const trimmedNotes = rawNotes.trim();
+      if (trimmedNotes.length > 2000) {
+        return json({ error: "Job notes must be 2000 characters or fewer" }, 400);
+      }
+      jobNotes = trimmedNotes || null;
     }
 
     // Phase 5.7D-R18: Job Tracking is now per-assignment, not per-appointment
@@ -53,7 +71,25 @@ export async function POST(req: Request) {
     if (!assignment) return json({ error: "Unauthorized" }, 403);
 
     if (assignment.actual_completed_at) {
+      // Also the enforcement point for "job_notes becomes read-only from
+      // the employee workflow" once complete -- this same guard already
+      // blocks 'start'/'complete' past completion, so 'save_notes' inherits
+      // it for free rather than needing a second, duplicated check.
       return json({ error: "Job already completed" }, 400);
+    }
+
+    if (action === "save_notes") {
+      if (!assignment.actual_started_at) {
+        return json({ error: "Job has not been started" }, 400);
+      }
+      const { error: notesErr } = await supabaseAdmin
+        .from("appointment_employees")
+        .update({ job_notes: jobNotes })
+        .eq("id", assignment.id)
+        .eq("workspace_id", workspaceId);
+
+      if (notesErr) throw notesErr;
+      return json({ ok: true, job_notes: jobNotes });
     }
 
     const now = new Date().toISOString();

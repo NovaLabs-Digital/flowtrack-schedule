@@ -1061,6 +1061,21 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                         )}
                       </>
                     )}
+                    {/* Employee Job Notes: the employee's own optional
+                        free text about how their portion of the job went
+                        (migrations/028), saved via the "Save Note" action
+                        while their job was active. Deliberately separate
+                        from the appointment's own `notes` field (shown
+                        elsewhere in this modal, owner-authored) and from
+                        a manual hours entry's `note` correction reason
+                        (shown above, in the branch that reads
+                        manualEntry.note) -- read-only here in V1. */}
+                    {assignment.job_notes && (
+                      <div className="pt-1 border-t border-slate-200 mt-1">
+                        <div className="font-medium text-slate-700">Job Notes:</div>
+                        <div className="whitespace-pre-wrap">{assignment.job_notes}</div>
+                      </div>
+                    )}
                   </div>
                 );
               })}

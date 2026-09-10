@@ -283,3 +283,197 @@ describe("Phase 5.7D-R18: per-assignment resolution never touches another employ
     assert.deepEqual(eqAfterUpdate[0].args, ["id", "ae-1"]);
   });
 });
+
+describe("Employee Job Notes -- POST /api/appointments/job, action: 'save_notes'", () => {
+  test("an employee can save a note on their own ACTIVE (started, not completed) assignment", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "Client was not home." }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.job_notes, "Client was not home.");
+    const updateCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "update");
+    assert.deepEqual(updateCall!.args[0], { job_notes: "Client was not home." });
+  });
+
+  test("notes are optional -- omitting the field entirely saves job_notes as null, not an error", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.job_notes, null);
+  });
+
+  test("whitespace is trimmed server-side -- leading/trailing whitespace removed", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "   gate was locked   " }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.job_notes, "gate was locked");
+  });
+
+  test("whitespace-only content is stored as NULL, not an empty string", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "   \n\t  " }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.job_notes, null);
+    const updateCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "update");
+    assert.deepEqual(updateCall!.args[0], { job_notes: null });
+  });
+
+  test("exactly 2000 characters (after trimming) is accepted", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const notes = "x".repeat(2000);
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.job_notes!.length, 2000);
+  });
+
+  test("2001 characters (after trimming) is rejected with 400, not silently truncated, and never reaches the database", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const notes = "x".repeat(2001);
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Job notes must be 2000 characters or fewer" });
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("leading/trailing whitespace does not count against the 2000-character limit", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const notes = "  " + "x".repeat(2000) + "  ";
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes }));
+    assert.equal(res.status, 200);
+  });
+
+  test("cannot save a note before the job has been started", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: notStartedAssignment() }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "too early" }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Job has not been started" });
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("cannot save a note once the job is already completed -- read-only from the employee workflow after completion", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: { id: "ae-1", actual_started_at: "2026-07-21T10:00:00.000Z", actual_completed_at: "2026-07-21T11:00:00.000Z" } }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "too late" }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Job already completed" });
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("an employee cannot save a note to an appointment/assignment that isn't their own -- same fail-closed 403 as start/complete", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: null }], // no row for this appointment_id + employee_id + workspace_id
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "not mine" }));
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "Unauthorized" });
+  });
+
+  test("the assignment lookup for save_notes is scoped by appointment_id, the AUTHENTICATED employee_id, and workspace_id -- a body-supplied employee_id is ignored", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "hi", employee_id: "someone-else" }));
+    assert.equal(res.status, 200);
+    const eqCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "eq");
+    assert.deepEqual(eqCalls[0].args, ["appointment_id", "appt-1"]);
+    assert.deepEqual(eqCalls[1].args, ["employee_id", EMPLOYEE_ID]);
+    assert.deepEqual(eqCalls[2].args, ["workspace_id", REAL_WORKSPACE_ID]);
+  });
+
+  test("cross-workspace write is impossible -- a spoofed workspace_id in the body is never read; the real session workspace is used and a mismatched row is never returned", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: null }], // fake fixture never matches a different workspace's row
+    });
+    sessionToReturn = EMPLOYEE_SESSION; // REAL_WORKSPACE_ID
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "hi", workspace_id: "attacker-ws" }));
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "Unauthorized" });
+    const eqCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "eq");
+    assert.deepEqual(eqCalls[2].args, ["workspace_id", REAL_WORKSPACE_ID]);
+  });
+
+  test("the update is scoped to the specific assignment row by id AND workspace_id, and writes only job_notes -- never touches actual_started_at/actual_completed_at", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "second save" }));
+    const updateCall = currentFake.calls.find((c) => c.table === "appointment_employees" && c.method === "update");
+    assert.deepEqual(updateCall!.args[0], { job_notes: "second save" });
+    const eqAfterUpdate = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "eq").slice(-2);
+    assert.deepEqual(eqAfterUpdate[0].args, ["id", "ae-1"]);
+    assert.deepEqual(eqAfterUpdate[1].args, ["workspace_id", REAL_WORKSPACE_ID]);
+  });
+
+  test("this route never queries or writes the appointments table for save_notes -- job_notes lives only on appointment_employees, appointments.notes is untouched", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "save_notes", notes: "hi" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+  });
+
+  test("Complete Job still succeeds whether or not a note was ever saved -- notes are fully independent of the complete action", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointment_employees: [{ data: startedAssignment() }, { error: null }],
+    });
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "complete" }));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.ok(body.actual_completed_at);
+    assert.equal(body.job_notes, undefined, "the complete action's response shape is unchanged -- it never mentions job_notes");
+  });
+});

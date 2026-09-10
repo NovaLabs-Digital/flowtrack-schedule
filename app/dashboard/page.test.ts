@@ -111,10 +111,10 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
 // DispatchPanel all need every workspace assignment row, not just the ones
 // belonging to whichever appointment happens to be selected.
 describe("app/dashboard/page.tsx -- fetches appointment_employees assignments, workspace-scoped (Phase 5.7D-R18)", () => {
-  test("queries appointment_employees selecting id, appointment_id, employee_id, and both tracking timestamps", () => {
+  test("queries appointment_employees selecting id, appointment_id, employee_id, both tracking timestamps, and job_notes", () => {
     const selectMatch = source.match(/\.from\("appointment_employees"\)\s*\n\s*\.select\("([^"]*)"\)/);
     assert.ok(selectMatch, "expected to find the appointment_employees .from(...).select(...) call");
-    for (const col of ["id", "appointment_id", "employee_id", "actual_started_at", "actual_completed_at"]) {
+    for (const col of ["id", "appointment_id", "employee_id", "actual_started_at", "actual_completed_at", "job_notes"]) {
       assert.ok(selectMatch![1].includes(col), `must select "${col}"`);
     }
   });

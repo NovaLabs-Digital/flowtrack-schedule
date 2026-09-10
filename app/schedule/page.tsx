@@ -94,7 +94,7 @@ export default async function SchedulePage() {
   const assignRes = await fetchAllPages<AppointmentEmployeeAssignment>(async (from, to) =>
     supabaseAdmin
       .from("appointment_employees")
-      .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, created_at, updated_at")
+      .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, job_notes, created_at, updated_at")
       .eq("employee_id", employeeId)
       .eq("workspace_id", workspaceId)
       .order("appointment_id", { ascending: true })
@@ -142,6 +142,7 @@ export default async function SchedulePage() {
         ...a,
         actual_started_at: mine?.actual_started_at ?? null,
         actual_completed_at: mine?.actual_completed_at ?? null,
+        job_notes: mine?.job_notes ?? null,
       };
     })
     .sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime());

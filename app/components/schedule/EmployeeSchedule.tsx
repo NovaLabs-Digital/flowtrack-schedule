@@ -18,6 +18,11 @@ type Appointment = {
   duration_minutes?: number | null;
   actual_started_at?: string | null;
   actual_completed_at?: string | null;
+  // Employee Job Notes: this employee's own optional note for this job,
+  // seeded from appointment_employees.job_notes (see app/schedule/page.tsx)
+  // -- distinct from `notes` above (the owner-authored appointment note,
+  // read-only, shown separately).
+  job_notes?: string | null;
 };
 
 type ClientInfo = { name: string; address: string | null };
@@ -102,6 +107,35 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
     return map;
   });
 
+  // Employee Job Notes: `jobNotes` is the textarea's live value (what the
+  // employee is currently typing/has typed); `savedJobNotes` holds a key
+  // for appointment `a.id` ONLY once a save has actually succeeded for it
+  // (its value is whatever was last confirmed persisted, including an
+  // intentionally-cleared ""). Both are seeded from the same appointments
+  // prop so a reload/reopen shows the previously saved note (product
+  // requirement) and correctly shows it as already-saved. Presence in
+  // `savedJobNotes` (not just value equality) is what "Note saved" checks
+  // below -- otherwise an appointment that was never saved (both "live"
+  // and "saved" trivially "" at mount) would wrongly appear saved.
+  // Editing the textarea after a save makes the two values diverge again
+  // with no timer needed to hide the confirmation -- it simply stops being
+  // true.
+  const [jobNotes, setJobNotes] = useState<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    for (const a of appointments) {
+      if (a.job_notes) map[a.id] = a.job_notes;
+    }
+    return map;
+  });
+  const [savedJobNotes, setSavedJobNotes] = useState<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    for (const a of appointments) {
+      if (a.job_notes) map[a.id] = a.job_notes;
+    }
+    return map;
+  });
+  const [savingNote, setSavingNote] = useState<string | null>(null);
+
   // Phase 5C: business-tz-anchored (never bare `new Date()`/native getters
   // on a raw `new Date(iso)`) -- this screen previously computed "today"
   // and each appointment's day in the EMPLOYEE's own device timezone,
@@ -170,6 +204,40 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
     finally {
       inFlightRef.current.delete(appointmentId);
       setLoadingJob(null);
+    }
+  }
+
+  // Employee Job Notes: an explicit, employee-triggered save -- V1
+  // deliberately has no autosave/draft/timer/background sync (product
+  // decision). The employee may call this any number of times while the
+  // job remains active; the server always overwrites the same assignment
+  // row's job_notes with the latest value, so there is nothing to merge or
+  // reconcile between saves.
+  async function handleSaveNote(appointmentId: string) {
+    if (inFlightRef.current.has(appointmentId)) return;
+
+    inFlightRef.current.add(appointmentId);
+    setSavingNote(appointmentId);
+    try {
+      const value = jobNotes[appointmentId] ?? "";
+      const res = await fetch("/api/appointments/job", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ appointment_id: appointmentId, action: "save_notes", notes: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+
+      // Reflects the server's own trimmed/normalized value back into both
+      // pieces of state, so the textarea and the "saved" comparison agree
+      // exactly with what is now actually persisted.
+      const saved: string = data.job_notes ?? "";
+      setJobNotes((prev) => ({ ...prev, [appointmentId]: saved }));
+      setSavedJobNotes((prev) => ({ ...prev, [appointmentId]: saved }));
+    } catch {}
+    finally {
+      inFlightRef.current.delete(appointmentId);
+      setSavingNote(null);
     }
   }
 
@@ -355,6 +423,46 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                   {a.notes && (
                     <div className="text-xs text-slate-500 italic pt-1 border-t border-slate-100">
                       {a.notes}
+                    </div>
+                  )}
+
+                  {/* Job Notes -- employee's own optional note for this
+                      job. Visible ONLY between Start and Complete (per
+                      product decision, the workflow is START -> JOB NOTES
+                      -> COMPLETE): before Start there is nothing to write
+                      about yet, and after Complete it becomes read-only
+                      from the employee workflow (no edit UI in V1 -- the
+                      owner can still see it via AppointmentModal). */}
+                  {isStarted && !isCompleted && (
+                    <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                      <label htmlFor={`job-notes-${a.id}`} className="block text-xs font-medium text-slate-600">
+                        Job Notes (optional)
+                      </label>
+                      <textarea
+                        id={`job-notes-${a.id}`}
+                        value={jobNotes[a.id] ?? ""}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setJobNotes((prev) => ({ ...prev, [a.id]: val }));
+                        }}
+                        maxLength={2000}
+                        rows={3}
+                        placeholder="e.g. client not home, gate locked, extra work requested..."
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveNote(a.id)}
+                          disabled={savingNote === a.id}
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 active:bg-slate-100 disabled:opacity-50 transition-colors"
+                        >
+                          {savingNote === a.id ? "Saving..." : "Save Note"}
+                        </button>
+                        {savingNote !== a.id && Object.prototype.hasOwnProperty.call(savedJobNotes, a.id) && (jobNotes[a.id] ?? "") === savedJobNotes[a.id] && (
+                          <span className="text-xs text-emerald-600">Note saved</span>
+                        )}
+                      </div>
                     </div>
                   )}
 
