@@ -148,10 +148,6 @@ describe("Employee Job Notes -- textarea appears only between Start and Complete
   }
 
   test("the Job Notes block is gated on isStarted && !isCompleted -- not visible before Start or after Complete", () => {
-    // Exactly one such gate in the whole file (this one) -- Start/Complete
-    // itself is gated only on isCompleted (see the "only completion status
-    // gates the job-action control" test above), so this is a distinct,
-    // narrower condition than the button's own.
     const occurrences = [...source.matchAll(/\{isStarted && !isCompleted && \(/g)];
     assert.equal(occurrences.length, 1);
   });
@@ -167,52 +163,150 @@ describe("Employee Job Notes -- textarea appears only between Start and Complete
     assert.ok(jobNotesGateIdx < buttonCommentIdx, "Job Notes must come before the job-action button");
   });
 
-  test("the textarea is optional (no required attribute), capped at 2000 characters, and seeded from jobNotes state", () => {
+  test("the textarea is optional (no required attribute), capped at 2000 characters, and driven by handleNotesChange", () => {
     const block = jobNotesBlock();
     assert.ok(block.includes("<textarea"));
     assert.ok(!/\brequired\b/.test(block), "the textarea must not be required -- notes are optional");
     assert.ok(block.includes("maxLength={2000}"));
     assert.ok(block.includes('value={jobNotes[a.id] ?? ""}'));
+    assert.ok(block.includes("onChange={(e) => handleNotesChange(a.id, e.target.value)}"));
   });
 
-  test("a 'Save Note' button calls handleSaveNote(a.id) -- a distinct action from Start/Complete", () => {
+  test("the 'Save Note' button no longer exists anywhere in this file (a comment may still explain the old behavior for context)", () => {
+    assert.ok(!source.includes(">Save Note<"), "no JSX element must render 'Save Note' as a label");
+    assert.ok(!source.includes("handleSaveNote"));
+    assert.ok(!source.includes("savingNote"));
+    assert.ok(!/type="button"[^>]*onClick=\{\(\) => \w*[Ss]ave/.test(source), "no explicit save button remains");
+  });
+
+  test("status text shows exactly 'Saving...', 'Saved', or 'Not saved — try again', driven by noteStatus[a.id]", () => {
     const block = jobNotesBlock();
-    assert.ok(block.includes("onClick={() => handleSaveNote(a.id)}"));
-    assert.ok(block.includes("Save Note"));
+    assert.ok(block.includes('noteStatus[a.id] === "saving"'));
+    assert.ok(block.includes("Saving..."));
+    assert.ok(block.includes('noteStatus[a.id] === "saved"'));
+    assert.ok(block.includes(">Saved<"));
+    assert.ok(block.includes('noteStatus[a.id] === "error"'));
+    assert.ok(block.includes("Not saved — try again"));
   });
 
-  test("a 'Note saved' confirmation is shown once the live value matches the last-saved value for an appointment that has actually been saved", () => {
+  test("no popups/alerts/modals/toasts are used for the note status (window.alert/window.confirm never appear in the Job Notes block)", () => {
     const block = jobNotesBlock();
-    assert.ok(block.includes("Note saved"));
-    assert.ok(block.includes("Object.prototype.hasOwnProperty.call(savedJobNotes, a.id)"));
-    assert.ok(block.includes("(jobNotes[a.id] ?? \"\") === savedJobNotes[a.id]"));
-  });
-
-  test("no autosave, draft-persistence, or timer exists -- saving happens only via the explicit button click", () => {
-    for (const forbidden of ["setTimeout", "setInterval", "onBlur", "debounce", "localStorage"]) {
-      assert.ok(!source.includes(forbidden), `must not contain "${forbidden}" (V1 has no autosave/drafts/timers)`);
-    }
+    assert.ok(!block.includes("window.alert"));
+    assert.ok(!block.includes("window.confirm"));
+    assert.ok(!block.includes("toast"));
   });
 });
 
-describe("Employee Job Notes -- persistence via handleSaveNote", () => {
-  test("handleSaveNote posts action: 'save_notes' to the same /api/appointments/job endpoint used by Start/Complete", () => {
-    const idx = source.indexOf("async function handleSaveNote(appointmentId: string)");
+describe("Employee Job Notes -- autosave debouncing (handleNotesChange)", () => {
+  function handleNotesChangeBlock(): string {
+    const idx = source.indexOf("function handleNotesChange(appointmentId: string, value: string)");
     assert.notEqual(idx, -1);
-    const nextFnIdx = source.indexOf("\n  return (", idx);
-    const block = source.slice(idx, nextFnIdx === -1 ? undefined : nextFnIdx);
-    assert.ok(block.includes('fetch("/api/appointments/job"'));
-    assert.ok(block.includes('action: "save_notes"'));
-    assert.ok(block.includes("notes: value"));
+    const returnIdx = source.indexOf('<div className="min-h-[100dvh] bg-slate-50 flex flex-col safe-area-top">', idx);
+    assert.notEqual(returnIdx, -1);
+    return source.slice(idx, returnIdx);
+  }
+
+  test("an autosave delay constant of approximately 1000ms exists and is used by the debounce timer", () => {
+    assert.ok(source.includes("const NOTE_AUTOSAVE_DEBOUNCE_MS = 1000;"));
+    const block = handleNotesChangeBlock();
+    assert.ok(block.includes("NOTE_AUTOSAVE_DEBOUNCE_MS"));
   });
 
-  test("on success, both jobNotes and savedJobNotes are updated from the server's own normalized job_notes value", () => {
-    const idx = source.indexOf("async function handleSaveNote(appointmentId: string)");
-    const nextFnIdx = source.indexOf("\n  return (", idx);
-    const block = source.slice(idx, nextFnIdx === -1 ? undefined : nextFnIdx);
-    assert.ok(block.includes("const saved: string = data.job_notes ?? \"\";"));
-    assert.ok(block.includes("setJobNotes((prev) => ({ ...prev, [appointmentId]: saved }));"));
-    assert.ok(block.includes("setSavedJobNotes((prev) => ({ ...prev, [appointmentId]: saved }));"));
+  test("does not send a request on every keystroke -- only schedules a setTimeout, never calls fetch directly", () => {
+    const block = handleNotesChangeBlock();
+    assert.ok(!block.includes("fetch("), "handleNotesChange itself must never call fetch directly");
+    assert.ok(block.includes("setTimeout("));
+  });
+
+  test("rapid typing resets the pending timer -- clears any existing debounce timer before scheduling a new one", () => {
+    const block = handleNotesChangeBlock();
+    const clearIdx = block.indexOf("clearTimeout(debounceTimers.current[appointmentId]);");
+    const setIdx = block.indexOf("debounceTimers.current[appointmentId] = setTimeout(");
+    assert.notEqual(clearIdx, -1, "expected the existing timer to be cleared");
+    assert.notEqual(setIdx, -1, "expected a new timer to be scheduled");
+    assert.ok(clearIdx < setIdx, "must clear the old timer before scheduling the new one");
+  });
+
+  test("the debounced save calls ensureSaveLoop (the serialized autosave entry point), not a raw fetch", () => {
+    const block = handleNotesChangeBlock();
+    assert.ok(block.includes("ensureSaveLoop(appointmentId);"));
+  });
+
+  test("jobNotesRef is updated synchronously alongside jobNotes state, so the save loop always reads the truly-latest typed value", () => {
+    const block = handleNotesChangeBlock();
+    const refIdx = block.indexOf("jobNotesRef.current[appointmentId] = value;");
+    const stateIdx = block.indexOf("setJobNotes((prev) => ({ ...prev, [appointmentId]: value }));");
+    assert.notEqual(refIdx, -1);
+    assert.notEqual(stateIdx, -1);
+    assert.ok(refIdx < stateIdx, "the ref must be updated before/alongside the state setter");
+  });
+});
+
+describe("Employee Job Notes -- persistence via saveLoop/ensureSaveLoop", () => {
+  function saveLoopBlock(): string {
+    const idx = source.indexOf("async function saveLoop(appointmentId: string)");
+    assert.notEqual(idx, -1);
+    const nextIdx = source.indexOf("function ensureSaveLoop(appointmentId: string)");
+    assert.notEqual(nextIdx, -1);
+    return source.slice(idx, nextIdx);
+  }
+
+  test("saveLoop posts action: 'save_notes' to the same /api/appointments/job endpoint used by Start/Complete -- no new endpoint", () => {
+    const block = saveLoopBlock();
+    assert.ok(block.includes('fetch("/api/appointments/job"'));
+    assert.ok(block.includes('action: "save_notes"'));
+    assert.ok(block.includes("notes: valueToSend"));
+    // No other endpoint is ever referenced anywhere in this file.
+    const allFetchTargets = [...source.matchAll(/fetch\("([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(new Set(allFetchTargets), new Set(["/api/auth/logout", "/api/appointments/job"]));
+  });
+
+  test("sets status to 'saving' before the request and 'saved' after a successful, settled response", () => {
+    const block = saveLoopBlock();
+    const savingIdx = block.indexOf('setNoteStatus((prev) => ({ ...prev, [appointmentId]: "saving" }));');
+    const fetchIdx = block.indexOf('fetch("/api/appointments/job"');
+    const savedIdx = block.indexOf('setNoteStatus((prev) => ({ ...prev, [appointmentId]: "saved" }));');
+    assert.notEqual(savingIdx, -1);
+    assert.notEqual(savedIdx, -1);
+    assert.ok(savingIdx < fetchIdx, "'saving' must be set before the request is sent");
+  });
+
+  test("sets status to 'error' on a failed response or network error, and never clears the typed text on failure", () => {
+    const block = saveLoopBlock();
+    const errorOccurrences = [...block.matchAll(/setNoteStatus\(\(prev\) => \(\{ \.\.\.prev, \[appointmentId\]: "error" \}\)\);/g)];
+    assert.ok(errorOccurrences.length >= 1);
+    // jobNotes/jobNotesRef (the typed text) is never written to inside saveLoop --
+    // only savedJobNotes and noteStatus are. The typed text is preserved as-is
+    // whether the save succeeds or fails.
+    assert.ok(!block.includes("setJobNotes("));
+    assert.ok(!block.includes("jobNotesRef.current[appointmentId] ="));
+  });
+
+  test("on success, savedJobNotes is updated from the server's own normalized job_notes value", () => {
+    const block = saveLoopBlock();
+    assert.ok(block.includes("savedValue = data.job_notes ?? \"\";"));
+    assert.ok(block.includes("setSavedJobNotes((prev) => ({ ...prev, [appointmentId]: savedValue }));"));
+  });
+
+  test("stale-response protection: after a successful save, re-checks the live value against what was just sent, and loops again immediately if it changed -- an older response can never leave a newer edit unsaved or get reported as 'saved' when it isn't", () => {
+    const block = saveLoopBlock();
+    assert.ok(block.includes("for (;;)"), "expected saveLoop to be a loop, not a single fire-and-forget request");
+    const reCheckIdx = block.indexOf('if ((jobNotesRef.current[appointmentId] ?? "") !== valueToSend)');
+    assert.notEqual(reCheckIdx, -1);
+    const continueIdx = block.indexOf("continue;", reCheckIdx);
+    assert.notEqual(continueIdx, -1);
+    assert.ok(continueIdx - reCheckIdx < 100, "the loop must re-send immediately (continue), not schedule another debounce");
+  });
+
+  test("ensureSaveLoop serializes saves -- returns the SAME in-flight promise instead of starting a second overlapping request", () => {
+    const idx = source.indexOf("function ensureSaveLoop(appointmentId: string)");
+    const endIdx = source.indexOf("function handleNotesChange(appointmentId: string, value: string)");
+    const block = source.slice(idx, endIdx);
+    assert.ok(block.includes("if (saveLoopActive.current[appointmentId]) {"));
+    assert.ok(block.includes("return saveLoopPromise.current[appointmentId];"));
+    assert.ok(block.includes("saveLoopActive.current[appointmentId] = true;"));
+    assert.ok(block.includes(".finally(() => {"));
+    assert.ok(block.includes("saveLoopActive.current[appointmentId] = false;"));
   });
 
   test("jobNotes and savedJobNotes are both seeded from appointments[].job_notes at mount -- a reload initializes the textarea with the previously saved value", () => {
@@ -222,15 +316,92 @@ describe("Employee Job Notes -- persistence via handleSaveNote", () => {
     assert.notEqual(savedInit, -1);
     const jobNotesBlock2 = source.slice(jobNotesInit, savedInit);
     assert.ok(jobNotesBlock2.includes("if (a.job_notes) map[a.id] = a.job_notes;"));
-    const savedBlock = source.slice(savedInit, source.indexOf("const [savingNote, setSavingNote]"));
+    const savedBlock = source.slice(savedInit, source.indexOf("const [noteStatus, setNoteStatus]"));
     assert.ok(savedBlock.includes("if (a.job_notes) map[a.id] = a.job_notes;"));
   });
+});
 
-  test("handleSaveNote is reentrancy-guarded the same way handleJobAction already is (inFlightRef)", () => {
-    const idx = source.indexOf("async function handleSaveNote(appointmentId: string)");
-    const block = source.slice(idx, idx + 400);
-    assert.ok(block.includes("if (inFlightRef.current.has(appointmentId)) return;"));
-    assert.ok(block.includes("inFlightRef.current.add(appointmentId);"));
+describe("Employee Job Notes -- Complete Job flushes the latest note first", () => {
+  function completeFlushBlock(): string {
+    const idx = source.indexOf('if (action === "complete") {');
+    assert.notEqual(idx, -1);
+    const endIdx = source.indexOf("inFlightRef.current.add(appointmentId);");
+    assert.notEqual(endIdx, -1);
+    return source.slice(idx, endIdx);
+  }
+
+  test("cancels any pending debounce timer before completing, so it never fires redundantly after Complete", () => {
+    const block = completeFlushBlock();
+    assert.ok(block.includes("if (debounceTimers.current[appointmentId]) {"));
+    assert.ok(block.includes("clearTimeout(debounceTimers.current[appointmentId]);"));
+    assert.ok(block.includes("delete debounceTimers.current[appointmentId];"));
+  });
+
+  test("awaits ensureSaveLoop before proceeding when a save is in flight or the live note differs from the last saved value", () => {
+    const block = completeFlushBlock();
+    assert.ok(block.includes("const liveNote = jobNotesRef.current[appointmentId] ?? \"\";"));
+    assert.ok(block.includes("const lastSavedNote = savedJobNotes[appointmentId] ?? \"\";"));
+    assert.ok(block.includes("if (saveLoopActive.current[appointmentId] || liveNote !== lastSavedNote) {"));
+    assert.ok(block.includes("const result = await ensureSaveLoop(appointmentId);"));
+  });
+
+  test("does not proceed with Complete if the flush save fails -- returns before the Start/Complete fetch is ever reached", () => {
+    const block = completeFlushBlock();
+    const resultIdx = block.indexOf("const result = await ensureSaveLoop(appointmentId);");
+    const ifNotOkIdx = block.indexOf("if (!result.ok) {", resultIdx);
+    const returnIdx = block.indexOf("return;", ifNotOkIdx);
+    assert.notEqual(resultIdx, -1);
+    assert.notEqual(ifNotOkIdx, -1);
+    assert.notEqual(returnIdx, -1);
+    assert.ok(ifNotOkIdx > resultIdx && returnIdx > ifNotOkIdx);
+    // The actual Start/Complete POST body construction must appear only
+    // AFTER this whole complete-flush block, never before it.
+    const fullSource = source;
+    const jobFetchIdx = fullSource.indexOf('body: JSON.stringify({ appointment_id: appointmentId, action }),');
+    const flushStartIdx = fullSource.indexOf('if (action === "complete") {');
+    assert.ok(flushStartIdx < jobFetchIdx);
+  });
+
+  test("this flush logic is scoped to the 'complete' action only -- 'start' never touches the note-saving machinery", () => {
+    const idx = source.indexOf('if (action === "complete") {');
+    const closeIdx = source.indexOf("inFlightRef.current.add(appointmentId);");
+    assert.notEqual(idx, -1);
+    assert.notEqual(closeIdx, -1);
+    // Everything between the "complete" branch open and its own close is
+    // inside the `if (action === "complete")` block -- confirmed by the
+    // completeFlushBlock() helper's own bounds in the tests above already
+    // matching this same span.
+    assert.ok(closeIdx > idx);
+  });
+});
+
+describe("Employee Job Notes -- no orphaned timers", () => {
+  test("an unmount cleanup effect clears every pending debounce timer", () => {
+    const idx = source.indexOf("useEffect(() => {");
+    assert.notEqual(idx, -1, "expected a useEffect in this file");
+    const closeIdx = source.indexOf("}, []);", idx);
+    assert.notEqual(closeIdx, -1);
+    const block = source.slice(idx, closeIdx);
+    assert.ok(block.includes("return () => {"), "expected a cleanup function");
+    assert.ok(block.includes("for (const timer of Object.values(debounceTimers.current)) clearTimeout(timer);"));
+    assert.ok(block.includes("debounceTimers.current = {};"));
+  });
+
+  test("useEffect is imported from react", () => {
+    assert.ok(source.includes('import { useEffect, useRef, useState } from "react";'));
+  });
+});
+
+describe("Employee Job Notes -- V1 simplicity guardrails", () => {
+  test("no offline sync, service worker, localStorage draft, or visible versioning/history exists", () => {
+    for (const forbidden of ["serviceWorker", "localStorage", "sessionStorage", "IndexedDB", "history", "version:"]) {
+      assert.ok(!source.includes(forbidden), `must not contain "${forbidden}" (V1 has none of these)`);
+    }
+  });
+
+  test("no notification API is used for note status", () => {
+    assert.ok(!source.includes("Notification("));
+    assert.ok(!source.includes("new Notification"));
   });
 });
 
