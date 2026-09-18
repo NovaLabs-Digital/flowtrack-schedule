@@ -139,8 +139,8 @@ describe("notice block", () => {
     assert.ok(source.includes(`const RESTRICTED_WORDING = "${APPROVED_WORDING}";`));
   });
 
-  test("notice only renders when restricted (negated condition, not the positive form)", () => {
-    assert.match(source, /\{!canMutateOperationalData && \(/);
+  test("notice only renders when restricted (negated condition, not the positive form) -- and never for a past appointment, which never shows the Cancel control it explains", () => {
+    assert.match(source, /\{!canMutateOperationalData && !isHistorical && \(/);
   });
 
   test("notice element id's declared value is unique to this component (not appointment-modal-restricted-notice or move-confirm-dialog-restricted-notice)", () => {
@@ -239,5 +239,86 @@ describe("Phase 5C: workspace-timezone-aware date/time display", () => {
   test("duration math still uses the real UTC instants (rawStart/rawEnd), never the business-local display values", () => {
     assert.ok(source.includes("const rawStart = new Date(appointment.scheduled_for);"));
     assert.ok(source.includes("const rawEnd = new Date(rawStart.getTime() + durationMinutes * 60_000);"));
+  });
+});
+
+describe("historical-record protection (founder decision): a past/completed/cancelled appointment opens for review only", () => {
+  test("isHistorical is derived from the canonical isHistoricalAppointment(appointment, assignments) predicate, never a locally re-derived date/completion check", () => {
+    assert.ok(source.includes("const isHistorical = isHistoricalAppointment(appointment, assignments);"));
+  });
+
+  test("isHistoricalAppointment is imported from lib/payroll, never lib/timezone's bare isPastAppointment", () => {
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(!source.includes("isPastAppointment"));
+  });
+
+  test("statusLabel is Cancelled/Completed/Scheduled, derived from appointment.status and isHistorical, not fabricated", () => {
+    assert.ok(source.includes('const statusLabel = appointment.status === "cancelled" ? "Cancelled" : isHistorical ? "Completed" : "Scheduled";'));
+    assert.ok(source.includes("{statusLabel}"));
+  });
+
+  test("the Edit button is wrapped in {!isHistorical && (...)} -- hidden entirely for a historical appointment, not merely disabled", () => {
+    const idx = source.indexOf("onClick={handleEdit}");
+    assert.notEqual(idx, -1);
+    const before = source.slice(Math.max(0, idx - 200), idx);
+    assert.match(before, /\{!isHistorical && \(/);
+  });
+
+  test("the Cancel Appointment control (and its own restricted notice) is wrapped in {!isHistorical && (...)}, in addition to the existing canMutateOperationalData gate", () => {
+    const idx = source.indexOf("onClick={handleCancel}");
+    assert.notEqual(idx, -1);
+    const before = source.slice(Math.max(0, idx - 400), idx);
+    assert.match(before, /\{!isHistorical && \(/);
+  });
+
+  test("Props declares assignments and employeeHours, and DashboardShell passes selectedApptAssignments/employeeHoursState", () => {
+    assert.ok(source.includes("assignments: AppointmentEmployeeAssignment[];"));
+    assert.ok(source.includes("employeeHours: EmployeeHours[];"));
+    const idx = shellSource.indexOf("<AppointmentDetailPanel");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /assignments=\{selectedApptAssignments\}/);
+    assert.match(jsx, /employeeHours=\{employeeHoursState\}/);
+  });
+
+  test("the Worked Hours card is hidden for a cancelled appointment and requires at least one assignment, mirroring AppointmentModal's own convention", () => {
+    assert.ok(source.includes('{appointment.status !== "cancelled" && assignments.length > 0 && ('));
+  });
+
+  test("Worked Hours reads Started/Completed/duration/Job Notes from the exact same lib/payroll.ts helpers AppointmentModal's Worked Hours card uses, never a re-derived computation", () => {
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(source.includes("const manualEntry = findManualHoursEntry(appointment.id, assignment.employee_id, employeeHours);"));
+    assert.ok(source.includes("const complete = isJobTrackingComplete(assignment);"));
+    assert.ok(source.includes("const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);"));
+  });
+
+  test("Started/Completed fall back to the clean 'Not recorded' empty state -- never fabricated -- and Job Notes only renders when assignment.job_notes is truthy", () => {
+    assert.ok(source.includes('? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n              : "Not recorded";'));
+    assert.ok(source.includes('? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n              : "Not recorded";'));
+    assert.ok(source.includes("{assignment.job_notes && ("));
+    assert.ok(source.includes('<div className="font-medium text-slate-700">Job Notes:</div>'));
+  });
+
+  test("Worked Hours never mutates anything -- no fetch, no notifyDemoAction, inside the card's render", () => {
+    const cardStart = source.indexOf('{appointment.status !== "cancelled" && assignments.length > 0 && (');
+    const cardEnd = source.indexOf("{error &&", cardStart);
+    const block = source.slice(cardStart, cardEnd);
+    assert.ok(!block.includes("fetch("));
+    assert.ok(!block.includes("notifyDemoAction"));
+  });
+
+  test("isHistorical is passed the exact `assignments` prop, not a re-fetched or re-derived list -- so an appointment already completed (every assigned employee's Job Tracking done) is historical immediately, even with a scheduled_end still in the future (the REQUIRED regression case)", () => {
+    // Source-inspection proof only: this asserts the wiring (assignments
+    // flows straight from props into isHistoricalAppointment with no
+    // intermediate filtering/re-fetching), not a rendered-DOM assertion --
+    // the actual completed-early behavior itself is proven by real
+    // execution in lib/payroll.test.ts's isHistoricalAppointment suite
+    // (the same function this component calls) and by the rendered-DOM
+    // proof in AppointmentModal.test.ts / DispatchPanel.test.ts for
+    // deriveAppointmentTrackingStatus's underlying "completed" derivation.
+    assert.ok(source.includes("const isHistorical = isHistoricalAppointment(appointment, assignments);"));
+    const propsIdx = source.indexOf("assignments: AppointmentEmployeeAssignment[];");
+    assert.notEqual(propsIdx, -1, "assignments must be a plain required prop, not computed inside this component");
   });
 });

@@ -12,6 +12,8 @@ import {
   zonedDateValue,
   zonedTimeValue,
   zonedDateTimeToUTC,
+  appointmentEndInstant,
+  isPastAppointment,
 } from "./timezone.ts";
 
 describe("TIMEZONE_OPTIONS", () => {
@@ -361,5 +363,75 @@ describe("zonedDateTimeToUTC -- UTC-server runtime independence", () => {
     const iso = "2026-08-03T13:30:00.000Z";
     assert.equal(zonedDateValue(iso, "America/New_York"), "2026-08-03");
     assert.equal(zonedTimeValue(iso, "America/New_York"), "09:30");
+  });
+});
+
+describe("appointmentEndInstant", () => {
+  test("uses scheduled_end when present, ignoring duration_minutes entirely", () => {
+    const end = appointmentEndInstant({
+      scheduled_for: "2026-08-03T13:00:00.000Z",
+      scheduled_end: "2026-08-03T15:00:00.000Z",
+      duration_minutes: 15,
+    });
+    assert.equal(end.toISOString(), "2026-08-03T15:00:00.000Z");
+  });
+
+  test("falls back to scheduled_for + duration_minutes when scheduled_end is null", () => {
+    const end = appointmentEndInstant({
+      scheduled_for: "2026-08-03T13:00:00.000Z",
+      scheduled_end: null,
+      duration_minutes: 90,
+    });
+    assert.equal(end.toISOString(), "2026-08-03T14:30:00.000Z");
+  });
+
+  test("falls back to a 60-minute default when neither scheduled_end nor duration_minutes is present", () => {
+    const end = appointmentEndInstant({ scheduled_for: "2026-08-03T13:00:00.000Z" });
+    assert.equal(end.toISOString(), "2026-08-03T14:00:00.000Z");
+  });
+});
+
+describe("isPastAppointment", () => {
+  const NOW = new Date("2026-08-03T14:00:00.000Z");
+
+  test("a cancelled appointment is always past, even if scheduled in the future", () => {
+    const appt = { scheduled_for: "2026-08-10T13:00:00.000Z", status: "cancelled" };
+    assert.equal(isPastAppointment(appt, NOW), true);
+  });
+
+  test("an appointment whose scheduled_end has not yet arrived is not past", () => {
+    const appt = { scheduled_for: "2026-08-03T13:00:00.000Z", scheduled_end: "2026-08-03T14:30:00.000Z", status: "scheduled" };
+    assert.equal(isPastAppointment(appt, NOW), false);
+  });
+
+  test("an appointment whose scheduled_end has already elapsed is past", () => {
+    const appt = { scheduled_for: "2026-08-03T12:00:00.000Z", scheduled_end: "2026-08-03T13:30:00.000Z", status: "scheduled" };
+    assert.equal(isPastAppointment(appt, NOW), true);
+  });
+
+  test("an appointment currently in progress (started, not yet ended) is not past -- START time is never used for this check", () => {
+    const appt = { scheduled_for: "2026-08-03T13:50:00.000Z", scheduled_end: "2026-08-03T14:50:00.000Z", status: "scheduled" };
+    assert.equal(isPastAppointment(appt, NOW), false);
+  });
+
+  test("falls back to scheduled_for + duration_minutes when scheduled_end is absent", () => {
+    const stillFuture = { scheduled_for: "2026-08-03T13:50:00.000Z", duration_minutes: 30, status: "scheduled" };
+    const alreadyPast = { scheduled_for: "2026-08-03T12:00:00.000Z", duration_minutes: 30, status: "scheduled" };
+    assert.equal(isPastAppointment(stillFuture, NOW), false);
+    assert.equal(isPastAppointment(alreadyPast, NOW), true);
+  });
+
+  test("falls back to a 60-minute default when neither scheduled_end nor duration_minutes is present", () => {
+    const stillFuture = { scheduled_for: "2026-08-03T13:30:00.000Z", status: "scheduled" };
+    const alreadyPast = { scheduled_for: "2026-08-03T12:00:00.000Z", status: "scheduled" };
+    assert.equal(isPastAppointment(stillFuture, NOW), false);
+    assert.equal(isPastAppointment(alreadyPast, NOW), true);
+  });
+
+  test("defaults `now` to the real current instant when not supplied", () => {
+    const longAgo = { scheduled_for: "2020-01-01T12:00:00.000Z", scheduled_end: "2020-01-01T13:00:00.000Z", status: "scheduled" };
+    const farFuture = { scheduled_for: "2099-01-01T12:00:00.000Z", scheduled_end: "2099-01-01T13:00:00.000Z", status: "scheduled" };
+    assert.equal(isPastAppointment(longAgo), true);
+    assert.equal(isPastAppointment(farFuture), false);
   });
 });

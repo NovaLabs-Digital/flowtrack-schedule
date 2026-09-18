@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Appointment, Client, Employee } from "@/app/components/dashboard/types";
+import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
+import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";
+import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 
 // Phase 5.5E-E1D: this control's own restricted notice, distinct from every
@@ -35,6 +37,14 @@ type Props = {
   client: Client | null;
   // Phase 5.7D-R18: zero, one, or many assigned employees.
   employees: Employee[];
+  // Historical-record protection: this exact appointment's own assignment
+  // rows (actual_started_at/actual_completed_at/job_notes) and every hours
+  // entry, so this screen can show real Worked Hours / Employee Job Notes
+  // for a historical appointment's review -- the same underlying data
+  // desktop's AppointmentDetailPanel already reads, reused here rather
+  // than duplicated.
+  assignments: AppointmentEmployeeAssignment[];
+  employeeHours: EmployeeHours[];
   durationMinutes: number;
   onBack: () => void;
   onEdit: () => void;
@@ -55,6 +65,8 @@ export default function MobileAppointmentDetail({
   appointment,
   client,
   employees,
+  assignments,
+  employeeHours,
   durationMinutes,
   onBack,
   onEdit,
@@ -68,6 +80,16 @@ export default function MobileAppointmentDetail({
 
   const start = toBusinessLocal(appointment.scheduled_for, timezone);
   const end = new Date(start.getTime() + durationMinutes * 60_000);
+
+  // Historical-record protection (founder decision): a past, completed, or
+  // already-cancelled appointment is a historical record -- reviewable
+  // here, but never edited/cancelled through the normal appointment-
+  // management flow. isHistoricalAppointment is the single canonical
+  // predicate the server routes and desktop's AppointmentDetailPanel also
+  // use (lib/payroll.ts) -- this is mobile's own reflection of the same
+  // rule, not a second, independently invented one.
+  const isHistorical = isHistoricalAppointment(appointment, assignments);
+  const statusLabel = appointment.status === "cancelled" ? "Cancelled" : isHistorical ? "Completed" : "Scheduled";
 
   async function handleCancel() {
     // Defense-in-depth: the server route this reaches already enforces this
@@ -117,15 +139,22 @@ export default function MobileAppointmentDetail({
           ←
         </button>
         <div className="text-sm font-semibold text-slate-900">Appointment</div>
-        <CapabilityGatedButton
-          type="button"
-          allowed={canMutateOperationalData}
-          onClick={handleEditClick}
-          ariaDescribedBy={RESTRICTED_NOTICE_ID}
-          className="text-sm font-medium text-blue-600 disabled:opacity-50"
-        >
-          Edit
-        </CapabilityGatedButton>
+        {/* Historical-record protection: a past/completed appointment opens
+            for review only -- Edit is hidden entirely rather than opening
+            AppointmentModal's fully mutable form for a record that can no
+            longer be changed (server-enforced too, see lib/payroll.ts's
+            isHistoricalAppointment and the appointments/update route). */}
+        {!isHistorical && (
+          <CapabilityGatedButton
+            type="button"
+            allowed={canMutateOperationalData}
+            onClick={handleEditClick}
+            ariaDescribedBy={RESTRICTED_NOTICE_ID}
+            className="text-sm font-medium text-blue-600 disabled:opacity-50"
+          >
+            Edit
+          </CapabilityGatedButton>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 overflow-auto p-4 space-y-3">
@@ -133,6 +162,7 @@ export default function MobileAppointmentDetail({
         <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
           <div className="text-base font-semibold text-slate-900">{appointment.service_type}</div>
           <div className="text-sm text-slate-700">{client?.name ?? "Client"}</div>
+          <div className="text-xs font-medium text-slate-500">{statusLabel}</div>
           <div className="pt-1 space-y-1.5 text-sm text-slate-600">
             <div className="flex items-center gap-2">
               <span>📅</span>
@@ -193,6 +223,64 @@ export default function MobileAppointmentDetail({
           </div>
         )}
 
+        {/* Worked Hours / Employee Job Notes -- reuses the exact same
+            underlying data (appointment_employees + appointment_employee_hours)
+            and computation (lib/payroll.ts) as desktop's AppointmentDetailPanel
+            Worked Hours card, so a historical appointment reviewed here and
+            the same appointment reviewed on desktop never disagree. Hidden
+            entirely for a cancelled appointment, mirroring that same
+            convention. Read-only by construction -- this screen has no
+            field this card could ever write to. */}
+        {appointment.status !== "cancelled" && assignments.length > 0 && (
+          <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Worked Hours</div>
+            {sortAssignmentsStable(assignments).map((assignment) => {
+              const emp = employees.find((e) => e.id === assignment.employee_id);
+              const manualEntry = findManualHoursEntry(appointment.id, assignment.employee_id, employeeHours);
+              const complete = isJobTrackingComplete(assignment);
+              const hasAnyRecordedActivity = !!assignment.actual_started_at || !!assignment.actual_completed_at || !!manualEntry;
+
+              if (!hasAnyRecordedActivity) {
+                return (
+                  <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-1">
+                    <div className="font-medium text-slate-700">{emp?.name ?? "Unknown employee"}</div>
+                    <div className="text-slate-500">Not tracked yet.</div>
+                  </div>
+                );
+              }
+
+              const startedLabel = assignment.actual_started_at
+                ? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                : "Not recorded";
+              const completedLabel = assignment.actual_completed_at
+                ? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                : "Not recorded";
+              const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);
+
+              return (
+                <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-1 text-slate-600">
+                  <div className="font-medium text-slate-700">{emp?.name ?? "Unknown employee"}</div>
+                  <div>Started: <span className="font-medium text-slate-900">{startedLabel}</span></div>
+                  <div>Completed: <span className="font-medium text-slate-900">{completedLabel}</span></div>
+                  {complete ? (
+                    <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                  ) : manualEntry ? (
+                    <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                  ) : (
+                    <div>Worked duration: not yet available.</div>
+                  )}
+                  {assignment.job_notes && (
+                    <div className="pt-1 border-t border-slate-200 mt-1">
+                      <div className="font-medium text-slate-700">Job Notes:</div>
+                      <div className="whitespace-pre-wrap">{assignment.job_notes}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* Communication */}
         {client && (
           <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
@@ -222,23 +310,32 @@ export default function MobileAppointmentDetail({
           <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
         )}
 
-        {!canMutateOperationalData && (
+        {!canMutateOperationalData && !isHistorical && (
           <div id={RESTRICTED_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             {RESTRICTED_WORDING}
           </div>
         )}
 
-        {/* Cancel */}
-        <CapabilityGatedButton
-          type="button"
-          allowed={canMutateOperationalData}
-          onClick={handleCancel}
-          disabled={cancelling}
-          ariaDescribedBy={RESTRICTED_NOTICE_ID}
-          className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 active:bg-rose-100 disabled:opacity-50 transition-colors"
-        >
-          {cancelling ? "Cancelling..." : "Cancel Appointment"}
-        </CapabilityGatedButton>
+        {/* Cancel -- Historical-record protection: a past/completed
+            appointment is reviewable here but can never be cancelled
+            through the normal appointment-management flow -- the control
+            (and its own restricted notice, above) simply doesn't render,
+            rather than rendering disabled. The server route enforces the
+            same rule independently (see
+            app/api/appointments/delete/route.ts's isHistoricalAppointment
+            guard), so this is UI clarity, not the only protection. */}
+        {!isHistorical && (
+          <CapabilityGatedButton
+            type="button"
+            allowed={canMutateOperationalData}
+            onClick={handleCancel}
+            disabled={cancelling}
+            ariaDescribedBy={RESTRICTED_NOTICE_ID}
+            className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 active:bg-rose-100 disabled:opacity-50 transition-colors"
+          >
+            {cancelling ? "Cancelling..." : "Cancel Appointment"}
+          </CapabilityGatedButton>
+        )}
       </div>
     </div>
   );

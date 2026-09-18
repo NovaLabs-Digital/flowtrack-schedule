@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Client, Appointment, Service, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
+import { Client, Appointment, Service, Employee, AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
@@ -30,6 +30,10 @@ type Props = {
   // the authoritative "who's assigned" source, grouped internally below by
   // appointment_id.
   assignments: AppointmentEmployeeAssignment[];
+  // Historical-record protection: every appointment_employee_hours row for
+  // the workspace -- threaded straight through to MobileAppointmentDetail's
+  // Worked Hours card, mirroring desktop's AppointmentDetailPanel.
+  employeeHours: EmployeeHours[];
   onAdd: () => void;
   onEditAppointment: (apptId: string) => void;
   onClientUpdated: () => void;
@@ -84,6 +88,7 @@ export default function MobileDashboard({
   services,
   employees,
   assignments,
+  employeeHours,
   onAdd,
   onEditAppointment,
   onClientUpdated,
@@ -176,6 +181,8 @@ export default function MobileDashboard({
             appointment={selectedAppt}
             client={clientById[selectedAppt.client_id] ?? null}
             employees={employeesFor(selectedAppt.id)}
+            assignments={assignmentsFor(selectedAppt.id)}
+            employeeHours={employeeHours}
             durationMinutes={scheduledMinutes(selectedAppt, services)}
             onBack={() => setSelectedApptId(null)}
             onEdit={() => onEditAppointment(selectedAppt.id)}

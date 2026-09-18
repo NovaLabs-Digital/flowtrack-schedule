@@ -77,24 +77,46 @@ describe("dragMutationEnabled derivation", () => {
 });
 
 describe("drag-initiation boundary (the appointment card)", () => {
-  test("draggable uses dragMutationEnabled, not the raw dragEnabled", () => {
-    assert.ok(source.includes("draggable={dragMutationEnabled}"));
+  // Historical-record protection: per-card drag eligibility is
+  // dragMutationEnabled narrowed further by !isHistoricalAppointment(a,
+  // assignmentsFor(a.id)) -- a restricted (no canMutateOperationalData)
+  // card and a past/completed/cancelled card must both be undraggable, for
+  // independent reasons, without either one silently overriding the other.
+  test("cardDragEnabled is derived from dragMutationEnabled && !isHistoricalAppointment(a, assignmentsFor(a.id))", () => {
+    assert.ok(source.includes("const cardDragEnabled = dragMutationEnabled && !isHistoricalAppointment(a, assignmentsFor(a.id));"));
+  });
+
+  test("isHistoricalAppointment is imported from lib/payroll, never lib/timezone's bare isPastAppointment", () => {
+    assert.ok(source.includes('import { needsWorkedHoursAttention, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";'));
+    assert.ok(!source.includes("isPastAppointment"));
+  });
+
+  test("uses assignmentsFor(a.id) -- the same per-appointment assignment lookup already used for the missing-hours warning icon -- never a re-fetched or re-derived list", () => {
+    const idx = source.indexOf("const cardDragEnabled = dragMutationEnabled");
+    assert.notEqual(idx, -1);
+    assert.ok(source.slice(idx, idx + 100).includes("assignmentsFor(a.id)"));
+  });
+
+  test("draggable uses cardDragEnabled, not the raw dragEnabled or the undifferentiated dragMutationEnabled", () => {
+    assert.ok(source.includes("draggable={cardDragEnabled}"));
     assert.ok(!source.includes("draggable={dragEnabled}"));
+    assert.ok(!source.includes("draggable={dragMutationEnabled}"));
   });
 
-  test("onDragStart is gated on dragMutationEnabled", () => {
-    assert.match(source, /onDragStart=\{dragMutationEnabled \? \(e\) => \{/);
+  test("onDragStart is gated on cardDragEnabled", () => {
+    assert.match(source, /onDragStart=\{cardDragEnabled \? \(e\) => \{/);
   });
 
-  test("onDragEnd is gated on dragMutationEnabled", () => {
-    assert.match(source, /onDragEnd=\{dragMutationEnabled \? \(\) => \{ setDraggingId\(null\); setDragOverCell\(null\); \} : undefined\}/);
+  test("onDragEnd is gated on cardDragEnabled", () => {
+    assert.match(source, /onDragEnd=\{cardDragEnabled \? \(\) => \{ setDraggingId\(null\); setDragOverCell\(null\); \} : undefined\}/);
   });
 
-  test("the grab-cursor styling (cursor-grab active:cursor-grabbing) is also gated on dragMutationEnabled, so a restricted card gives no visual affordance suggesting it can be dragged", () => {
-    assert.ok(source.includes('dragMutationEnabled ? "cursor-grab active:cursor-grabbing" : "",'));
+  test("the grab-cursor styling (cursor-grab active:cursor-grabbing) is also gated on cardDragEnabled, so a restricted OR past card gives no visual affordance suggesting it can be dragged", () => {
+    assert.ok(source.includes('cardDragEnabled ? "cursor-grab active:cursor-grabbing" : "",'));
   });
 
-  test("card selection (onClick -> onSelectAppointment) and edit (onDoubleClick -> onEditAppointment) remain unconditional -- read-only interactions are never gated", () => {
+  test("card selection (onClick -> onSelectAppointment) and edit (onDoubleClick -> onEditAppointment) remain unconditional -- read-only interactions are never gated (the past-appointment redirect to review mode lives in DashboardShell's editAppointment, not here)", () => {
     assert.ok(source.includes("onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}"));
     assert.ok(source.includes("onDoubleClick={(e) => { e.stopPropagation(); onEditAppointment?.(a.id); }}"));
   });
@@ -298,5 +320,59 @@ describe("Phase 5C: workspace-timezone-aware calendar display and drag/drop resc
     const body = source.slice(fnStart, fnStart + 2000);
     assert.ok(body.includes("const delta = newStart.getTime() - oldStart.getTime();"));
     assert.ok(body.includes("newEndIso = new Date(new Date(appt.scheduled_end).getTime() + delta).toISOString();"));
+  });
+});
+
+describe("Day/Weekdays/Week visible hour range is derived from saved business hours, never a second hardcoded range", () => {
+  test("businessHours is imported from lib/businessHours and declared as a required prop", () => {
+    assert.ok(source.includes('import { BusinessHours, computeGridHourBounds } from "@/lib/businessHours";'));
+    assert.ok(source.includes("businessHours: BusinessHours;"));
+  });
+
+  test("startHour/endHour are computed via computeGridHourBounds -- the literal 'const startHour = 7; const endHour = 18;' hardcode is gone", () => {
+    assert.ok(!source.includes("const startHour = 7;"));
+    assert.ok(!source.includes("const endHour = 18;"));
+    assert.ok(source.includes("const { startHour, endHour } = computeGridHourBounds(businessHours, dateStrs, timezone, apptMinuteRanges);"));
+  });
+
+  test("dateStrs covers every date in `days` -- 1 for Day view, 5 for Weekdays, 7 for Week, matching viewDays' own return", () => {
+    assert.ok(source.includes("const dateStrs = days.map((d) =>"));
+    // Built from `days`, not a separately re-derived date list.
+    const idx = source.indexOf("const dateStrs = days.map((d) =>");
+    const line = source.slice(idx, source.indexOf(";", idx) + 1);
+    assert.ok(line.includes("d.getFullYear()") && line.includes("d.getMonth()") && line.includes("d.getDate()"));
+  });
+
+  test("appointment expansion input (apptMinuteRanges) is built from apptsInView -- already cancelled-excluded and visible-days-scoped -- via the dedicated apptMinuteRange helper", () => {
+    assert.ok(source.includes("const apptMinuteRanges = apptsInView.map((a) => apptMinuteRange(a, timezone, durationFor));"));
+    assert.ok(source.includes("function apptMinuteRange(a: Appointment, timezone: string, durationFor: (s: string) => number): { startMin: number; endMin: number }"));
+  });
+
+  test("apptsInView is computed BEFORE the hour-range calculation -- the range calc depends on it, not the reverse", () => {
+    const apptsInViewIdx = source.indexOf("const apptsInView = appointments.filter(");
+    const boundsIdx = source.indexOf("computeGridHourBounds(businessHours, dateStrs, timezone, apptMinuteRanges)");
+    assert.notEqual(apptsInViewIdx, -1);
+    assert.notEqual(boundsIdx, -1);
+    assert.ok(apptsInViewIdx < boundsIdx);
+  });
+
+  test("totalHours/hours are still derived from startHour/endHour exactly as before -- only how those two are COMPUTED changed, not how they're consumed", () => {
+    assert.ok(source.includes("const totalHours = endHour - startHour + 1;"));
+    assert.ok(source.includes("const hours = Array.from({ length: totalHours }, (_, i) => startHour + i);"));
+  });
+
+  test("the appointment visibility guard and computeOverlapLayout's signature are unchanged -- this phase only changed how startHour/endHour are computed, not the render logic that consumes them", () => {
+    assert.ok(source.includes("if (apptHour < startHour || apptHour > endHour) return null;"));
+    assert.ok(source.includes("function computeOverlapLayout(appts: Appointment[], startHour: number, durationFor: (s: string) => number, timezone: string): Map<string, LayoutInfo>"));
+  });
+
+  test("the 15-minute quarter-hour cell structure is unchanged", () => {
+    assert.ok(source.includes("const QUARTER_MINUTES = [0, 15, 30, 45];"));
+    assert.ok(source.includes("const QUARTER_PX = CELL_PX / 4;"));
+  });
+
+  test("timezone continues to drive both the date-string construction and the appointment-minute derivation -- never the browser/device's own ambient timezone", () => {
+    assert.ok(source.includes("computeGridHourBounds(businessHours, dateStrs, timezone, apptMinuteRanges)"));
+    assert.ok(source.includes("apptMinuteRange(a, timezone, durationFor)"));
   });
 });

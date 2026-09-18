@@ -29,6 +29,19 @@ mock.module("@/lib/supabaseAdmin", {
 });
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => sessionToReturn) });
 
+// Historical-record protection (founder decision): the route now rejects a
+// recurrence-management request anchored to a past appointment (see
+// isPastAppointment in lib/timezone.ts), evaluated against the REAL current
+// instant. The earliest fixture anchor date in this file is 2026-01-08 (a
+// DST-generation test) -- freezing the clock to a fixed instant safely
+// before all of them (rather than rewriting the hardcoded fixture dates,
+// several of which are pinned to real US DST transition dates and can't
+// simply be shifted by year) keeps every one of those dates correctly
+// "current/future" regardless of the real wall-clock date this suite
+// happens to run on. Only Date is mocked (Date.now()/`new Date()` with no
+// arguments); `new Date(iso)` parsing is unaffected.
+mock.timers.enable({ apis: ["Date"], now: new Date("2025-12-01T00:00:00.000Z").getTime() });
+
 const { POST } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
@@ -1017,5 +1030,116 @@ describe("Block 2B safety correction: recurring_series registry lifecycle is fai
     const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
     assert.equal(res.status, 200);
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+  });
+});
+
+describe("historical-record protection -- recurrence management can never be anchored to a past/completed/cancelled appointment (founder decision)", () => {
+  test("a past (scheduled_end already elapsed) anchor is rejected 409, zero appointment/registry writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: { ...oneTimeAppt(), scheduled_for: "2025-11-01T14:00:00.000Z", scheduled_end: "2025-11-01T15:00:00.000Z" } }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1 }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+    // The origin's assignments ARE read (isHistoricalAppointment needs them
+    // to rule out "completed" before falling back to the time check) but
+    // nothing else -- no registry/series row is ever touched, and the read
+    // itself is never a write.
+    assert.deepEqual(
+      currentFake.calls.filter((c) => c.table !== "appointments" && c.table !== "subscriptions" && c.table !== "workspace_memberships" && c.table !== "appointment_employees"),
+      []
+    );
+  });
+
+  test("an already-cancelled anchor is rejected 409, even though scheduled_for is in the future", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: { ...oneTimeAppt(), status: "cancelled", scheduled_for: "2026-12-01T14:00:00.000Z" } }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("completed early: scheduled_end is still an hour in the future, but every assigned employee already finished -- rejected 409, zero writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{
+        data: {
+          ...oneTimeAppt(),
+          scheduled_for: new Date(Date.now() - 30 * 60_000).toISOString(),
+          scheduled_end: new Date(Date.now() + 60 * 60_000).toISOString(), // an hour in the future
+        },
+      }],
+      appointment_employees: [{
+        data: [{
+          id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
+          actual_started_at: new Date(Date.now() - 25 * 60_000).toISOString(),
+          actual_completed_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+          created_at: "x", updated_at: "x",
+        }],
+      }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("one employee finished but a second assigned employee has not -- NOT historical, request still succeeds (never assume one employee finishing completes the whole appointment)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        {
+          data: {
+            ...oneTimeAppt(),
+            scheduled_for: new Date(Date.now() - 30 * 60_000).toISOString(),
+            scheduled_end: new Date(Date.now() + 60 * 60_000).toISOString(),
+          },
+        },
+        { error: null },
+      ],
+      appointment_employees: [{
+        data: [
+          {
+            id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
+            actual_started_at: new Date(Date.now() - 25 * 60_000).toISOString(),
+            actual_completed_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+            created_at: "x", updated_at: "x",
+          },
+          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+        ],
+      }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    assert.equal(res.status, 200);
+  });
+
+  test("a still-in-progress appointment (started, scheduled_end not yet reached) is NOT treated as historical -- normal recurrence management still succeeds", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: { ...oneTimeAppt(), scheduled_for: "2025-11-30T23:50:00.000Z", scheduled_end: "2025-12-01T00:50:00.000Z" } },
+        { error: null },
+      ],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    assert.equal(res.status, 200);
   });
 });

@@ -7,6 +7,8 @@ import { cancelTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { quarantineIfObservedActive, finalizeSeriesStopped, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
+import { isHistoricalAppointment } from "@/lib/payroll";
+import { fetchAssignments } from "@/lib/appointmentEmployees";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -42,7 +44,7 @@ export async function POST(req: Request) {
     const isTester = session.role === "tester";
     const workspaceId = session.workspaceId;
 
-    const selectFields = "id, client_id, service_type, scheduled_for, status, series_id, is_demo";
+    const selectFields = "id, client_id, service_type, scheduled_for, scheduled_end, duration_minutes, status, series_id, is_demo";
     let apptRes = await supabaseAdmin
       .from("appointments")
       .select(selectFields)
@@ -53,7 +55,7 @@ export async function POST(req: Request) {
     if (apptRes.error) {
       apptRes = await supabaseAdmin
         .from("appointments")
-        .select("id, client_id, service_type, scheduled_for, status, is_demo")
+        .select("id, client_id, service_type, scheduled_for, scheduled_end, duration_minutes, status, is_demo")
         .eq("id", appointment_id)
         .eq("workspace_id", workspaceId)
         .maybeSingle();
@@ -65,6 +67,23 @@ export async function POST(req: Request) {
 
     if (isTester && !appt.is_demo) {
       return json({ error: "Appointment not found" }, 404);
+    }
+
+    // Historical-record protection (founder decision): a past, completed, or
+    // already-cancelled appointment can never be cancelled/deleted through
+    // this route, in either mode -- "single" targets this exact row;
+    // "future" is anchored to it (its own scheduled_for is the lower bound
+    // of the `gte` sibling query below), so rejecting a historical anchor
+    // here also guarantees no future sibling is ever touched by a request
+    // anchored to a historical occurrence. isHistoricalAppointment
+    // (lib/payroll.ts) is the single canonical predicate -- it treats the
+    // appointment as historical the moment EVERY assigned employee's Job
+    // Tracking is complete, even if scheduled_end hasn't elapsed yet, not
+    // just cancelled/past-by-time. Checked before any mutation, quarantine
+    // call, or notification.
+    const historicalAssignments = await fetchAssignments(appointment_id, workspaceId);
+    if (isHistoricalAppointment(appt, historicalAssignments)) {
+      return json({ error: "This appointment is a past record and can no longer be changed.", code: "APPOINTMENT_IS_HISTORICAL" }, 409);
     }
 
     async function notifyCancellation() {

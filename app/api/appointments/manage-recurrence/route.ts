@@ -8,6 +8,7 @@ import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
 import { fetchAssignments, insertAssignments, deriveLegacyEmployeeId } from "@/lib/appointmentEmployees";
 import { effectiveTimezone } from "@/lib/timezone";
+import { isHistoricalAppointment } from "@/lib/payroll";
 import {
   quarantineIfObservedActive,
   finalizeSeriesStopped,
@@ -75,8 +76,25 @@ export async function POST(req: Request) {
     // (not the legacy single employee_id column) is what every newly
     // generated occurrence below inherits -- mirrors how price_cents is
     // already copied from the origin's own current value, not recomputed.
+    // Fetched before the historical-record guard below so the same query
+    // serves both purposes -- isHistoricalAppointment needs this exact
+    // assignment set too.
     const originAssignments = await fetchAssignments(appointmentId, workspaceId);
     const employeeIds = originAssignments.map((a) => a.employee_id);
+
+    // Historical-record protection (founder decision): recurrence
+    // management is always anchored to this exact appointment -- it both
+    // becomes the confirmed template for a new series and is the point
+    // future siblings are cancelled/regenerated relative to (`gt
+    // scheduled_for` below), so a historical anchor must reject the entire
+    // request before any registry/appointment row is touched. The owner can
+    // select an actual future occurrence to manage future appointments
+    // instead. isHistoricalAppointment (lib/payroll.ts) also treats the
+    // appointment as historical the moment EVERY assigned employee's Job
+    // Tracking is complete, even if scheduled_end hasn't elapsed yet.
+    if (isHistoricalAppointment(appt, originAssignments)) {
+      return json({ error: "This appointment is a past record and can no longer be changed.", code: "APPOINTMENT_IS_HISTORICAL" }, 409);
+    }
 
     const isNewRecurring = newFrequency !== "one_time";
     const newSeriesId = isNewRecurring ? crypto.randomUUID() : null;

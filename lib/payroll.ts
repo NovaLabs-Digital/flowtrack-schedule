@@ -1,5 +1,5 @@
 import type { Appointment, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
-import { toBusinessLocal } from "@/lib/timezone";
+import { toBusinessLocal, isPastAppointment, type AppointmentPastInput } from "@/lib/timezone";
 
 export function toDateInputValue(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -133,6 +133,48 @@ export function deriveAppointmentTrackingStatus(assignments: TimestampPair[]): A
   if (!anyStarted) return "scheduled";
   const allComplete = assignments.every((a) => isJobTrackingComplete(a));
   return allComplete ? "completed" : "in_progress";
+}
+
+// ============================================================================
+// Historical-record protection, completed-status correction: isPastAppointment
+// (lib/timezone.ts) only ever considered cancelled status and elapsed
+// scheduled_end -- it had no way to know an appointment was already marked
+// completed via Job Tracking, since that lives on appointment_employees, not
+// on the appointment row itself. An appointment with a 1-hour scheduled
+// duration that every assigned employee finished in 20 minutes is a
+// historical record the moment the last employee completes it, not an hour
+// later when scheduled_end finally elapses -- reusing deriveAppointmentTrackingStatus
+// above (lib/payroll.ts, not lib/timezone.ts, to avoid a circular import: this
+// file already depends on lib/timezone.ts, never the other way around) is
+// what "Do not assume one employee finishing means the whole appointment is
+// completed" means in practice -- "completed" requires EVERY assigned
+// employee's own isJobTrackingComplete to be true (deriveAppointmentTrackingStatus's
+// own `.every()`), the exact same rule DispatchPanel's status pill and every
+// other consumer of that function already uses. A single completed employee
+// on a still-in-progress multi-employee job must NOT make the whole
+// appointment historical.
+//
+// isJobTrackingComplete (used internally by deriveAppointmentTrackingStatus)
+// parses actual_started_at/actual_completed_at via `new Date(iso)` -- safe
+// here specifically because those columns are Postgres timestamptz values,
+// always returned by Supabase as ISO 8601 strings carrying an explicit UTC
+// offset (e.g. "2026-08-27T15:30:00.000Z"), never a naive "YYYY-MM-DD HH:mm"
+// wall-clock string without one -- so this is a real, environment-independent
+// instant comparison, not a host-timezone-dependent parse of a naive
+// timestamp.
+//
+// This is the single canonical "is this appointment a historical record"
+// predicate -- cancelled, OR completed (every assigned employee's Job
+// Tracking done), OR its scheduled end has elapsed. Every UI surface and
+// every server mutation route must call this (not isPastAppointment alone)
+// to decide whether normal appointment-management actions are allowed.
+export function isHistoricalAppointment(
+  appt: AppointmentPastInput,
+  assignments: TimestampPair[],
+  now: Date = new Date()
+): boolean {
+  if (deriveAppointmentTrackingStatus(assignments) === "completed") return true;
+  return isPastAppointment(appt, now);
 }
 
 // The employee_ids of assigned employees who are missing worked hours for

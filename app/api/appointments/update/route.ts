@@ -27,6 +27,7 @@ import {
   RECURRING_SERIES_REVIEW_WARNING,
 } from "@/lib/recurringSeries";
 import { effectiveTimezone } from "@/lib/timezone";
+import { isHistoricalAppointment } from "@/lib/payroll";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -89,7 +90,7 @@ export async function PATCH(req: Request) {
 
     const existing = await supabaseAdmin
       .from("appointments")
-      .select("id, client_id, series_id, scheduled_for, scheduled_end, is_demo")
+      .select("id, client_id, series_id, scheduled_for, scheduled_end, duration_minutes, status, is_demo")
       .eq("id", appointment_id)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
@@ -98,6 +99,22 @@ export async function PATCH(req: Request) {
     if (!existing.data) return json({ error: "Appointment not found" }, 404);
     if (isTester && !existing.data.is_demo) {
       return json({ error: "Appointment not found" }, 404);
+    }
+
+    // Historical-record protection (founder decision): a past, completed, or
+    // already-cancelled appointment can never be edited/rescheduled through
+    // this route, in either mode -- checked before any read/validation that
+    // could imply a mutation is in progress, and before any DB write. Mode
+    // "future" is anchored to this exact row (siblings are queried with
+    // scheduled_for > this row's own scheduled_for), so rejecting a
+    // historical anchor here also guarantees no future sibling is ever
+    // touched by a request anchored to a historical occurrence.
+    // isHistoricalAppointment (lib/payroll.ts) additionally treats the
+    // appointment as historical the moment EVERY assigned employee's Job
+    // Tracking is complete, even if scheduled_end hasn't elapsed yet.
+    const historicalAssignments = await fetchAssignments(appointment_id, workspaceId);
+    if (isHistoricalAppointment(existing.data, historicalAssignments)) {
+      return json({ error: "This appointment is a past record and can no longer be changed.", code: "APPOINTMENT_IS_HISTORICAL" }, 409);
     }
     // Narrowed into its own const: existing.data's null-check above doesn't
     // persist into the fetchSiblings() closure below (a nested function

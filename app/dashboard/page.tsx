@@ -10,6 +10,7 @@ import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
 import { projectEntitlementForOwner } from "@/lib/entitlementView";
 import { requireCurrentOwnerSession } from "@/lib/sessionEpoch";
 import { effectiveTimezone } from "@/lib/timezone";
+import { effectiveBusinessHours } from "@/lib/businessHours";
 import type { AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 
 export const runtime = "nodejs";
@@ -213,14 +214,24 @@ export default async function DashboardPage() {
   // safely resolves a missing row or NULL column to the existing
   // America/New_York default, so this is safe even before an owner has
   // ever saved a Time Zone.
+  //
+  // business_hours is read from the same row in the same request (no
+  // second round trip) and resolved the same safe way -- effectiveBusinessHours
+  // falls back to the canonical Mon-Fri 07:00-17:00 default for a missing
+  // row/NULL column, exactly like effectiveTimezone does for timezone. This
+  // is the schedule grid's (ScheduleGrid, via DashboardShell) authoritative
+  // source for its visible hour range -- there is no second, independent
+  // business-hours configuration anywhere in the dashboard.
   let timezone = effectiveTimezone(null);
+  let businessHours = effectiveBusinessHours(null);
   try {
-    const { data: tzRow } = await supabaseAdmin
+    const { data: companyRow } = await supabaseAdmin
       .from("company_settings")
-      .select("timezone")
+      .select("timezone, business_hours")
       .eq("workspace_id", workspaceId)
       .maybeSingle();
-    timezone = effectiveTimezone(tzRow?.timezone);
+    timezone = effectiveTimezone(companyRow?.timezone);
+    businessHours = effectiveBusinessHours(companyRow?.business_hours);
   } catch {
     // company_settings row/column may not exist yet -- fall back safely.
   }
@@ -254,6 +265,7 @@ export default async function DashboardPage() {
       isTester={isTester}
       entitlement={entitlement}
       timezone={timezone}
+      businessHours={businessHours}
     />
   );
 }

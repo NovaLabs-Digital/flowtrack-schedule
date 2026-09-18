@@ -49,7 +49,19 @@ const { POST } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
 function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+  // isHistoricalAppointment (the historical-record guard, added when this
+  // route started rejecting a completed/past/cancelled appointment) always
+  // fetches this appointment's own appointment_employees rows immediately
+  // after the status==="cancelled" short-circuit -- a default empty
+  // response means every test below that isn't specifically exercising
+  // job-tracking/completion behavior doesn't need to know that read exists.
+  // An explicit `appointment_employees` key in `responses` fully overrides
+  // this default (object spread), exactly like the historical-record-
+  // protection tests below that DO care about it. This route never reads
+  // this table for any other reason, so unlike the owner-dashboard mutation
+  // routes there is no second, later call whose own queue this could
+  // misalign.
+  currentFake = createFakeSupabaseAdmin({ appointment_employees: [{ data: [] }], ...responses });
   currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabaseAdmin.from(t) });
 }
 function req(body?: unknown) {
@@ -371,5 +383,85 @@ describe("the notification gate is source-correctly placed and scoped (source-le
 
   test("workspaceId is declared from the matched appointment row, never from request input", () => {
     assert.ok(routeSource.includes("const workspaceId = apptRes.data.workspace_id;"));
+  });
+});
+
+describe("historical-record protection -- a valid token can never cancel a past/completed appointment (founder decision)", () => {
+  test("a token for a past (scheduled_end already elapsed) appointment is rejected 409, zero writes, zero entitlement query", async () => {
+    resetFixtures({
+      appointments: [{ data: apptRow({ scheduled_for: "2020-01-01T14:00:00.000Z", scheduled_end: "2020-01-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    const res = await POST(req({ token: "tok" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(currentFake.calls.filter((c) => c.table === "subscriptions").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 0);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("an already-cancelled appointment still resolves through the existing idempotent 'already: true' response, never the historical-rejection path", async () => {
+    resetFixtures({ appointments: [{ data: apptRow({ status: "cancelled", scheduled_for: "2020-01-01T14:00:00.000Z" }) }] });
+    const res = await POST(req({ token: "tok" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, already: true });
+  });
+
+  // The exact required regression case: completed well before its scheduled
+  // end (both fixed far in the future relative to real wall-clock time, so
+  // scheduled_end alone would NOT make this historical), but every assigned
+  // employee's Job Tracking is already complete.
+  test("REQUIRED CASE: completed mid-appointment with a scheduled end still far in the future is rejected 409 before any side effect, even though scheduled_end has not elapsed", async () => {
+    resetFixtures({
+      appointments: [{
+        data: apptRow({
+          scheduled_for: "2099-01-01T14:00:00.000Z",
+          scheduled_end: "2099-01-01T15:00:00.000Z",
+        }),
+      }],
+      appointment_employees: [{
+        data: [{
+          id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
+          actual_started_at: "2020-01-01T09:00:00.000Z",
+          actual_completed_at: "2020-01-01T09:30:00.000Z",
+          created_at: "x", updated_at: "x",
+        }],
+      }],
+    });
+    const res = await POST(req({ token: "tok" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 0);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("one employee finished but a second assigned employee has not -- NOT historical, cancellation still succeeds (never assume one employee finishing completes the whole appointment)", async () => {
+    resetFixtures({
+      subscriptions: [{ error: { message: "simulated DB error" } }],
+      appointments: [{ data: apptRow({ scheduled_for: "2099-01-01T14:00:00.000Z", scheduled_end: "2099-01-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{
+        data: [
+          { id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: "2020-01-01T09:00:00.000Z", actual_completed_at: "2020-01-01T09:30:00.000Z", created_at: "x", updated_at: "x" },
+          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+        ],
+      }],
+    });
+    const res = await POST(req({ token: "tok" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+  });
+
+  test("a token for a genuinely future appointment still cancels normally", async () => {
+    resetFixtures({
+      subscriptions: [{ error: { message: "simulated DB error" } }], // fails closed on notification only -- irrelevant to the mutation itself
+      appointments: [{ data: apptRow({ scheduled_for: "2099-01-01T14:00:00.000Z", scheduled_end: "2099-01-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    const res = await POST(req({ token: "tok" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
   });
 });

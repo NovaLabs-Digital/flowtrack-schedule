@@ -156,11 +156,11 @@ describe("app/dashboard/page.tsx -- Phase 5C: workspace timezone resolved server
 
   test("queries company_settings for timezone, scoped by workspace_id, and resolves it through effectiveTimezone -- never trusts a client-supplied value (there is none; this is a server component)", () => {
     const block = source.match(/let timezone = effectiveTimezone\(null\);[\s\S]*?catch \{[\s\S]*?\}/);
-    assert.ok(block, "expected a try/catch around the company_settings timezone lookup");
+    assert.ok(block, "expected a try/catch around the company_settings lookup");
     assert.ok(block![0].includes('.from("company_settings")'));
-    assert.ok(block![0].includes('.select("timezone")'));
+    assert.ok(block![0].includes('.select("timezone, business_hours")'));
     assert.ok(block![0].includes('.eq("workspace_id", workspaceId)'));
-    assert.ok(block![0].includes("timezone = effectiveTimezone(tzRow?.timezone);"));
+    assert.ok(block![0].includes("timezone = effectiveTimezone(companyRow?.timezone);"));
   });
 
   test("a missing/erroring company_settings row degrades safely to the default (effectiveTimezone(null)), never a hard failure", () => {
@@ -171,5 +171,29 @@ describe("app/dashboard/page.tsx -- Phase 5C: workspace timezone resolved server
     const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
     assert.ok(shellBlock);
     assert.ok(shellBlock![0].includes("timezone={timezone}"));
+  });
+});
+
+describe("app/dashboard/page.tsx -- business hours resolved server-side and passed to DashboardShell (schedule-grid hour range)", () => {
+  test("imports effectiveBusinessHours from lib/businessHours", () => {
+    assert.ok(source.includes('import { effectiveBusinessHours } from "@/lib/businessHours";'));
+  });
+
+  test("business_hours is read from the SAME company_settings query as timezone -- no second round trip, no second query", () => {
+    const occurrences = [...source.matchAll(/\.from\("company_settings"\)/g)];
+    assert.equal(occurrences.length, 1, "expected exactly one company_settings query in this file");
+    const block = source.match(/let timezone = effectiveTimezone\(null\);[\s\S]*?catch \{[\s\S]*?\}/);
+    assert.ok(block);
+    assert.ok(block![0].includes("businessHours = effectiveBusinessHours(companyRow?.business_hours);"));
+  });
+
+  test("a missing/erroring company_settings row degrades safely to the default (effectiveBusinessHours(null)), never a hard failure", () => {
+    assert.ok(source.includes("let businessHours = effectiveBusinessHours(null);"));
+  });
+
+  test("businessHours is passed to DashboardShell", () => {
+    const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
+    assert.ok(shellBlock);
+    assert.ok(shellBlock![0].includes("businessHours={businessHours}"));
   });
 });

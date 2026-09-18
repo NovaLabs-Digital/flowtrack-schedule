@@ -31,6 +31,8 @@ import {
   SettingsSection,
 } from "@/app/components/dashboard/types";
 import type { EntitlementView } from "@/lib/entitlementView";
+import { isHistoricalAppointment } from "@/lib/payroll";
+import type { BusinessHours } from "@/lib/businessHours";
 
 type ModalState =
   | { mode: "create"; prefillDate?: string; prefillTime?: string }
@@ -46,6 +48,7 @@ export default function DashboardShell({
   isTester,
   entitlement,
   timezone,
+  businessHours,
 }: {
   clients: Client[];
   appointments: Appointment[];
@@ -83,6 +86,12 @@ export default function DashboardShell({
   // threaded through to every scheduling/display consumer below -- never
   // re-derived from the browser/device's own ambient timezone.
   timezone: string;
+  // Resolved server-side (app/dashboard/page.tsx, via
+  // lib/businessHours.ts's effectiveBusinessHours) and threaded through to
+  // ScheduleGrid only -- Month view (ScheduleMonthGrid) has no hourly axis
+  // and does not consume this. The single source of truth for the grid's
+  // visible hour range; no second, independent schedule range exists.
+  businessHours: BusinessHours;
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
@@ -181,6 +190,20 @@ export default function DashboardShell({
   function editAppointment(apptId: string) {
     const appt = appointments.find((a) => a.id === apptId);
     if (!appt) return;
+    // Historical-record protection (founder decision): a past, completed,
+    // or already-cancelled appointment opens for review only -- every
+    // "edit" entry point in this app (Past Services rows, the schedule
+    // grid's double-click, Month view, this panel's own Edit button,
+    // mobile) converges on this one function, so redirecting here to the
+    // read-only selection path is what makes the rule apply everywhere at
+    // once, rather than needing to be re-applied at each call site. The
+    // server independently enforces the same rule (lib/payroll.ts's
+    // isHistoricalAppointment, reused verbatim by every mutation route), so
+    // this redirect is UI clarity, not the only protection.
+    if (isHistoricalAppointment(appt, assignments.filter((a) => a.appointment_id === apptId))) {
+      selectAppointment(apptId);
+      return;
+    }
     setSelectedApptId(apptId);
     setSelectedClientId(appt.client_id);
     const client = clients.find((c) => c.id === appt.client_id);
@@ -307,6 +330,7 @@ export default function DashboardShell({
           services={services}
           employees={employees}
           assignments={assignments}
+          employeeHours={employeeHoursState}
           onAdd={handleAdd}
           onEditAppointment={handleEditAppointment}
           onClientUpdated={() => router.refresh()}
@@ -414,6 +438,7 @@ export default function DashboardShell({
                     weekOffset={weekOffset}
                     canMutateOperationalData={entitlement.canMutateOperationalData}
                     timezone={timezone}
+                    businessHours={businessHours}
                   />
                 )}
               </div>
@@ -426,6 +451,8 @@ export default function DashboardShell({
                     client={clients.find((c) => c.id === selectedAppt.client_id) ?? null}
                     employees={selectedApptEmployees}
                     services={services}
+                    assignments={selectedApptAssignments}
+                    employeeHours={employeeHoursState}
                     onEdit={() => handleEditAppointment(selectedAppt.id)}
                     onCancelled={handleAppointmentCancelled}
                     canMutateOperationalData={entitlement.canMutateOperationalData}
@@ -438,6 +465,7 @@ export default function DashboardShell({
                     onClientUpdated={() => router.refresh()}
                     canMutateOperationalData={entitlement.canMutateOperationalData}
                     timezone={timezone}
+                    onEditAppointment={handleEditAppointment}
                   />
                 )}
               </div>

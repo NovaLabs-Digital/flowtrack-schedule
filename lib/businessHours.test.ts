@@ -9,6 +9,9 @@ import {
   weekdayKeyForDate,
   rangesForDate,
   cloneBusinessHours,
+  computeGridHourBounds,
+  FALLBACK_GRID_HOUR_BOUNDS,
+  type BusinessHours,
 } from "./businessHours.ts";
 import { TIMEZONE_OPTIONS } from "./timezone.ts";
 
@@ -247,5 +250,106 @@ describe("cloneBusinessHours", () => {
     const clone = cloneBusinessHours(original);
     clone.monday.push({ start: "18:00", end: "19:00" });
     assert.equal(original.monday.length, 1, "the original must be unaffected by mutating the clone");
+  });
+});
+
+// The schedule grid's visible hour-range computation -- proves the
+// acceptance case (4:00 AM opening -> grid includes 4:00 AM), the
+// earliest-opening/latest-closing-across-days rule, multi-interval
+// handling, appointment-driven expansion (including a closed day), and the
+// missing/invalid-data fallback. 2026-08-03 is a Monday.
+describe("computeGridHourBounds", () => {
+  const MON = "2026-08-03";
+  const TUE = "2026-08-04";
+  const SAT = "2026-08-08";
+  const SUN = "2026-08-09";
+
+  test("a 4:00 AM saved opening time produces a grid whose startHour is 4 (includes 4:00 AM)", () => {
+    const hours = effectiveBusinessHours({ monday: [{ start: "04:00", end: "17:00" }] });
+    const bounds = computeGridHourBounds(hours, [MON], NY);
+    assert.equal(bounds.startHour, 4);
+  });
+
+  test("a 4:30 AM appointment is folded into the range via appointment expansion even with default (07:00) hours", () => {
+    const hours = effectiveBusinessHours(null);
+    const bounds = computeGridHourBounds(hours, [MON], NY, [{ startMin: 4 * 60 + 30, endMin: 5 * 60 + 30 }]);
+    assert.equal(bounds.startHour, 4, "startHour must be pulled down to include the 4:30 AM appointment");
+    assert.ok(bounds.startHour <= 4 && 4 * 60 + 30 >= bounds.startHour * 60, "4:30 AM must fall within the returned hour range");
+  });
+
+  test("Day view (a single date) uses that date's own hours, ignoring a different day's hours entirely", () => {
+    const hours = effectiveBusinessHours({
+      monday: [{ start: "09:00", end: "12:00" }],
+      tuesday: [{ start: "04:00", end: "22:00" }],
+    });
+    const mondayBounds = computeGridHourBounds(hours, [MON], NY);
+    assert.equal(mondayBounds.startHour, 9);
+    assert.equal(mondayBounds.endHour, 11, "close at 12:00 -> last shown row is 11 (11:00-12:00)");
+  });
+
+  test("Weekdays/Week views (multiple dates) use the earliest opening and latest closing among the visible dates", () => {
+    const hours = effectiveBusinessHours({
+      monday: [{ start: "09:00", end: "12:00" }],
+      tuesday: [{ start: "06:00", end: "20:00" }],
+    });
+    const bounds = computeGridHourBounds(hours, [MON, TUE], NY);
+    assert.equal(bounds.startHour, 6, "must use Tuesday's earlier 6:00 opening, not Monday's 9:00");
+    assert.equal(bounds.endHour, 19, "close at 20:00 -> last shown row is 19 (19:00-20:00), from Tuesday's later closing");
+  });
+
+  test("multiple intervals on one day (a lunch-break split) are folded into a single earliest-start/latest-end span", () => {
+    const hours = effectiveBusinessHours({ monday: [{ start: "08:00", end: "12:00" }, { start: "13:00", end: "17:00" }] });
+    const bounds = computeGridHourBounds(hours, [MON], NY);
+    assert.equal(bounds.startHour, 8);
+    assert.equal(bounds.endHour, 16, "close at 17:00 -> last shown row is 16 (16:00-17:00)");
+  });
+
+  test("an appointment starting earlier than the configured opening time expands the range early enough to show it", () => {
+    const hours = effectiveBusinessHours({ monday: [{ start: "09:00", end: "17:00" }] });
+    const bounds = computeGridHourBounds(hours, [MON], NY, [{ startMin: 5 * 60, endMin: 6 * 60 }]);
+    assert.equal(bounds.startHour, 5, "must expand down to 5:00 to show a 5:00 AM appointment, well before the 9:00 opening");
+  });
+
+  test("an appointment ending later than the configured closing time expands the range late enough to show it", () => {
+    const hours = effectiveBusinessHours({ monday: [{ start: "09:00", end: "17:00" }] });
+    const bounds = computeGridHourBounds(hours, [MON], NY, [{ startMin: 19 * 60, endMin: 20 * 60 + 30 }]);
+    assert.equal(bounds.endHour, 20, "an appointment ending at 20:30 needs the 20:00-21:00 row to be fully visible");
+  });
+
+  test("a closed day (empty ranges) with an existing appointment still exposes that appointment, not the fallback", () => {
+    const hours = effectiveBusinessHours(null); // Saturday is closed in the default
+    assert.deepEqual(rangesForDate(hours, SAT, NY), []);
+    const bounds = computeGridHourBounds(hours, [SAT], NY, [{ startMin: 10 * 60, endMin: 11 * 60 }]);
+    assert.equal(bounds.startHour, 10);
+    assert.equal(bounds.endHour, 10);
+  });
+
+  test("missing business hours (NULL) use the established Mon-Fri 07:00-17:00 safe fallback for a weekday with no appointments", () => {
+    const hours = effectiveBusinessHours(null);
+    const bounds = computeGridHourBounds(hours, [MON], NY);
+    assert.equal(bounds.startHour, 7);
+    assert.equal(bounds.endHour, 16);
+  });
+
+  test("a genuinely empty range (closed day, no appointments at all) falls back to FALLBACK_GRID_HOUR_BOUNDS rather than rendering zero rows", () => {
+    const hours = effectiveBusinessHours(null); // Sunday is closed in the default
+    const bounds = computeGridHourBounds(hours, [SUN], NY);
+    assert.deepEqual(bounds, FALLBACK_GRID_HOUR_BOUNDS);
+  });
+
+  test("ordinary 7:00 AM-6:00 PM saved settings with no out-of-hours appointments retain that normal range (no unnecessary empty hours beyond it)", () => {
+    const hours = effectiveBusinessHours({ monday: [{ start: "07:00", end: "18:00" }] });
+    const bounds = computeGridHourBounds(hours, [MON], NY);
+    assert.equal(bounds.startHour, 7);
+    assert.equal(bounds.endHour, 17, "close at 18:00 -> last shown row is 17 (17:00-18:00), i.e. the grid visually spans 7 AM through 6 PM");
+  });
+
+  test("an invalid input value is never passed through untouched -- callers must resolve it via effectiveBusinessHours first (this function trusts its `hours` argument)", () => {
+    // Documents the contract: computeGridHourBounds takes an already-resolved
+    // BusinessHours object, never a raw/untrusted stored value -- the
+    // missing/invalid-data fallback lives in effectiveBusinessHours (see
+    // the two tests above), not duplicated again in this function.
+    const hours: BusinessHours = effectiveBusinessHours(undefined);
+    assert.ok(WEEKDAY_KEYS.every((k) => Array.isArray(hours[k])));
   });
 });

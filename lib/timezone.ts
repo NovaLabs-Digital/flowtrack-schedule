@@ -224,3 +224,59 @@ export function zonedDateTimeToUTC(date: string, time: string, tz: string): Zone
 
   return { ok: true, iso: dt.toUTC().toISO()! };
 }
+
+// ============================================================================
+// Historical-record protection -- founder decision: a completed/past
+// appointment is a historical business record. It must remain reviewable but
+// can never be cancelled, deleted, rescheduled, or otherwise changed through
+// the normal appointment-management flow (cancelling/updating/deleting it,
+// or managing recurrence anchored to it). This is the single canonical
+// predicate every UI surface and every server mutation route must call to
+// decide that -- never a locally re-derived date check -- so the rule can
+// never drift between the client and the server, or between one screen and
+// another.
+// ============================================================================
+
+const DEFAULT_APPOINTMENT_DURATION_MINUTES = 60;
+
+export type AppointmentPastInput = {
+  scheduled_for: string;
+  scheduled_end?: string | null;
+  duration_minutes?: number | null;
+  status?: string | null;
+};
+
+// The real UTC instant this appointment is scheduled to end -- scheduled_end
+// when present, else scheduled_for + duration_minutes, else the same
+// 60-minute default already used everywhere else in SFT a duration is
+// unknown (ScheduleGrid's durationFor, AppointmentDetailPanel's
+// scheduledMinutes). Deliberately does NOT fall back to a service's own
+// default duration -- callers of isPastAppointment (server routes in
+// particular) don't always have the services list loaded, and a coarse
+// 60-minute estimate is a safe, already-established approximation for this
+// purpose.
+export function appointmentEndInstant(appt: AppointmentPastInput): Date {
+  if (appt.scheduled_end) return new Date(appt.scheduled_end);
+  const start = new Date(appt.scheduled_for);
+  const minutes = appt.duration_minutes ?? DEFAULT_APPOINTMENT_DURATION_MINUTES;
+  return new Date(start.getTime() + minutes * 60_000);
+}
+
+// True once an appointment is a historical record: already cancelled, or its
+// scheduled END instant has passed (an appointment that started 10 minutes
+// ago and runs for an hour is still in progress, not historical -- START
+// time is never used for this check). `now` defaults to the real current
+// instant and exists only so tests can pin it.
+//
+// This is a pure UTC-instant comparison (real Date#getTime() values on both
+// sides), so it deliberately takes no timezone parameter -- unlike the
+// day-boundary/calendar-date helpers elsewhere in this file
+// (startOfBusinessDay, etc.), which do need one. Two true instants compare
+// identically no matter what timezone the server or the owner's browser
+// happens to be in; only a naive `new Date().toDateString()`/local-getter
+// comparison would be wrong here, which is exactly what using real instants
+// on both sides avoids.
+export function isPastAppointment(appt: AppointmentPastInput, now: Date = new Date()): boolean {
+  if (appt.status === "cancelled") return true;
+  return appointmentEndInstant(appt).getTime() < now.getTime();
+}

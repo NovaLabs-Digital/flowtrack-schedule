@@ -5,6 +5,8 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, describeProviderError, recordMessageSent, getCompanyIdentity } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
+import { isHistoricalAppointment } from "@/lib/payroll";
+import { fetchAssignments } from "@/lib/appointmentEmployees";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -17,7 +19,7 @@ export async function POST(req: Request) {
 
     const apptRes = await supabaseAdmin
       .from("appointments")
-      .select("id, status, client_id, service_type, is_demo, workspace_id")
+      .select("id, status, client_id, service_type, is_demo, workspace_id, scheduled_for, scheduled_end, duration_minutes")
       .eq("cancel_token", token)
       .maybeSingle();
 
@@ -32,6 +34,21 @@ export async function POST(req: Request) {
 
     if (apptRes.data.status === "cancelled") {
       return json({ ok: true, already: true });
+    }
+
+    // Historical-record protection (founder decision): a valid token must
+    // still never be able to cancel an appointment that's already a
+    // historical record -- this is the one path that's intentionally
+    // ungated by workspace/subscription state (Phase 5.4F/5.4G policy, see
+    // the note below), but it is not exempt from the historical-record
+    // rule. isHistoricalAppointment (lib/payroll.ts) is the same canonical
+    // predicate the owner dashboard routes use -- it rejects the moment
+    // EVERY assigned employee's Job Tracking is complete, even if
+    // scheduled_end hasn't elapsed yet, not just once scheduled_end has
+    // passed. Status is already known non-cancelled at this point.
+    const historicalAssignments = await fetchAssignments(apptRes.data.id, workspaceId);
+    if (isHistoricalAppointment(apptRes.data, historicalAssignments)) {
+      return json({ error: "This appointment has already passed and can no longer be cancelled.", code: "APPOINTMENT_IS_HISTORICAL" }, 409);
     }
 
     await supabaseAdmin

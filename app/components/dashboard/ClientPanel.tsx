@@ -34,9 +34,17 @@ function InfoRow({ icon, label, value }: { icon: string; label: string; value: s
   );
 }
 
-function ServiceRow({ date, time, service, status }: { date: string; time?: string; service: string; status: string }) {
+// A real <button>, not a clickable <div> -- gives Enter/Space activation
+// and focus outline for free, and is valid here since the row's own
+// contents (a date/time label and a status pill, both plain non-interactive
+// text) never contain another interactive element of their own.
+function ServiceRow({ date, time, service, status, onClick }: { date: string; time?: string; service: string; status: string; onClick: () => void }) {
   return (
-    <div className="flex items-center gap-1.5 py-1.5 border-b border-slate-50 last:border-0 text-xs">
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full flex items-center gap-1.5 py-1.5 border-b border-slate-50 last:border-0 text-xs text-left rounded-sm transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
+    >
       <div className="shrink-0 w-[68px]">
         <div className="text-slate-600">{date}</div>
         {time && <div className="text-[10px] text-slate-400">{time}</div>}
@@ -46,7 +54,7 @@ function ServiceRow({ date, time, service, status }: { date: string; time?: stri
         "text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0",
         status === "Cancelled" ? "text-rose-600 bg-rose-50" : status === "Completed" ? "text-emerald-600 bg-emerald-50" : "text-blue-600 bg-blue-50",
       ].join(" ")}>{status}</span>
-    </div>
+    </button>
   );
 }
 
@@ -111,13 +119,24 @@ function initForm(c: Client): EditForm {
 }
 
 export default function ClientPanel({
-  client, appointments, onClientUpdated, canMutateOperationalData, timezone,
+  client, appointments, onClientUpdated, canMutateOperationalData, timezone, onEditAppointment,
 }: {
   client: Client | null; appointments: Appointment[]; onClientUpdated: () => void; canMutateOperationalData: boolean;
   // Phase 5C: the workspace's own resolved timezone, used for Past/Future
   // Services' date/time display (fmtDate/fmtTime above) -- never the
   // browser/device's own ambient timezone.
   timezone: string;
+  // Opens the exact same AppointmentModal edit view a double-click on a
+  // schedule-grid chip already opens (see DashboardShell.tsx's
+  // editAppointment/handleEditAppointment) -- reused as-is here, not a
+  // competing appointment editor. Chosen over the single-click
+  // "select into AppointmentDetailPanel" behavior specifically because
+  // AppointmentModal's Worked Hours card is the only existing surface that
+  // shows a completed appointment's actual start/complete time, duration,
+  // and employee Job Notes; AppointmentDetailPanel does not. Merely opening
+  // this modal performs no mutation and sends no notification -- nothing
+  // is submitted until the owner explicitly saves.
+  onEditAppointment: (appointmentId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<EditForm>(initForm(client ?? {} as Client));
@@ -312,7 +331,7 @@ export default function ClientPanel({
             {pastAppts.length > 0 ? (
               <div className="overflow-auto flex-1 min-h-0">
                 {pastAppts.slice(0, 6).map((a) => (
-                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for, timezone)} service={a.service_type} status={a.status === "cancelled" ? "Cancelled" : "Completed"} />
+                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for, timezone)} service={a.service_type} status={a.status === "cancelled" ? "Cancelled" : "Completed"} onClick={() => onEditAppointment(a.id)} />
                 ))}
               </div>
             ) : <EmptyCol icon="&#128340;" line1="No past services" line2="Service history will appear here." />}
@@ -323,7 +342,7 @@ export default function ClientPanel({
             {futureAppts.length > 0 ? (
               <div className="overflow-auto flex-1 min-h-0">
                 {futureAppts.slice(0, 6).map((a) => (
-                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for, timezone)} time={fmtTime(a.scheduled_for, timezone)} service={a.service_type} status="Scheduled" />
+                  <ServiceRow key={a.id} date={fmtDate(a.scheduled_for, timezone)} time={fmtTime(a.scheduled_for, timezone)} service={a.service_type} status="Scheduled" onClick={() => onEditAppointment(a.id)} />
                 ))}
               </div>
             ) : <EmptyCol icon="&#128197;" line1="No upcoming services" line2="Scheduled services will appear here." />}

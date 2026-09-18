@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";
-import { needsWorkedHoursAttention } from "@/lib/payroll";
+import { needsWorkedHoursAttention, isHistoricalAppointment } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
+import { BusinessHours, computeGridHourBounds } from "@/lib/businessHours";
 
 function formatDay(d: Date) {
   return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -123,6 +124,27 @@ const QUARTER_MINUTES = [0, 15, 30, 45];
 
 type LayoutInfo = { column: number; totalColumns: number };
 
+// Business-local minutes-from-midnight start/end for one appointment --
+// mirrors computeOverlapLayout's own start/duration derivation below
+// (kept as a separate, independent function rather than refactored into a
+// shared helper, so computeOverlapLayout's existing, tested behavior is
+// left completely untouched). Used only to feed lib/businessHours.ts's
+// computeGridHourBounds, so an appointment outside the configured business
+// hours still expands the grid far enough to remain visible.
+function apptMinuteRange(a: Appointment, timezone: string, durationFor: (s: string) => number): { startMin: number; endMin: number } {
+  const rawStart = new Date(a.scheduled_for);
+  const localStart = toBusinessLocal(a.scheduled_for, timezone);
+  const startMin = localStart.getHours() * 60 + localStart.getMinutes();
+  let dur: number;
+  if (a.scheduled_end) {
+    dur = Math.round((new Date(a.scheduled_end).getTime() - rawStart.getTime()) / 60_000);
+    if (dur <= 0) dur = durationFor(a.service_type);
+  } else {
+    dur = a.duration_minutes ?? durationFor(a.service_type);
+  }
+  return { startMin, endMin: startMin + dur };
+}
+
 function computeOverlapLayout(appts: Appointment[], startHour: number, durationFor: (s: string) => number, timezone: string): Map<string, LayoutInfo> {
   const layout = new Map<string, LayoutInfo>();
   if (appts.length === 0) return layout;
@@ -213,6 +235,7 @@ export default function ScheduleGrid({
   weekOffset,
   canMutateOperationalData,
   timezone,
+  businessHours,
 }: {
   viewMode: ViewMode;
   clients: Client[];
@@ -238,6 +261,11 @@ export default function ScheduleGrid({
   // labels, and (via handleDrop below) what a drag/drop reschedule actually
   // saves. Never the browser/device's own ambient timezone.
   timezone: string;
+  // Resolved server-side (app/dashboard/page.tsx, via
+  // lib/businessHours.ts's effectiveBusinessHours) -- the single source of
+  // truth for this grid's visible hour range (startHour/endHour below).
+  // Never a second, independent schedule-range configuration.
+  businessHours: BusinessHours;
 }) {
   const dragEnabled = !!onDropAppointment;
   // Phase 5.5E-E1B: dragging always initiates a reschedule mutation (via
@@ -260,17 +288,33 @@ export default function ScheduleGrid({
     return serviceDurations[serviceType] ?? 60;
   }
   const days = viewDays(viewMode, weekOffset, timezone);
-
-  const startHour = 7;
-  const endHour = 18;
-  const totalHours = endHour - startHour + 1;
-  const hours = Array.from({ length: totalHours }, (_, i) => startHour + i);
+  // Business-local "yyyy-MM-dd" per visible day, for the business-hours
+  // lookup below -- `days` entries are already business-tz-anchored Date
+  // objects (see viewDays/nowInBusinessTz), so their own native getters
+  // already reflect the business's calendar date, exactly like handleDrop's
+  // identical dateStr construction elsewhere in this file.
+  const dateStrs = days.map((d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
 
   const apptsInView = appointments.filter((a) => {
     if (a.status === "cancelled") return false;
     const apptDate = toBusinessLocal(a.scheduled_for, timezone);
     return days.some((d) => d.toDateString() === apptDate.toDateString());
   });
+
+  // The grid's visible hour range is derived from this business's saved
+  // Company Settings business hours (never a second, independent schedule
+  // range), widened to also cover any in-view appointment that falls
+  // outside those hours -- see lib/businessHours.ts's computeGridHourBounds
+  // for the exact earliest-opening/latest-closing/appointment-expansion
+  // rules. Day view's `days` has exactly one date; Weekdays/Week pass every
+  // visible date, so the range reflects the earliest opening and latest
+  // closing among them, per the approved behavior. apptsInView already
+  // excludes cancelled appointments and is scoped to the visible days, so
+  // it's the correct, already-computed input for the expansion.
+  const apptMinuteRanges = apptsInView.map((a) => apptMinuteRange(a, timezone, durationFor));
+  const { startHour, endHour } = computeGridHourBounds(businessHours, dateStrs, timezone, apptMinuteRanges);
+  const totalHours = endHour - startHour + 1;
+  const hours = Array.from({ length: totalHours }, (_, i) => startHour + i);
 
   const employeeMap: Record<string, Employee> = {};
   for (const e of employees) employeeMap[e.id] = e;
@@ -525,25 +569,38 @@ export default function ScheduleGrid({
                     const darkClientCls = useServiceColor ? " dark:text-slate-300" : "";
                     const darkNotesCls = useServiceColor ? " dark:text-slate-500" : "";
 
+                    // Historical-record protection (founder decision): a
+                    // past/completed appointment card remains viewable on
+                    // the grid but must never be draggable/reschedulable --
+                    // isHistoricalAppointment is the same canonical
+                    // predicate the server routes enforce (lib/payroll.ts),
+                    // never a locally re-derived date check. It treats the
+                    // card as historical the moment EVERY assigned
+                    // employee's Job Tracking is complete, even if
+                    // scheduled_end hasn't elapsed yet. Cancelled
+                    // appointments are already excluded from apptsInView
+                    // above and never reach this render at all.
+                    const cardDragEnabled = dragMutationEnabled && !isHistoricalAppointment(a, assignmentsFor(a.id));
+
                     return (
                       <button
                         key={a.id}
-                        draggable={dragMutationEnabled}
+                        draggable={cardDragEnabled}
                         onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}
                         onDoubleClick={(e) => { e.stopPropagation(); onEditAppointment?.(a.id); }}
-                        onDragStart={dragMutationEnabled ? (e) => {
+                        onDragStart={cardDragEnabled ? (e) => {
                           e.stopPropagation();
                           e.dataTransfer.effectAllowed = "move";
                           e.dataTransfer.setData("text/plain", a.id);
                           setDraggingId(a.id);
                         } : undefined}
-                        onDragEnd={dragMutationEnabled ? () => { setDraggingId(null); setDragOverCell(null); } : undefined}
+                        onDragEnd={cardDragEnabled ? () => { setDraggingId(null); setDragOverCell(null); } : undefined}
                         className={[
                           "absolute rounded-lg border text-left shadow-sm overflow-hidden px-2 z-[5]",
                           useServiceColor ? `service-tint text-slate-900${darkTextCls}` : statusPill(a.status),
                           selected ? "ring-2 ring-blue-600 bg-blue-100/60 z-[6]" : "",
                           sameClient && !selected ? "outline outline-2 outline-blue-600/30" : "",
-                          dragMutationEnabled ? "cursor-grab active:cursor-grabbing" : "",
+                          cardDragEnabled ? "cursor-grab active:cursor-grabbing" : "",
                           draggingId === a.id ? "opacity-40" : "",
                           // While dragging, OTHER cards must not intercept drag/drop events —
                           // otherwise dropping onto an occupied time slot hits that appointment's

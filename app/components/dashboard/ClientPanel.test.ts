@@ -33,7 +33,7 @@ describe("prop wiring", () => {
   });
 
   test("the component destructures canMutateOperationalData from its props", () => {
-    assert.match(source, /^\s*client, appointments, onClientUpdated, canMutateOperationalData, timezone,$/m);
+    assert.match(source, /^\s*client, appointments, onClientUpdated, canMutateOperationalData, timezone, onEditAppointment,$/m);
   });
 
   test("DashboardShell passes entitlement.canMutateOperationalData to ClientPanel", () => {
@@ -271,5 +271,135 @@ describe("Phase 5C: workspace-timezone-aware Past/Future Services display", () =
 
   test("past/future classification (a pure instant comparison) remains on bare new Date(), unaffected by the display-formatter fix", () => {
     assert.ok(source.includes("const now = new Date();"));
+  });
+});
+
+describe("Past/Future Services rows are clickable and open the exact appointment (accessibility fix)", () => {
+  function serviceRowBlock(): string {
+    const idx = source.indexOf("function ServiceRow(");
+    assert.notEqual(idx, -1);
+    const endIdx = source.indexOf("function CommRow(");
+    assert.notEqual(endIdx, -1);
+    return source.slice(idx, endIdx);
+  }
+
+  test("ServiceRow renders a real <button type=\"button\">, not a clickable <div> -- native Enter/Space/mouse/touch activation, no custom key handler needed", () => {
+    const block = serviceRowBlock();
+    assert.ok(block.includes("<button"));
+    assert.ok(block.includes('type="button"'));
+    assert.ok(!block.includes("<div\n      className=\"flex items-center gap-1.5 py-1.5"), "the old plain <div> wrapper must be gone");
+  });
+
+  test("ServiceRow takes a required onClick callback and wires it to the button's onClick", () => {
+    assert.ok(source.includes("onClick: () => void"));
+    const block = serviceRowBlock();
+    assert.ok(block.includes("onClick={onClick}"));
+  });
+
+  test("no nested interactive element exists inside the row -- the status pill remains a plain <span>, not a button/link/input", () => {
+    const block = serviceRowBlock();
+    assert.ok(!/<(a|button|input|select|textarea)[\s>]/.test(block.slice(block.indexOf("<span className=[\"'`]text-\\[10px\\]"))), "no nested interactive element should follow the status pill markup");
+    // The status pill itself is still a <span>, not upgraded to its own control.
+    const pillIdx = block.indexOf('status === "Cancelled"');
+    assert.notEqual(pillIdx, -1);
+    assert.ok(block.slice(Math.max(0, pillIdx - 150), pillIdx).includes("<span"));
+  });
+
+  test("visible hover/focus feedback is present without a broader visual redesign of the row's existing layout", () => {
+    const block = serviceRowBlock();
+    assert.ok(block.includes("hover:bg-slate-50"));
+    assert.ok(block.includes("focus-visible:ring-2"));
+    // The original row's own content/layout classes are preserved unchanged.
+    assert.ok(block.includes('className="shrink-0 w-[68px]"'));
+    assert.ok(block.includes('className="text-slate-700 flex-1 truncate"'));
+  });
+
+  test("both Past and Future Services call sites pass onClick={() => onEditAppointment(a.id)} -- the real appointment id, never a display-derived value", () => {
+    const occurrences = [...source.matchAll(/onClick=\{\(\) => onEditAppointment\(a\.id\)\}/g)];
+    assert.equal(occurrences.length, 2, "expected exactly two ServiceRow call sites (Past Services, Future Services), both wired identically");
+  });
+
+  test("ClientPanel declares and requires onEditAppointment: (appointmentId: string) => void as a prop", () => {
+    assert.ok(source.includes("onEditAppointment: (appointmentId: string) => void;"));
+  });
+
+  test("DashboardShell passes handleEditAppointment -- the SAME callback ScheduleGrid's chip double-click already uses -- reusing the existing edit flow, not a competing duplicate editor", () => {
+    const idx = shellSource.indexOf("<ClientPanel");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /onEditAppointment=\{handleEditAppointment\}/);
+    // The same function reference DashboardShell already threads to
+    // ScheduleGrid/ScheduleMonthGrid's onEditAppointment prop.
+    const gridIdx = shellSource.indexOf("<ScheduleGrid");
+    const gridClose = shellSource.indexOf("/>", gridIdx);
+    assert.match(shellSource.slice(gridIdx, gridClose), /onEditAppointment=\{handleEditAppointment\}/);
+  });
+
+  test("opening a row performs no mutation and sends no notification -- ServiceRow's onClick only calls the passed-in callback, never fetch/notifyDemoAction directly", () => {
+    const block = serviceRowBlock();
+    assert.ok(!block.includes("fetch("));
+    assert.ok(!block.includes("notifyDemoAction"));
+  });
+
+  test("existing past/future action restrictions remain enforced -- reusing editAppointment/AppointmentModal means no new, separate gating logic was added for opening from this panel", () => {
+    // No new capability/role/status check was introduced in this file for
+    // the click-to-open behavior itself -- canMutateOperationalData is
+    // still consumed only by the pre-existing Edit/Archive/Restore/Save
+    // Client controls (see "governed controls" describe block above), not
+    // by ServiceRow/onEditAppointment.
+    const serviceRowIdx = source.indexOf("function ServiceRow(");
+    const commRowIdx = source.indexOf("function CommRow(");
+    assert.ok(!source.slice(serviceRowIdx, commRowIdx).includes("canMutateOperationalData"));
+  });
+
+  test("\"View all\" is unaffected by this change -- still the same pre-existing action link, not newly broken", () => {
+    assert.ok(source.includes('action={pastAppts.length > 4 ? "View all" : undefined}'));
+    assert.ok(source.includes('action={futureAppts.length > 4 ? "View all" : undefined}'));
+  });
+});
+
+describe("historical-record protection (founder decision): a Past Service opens review mode, a Future Service opens editable mode -- both via the same onEditAppointment callback, differentiated centrally in DashboardShell", () => {
+  test("DashboardShell imports isHistoricalAppointment from lib/payroll, never lib/timezone's bare isPastAppointment", () => {
+    assert.ok(shellSource.includes('import { isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(!shellSource.includes("isPastAppointment"));
+  });
+
+  function editAppointmentBody(): string {
+    const fnStart = shellSource.indexOf("function editAppointment(apptId: string) {");
+    assert.notEqual(fnStart, -1);
+    const fnEnd = shellSource.indexOf("\n  }", fnStart);
+    return shellSource.slice(fnStart, fnEnd);
+  }
+
+  test("editAppointment checks isHistoricalAppointment(appt, assignments-for-this-appointment) and redirects to selectAppointment(apptId) before ever calling setModal", () => {
+    const body = editAppointmentBody();
+    const guardIdx = body.indexOf('if (isHistoricalAppointment(appt, assignments.filter((a) => a.appointment_id === apptId))) {');
+    const selectIdx = body.indexOf("selectAppointment(apptId);");
+    const modalIdx = body.indexOf("setModal({ mode: \"edit\"");
+    assert.notEqual(guardIdx, -1, "editAppointment must guard on isHistoricalAppointment, passing this exact appointment's own assignments");
+    assert.notEqual(selectIdx, -1);
+    assert.notEqual(modalIdx, -1);
+    assert.ok(guardIdx < selectIdx && selectIdx < modalIdx, "the historical-appointment redirect must run, and return, before the editable modal is ever opened");
+  });
+
+  test("the redirect returns immediately -- setModal is never reached for a historical appointment", () => {
+    const body = editAppointmentBody();
+    const guardBlockStart = body.indexOf('if (isHistoricalAppointment(appt, assignments.filter((a) => a.appointment_id === apptId))) {');
+    const guardBlockEnd = body.indexOf("}", guardBlockStart);
+    const guardBlock = body.slice(guardBlockStart, guardBlockEnd);
+    assert.ok(guardBlock.includes("return;"));
+  });
+
+  test("since ScheduleGrid's chip double-click, Month view, ClientPanel's Past/Future rows, and AppointmentDetailPanel's own Edit button all call this same editAppointment function (directly or via handleEditAppointment), the redirect applies uniformly across every entry point -- not re-implemented per call site", () => {
+    // ScheduleGrid/ScheduleMonthGrid and ClientPanel are already proven
+    // (above, and in ScheduleGrid.test.ts/ScheduleMonthGrid.test.ts) to
+    // wire onEditAppointment={handleEditAppointment}, which just calls
+    // editAppointment -- so this one guard, in this one function, is what
+    // makes the founder's rule apply everywhere at once.
+    const fnIdx = shellSource.indexOf("function handleEditAppointment(apptId: string) {");
+    assert.notEqual(fnIdx, -1);
+    const fnEndIdx = shellSource.indexOf("}", fnIdx);
+    assert.ok(shellSource.slice(fnIdx, fnEndIdx).includes("editAppointment(apptId);"));
   });
 });

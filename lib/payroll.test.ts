@@ -11,6 +11,7 @@ import {
   needsWorkedHoursAttention,
   getMissingHoursEmployeeIds,
   deriveAppointmentTrackingStatus,
+  isHistoricalAppointment,
   toDateInputValue,
 } from "./payroll.ts";
 import type { Appointment, EmployeeHours, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
@@ -244,6 +245,70 @@ describe("Phase 5.7D-R18: deriveAppointmentTrackingStatus", () => {
       actual_completed_at: new Date(start.getTime() + 10_000).toISOString(), // 10s gap
     });
     assert.equal(deriveAppointmentTrackingStatus([invalidComplete]), "in_progress");
+  });
+});
+
+describe("isHistoricalAppointment -- the canonical historical-record predicate (completed, cancelled, or scheduled_end elapsed)", () => {
+  const NOW = new Date("2026-08-03T14:00:00.000Z"); // 10:00 AM America/New_York
+
+  test("completed early: scheduled_end is still an hour in the future, but every assigned employee already finished -> historical immediately (the reported gap)", () => {
+    const a = appt({
+      status: "scheduled",
+      scheduled_for: "2026-08-03T13:30:00.000Z", // 9:30 AM
+      scheduled_end: "2026-08-03T15:00:00.000Z", // 11:00 AM -- an hour after NOW
+    });
+    const assignments = [
+      assignment({
+        employee_id: "teresa",
+        actual_started_at: "2026-08-03T13:35:00.000Z",
+        actual_completed_at: "2026-08-03T13:55:00.000Z", // finished at 9:55 AM, well before scheduled_end
+      }),
+    ];
+    assert.equal(isHistoricalAppointment(a, assignments, NOW), true);
+  });
+
+  test("one employee finished but a second assigned employee has not -> NOT historical (never assume one employee finishing completes the whole appointment)", () => {
+    const a = appt({
+      status: "scheduled",
+      scheduled_for: "2026-08-03T13:30:00.000Z",
+      scheduled_end: "2026-08-03T15:00:00.000Z",
+    });
+    const assignments = [
+      assignment({
+        employee_id: "teresa",
+        actual_started_at: "2026-08-03T13:35:00.000Z",
+        actual_completed_at: "2026-08-03T13:55:00.000Z",
+      }),
+      assignment({ employee_id: "roxana", actual_started_at: null, actual_completed_at: null }),
+    ];
+    assert.equal(isHistoricalAppointment(a, assignments, NOW), false);
+  });
+
+  test("in-progress with a future scheduled_end remains operational: started, not completed, end not yet elapsed -> NOT historical", () => {
+    const a = appt({
+      status: "scheduled",
+      scheduled_for: "2026-08-03T13:30:00.000Z",
+      scheduled_end: "2026-08-03T15:00:00.000Z", // still an hour away
+    });
+    const assignments = [
+      assignment({ employee_id: "teresa", actual_started_at: "2026-08-03T13:35:00.000Z", actual_completed_at: null }),
+    ];
+    assert.equal(isHistoricalAppointment(a, assignments, NOW), false);
+  });
+
+  test("cancelled is historical regardless of assignments or scheduled_end", () => {
+    const a = appt({ status: "cancelled", scheduled_for: "2026-12-01T13:30:00.000Z", scheduled_end: "2026-12-01T15:00:00.000Z" });
+    assert.equal(isHistoricalAppointment(a, []), true);
+  });
+
+  test("scheduled_end already elapsed, no job-tracking data at all -> historical via the time-based fallback (isPastAppointment)", () => {
+    const a = appt({ status: "scheduled", scheduled_for: "2026-08-03T11:00:00.000Z", scheduled_end: "2026-08-03T12:00:00.000Z" });
+    assert.equal(isHistoricalAppointment(a, [], NOW), true);
+  });
+
+  test("a genuinely future, not-yet-started appointment is NOT historical", () => {
+    const a = appt({ status: "scheduled", scheduled_for: "2026-08-10T13:00:00.000Z", scheduled_end: "2026-08-10T14:00:00.000Z" });
+    assert.equal(isHistoricalAppointment(a, [], NOW), false);
   });
 });
 

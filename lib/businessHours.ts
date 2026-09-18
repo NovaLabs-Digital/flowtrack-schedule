@@ -165,3 +165,77 @@ export function rangesForDate(hours: BusinessHours, dateStr: string, tz: string)
   const key = weekdayKeyForDate(dateStr, tz);
   return key ? hours[key] : [];
 }
+
+export type HourBounds = { startHour: number; endHour: number };
+
+// The schedule grid's pre-existing hardcoded default (see ScheduleGrid.tsx's
+// former `startHour = 7; endHour = 18;` constants) -- the safe fallback used
+// whenever there is nothing to anchor a computed range to at all (every
+// visible day closed, and no appointment in view either). Missing/invalid
+// stored business hours never reach this function in that state, since
+// effectiveBusinessHours() already resolves those to the canonical Mon-Fri
+// default before a caller ever calls computeGridHourBounds -- this fallback
+// exists only for the genuinely-empty-range case (e.g. Day view on a closed
+// day with nothing scheduled), so the grid never renders zero rows.
+export const FALLBACK_GRID_HOUR_BOUNDS: HourBounds = { startHour: 7, endHour: 18 };
+
+// Computes the whole-hour range the Day/Weekdays/Week schedule grid should
+// display for a set of business-local dates (1 date for Day view, 5 for
+// Weekdays, 7 for Week), given that workspace's saved business hours and,
+// optionally, the business-local minute-of-day start/end of every
+// appointment already visible in that range.
+//
+// - Multiple intervals on one day (e.g. a lunch-break split) are folded
+//   into a single earliest-start/latest-end span for grid purposes -- the
+//   grid renders one continuous hour axis, unlike the public booking
+//   flow's per-interval slot list (lib/availability.ts), which correctly
+//   keeps intervals separate for slot generation.
+// - Across multiple visible days, the result is the earliest opening and
+//   latest closing among all of them, never narrower than any single day.
+// - `apptMinuteRanges` (business-local minutes-from-midnight) always widens
+//   the result, never narrows it: an appointment starting before the
+//   configured opening time, or ending after the configured closing time --
+//   including one on an otherwise-closed day -- pulls the boundary out far
+//   enough to remain visible. An existing appointment can never become
+//   unreachable in the grid because of this computation.
+// - Falls back to FALLBACK_GRID_HOUR_BOUNDS only when there is truly
+//   nothing to anchor a range to (no open interval on any visible day, and
+//   no appointment either) -- never an error, matching every other reader
+//   in this module.
+// - The caller (ScheduleGrid.tsx) is responsible for rounding/clamping this
+//   to its own existing whole-hour row granularity; this function already
+//   returns whole hours (floor the earliest start, ceil the latest end)
+//   so no fractional-hour value is ever produced.
+export function computeGridHourBounds(
+  hours: BusinessHours,
+  dateStrs: string[],
+  tz: string,
+  apptMinuteRanges: { startMin: number; endMin: number }[] = []
+): HourBounds {
+  let earliestMin: number | null = null;
+  let latestMin: number | null = null;
+
+  for (const dateStr of dateStrs) {
+    for (const range of rangesForDate(hours, dateStr, tz)) {
+      const [sh, sm] = range.start.split(":").map(Number);
+      const [eh, em] = range.end.split(":").map(Number);
+      const startMin = sh * 60 + sm;
+      const endMin = eh * 60 + em;
+      if (earliestMin === null || startMin < earliestMin) earliestMin = startMin;
+      if (latestMin === null || endMin > latestMin) latestMin = endMin;
+    }
+  }
+
+  for (const range of apptMinuteRanges) {
+    if (earliestMin === null || range.startMin < earliestMin) earliestMin = range.startMin;
+    if (latestMin === null || range.endMin > latestMin) latestMin = range.endMin;
+  }
+
+  if (earliestMin === null || latestMin === null || earliestMin >= latestMin) {
+    return { ...FALLBACK_GRID_HOUR_BOUNDS };
+  }
+
+  const startHour = Math.max(0, Math.floor(earliestMin / 60));
+  const endHour = Math.min(23, Math.max(startHour, Math.ceil(latestMin / 60) - 1));
+  return { startHour, endHour };
+}

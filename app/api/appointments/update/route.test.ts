@@ -63,11 +63,38 @@ mock.module("@/lib/notify", {
 });
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => sessionToReturn) });
 
+// Historical-record protection (founder decision): the route now rejects a
+// PATCH against a past appointment (see isPastAppointment in
+// lib/timezone.ts), evaluated against the REAL current instant. Every fixed
+// appointment date in this file (earliest: 2026-08-03) represents "today or
+// later" from this suite's own point of view -- freezing the clock to a
+// fixed instant safely before all of them (rather than rewriting the ~100
+// hardcoded fixture dates and their carefully-reasoned delta assertions)
+// keeps every one of those dates correctly "current/future" regardless of
+// the real wall-clock date this suite happens to run on. Only Date is
+// mocked (Date.now()/`new Date()` with no arguments); `new Date(iso)`
+// parsing is unaffected.
+mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z").getTime() });
+
 const { PATCH } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
 function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
-  currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
+  // isHistoricalAppointment (the historical-record guard, added when this
+  // route started rejecting a completed/past/cancelled appointment) always
+  // fetches this appointment's own appointment_employees rows first, before
+  // any other logic in this handler runs. A default empty response here
+  // means the many tests below that don't otherwise care about assignments
+  // never need to know that read exists -- an explicit `appointment_employees`
+  // key in `responses` fully replaces this default (object spread), which
+  // is what every test below that already queues its OWN
+  // appointment_employees sequence for a LATER call (planAssignmentSync's
+  // validation fetch, the registry re-finalize's fetchAssignments, etc.)
+  // does -- those tests each prepend their own `{ data: [] }` entry
+  // representing what the guard itself reads (this appointment isn't
+  // historical), immediately followed by their pre-existing sequence,
+  // completely unchanged in content.
+  currentFake = createFakeSupabaseAdmin({ appointment_employees: [{ data: [] }], ...responses }, rpcResponses);
   currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabaseAdmin.from(t) });
 }
 function req(body?: unknown, url = "http://localhost/api/appointments/update") {
@@ -1115,6 +1142,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
         employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
         appointment_employee_hours: [{ data: [] }],
         appointment_employees: [
+          { data: [] }, // isHistoricalAppointment's own read (guard) -- empty, so this appointment isn't historical
           { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // planAssignmentSync's own fetchAssignments
         ],
       },
@@ -1146,6 +1174,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
         employees: [{ data: [{ id: "alberto" }] }],
         appointment_employee_hours: [{ data: [] }],
         appointment_employees: [
+          { data: [] }, // isHistoricalAppointment's own read (guard)
           {
             data: [
               { id: "ae-1", appointment_id: "appt-1", employee_id: "alberto", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
@@ -1174,6 +1203,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
         appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
         appointment_employee_hours: [{ data: [] }],
         appointment_employees: [
+          { data: [] }, // isHistoricalAppointment's own read (guard)
           { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
         ],
       },
@@ -1195,6 +1225,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
       appointments: [{ data: existingAppt() }],
       appointment_employee_hours: [{ data: [] }],
       appointment_employees: [
+        { data: [] }, // isHistoricalAppointment's own read (guard) -- deliberately empty: this test is isolating ASSIGNMENT_REMOVAL_BLOCKED, not the historical-record guard (see the dedicated completed-status regression tests below for that)
         { data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: "2026-07-30T09:00:00.000Z", actual_completed_at: "2026-07-30T12:00:00.000Z", created_at: "x", updated_at: "x" }] },
       ],
     });
@@ -1229,6 +1260,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
         employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
         appointment_employee_hours: [{ data: [] }],
         appointment_employees: [
+          { data: [] }, // isHistoricalAppointment's own read (guard)
           { data: [{ id: "ae-o", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // planAssignmentSync's own fetchAssignments(origin)
           { data: [{ id: "ae-s", appointment_id: "sib-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] }, // planAssignmentSync's own fetchAssignments(sib-1)
         ],
@@ -1272,6 +1304,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
         employees: [{ data: [{ id: "teresa" }, { id: "roxana" }] }],
         appointment_employee_hours: [{ data: [] }],
         appointment_employees: [
+          { data: [] }, // isHistoricalAppointment's own read (guard)
           { data: [{ id: "ae-o", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
           { data: [{ id: "ae-s", appointment_id: "sib-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" }] },
         ],
@@ -1308,6 +1341,7 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
       employees: [{ data: [{ id: "teresa" }] }],
       appointment_employee_hours: [{ data: [] }],
       appointment_employees: [
+        { data: [] }, // isHistoricalAppointment's own read (guard)
         {
           data: [
             { id: "ae-o1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
@@ -1340,7 +1374,13 @@ describe("Phase 5.7D-R18: multi-employee assignment on update", () => {
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", service_type: "Deep Cleaning" }));
     assert.equal(res.status, 200);
-    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees").length, 0);
+    // The ONLY appointment_employees interaction is isHistoricalAppointment's
+    // own read (the historical-record guard, which now runs unconditionally
+    // for every request) -- never an insert/update/delete, and never a
+    // second, employee_ids-driven read/write, since employee_ids was never
+    // part of this request.
+    assert.equal(writeCalls(currentFake.calls).filter((c) => c.table === "appointment_employees").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "select").length, 1);
     assert.equal(currentFake.calls.filter((c) => c.table === "employees").length, 0);
     const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
     assert.equal("employee_id" in (updateCall!.args[0] as object), false);
@@ -1356,7 +1396,7 @@ describe("Block 2C-1: assignment sync failure stops the request safely -- never 
         appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
         employees: [{ data: [{ id: "teresa" }] }],
         appointment_employee_hours: [{ data: [] }],
-        appointment_employees: [{ data: [] }],
+        appointment_employees: [{ data: [] }, { data: [] }],
       },
       { sync_appointment_assignments: [{ data: "state_changed" }] }
     );
@@ -1376,7 +1416,7 @@ describe("Block 2C-1: assignment sync failure stops the request safely -- never 
         appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
         employees: [{ data: [{ id: "teresa" }] }],
         appointment_employee_hours: [{ data: [] }],
-        appointment_employees: [{ data: [] }],
+        appointment_employees: [{ data: [] }, { data: [] }],
       },
       { sync_appointment_assignments: [{ data: "employee_not_eligible" }] }
     );
@@ -1395,7 +1435,7 @@ describe("Block 2C-1: assignment sync failure stops the request safely -- never 
         appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
         employees: [{ data: [{ id: "teresa" }] }],
         appointment_employee_hours: [{ data: [] }],
-        appointment_employees: [{ data: [] }],
+        appointment_employees: [{ data: [] }, { data: [] }],
       },
       { sync_appointment_assignments: [{ data: "appointment_not_found" }] }
     );
@@ -1414,7 +1454,7 @@ describe("Block 2C-1: assignment sync failure stops the request safely -- never 
         appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
         employees: [{ data: [{ id: "teresa" }] }],
         appointment_employee_hours: [{ data: [] }],
-        appointment_employees: [{ data: [] }],
+        appointment_employees: [{ data: [] }, { data: [] }],
       },
       { sync_appointment_assignments: [{ error: { message: "simulated sync rpc failure" } }] }
     );
@@ -1433,7 +1473,7 @@ describe("Block 2C-1: assignment sync failure stops the request safely -- never 
         appointments: [{ data: existingAppt() }, { error: null }, { error: null }],
         employees: [{ data: [{ id: "teresa" }] }],
         appointment_employee_hours: [{ data: [] }],
-        appointment_employees: [{ data: [] }],
+        appointment_employees: [{ data: [] }, { data: [] }],
       },
       { sync_appointment_assignments: [{ data: "state_changed" }] }
     );
@@ -1467,6 +1507,7 @@ describe("Block 2C-1: assignment sync failure stops the request safely -- never 
         employees: [{ data: [{ id: "teresa" }] }],
         appointment_employee_hours: [{ data: [] }],
         appointment_employees: [
+          { data: [] }, // isHistoricalAppointment's own read (guard)
           { data: [] }, // planAssignmentSync fetchAssignments(origin)
           { data: [] }, // planAssignmentSync fetchAssignments(sib-1)
         ],
@@ -1592,11 +1633,13 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
           // fully-committed fields immediately before the activation RPC.
           { data: { service_type: "Haircut", price_cents: 5000, duration_minutes: 60, notes: null, team_color: null, scheduled_for: "2026-08-03T15:00:00.000Z" } },
         ],
+        // isHistoricalAppointment's own read (guard), then
         // fetchAssignments(appt-1) inside fetchLiveOccurrenceSnapshots, then
         // again immediately before the activation RPC (Block 2C-1) -- the
-        // second read proves the RPC's expected employee set reflects the
-        // CURRENT assignment state, not a stale earlier snapshot.
-        appointment_employees: [{ data: [] }, { data: [] }],
+        // second of those two proves the RPC's expected employee set
+        // reflects the CURRENT assignment state, not a stale earlier
+        // snapshot.
+        appointment_employees: [{ data: [] }, { data: [] }, { data: [] }],
         company_settings: [{ data: { timezone: null } }],
         recurring_series: [
           { data: { id: "series-1", status: "active" } }, // observe old series status
@@ -1642,7 +1685,7 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
           { data: [liveOcc({ scheduled_for: "2026-08-03T14:00:00.000Z", price_cents: 7500 })] },
           { data: { service_type: "Haircut", price_cents: 7500, duration_minutes: 60, notes: null, team_color: null, scheduled_for: "2026-08-03T14:00:00.000Z" } },
         ],
-        appointment_employees: [{ data: [] }, { data: [] }],
+        appointment_employees: [{ data: [] }, { data: [] }, { data: [] }],
         company_settings: [{ data: { timezone: null } }],
         recurring_series: [
           { data: { id: "series-1", status: "active" } }, // observe
@@ -1910,5 +1953,119 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
     // No later finalize/reactivate attempt of any kind -- the row is never
     // forced back to active over whatever it concurrently became.
     assert.equal(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update").length, 1, "only the failed quarantine CAS, nothing else");
+  });
+});
+
+describe("historical-record protection -- past/completed/cancelled appointments can never be edited/rescheduled through this route (founder decision)", () => {
+  test("mode: single against a past (scheduled_end already elapsed) appointment is rejected 409, zero writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service", notify_channel: "both" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("mode: single against an already-cancelled appointment is rejected 409, even though scheduled_for is in the future", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ status: "cancelled", scheduled_for: "2026-12-01T14:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  // The exact required regression case: relative to this file's frozen
+  // clock (2026-08-01T00:00:00.000Z), scheduled with a scheduled_end still
+  // well in the future, but every assigned employee's Job Tracking is
+  // already complete -- rejected before scheduled_end would otherwise have
+  // made it historical by time alone.
+  test("REQUIRED CASE: completed mid-appointment with a scheduled end still an hour in the future is rejected 409 before any side effect, even though scheduled_end has not elapsed", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{
+        data: existingAppt({
+          scheduled_for: "2026-08-01T09:30:00.000Z",
+          scheduled_end: "2026-08-01T15:00:00.000Z",
+        }),
+      }],
+      appointment_employees: [{
+        data: [{
+          id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
+          actual_started_at: "2026-08-01T09:35:00.000Z",
+          actual_completed_at: "2026-08-01T09:55:00.000Z",
+          created_at: "x", updated_at: "x",
+        }],
+      }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("one employee finished but a second assigned employee has not -- NOT historical, edit still succeeds (never assume one employee finishing completes the whole appointment)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-31T23:50:00.000Z", scheduled_end: "2026-08-01T00:50:00.000Z" }) }, { error: null }],
+      appointment_employees: [{
+        data: [
+          { id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: "2026-07-31T23:52:00.000Z", actual_completed_at: "2026-07-31T23:59:00.000Z", created_at: "x", updated_at: "x" },
+          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+        ],
+      }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+  });
+
+  test("mode: future anchored to a past occurrence is rejected 409 before any employee validation, sibling fetch, quarantine, or mutation", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1", scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: "2026-07-01T15:00:00.000Z", employee_ids: ["teresa"] }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    // Zero calls at all beyond the initial appointment fetch and the
+    // assignments read isHistoricalAppointment itself needs -- proves no
+    // employee validation, sibling, or registry read/write was ever
+    // attempted for a request anchored to a historical occurrence.
+    assert.deepEqual(
+      currentFake.calls.filter((c) => c.table !== "appointments" && c.table !== "subscriptions" && c.table !== "workspace_memberships" && c.table !== "appointment_employees"),
+      []
+    );
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("a still-in-progress appointment (started, scheduled_end not yet reached, not yet completed) remains fully operational -- normal single edit still succeeds", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-31T23:50:00.000Z", scheduled_end: "2026-08-01T00:50:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: "2026-07-31T23:52:00.000Z", actual_completed_at: null, created_at: "x", updated_at: "x" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
   });
 });

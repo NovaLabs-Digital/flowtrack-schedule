@@ -56,11 +56,30 @@ mock.module("@/lib/notify", {
 });
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => sessionToReturn) });
 
+// Historical-record protection (founder decision): the route now rejects a
+// cancel against a past appointment (see isPastAppointment in
+// lib/timezone.ts), evaluated against the REAL current instant. This
+// suite's only fixture date is 2026-08-03 -- freezing the clock to a fixed
+// instant safely before it keeps that date correctly "current/future"
+// regardless of the real wall-clock date this suite happens to run on. Only
+// Date is mocked (Date.now()/`new Date()` with no arguments); `new
+// Date(iso)` parsing is unaffected.
+mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T00:00:00.000Z").getTime() });
+
 const { POST } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
 function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+  // isHistoricalAppointment (the historical-record guard, added when this
+  // route started rejecting a completed/past/cancelled appointment) always
+  // fetches this appointment's own appointment_employees rows before doing
+  // anything else -- a default empty response means every test that isn't
+  // specifically exercising job-tracking/completion behavior doesn't need
+  // to know that read exists. An explicit `appointment_employees` key in
+  // `responses` still fully overrides this default (object spread: the
+  // caller's own key wins), exactly like the historical-record-protection
+  // tests below that DO care about it.
+  currentFake = createFakeSupabaseAdmin({ appointment_employees: [{ data: [] }], ...responses });
   currentNotify = createFakeNotify({ from: (t: string) => currentFake.supabaseAdmin.from(t) });
 }
 function req(body?: unknown, url = "http://localhost/api/appointments/delete") {
@@ -825,5 +844,126 @@ describe("Block 2B safety correction: Delete This & Future is fail-closed around
     // that matched zero rows) -- no corrective/forcing write was ever
     // issued afterward.
     assert.equal(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update").length, 2);
+  });
+});
+
+describe("historical-record protection -- past/completed/cancelled appointments can never be cancelled through this route (founder decision)", () => {
+  test("mode: single against a past (scheduled_end already elapsed) appointment is rejected 409, zero writes, zero notification", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("mode: single against an already-cancelled appointment is rejected 409, even though scheduled_for is in the future", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ status: "cancelled", scheduled_for: "2026-12-01T14:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  // The exact required regression case: relative to this file's frozen
+  // clock (2026-08-01T00:00:00.000Z, set near the top of this file),
+  // scheduled 9:30-11:00 (a 10:00-ish "now" mid-appointment, 11:00 scheduled
+  // end still an hour past "now"), but every assigned employee's Job
+  // Tracking is already complete -- isHistoricalAppointment must reject
+  // this BEFORE scheduled_end would otherwise have made it historical by
+  // time alone.
+  test("REQUIRED CASE: completed mid-appointment with a scheduled end still an hour in the future is rejected 409 before any side effect, even though scheduled_end has not elapsed", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{
+        data: existingAppt({
+          scheduled_for: "2026-08-01T09:30:00.000Z",
+          scheduled_end: "2026-08-01T15:00:00.000Z", // 15:00Z -- well after the frozen 00:00Z "now"
+        }),
+      }],
+      appointment_employees: [{
+        data: [{
+          id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
+          actual_started_at: "2026-08-01T09:35:00.000Z",
+          actual_completed_at: "2026-08-01T09:55:00.000Z", // finished well before "now" AND well before scheduled_end
+          created_at: "x", updated_at: "x",
+        }],
+      }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+    assert.equal(currentNotify.emailCalls.length, 0);
+    assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("one employee finished but a second assigned employee has not -- NOT historical, cancellation still succeeds (never assume one employee finishing completes the whole appointment)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-31T23:50:00.000Z", scheduled_end: "2026-08-01T00:50:00.000Z" }) }, { error: null }],
+      appointment_employees: [{
+        data: [
+          { id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: "2026-07-31T23:52:00.000Z", actual_completed_at: "2026-07-31T23:59:00.000Z", created_at: "x", updated_at: "x" },
+          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
+        ],
+      }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
+  });
+
+  test("mode: future anchored to a past occurrence is rejected 409 before any sibling read/quarantine/mutation is attempted", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1", scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    // Zero calls at all beyond the initial appointment fetch and the
+    // assignments read isHistoricalAppointment itself needs -- proves no
+    // future sibling was ever read or touched by a request anchored to a
+    // historical occurrence.
+    assert.deepEqual(
+      currentFake.calls.filter((c) => c.table !== "appointments" && c.table !== "subscriptions" && c.table !== "workspace_memberships" && c.table !== "appointment_employees"),
+      []
+    );
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("a still-in-progress appointment (started, scheduled_end not yet reached, not yet completed) remains fully operational -- normal single cancellation still succeeds", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-31T23:50:00.000Z", scheduled_end: "2026-08-01T00:50:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [{ id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: "2026-07-31T23:52:00.000Z", actual_completed_at: null, created_at: "x", updated_at: "x" }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
   });
 });

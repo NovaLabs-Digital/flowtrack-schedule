@@ -48,6 +48,19 @@ describe("prop wiring", () => {
     const jsx = shellSource.slice(idx, closeIdx);
     assert.match(jsx, /canMutateOperationalData=\{entitlement\.canMutateOperationalData\}/);
   });
+
+  // Historical-record protection: MobileAppointmentDetail's Worked Hours
+  // card needs employeeHours -- DashboardShell must thread the same
+  // employeeHoursState it already threads to every desktop consumer through
+  // to MobileDashboard too, not a second/independent source.
+  test("Props declares employeeHours: EmployeeHours[], and DashboardShell passes employeeHoursState", () => {
+    assert.ok(source.includes("employeeHours: EmployeeHours[];"));
+    const idx = shellSource.indexOf("<MobileDashboard");
+    assert.notEqual(idx, -1);
+    const closeIdx = shellSource.indexOf("/>", idx);
+    const jsx = shellSource.slice(idx, closeIdx);
+    assert.match(jsx, /employeeHours=\{employeeHoursState\}/);
+  });
 });
 
 describe("+ Add Appointment control governed by CapabilityGatedButton", () => {

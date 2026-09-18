@@ -166,8 +166,15 @@ describe("Edit control governed by CapabilityGatedButton (corrected from the ini
 
   test("the label text (Edit) is unchanged", () => {
     const idx = source.indexOf("onClick={handleEditClick}");
-    const block = source.slice(idx, idx + 200);
-    assert.ok(block.includes(">\n          Edit\n") || block.includes(">Edit<") || source.includes("Edit\n        </CapabilityGatedButton>"));
+    const block = source.slice(idx, idx + 250);
+    assert.ok(/>\s*\n\s*Edit\s*\n/.test(block) || block.includes(">Edit<"));
+  });
+
+  test("the Edit control is wrapped in {!isHistorical && (...)} -- hidden entirely for a historical appointment, not merely disabled", () => {
+    const idx = source.indexOf("onClick={handleEditClick}");
+    assert.notEqual(idx, -1);
+    const before = source.slice(Math.max(0, idx - 300), idx);
+    assert.match(before, /\{!isHistorical && \(/);
   });
 });
 
@@ -210,8 +217,8 @@ describe("notice block", () => {
     assert.ok(source.includes(`const RESTRICTED_WORDING = "${APPROVED_WORDING}";`));
   });
 
-  test("notice only renders when restricted (negated condition, not the positive form)", () => {
-    assert.match(source, /\{!canMutateOperationalData && \(/);
+  test("notice only renders when restricted (negated condition, not the positive form) -- and never for a historical appointment, which never shows the Cancel control it explains", () => {
+    assert.match(source, /\{!canMutateOperationalData && !isHistorical && \(/);
   });
 
   test("notice id's declared value is unique to this component", () => {
@@ -345,5 +352,59 @@ describe("Phase 5C: workspace-timezone-aware date/time display", () => {
     const closeIdx = mobileDashboardSource.indexOf("/>", idx);
     const jsx = mobileDashboardSource.slice(idx, closeIdx);
     assert.match(jsx, /timezone=\{timezone\}/);
+  });
+});
+
+describe("historical-record protection (founder decision): mobile's sole edit entry point matches desktop's AppointmentDetailPanel", () => {
+  test("isHistorical is derived from the canonical isHistoricalAppointment(appointment, assignments) predicate, never a locally re-derived date/completion check, and never lib/timezone's bare isPastAppointment", () => {
+    assert.ok(source.includes("const isHistorical = isHistoricalAppointment(appointment, assignments);"));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(!source.includes("isPastAppointment"));
+  });
+
+  test("statusLabel is Cancelled/Completed/Scheduled, derived from appointment.status and isHistorical, not fabricated", () => {
+    assert.ok(source.includes('const statusLabel = appointment.status === "cancelled" ? "Cancelled" : isHistorical ? "Completed" : "Scheduled";'));
+    assert.ok(source.includes("{statusLabel}"));
+  });
+
+  test("Props declares assignments and employeeHours, and MobileDashboard passes assignmentsFor(selectedAppt.id)/employeeHours straight through", () => {
+    assert.ok(source.includes("assignments: AppointmentEmployeeAssignment[];"));
+    assert.ok(source.includes("employeeHours: EmployeeHours[];"));
+    const idx = mobileDashboardSource.indexOf("<MobileAppointmentDetail");
+    assert.notEqual(idx, -1);
+    const closeIdx = mobileDashboardSource.indexOf("/>", idx);
+    const jsx = mobileDashboardSource.slice(idx, closeIdx);
+    assert.match(jsx, /assignments=\{assignmentsFor\(selectedAppt\.id\)\}/);
+    assert.match(jsx, /employeeHours=\{employeeHours\}/);
+  });
+
+  test("the Worked Hours card is hidden for a cancelled appointment and requires at least one assignment, mirroring desktop's AppointmentDetailPanel convention", () => {
+    assert.ok(source.includes('{appointment.status !== "cancelled" && assignments.length > 0 && ('));
+  });
+
+  test("Worked Hours reads Started/Completed/duration/Job Notes from the exact same lib/payroll.ts helpers desktop's AppointmentDetailPanel Worked Hours card uses, never a re-derived computation", () => {
+    assert.ok(source.includes("const manualEntry = findManualHoursEntry(appointment.id, assignment.employee_id, employeeHours);"));
+    assert.ok(source.includes("const complete = isJobTrackingComplete(assignment);"));
+    assert.ok(source.includes("const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);"));
+  });
+
+  test("Started/Completed fall back to the clean 'Not recorded' empty state -- never fabricated -- and Job Notes only renders when assignment.job_notes is truthy", () => {
+    assert.ok(source.includes('? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n                : "Not recorded";'));
+    assert.ok(source.includes('? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n                : "Not recorded";'));
+    assert.ok(source.includes("{assignment.job_notes && ("));
+    assert.ok(source.includes('<div className="font-medium text-slate-700">Job Notes:</div>'));
+  });
+
+  test("Worked Hours never mutates anything -- no fetch, no notifyDemoAction, inside the card's render", () => {
+    const cardStart = source.indexOf('{appointment.status !== "cancelled" && assignments.length > 0 && (');
+    const cardEnd = source.indexOf("{/* Communication */}", cardStart);
+    const block = source.slice(cardStart, cardEnd);
+    assert.ok(!block.includes("fetch("));
+    assert.ok(!block.includes("notifyDemoAction"));
+  });
+
+  test("the REQUIRED regression case (completed early, scheduled_end still in the future) is proven by real execution in lib/payroll.test.ts's isHistoricalAppointment suite -- the exact same function this component calls, with the exact same `assignments` prop wired straight through with no re-fetch/re-filter", () => {
+    const propsIdx = source.indexOf("assignments: AppointmentEmployeeAssignment[];");
+    assert.notEqual(propsIdx, -1, "assignments must be a plain required prop, not computed inside this component");
   });
 });
