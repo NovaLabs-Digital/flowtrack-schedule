@@ -1,0 +1,38 @@
+-- Supabase-shaped extras for the schema-export tests: sequences (incl. another schema), identity,
+-- partitions, views, policies, triggers, extra roles and ACL variety.
+CREATE ROLE supabase_admin NOLOGIN; CREATE ROLE dashboard_user NOLOGIN;
+CREATE TYPE public.mood AS ENUM ('happy','sad');
+CREATE DOMAIN public.posint AS integer CHECK (VALUE > 0);
+CREATE SEQUENCE public.plain_seq;
+CREATE SEQUENCE public."Mixed Case Seq" AS bigint INCREMENT 5;
+CREATE TABLE public.serial_t (id serial PRIMARY KEY, m public.mood DEFAULT 'happy', n public.posint, a text[] DEFAULT '{}', g int GENERATED ALWAYS AS (id * 2) STORED);
+CREATE TABLE public.ident_t (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text);
+CREATE TABLE public."Weird Table" ("Weird Col" int DEFAULT nextval('public."Mixed Case Seq"'::regclass), x int);
+CREATE TABLE public.part_t (id int, d date) PARTITION BY RANGE (d);
+CREATE TABLE public.part_t_2026 PARTITION OF public.part_t FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+CREATE TABLE public.fk_auth (id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE, s_id int REFERENCES public.serial_t(id) DEFERRABLE INITIALLY DEFERRED);
+CREATE VIEW public.v_serial AS SELECT id, m FROM public.serial_t;
+CREATE MATERIALIZED VIEW public.mv_serial AS SELECT id FROM public.serial_t;
+CREATE FUNCTION public.trg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+CREATE TRIGGER t1 BEFORE INSERT ON public.serial_t FOR EACH ROW EXECUTE FUNCTION public.trg();
+CREATE FUNCTION public.f(a int) RETURNS int LANGUAGE sql AS $$ SELECT a $$;
+CREATE FUNCTION public.f(a text) RETURNS text LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$ SELECT a $$;
+CREATE PROCEDURE public.p() LANGUAGE sql AS $$ SELECT 1 $$;
+CREATE AGGREGATE public.mysum(int) (SFUNC = int4pl, STYPE = int, INITCOND = 0);
+ALTER TABLE public.serial_t ENABLE ROW LEVEL SECURITY; ALTER TABLE public.serial_t FORCE ROW LEVEL SECURITY;
+CREATE POLICY pol1 ON public.serial_t AS PERMISSIVE FOR SELECT TO authenticated, anon USING (auth.uid() IS NOT NULL);
+CREATE POLICY pol2 ON public.serial_t AS RESTRICTIVE FOR ALL TO public USING (true) WITH CHECK (true);
+CREATE INDEX ix1 ON public.serial_t (abs(id)) WHERE id > 5;
+GRANT SELECT ON public.serial_t TO anon WITH GRANT OPTION;
+GRANT SELECT (id) ON public.serial_t TO authenticated;
+GRANT ALL ON public.v_serial TO service_role, supabase_admin, dashboard_user;
+GRANT SELECT ON public.ident_t TO PUBLIC;
+GRANT USAGE ON SEQUENCE public.plain_seq TO anon;
+REVOKE EXECUTE ON FUNCTION public.f(int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.f(int) TO service_role, supabase_admin;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role, supabase_admin;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO PUBLIC;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON TYPES TO anon;
+CREATE SCHEMA other; CREATE SEQUENCE other.o_seq; CREATE TABLE other.t (id serial);

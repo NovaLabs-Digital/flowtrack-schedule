@@ -1,20 +1,27 @@
-// Phase 5.4E3: route-level tests for
-// app/api/appointments/manage-recurrence/route.ts (POST only -- this file
-// has no GET handler, and sends no notifications). Proves
-// requireCapability(session, "canMutateOperationalData") is correctly wired
-// before body parsing, appointment reads, and any of the (up to three)
-// writes. @/lib/session and @/lib/supabaseAdmin are mocked in-process;
-// @/lib/entitlementServer is DELIBERATELY LEFT UNMOCKED -- the real
-// requireCapability chain runs against a fake "subscriptions" table. No
-// real Supabase/Stripe/network call is reachable. Run with
-// --experimental-test-module-mocks (see package.json).
+// Route-level tests for app/api/appointments/manage-recurrence/route.ts (POST).
+//
+// SCOPE OF THESE TESTS: the route is now a thin wrapper around ONE database
+// call (apply_recurrence_change, migrations/029). These tests use a mocked
+// RPC and therefore prove only the route's own behavior: authentication and
+// entitlement ordering, input validation, request building (including the
+// DST-safe date generation), outcome -> HTTP mapping, that exactly one RPC and
+// zero direct table writes happen, and that notifications are sent only after
+// a fresh commit. They CANNOT prove transaction rollback, locking, replay or
+// concurrency -- those are proven against real PostgreSQL by
+// test-db/recurrence.test.ts (`npm run test:db`).
+//
+// @/lib/session and @/lib/supabaseAdmin are mocked in-process;
+// @/lib/entitlementServer is DELIBERATELY LEFT UNMOCKED (the real
+// requireCapability chain runs against a fake "subscriptions" table).
 process.env.SUPABASE_URL = "http://localhost:54321";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
+import { DateTime } from "luxon";
 import { createFakeSupabaseAdmin, writeCalls, fakeSessionNamedExports, subscriptionRow, SUBSCRIPTION_RESTRICTED_BODY, SERVICE_UNAVAILABLE_BODY } from "../../../../lib/testSupport.ts";
 import type { FakeSupabaseFixture } from "../../../../lib/testSupport.ts";
+import type { RecurrenceChangeRequest } from "../../../../lib/recurrenceChange.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
 let sessionToReturn: unknown = { role: "none" };
@@ -29,24 +36,26 @@ mock.module("@/lib/supabaseAdmin", {
 });
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => sessionToReturn) });
 
-// Historical-record protection (founder decision): the route now rejects a
-// recurrence-management request anchored to a past appointment (see
-// isPastAppointment in lib/timezone.ts), evaluated against the REAL current
-// instant. The earliest fixture anchor date in this file is 2026-01-08 (a
-// DST-generation test) -- freezing the clock to a fixed instant safely
-// before all of them (rather than rewriting the hardcoded fixture dates,
-// several of which are pinned to real US DST transition dates and can't
-// simply be shifted by year) keeps every one of those dates correctly
-// "current/future" regardless of the real wall-clock date this suite
-// happens to run on. Only Date is mocked (Date.now()/`new Date()` with no
-// arguments); `new Date(iso)` parsing is unaffected.
-mock.timers.enable({ apis: ["Date"], now: new Date("2025-12-01T00:00:00.000Z").getTime() });
+// Records the notification helper's calls together with how many RPC calls had
+// completed when it ran -- proving "after the transaction", not merely "called".
+const notifyCalls: { params: Record<string, unknown>; rpcCallsSoFar: number }[] = [];
+let notifyShouldThrow = false;
+mock.module("@/lib/notifyAppointmentChange", {
+  namedExports: {
+    sendAppointmentChangeNotification: async (params: Record<string, unknown>) => {
+      notifyCalls.push({ params, rpcCallsSoFar: currentFake.rpcCalls.length });
+      if (notifyShouldThrow) throw new Error("provider down");
+    },
+  },
+});
 
 const { POST } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
 function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
   currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
+  notifyCalls.length = 0;
+  notifyShouldThrow = false;
 }
 function req(body?: unknown, url = "http://localhost/api/appointments/manage-recurrence") {
   return new Request(url, {
@@ -56,1090 +65,401 @@ function req(body?: unknown, url = "http://localhost/api/appointments/manage-rec
   });
 }
 
-const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
-const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
+type RpcArgs = {
+  p_workspace_id: string; p_appointment_id: string; p_operation_id: string;
+  p_request: RecurrenceChangeRequest; p_expected: Record<string, unknown>;
+};
+const rpcArgs = (i = 0) => currentFake.rpcCalls[i].args as RpcArgs;
 
-function oneTimeAppt() {
+const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: "aaaaaaaa-0000-0000-0000-00000000owna", sessionEpoch: 1 };
+const OP_ID = "11111111-1111-4111-8111-111111111111";
+const EMP_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const EMP_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+// The reported case: edited to Sept 22, 2026 9:00 AM New York, every 4 weeks.
+const SEPT_22_9AM_NY = "2026-09-22T13:00:00.000Z";
+function validBody(over: Record<string, unknown> = {}) {
   return {
-    id: "appt-1",
-    client_id: "client-1",
-    service_type: "Haircut",
-    scheduled_for: "2026-08-03T14:00:00.000Z",
-    scheduled_end: null,
-    notes: null,
-    duration_minutes: 60,
-    employee_id: null,
-    series_id: null,
-    frequency_type: "one_time",
-    repeat_weeks: 1,
-    repeat_months: null,
-    status: "scheduled",
-    is_demo: false,
-    price_cents: 5000,
-    team_color: "#2563EB",
+    appointment_id: "appt-1",
+    client_operation_id: OP_ID,
+    frequency_type: "weekly",
+    repeat_weeks: 4,
+    fields: {
+      scheduled_for: SEPT_22_9AM_NY,
+      scheduled_end: "2026-09-22T14:00:00.000Z",
+      service_type: "Regular Cleaning",
+      notes: null,
+      duration_minutes: 60,
+      price_cents: 9000,
+      team_color: null,
+      status: "scheduled",
+    },
+    employee_ids: [],
+    expected: {
+      scheduled_for: "2026-09-29T08:30:00.000Z",
+      scheduled_end: "2026-09-29T09:30:00.000Z",
+      service_type: "Regular Cleaning",
+      notes: null,
+      duration_minutes: 60,
+      price_cents: 9000,
+      team_color: null,
+      status: "scheduled",
+      series_id: null,
+      frequency_type: "one_time",
+      employee_ids: [],
+      timezone: "America/New_York",
+    },
+    notify_channel: "none",
+    ...over,
   };
 }
 
-describe("POST /api/appointments/manage-recurrence -- entitlement gate", () => {
+const APPLIED = {
+  outcome: "applied", operation_id: OP_ID, appointment_id: "appt-1", previous_scheduled_for: "2026-09-29T08:30:00+00:00",
+  previous_series_id: null, new_series_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", old_series_stopped: false,
+  cancelled_count: 0, protected_count: 0, protected: [], created_count: 6, skipped_for_exclusion_count: 0, client_visible_change: true,
+};
+
+function happy(over: { rpc?: Record<string, unknown>; appt?: Record<string, unknown>; timezone?: string | null } = {}, extra: Record<string, FakeSupabaseFixture[]> = {}) {
+  resetFixtures(
+    {
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: { id: "appt-1", client_id: "client-1", is_demo: false, ...over.appt } }],
+      company_settings: [{ data: { timezone: over.timezone === undefined ? null : over.timezone } }],
+      ...extra,
+    },
+    { apply_recurrence_change: [{ data: { ...APPLIED, ...over.rpc } }] }
+  );
+  sessionToReturn = OWNER_SESSION;
+}
+
+describe("entitlement gate and role gate run before anything else", () => {
   const FULL_STATES: Array<[string, ReturnType<typeof subscriptionRow>]> = [
     ["active", subscriptionRow({ stripe_status: "active" })],
     ["trialing", subscriptionRow({ stripe_status: "trialing" })],
-    ["past_due_grace", subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() + 1000).toISOString() })],
+    ["past_due_grace", subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() + 60000).toISOString() })],
     ["internal", subscriptionRow({ billing_mode: "internal", stripe_status: null })],
   ];
-
   for (const [label, row] of FULL_STATES) {
-    test(`${label} permits converting a one-time appointment to weekly recurrence, response unchanged`, async () => {
+    test(`${label} permits the change: exactly one RPC, zero direct table writes`, async () => {
       resetFixtures(
         {
           workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
           subscriptions: [{ data: row }],
+          appointments: [{ data: { id: "appt-1", client_id: "client-1", is_demo: false } }],
           company_settings: [{ data: { timezone: null } }],
-          appointments: [
-            { data: oneTimeAppt() }, // fetch existing
-            { error: null }, // update source appointment
-            { data: [{ id: "new-1" }] }, // insert new series rows (.select("id"))
-          ],
-          appointment_employees: [{ data: [] }], // fetchAssignments(origin) -- unassigned
-          // Block 2B/2C-1 safety correction: a one-time appointment has no
-          // old series_id, so the pre-mutation quarantine/post-mutation stop
-          // steps never run here -- only the new series' two-step
-          // insert-quarantined then activate_recurring_series RPC call. The
-          // client re-check now happens entirely inside the RPC's own
-          // locked transaction, opaque to this fake.
-          recurring_series: [{ data: null }],
         },
-        { activate_recurring_series: [{ data: "activated" }] }
+        { apply_recurrence_change: [{ data: APPLIED }] }
       );
       sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 4 }));
+      const res = await POST(req(validBody()));
       assert.equal(res.status, 200, label);
-      const body = await res.json();
-      assert.equal(body.ok, true, label);
-      assert.equal(body.warning, undefined, label);
-      assert.ok(body.created > 0, label);
-      assert.equal(writeCalls(currentFake.calls).length, 3, label); // update appt + insert new rows + registry insert (activation RPC is not a `.from()` write call)
+      assert.equal(currentFake.rpcCalls.length, 1);
+      assert.deepEqual(writeCalls(currentFake.calls), [], "atomicity lives in the RPC; the route writes nothing itself");
     });
   }
 
-  test("exact trusted demo workspace permits the mutation with zero subscriptions-table queries (real short-circuit)", async () => {
-    resetFixtures({
-      appointments: [{ data: { ...oneTimeAppt(), is_demo: true } }, { error: null }],
-      appointment_employees: [{ data: [] }],
-    });
+  test("exact trusted demo workspace permits the mutation with zero subscriptions-table queries", async () => {
+    resetFixtures(
+      { appointments: [{ data: { id: "appt-1", client_id: "client-1", is_demo: true } }], company_settings: [{ data: { timezone: null } }] },
+      { apply_recurrence_change: [{ data: APPLIED }] }
+    );
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    const res = await POST(req(validBody()));
     assert.equal(res.status, 200);
-    assert.equal((await res.json()).ok, true);
+    assert.equal(currentFake.calls.filter((c) => c.table === "subscriptions").length, 0);
   });
 
-  const RESTRICTED_STATES: Array<[string, ReturnType<typeof subscriptionRow> | null]> = [
+  const RESTRICTED: Array<[string, ReturnType<typeof subscriptionRow> | null]> = [
     ["past_due_expired", subscriptionRow({ stripe_status: "past_due", grace_until: new Date(Date.now() - 1000).toISOString() })],
     ["canceled", subscriptionRow({ stripe_status: "canceled" })],
     ["unpaid", subscriptionRow({ stripe_status: "unpaid" })],
     ["no_subscription (no row)", null],
     ["malformed", subscriptionRow({ stripe_status: "not_a_real_status" })],
   ];
-
-  for (const [label, row] of RESTRICTED_STATES) {
-    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero appointment reads/writes`, async () => {
-      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: row }] });
+  for (const [label, row] of RESTRICTED) {
+    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403 with zero appointment reads and zero RPC calls`, async () => {
+      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }], subscriptions: [{ data: row }] });
       sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
+      const res = await POST(req(validBody()));
       assert.equal(res.status, 403, label);
       assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY, label);
-      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), [], label);
+      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+      assert.equal(currentFake.rpcCalls.length, 0);
     });
   }
 
-  test("query_error on the subscriptions read denies, zero appointment access", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ error: { message: "simulated DB error" } }] });
+  test("query_error on the subscriptions read denies (503) with zero appointment access", async () => {
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }], subscriptions: [{ error: { message: "simulated" } }] });
     sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
+    const res = await POST(req(validBody()));
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 
-  test("non-owner/tester role (employee) retains the existing role-denial, never SUBSCRIPTION_RESTRICTED, never queries entitlement", async () => {
-    resetFixtures({});
-    sessionToReturn = { role: "employee", employeeId: "e1", workspaceId: REAL_WORKSPACE_ID };
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
-    assert.equal(res.status, 403);
-    const body = await res.json();
-    assert.equal(body.error, "Unauthorized");
-    assert.equal(body.code, undefined);
-    assert.equal(currentFake.calls.length, 0);
-  });
+  for (const [label, session] of [
+    ["employee", { role: "employee", employeeId: "e1", workspaceId: REAL_WORKSPACE_ID }],
+    ["unauthenticated", { role: "none" }],
+  ] as const) {
+    test(`${label} keeps the existing role denial and touches nothing`, async () => {
+      resetFixtures({});
+      sessionToReturn = session;
+      const res = await POST(req(validBody()));
+      assert.equal(res.status, 403);
+      assert.equal((await res.json()).error, "Unauthorized");
+      assert.equal(currentFake.calls.length, 0);
+      assert.equal(currentFake.rpcCalls.length, 0);
+    });
+  }
 
-  test("tester session with a non-demo workspace fails closed with the generic session-integrity denial, not SUBSCRIPTION_RESTRICTED", async () => {
+  test("a tester session on a non-demo workspace fails closed and never reaches the RPC", async () => {
     resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: REAL_WORKSPACE_ID };
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
+    const res = await POST(req(validBody()));
     assert.equal(res.status, 403);
-    const body = await res.json();
-    assert.equal(body.error, "Unauthorized");
-    assert.equal(body.code, undefined);
-  });
-
-  test("unauthenticated (role: none) receives the existing role-denial and cannot probe subscription status", async () => {
-    resetFixtures({});
-    sessionToReturn = { role: "none" };
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
-    assert.equal(res.status, 403);
-    const body = await res.json();
-    assert.equal(body.error, "Unauthorized");
-    assert.equal(body.code, undefined);
-    assert.equal(currentFake.calls.length, 0);
-  });
-
-  test("a non-demo workspace cannot manufacture demo access via any request-supplied value", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", workspace_id: DEMO_WORKSPACE_ID }));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
-  });
-
-  test("a spoofed workspace_id/query-string value does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", workspace_id: "attacker-ws" }, "http://localhost/api/appointments/manage-recurrence?workspace_id=attacker-ws-2"));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
-  });
-
-  describe("mutation-specific validation runs only after auth/role/entitlement", () => {
-    test("missing appointment_id + unauthenticated -> the existing role-denial, not 400, zero Supabase calls", async () => {
-      resetFixtures({});
-      sessionToReturn = { role: "none" };
-      const res = await POST(req({ frequency_type: "weekly" }));
-      assert.equal(res.status, 403);
-      assert.equal(currentFake.calls.length, 0);
-    });
-
-    test("missing appointment_id + restricted workspace -> the exact SUBSCRIPTION_RESTRICTED 403, not 400", async () => {
-      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
-      sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ frequency_type: "weekly" }));
-      assert.equal(res.status, 403);
-      assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
-    });
-
-    test("missing appointment_id + entitled workspace -> the existing 400 'Missing appointment_id' response", async () => {
-      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
-      sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ frequency_type: "weekly" }));
-      assert.equal(res.status, 400);
-      assert.deepEqual(await res.json(), { error: "Missing appointment_id" });
-      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
-    });
-
-    test("invalid frequency_type + entitled workspace -> the existing 400 response, after entitlement passes", async () => {
-      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
-      sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ appointment_id: "appt-1", frequency_type: "bogus" }));
-      assert.equal(res.status, 400);
-      assert.deepEqual(await res.json(), { error: "Invalid frequency_type" });
-    });
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 });
 
-describe("existing recurrence business rules remain unchanged once entitled", () => {
-  test("an appointment already in a series cancels future siblings before creating the new series", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-1" } }, // fetch existing
-        { data: [{ id: "sib-1" }, { id: "sib-2" }] }, // sibling lookup
-        { error: null }, // bulk-cancel siblings
-        { error: null }, // update source appointment
-        { data: [{ id: "new-1" }] }, // insert new series (.select("id"))
-      ],
-      appointment_employees: [{ data: [] }],
-      // Block 2B/2C-1 safety correction: the old series' quarantine is now
-      // observe-then-CAS -- fetchSeriesById (observing "active") is its own
-      // read, immediately followed by the active -> review_required
-      // compare-and-set -- then finalize-stopped (after mutation), then the
-      // new series' insert-quarantined, then the atomic activation RPC call
-      // (opaque to this fake -- its own client re-check happens inside the
-      // RPC's locked transaction, never a separate clients fixture here).
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe old series status
-        { data: [{ id: "series-1" }] }, // quarantine old (active -> review_required)
-        { data: [{ id: "series-1" }] }, // finalize old stopped
-        { data: null }, // insert new quarantined
-      ],
-    }, { activate_recurring_series: [{ data: "activated" }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 2 }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.cancelled, 2);
-    assert.ok(body.created > 0);
-    assert.equal(body.warning, undefined);
-  });
+describe("validation happens after entitlement and before any RPC", () => {
+  async function rejected(body: unknown, expectedStatus: number, expectedError?: string | RegExp) {
+    happy();
+    const res = await POST(req(body));
+    assert.equal(res.status, expectedStatus);
+    const json = await res.json();
+    if (typeof expectedError === "string") assert.equal(json.error, expectedError);
+    else if (expectedError) assert.match(json.error, expectedError);
+    assert.equal(currentFake.rpcCalls.length, 0, "no RPC for an invalid request");
+    assert.deepEqual(writeCalls(currentFake.calls), []);
+  }
 
-  test("converting to one_time cancels siblings and creates no new rows", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "weekly" } },
-        { data: [{ id: "sib-1" }] },
-        { error: null },
-        { error: null },
-      ],
-      appointment_employees: [{ data: [] }],
-      // Block 2B safety correction: converting to one_time observes the old
-      // series as active, quarantines it BEFORE the cancellation/update,
-      // then finalizes it stopped after -- no new one is created, since
-      // it's no longer recurring.
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe old series status
-        { data: [{ id: "series-1" }] }, // quarantine old (active -> review_required)
-        { data: [{ id: "series-1" }] }, // finalize old stopped
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.cancelled, 1);
-    assert.equal(body.created, 0);
-    assert.equal(body.warning, undefined);
-    assert.equal(writeCalls(currentFake.calls).length, 4); // cancel siblings + update source + quarantine old + finalize old stopped
-  });
+  test("missing appointment_id", () => rejected(validBody({ appointment_id: "" }), 400, "Missing appointment_id"));
+  test("invalid frequency_type", () => rejected(validBody({ frequency_type: "yearly" }), 400, "Invalid frequency_type"));
+  test("missing client_operation_id", () => rejected(validBody({ client_operation_id: undefined }), 400, /client_operation_id/));
+  test("malformed client_operation_id", () => rejected(validBody({ client_operation_id: "not-a-uuid" }), 400, /client_operation_id/));
+  test("missing expected snapshot", () => rejected(validBody({ expected: undefined }), 400, /expected snapshot/));
+  test("malformed expected snapshot", () => rejected(validBody({ expected: { scheduled_for: "nope" } }), 400, /expected snapshot/));
+  test("missing fields", () => rejected(validBody({ fields: undefined }), 400, "Missing appointment fields"));
+  test("a recurring change requires a whole number of weeks between 1 and 8", () => rejected(validBody({ repeat_weeks: 9 }), 400, /weeks between 1 and 8/));
+  for (const bad of [0, -1, 1.5, 13, 100]) {
+    test(`monthly repeat_months=${bad} is rejected before any RPC`, () =>
+      rejected(validBody({ frequency_type: "monthly", repeat_months: bad }), 400, /months between 1 and 12/));
+  }
+  test("changing recurrence while the status is Cancelled is rejected", () =>
+    rejected(validBody({ fields: { ...validBody().fields, status: "cancelled" } }), 400, /status back to Scheduled/));
+  test("a generated occurrence on a nonexistent DST local time rejects the WHOLE request before any RPC", () =>
+    // 2026-02-22T07:30Z = 2:30 AM New York; +1 week lands in the March 8 spring-forward gap
+    rejected(validBody({ frequency_type: "weekly", repeat_weeks: 1, fields: { ...validBody().fields, scheduled_for: "2026-02-22T07:30:00.000Z", scheduled_end: "2026-02-22T08:30:00.000Z" } }), 400, /daylight-saving/));
 
-  test("appointment not found still 404s with the existing message, after entitlement passes", async () => {
+  test("an appointment that does not exist is a 404 with no RPC", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: null }],
     });
     sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-missing", frequency_type: "weekly" }));
+    const res = await POST(req(validBody()));
     assert.equal(res.status, 404);
-    assert.deepEqual(await res.json(), { error: "Appointment not found" });
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 
-  test("tester session accessing a non-demo appointment still 404s (existing tester-scoping rule)", async () => {
-    resetFixtures({
-      subscriptions: [], // demo short-circuit -- no subscriptions query
-      appointments: [{ data: { ...oneTimeAppt(), is_demo: false } }],
-    });
+  test("a tester session cannot reach a non-demo appointment (404, no RPC)", async () => {
+    resetFixtures({ appointments: [{ data: { id: "appt-1", client_id: "client-1", is_demo: false } }] });
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly" }));
+    const res = await POST(req(validBody()));
     assert.equal(res.status, 404);
-    assert.deepEqual(await res.json(), { error: "Appointment not found" });
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 });
 
-describe("Phase 5.7D-R17: newly generated recurring rows receive the origin appointment's price snapshot", () => {
-  test("every generated future row copies the origin appointment's own price_cents, not the service's current default", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: oneTimeAppt() }, // price_cents: 5000
-        { error: null }, // update source appointment
-        { data: [{ id: "new-1" }] }, // insert new series rows (.select("id"))
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+describe("the RPC request is built from trusted inputs and the DST-safe generator", () => {
+  test("workspace comes from the SESSION, never the body; operation id is normalized; the expected snapshot is canonicalized", async () => {
+    happy();
+    const res = await POST(req({ ...validBody({ client_operation_id: OP_ID.toUpperCase(), employee_ids: [EMP_B, EMP_A, EMP_A] }), workspace_id: "attacker-ws" }));
     assert.equal(res.status, 200);
-    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
-    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
-    assert.ok(rows.length > 0);
-    assert.ok(rows.every((r) => r.price_cents === 5000));
+    const args = rpcArgs();
+    assert.equal(currentFake.rpcCalls[0].fn, "apply_recurrence_change");
+    assert.equal(args.p_workspace_id, REAL_WORKSPACE_ID);
+    assert.equal(args.p_appointment_id, "appt-1");
+    assert.equal(args.p_operation_id, OP_ID);
+    assert.deepEqual(args.p_request.employee_ids, [EMP_A, EMP_B], "deduplicated and sorted");
+    assert.equal(args.p_expected.scheduled_for, "2026-09-29T08:30:00.000Z");
+    assert.equal(args.p_expected.frequency_type, "one_time");
+    assert.equal(args.p_expected.timezone, "America/New_York");
+    // no client-supplied "previous scheduled_for" exists anywhere in the request
+    assert.ok(!JSON.stringify(args).includes("previous_scheduled_for"));
   });
 
-  test("an origin appointment with no price generates rows with price_cents: null, never a fabricated value", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: { ...oneTimeAppt(), price_cents: null } },
-        { error: null },
-        { data: [{ id: "new-1" }] },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
+  test("Izabel: Sept 22 2026 9:00 AM every 4 weeks generates Oct 20 / Nov 17 / Dec 15 at 9:00 AM New York across the DST end", async () => {
+    happy();
+    const res = await POST(req(validBody()));
     assert.equal(res.status, 200);
-    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
-    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
-    assert.ok(rows.every((r) => r.price_cents === null));
+    const { occurrences, fields, recurrence, timezone } = rpcArgs().p_request;
+    assert.equal(timezone, "America/New_York");
+    assert.equal(fields.scheduled_for, SEPT_22_9AM_NY);
+    assert.deepEqual(recurrence, { frequency_type: "weekly", repeat_weeks: 4, repeat_months: null });
+    const local = occurrences.map((iso: string) => DateTime.fromISO(iso).setZone("America/New_York"));
+    assert.deepEqual(local.slice(0, 3).map((d: DateTime) => d.toFormat("yyyy-MM-dd h:mm a")), ["2026-10-20 9:00 AM", "2026-11-17 9:00 AM", "2026-12-15 9:00 AM"]);
+    assert.ok(local.every((d: DateTime) => d.toFormat("h:mm a") === "9:00 AM"));
+    assert.ok(occurrences.every((iso: string) => new Date(iso).getTime() > new Date(SEPT_22_9AM_NY).getTime()));
+  });
+
+  test("the generator uses the workspace's own timezone (a Chicago workspace keeps 9:00 AM Chicago)", async () => {
+    happy({ timezone: "America/Chicago" });
+    const chicago9 = "2026-09-22T14:00:00.000Z";
+    const res = await POST(req(validBody({ fields: { ...validBody().fields, scheduled_for: chicago9, scheduled_end: "2026-09-22T15:00:00.000Z" } })));
+    assert.equal(res.status, 200);
+    const { occurrences, timezone } = rpcArgs().p_request;
+    assert.equal(timezone, "America/Chicago");
+    assert.ok(occurrences.every((iso: string) => DateTime.fromISO(iso).setZone("America/Chicago").toFormat("h:mm a") === "9:00 AM"));
+  });
+
+  test("one_time sends no occurrences and no interval", async () => {
+    happy();
+    const res = await POST(req(validBody({ frequency_type: "one_time", repeat_weeks: undefined })));
+    assert.equal(res.status, 200);
+    const { occurrences, recurrence } = rpcArgs().p_request;
+    assert.deepEqual(occurrences, []);
+    assert.deepEqual(recurrence, { frequency_type: "one_time", repeat_weeks: null, repeat_months: null });
+  });
+
+  test("monthly sends repeat_months and month-stepped occurrences", async () => {
+    happy();
+    const res = await POST(req(validBody({ frequency_type: "monthly", repeat_months: 12, repeat_weeks: undefined })));
+    assert.equal(res.status, 200);
+    const { occurrences, recurrence } = rpcArgs().p_request;
+    assert.deepEqual(recurrence, { frequency_type: "monthly", repeat_weeks: null, repeat_months: 12 });
+    assert.equal(occurrences.length, 2);
+  });
+
+  test("identical input yields byte-identical requests (what makes the operation fingerprint stable across retries)", async () => {
+    happy();
+    await POST(req(validBody()));
+    happy();
+    await POST(req(validBody()));
+    const first = JSON.stringify(rpcArgs().p_request);
+    happy();
+    await POST(req(validBody()));
+    assert.equal(first, JSON.stringify(rpcArgs().p_request));
   });
 });
 
-describe("Phase 5.7D-R19: newly generated recurring rows receive the origin appointment's team_color snapshot", () => {
-  test("every generated future row copies the origin appointment's own team_color", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: oneTimeAppt() }, // team_color: "#2563EB"
-        { error: null }, // update source appointment
-        { data: [{ id: "new-1" }] }, // insert new series rows (.select("id"))
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
-    assert.equal(res.status, 200);
-    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
-    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
-    assert.ok(rows.length > 0);
-    assert.ok(rows.every((r) => r.team_color === "#2563EB"));
-  });
-
-  test("an origin appointment with no team color generates rows with team_color: null, never a fabricated value", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: { ...oneTimeAppt(), team_color: null } },
-        { error: null },
-        { data: [{ id: "new-1" }] },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
-    assert.equal(res.status, 200);
-    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
-    const rows = insertCall!.args[0] as Array<{ team_color?: string | null }>;
-    assert.ok(rows.every((r) => r.team_color === null));
-  });
-});
-
-describe("Phase 5.7D-R18: newly generated recurring rows receive the origin appointment's full assignment set", () => {
-  test("every generated future row gets the same set of assigned employees as the origin, and appointments.employee_id mirrors null for two employees", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: oneTimeAppt() },
-        { error: null }, // update source appointment
-        { data: [{ id: "new-1" }, { id: "new-2" }] }, // insert new series rows (.select("id"))
-      ],
-      appointment_employees: [
-        { data: [
-          { id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
-          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
-        ] }, // fetchAssignments(origin)
-        { data: null, error: null }, // insertAssignments(new-1)
-        { data: null, error: null }, // insertAssignments(new-2)
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
-    assert.equal(res.status, 200);
-
-    const insertApptCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
-    const apptRows = insertApptCall!.args[0] as Array<{ employee_id?: string | null }>;
-    assert.ok(apptRows.every((r) => r.employee_id === null), "two assigned employees -> legacy mirror is null, never an arbitrary pick");
-
-    const assignmentInsertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
-    assert.equal(assignmentInsertCalls.length, 2, "one insertAssignments call per newly generated occurrence");
-    for (const call of assignmentInsertCalls) {
-      const rows = call.args[0] as Array<{ employee_id: string }>;
-      assert.deepEqual(rows.map((r) => r.employee_id), ["teresa", "roxana"]);
-    }
-  });
-
-  test("an unassigned origin generates rows with no assignment inserts at all", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: oneTimeAppt() },
-        { error: null },
-        { data: [{ id: "new-1" }] },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 26 }));
-    assert.equal(res.status, 200);
-    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert").length, 0);
-  });
-});
-
-describe("Phase 2: Monthly Recurring Appointments via Manage Recurrence", () => {
-  test("converting a one-time appointment to monthly recurrence generates every future occurrence and saves repeat_months on the source row", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: oneTimeAppt() }, // fetch existing
-        { error: null }, // update source appointment
-        // repeat_months: 12 -> MAX_MONTHLY_HORIZON_MONTHS (24) / 12 = 2 future rows.
-        { data: [{ id: "new-1" }, { id: "new-2" }] },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.ok, true);
-    assert.equal(body.created, 2);
-
-    const updateCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
-    const updateArgs = updateCall!.args[0] as { frequency_type: string; repeat_weeks: number; repeat_months: number | null; series_id: string | null };
-    assert.equal(updateArgs.frequency_type, "monthly");
-    assert.equal(updateArgs.repeat_weeks, 1);
-    assert.equal(updateArgs.repeat_months, 12);
-    assert.ok(updateArgs.series_id, "a new series_id is generated for the newly-recurring source appointment");
-
-    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
-    const rows = insertCall!.args[0] as Array<{ frequency_type?: string; repeat_months?: number | null }>;
-    assert.equal(rows.length, 2);
-    assert.ok(rows.every((r) => r.frequency_type === "monthly" && r.repeat_months === 12));
-  });
-
-  test("every generated future row copies the origin appointment's own price_cents for a monthly series, not a service default", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: oneTimeAppt() }, // price_cents: 5000
-        { error: null },
-        { data: [{ id: "new-1" }, { id: "new-2" }] },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
-    assert.equal(res.status, 200);
-    const insertCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "insert");
-    const rows = insertCall!.args[0] as Array<{ price_cents?: number | null }>;
-    assert.ok(rows.length > 0);
-    assert.ok(rows.every((r) => r.price_cents === 5000));
-  });
-
-  test("every generated future row of a monthly series gets the same set of assigned employees as the origin, including multiple", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: oneTimeAppt() },
-        { error: null },
-        { data: [{ id: "new-1" }, { id: "new-2" }] },
-      ],
-      appointment_employees: [
-        { data: [
-          { id: "ae-1", appointment_id: "appt-1", employee_id: "teresa", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
-          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
-        ] }, // fetchAssignments(origin)
-        { data: null, error: null }, // insertAssignments(new-1)
-        { data: null, error: null }, // insertAssignments(new-2)
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
-    assert.equal(res.status, 200);
-    const assignmentInsertCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "insert");
-    assert.equal(assignmentInsertCalls.length, 2, "one insertAssignments call per newly generated monthly occurrence");
-    for (const call of assignmentInsertCalls) {
-      const rows = call.args[0] as Array<{ employee_id: string }>;
-      assert.deepEqual(rows.map((r) => r.employee_id), ["teresa", "roxana"]);
-    }
-  });
-
-  test("converting an existing weekly series to monthly cancels its future weekly siblings before generating monthly occurrences", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "weekly", repeat_weeks: 2 } },
-        { data: [{ id: "sib-1" }, { id: "sib-2" }] }, // weekly sibling lookup
-        { error: null }, // bulk-cancel weekly siblings
-        { error: null }, // update source appointment
-        { data: [{ id: "new-1" }, { id: "new-2" }] }, // insert new monthly series
-      ],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe old series status
-        { data: [{ id: "series-1" }] }, // quarantine old
-        { data: [{ id: "series-1" }] }, // finalize old stopped
-        { data: null }, // insert new quarantined
-      ],
-    }, { activate_recurring_series: [{ data: "activated" }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 12 }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.cancelled, 2);
-    assert.equal(body.created, 2);
-  });
-
-  test("missing repeat_months on a monthly request is rejected with 400, before any appointment read/write", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly" }));
-    assert.equal(res.status, 400);
-    assert.deepEqual(await res.json(), { error: "Repeat interval must be a whole number of months between 1 and 12." });
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
-  });
-
-  for (const bad of [0, -1, 1.5, 13, 100]) {
-    test(`repeat_months=${bad} on a monthly request is rejected with 400 -- never silently regenerates as a broken/empty series`, async () => {
-      resetFixtures({
-        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      });
-      sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: bad }));
-      assert.equal(res.status, 400);
-      assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments"), []);
+describe("RPC outcome -> HTTP mapping", () => {
+  const CASES: Array<[string, Record<string, unknown>, number, string | null]> = [
+    ["operation_id_conflict", { outcome: "operation_id_conflict" }, 409, "OPERATION_ID_CONFLICT"],
+    ["stale_snapshot", { outcome: "stale_snapshot", mismatched: ["notes"] }, 409, "STALE_SNAPSHOT"],
+    ["state_changed", { outcome: "state_changed" }, 409, "STATE_CHANGED"],
+    ["appointment_is_historical", { outcome: "appointment_is_historical" }, 409, "APPOINTMENT_IS_HISTORICAL"],
+    ["assignment_removal_blocked", { outcome: "assignment_removal_blocked", blocked_employee_ids: [EMP_A] }, 409, "ASSIGNMENT_REMOVAL_BLOCKED"],
+    ["employee_not_eligible", { outcome: "employee_not_eligible" }, 409, "ASSIGNMENT_SYNC_FAILED"],
+    ["client_not_active", { outcome: "client_not_active" }, 409, "CLIENT_NOT_ACTIVE"],
+    ["rolled_back", { outcome: "rolled_back", reason: "activation_failed" }, 409, "ROLLED_BACK"],
+    ["appointment_not_found", { outcome: "appointment_not_found" }, 404, null],
+    ["invalid_input", { outcome: "invalid_input" }, 400, null],
+    ["unknown outcome", { outcome: "surprise" }, 500, null],
+  ];
+  for (const [label, rpc, status, code] of CASES) {
+    test(`${label} -> ${status}${code ? ` ${code}` : ""}, never a success body, never a notification`, async () => {
+      happy({ rpc: { ...rpc } });
+      const res = await POST(req(validBody({ notify_channel: "both" })));
+      assert.equal(res.status, status);
+      const json = await res.json();
+      if (code) assert.equal(json.code, code);
+      assert.notEqual(json.ok, true);
+      assert.equal(notifyCalls.length, 0);
     });
   }
 
-  test("converting a monthly series back to one_time cancels future siblings and creates no new rows", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "monthly", repeat_months: 12 } },
-        { data: [{ id: "sib-1" }] },
-        { error: null },
-        { error: null },
-      ],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe old series status
-        { data: [{ id: "series-1" }] }, // quarantine old
-        { data: [{ id: "series-1" }] }, // finalize old stopped
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+  test("stale/rolled-back responses tell the owner nothing was saved and never leak the internal reason", async () => {
+    happy({ rpc: { outcome: "rolled_back", reason: "activation_failed" } });
+    const res = await POST(req(validBody()));
+    const json = await res.json();
+    assert.match(json.error, /nothing was saved/i);
+    assert.ok(!JSON.stringify(json).includes("activation_failed"));
+    happy({ rpc: { outcome: "stale_snapshot", mismatched: ["notes"] } });
+    const stale = await (await POST(req(validBody()))).json();
+    assert.match(stale.error, /Nothing was saved/);
+  });
+
+  test("applied: reports counts and the protected occurrences, with a notice naming how many were kept", async () => {
+    happy({ rpc: { cancelled_count: 3, created_count: 5, protected_count: 2, protected: [{ id: "x", scheduled_for: "2026-10-27T13:00:00+00:00" }, { id: "y", scheduled_for: "2026-11-03T13:00:00+00:00" }], skipped_for_exclusion_count: 1 } });
+    const res = await POST(req(validBody()));
     assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.cancelled, 1);
-    assert.equal(body.created, 0);
-    // Two "update" calls happen in this flow: the bulk sibling-cancel
-    // (.update({status: "cancelled"})) and the source-row recurrence update
-    // -- find the latter specifically by its frequency_type key, rather
-    // than assuming call order.
-    const updateCall = currentFake.calls.find(
-      (c) => c.table === "appointments" && c.method === "update" && (c.args[0] as Record<string, unknown>)?.frequency_type !== undefined
-    );
-    const updateArgs = updateCall!.args[0] as { frequency_type: string; repeat_months: number | null };
-    assert.equal(updateArgs.frequency_type, "one_time");
-    assert.equal(updateArgs.repeat_months, null, "converting away from monthly clears repeat_months rather than leaving a stale value");
-  });
-});
-
-describe("Phase 5D: trusted workspace timezone drives recurrence generation, with atomic DST-nonexistent rejection", () => {
-  test("converting to one_time never queries company_settings -- the timezone lookup is skipped entirely when there is no recurrence to generate", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-1", frequency_type: "weekly" } },
-        { data: [{ id: "sib-1" }] },
-        { error: null },
-        { error: null },
-      ],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [
-        { data: { id: "series-1", status: "active" } }, // observe old series status
-        { data: [{ id: "series-1" }] }, // quarantine old
-        { data: [{ id: "series-1" }] }, // finalize old stopped
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 200);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "company_settings"), []);
+    const json = await res.json();
+    assert.equal(json.ok, true);
+    assert.equal(json.cancelled, 3);
+    assert.equal(json.created, 5);
+    assert.equal(json.protectedOccurrences, 2);
+    assert.equal(json.protected.length, 2);
+    assert.equal(json.skippedForExclusion, 1);
+    assert.match(json.notice.message, /2 occurrences with recorded work were kept/);
+    assert.equal(json.alreadyApplied, undefined);
   });
 
-  test("a weekly recurrence whose generated occurrence lands on a nonexistent DST local time is rejected atomically -- 400, zero cancelled siblings, zero source-row update, zero new rows", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        // 2026-02-22T07:30:00.000Z = 2:30 AM New York (a Sunday). +1 week
-        // lands on 2026-03-08 2:30 AM New York -- the exact spring-forward
-        // gap. This appointment is ALREADY part of a series (siblings would
-        // normally be cancelled) -- proving the atomicity guarantee holds
-        // even when there's something to lose by acting too early.
-        { data: { ...oneTimeAppt(), series_id: "series-1", scheduled_for: "2026-02-22T07:30:00.000Z" } },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1 }));
-    assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.match(body.error, /daylight-saving/);
-    // Only the initial fetch + the company_settings read happened -- no
-    // sibling lookup/cancel, no source-row update, no insert.
-    assert.deepEqual(currentFake.calls.filter((c) => c.method === "update" || c.method === "insert"), []);
+  test("applied with nothing protected has no notice; a replay is marked alreadyApplied", async () => {
+    happy();
+    const fresh = await (await POST(req(validBody()))).json();
+    assert.equal(fresh.notice, undefined);
+    assert.equal(fresh.protectedOccurrences, 0);
+    happy({ rpc: { replayed: true } });
+    const replay = await (await POST(req(validBody()))).json();
+    assert.equal(replay.alreadyApplied, true);
+    assert.equal(replay.ok, true);
   });
 
-  test("a monthly recurrence whose generated occurrence lands on a nonexistent DST local time is also rejected atomically", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }],
-      appointments: [
-        // 2026-01-08T07:30:00.000Z = 2:30 AM New York, Jan 8. +2 months
-        // (repeat_months: 2) lands on Mar 8, 2:30 AM New York -- the gap.
-        { data: { ...oneTimeAppt(), scheduled_for: "2026-01-08T07:30:00.000Z" } },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "monthly", repeat_months: 2 }));
-    assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.match(body.error, /daylight-saving/);
-    assert.deepEqual(currentFake.calls.filter((c) => c.method === "update" || c.method === "insert"), []);
-  });
-
-  test("the exact same DST-gap origin succeeds for a workspace timezone that never hits it (Arizona, no DST)", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: "America/Phoenix" } }],
-      appointments: [
-        // 2026-02-22T09:30:00.000Z = 2:30 AM Arizona (no DST, never a gap).
-        { data: { ...oneTimeAppt(), scheduled_for: "2026-02-22T09:30:00.000Z" } },
-        { error: null }, // update source appointment
-        { data: [{ id: "new-1" }] }, // insert new series rows
-      ],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [{ data: null }],
-    }, { activate_recurring_series: [{ data: "activated" }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1 }));
-    assert.equal(res.status, 200);
-  });
-
-  test("a timezone field included in the request body is silently ignored -- there is no such input the caller can spoof", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      company_settings: [{ data: { timezone: null } }], // trusted: America/New_York
-      appointments: [
-        { data: { ...oneTimeAppt(), scheduled_for: "2026-02-22T07:30:00.000Z" } },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    // A body-supplied timezone claiming Arizona (which would NOT hit the
-    // gap) must not override the trusted, server-resolved NY timezone.
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1, timezone: "America/Phoenix" }));
-    assert.equal(res.status, 400);
-  });
-});
-
-describe("Block 2B safety correction: recurring_series registry lifecycle is fail-closed", () => {
-  test("changing frequency on a one-time appointment inserts a review_required row FIRST, then activates it with the EDITED appointment as its own template", async () => {
+  test("an RPC error (which aborts the whole transaction) returns a generic 500 that leaks nothing and notifies no one", async () => {
     resetFixtures(
       {
         workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
         subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+        appointments: [{ data: { id: "appt-1", client_id: "client-1", is_demo: false } }],
         company_settings: [{ data: { timezone: null } }],
-        appointments: [
-          { data: oneTimeAppt() },
-          { error: null },
-          { data: [{ id: "new-1" }] },
-        ],
-        appointment_employees: [{ data: [] }],
-        recurring_series: [{ data: null }],
       },
-      { activate_recurring_series: [{ data: "activated" }] }
+      { apply_recurrence_change: [{ error: { message: 'deadlock detected on relation "appointments"' } }] }
     );
     sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 2 }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.warning, undefined);
-
-    const insertCall = currentFake.calls.find((c) => c.table === "recurring_series" && c.method === "insert");
-    assert.ok(insertCall);
-    const insertedRow = insertCall!.args[0] as Record<string, unknown>;
-    assert.equal(insertedRow.status, "review_required");
-    assert.equal(insertedRow.source, "owner_created");
-    assert.equal(insertedRow.template_appointment_id, null);
-    assert.equal(insertedRow.reviewed_at, null);
-
-    assert.equal(currentFake.rpcCalls.length, 1);
-    const rpcCall = currentFake.rpcCalls[0];
-    assert.equal(rpcCall.fn, "activate_recurring_series");
-    assert.equal((rpcCall.args as Record<string, unknown>).p_template_appointment_id, "appt-1"); // the edited row itself, not a newly generated one
-  });
-
-  test("converting a recurring series to one_time quarantines the OLD series BEFORE cancelling siblings, then finalizes it stopped after", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-old", frequency_type: "weekly" } },
-        { data: [{ id: "sib-1" }] },
-        { error: null },
-        { error: null },
-      ],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [
-        { data: { id: "series-old", status: "active" } }, // observe old series status
-        { data: [{ id: "series-old" }] }, // quarantine
-        { data: [{ id: "series-old" }] }, // finalize stopped
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.warning, undefined);
-
-    const updateCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update");
-    assert.equal(updateCalls.length, 2, "quarantine then finalize-stopped");
-    assert.equal((updateCalls[0].args[0] as Record<string, unknown>).status, "review_required");
-    assert.equal((updateCalls[1].args[0] as Record<string, unknown>).status, "stopped");
-    const eqCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq");
-    assert.ok(eqCalls.some((c) => (c.args as unknown[])[0] === "id" && (c.args as unknown[])[1] === "series-old"));
-
-    // The quarantine call must be recorded before ANY appointment write.
-    const quarantineCallIdx = currentFake.calls.indexOf(updateCalls[0]);
-    const firstApptWriteIdx = currentFake.calls.findIndex(
-      (c) => c.table === "appointments" && (c.method === "update" || c.method === "insert")
-    );
-    assert.ok(quarantineCallIdx < firstApptWriteIdx);
-  });
-
-  test("production-review correction (Block 2C-2B lifecycle-concurrency audit): this route was ALREADY correctly ordered -- the sibling-id READ query (not just the later write) also occurs strictly after quarantineIfObservedActive's own observe call, proven via the real .from() call sequence", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-old", frequency_type: "weekly" } }, // 1: fetch origin
-        { data: [{ id: "sib-1" }] }, // 4: sibling-id query
-        { error: null }, // 5: cancel siblings
-        { error: null }, // 6: update origin (frequency_type -> one_time)
-      ],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [
-        { data: { id: "series-old", status: "active" } }, // 2: quarantine observe
-        { data: [{ id: "series-old" }] }, // 3: quarantine UPDATE
-        { data: [{ id: "series-old" }] }, // 7: finalize stopped
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 200);
-
-    const fromSequence = currentFake.calls
-      .filter((c) => c.method === "from" && (c.table === "appointments" || c.table === "recurring_series"))
-      .map((c) => c.table);
-    assert.deepEqual(fromSequence, [
-      "appointments", // 1: fetch origin
-      "recurring_series", // 2: quarantine observe
-      "recurring_series", // 3: quarantine UPDATE
-      "appointments", // 4: sibling-id query -- AFTER both quarantine calls above
-      "appointments", // 5: cancel siblings
-      "appointments", // 6: update origin
-      "recurring_series", // 7: finalize stopped
-    ]);
-  });
-
-  test("failure injection: a quarantine failure on the OLD series aborts BEFORE any appointment mutation, 500, zero appointment writes", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: { ...oneTimeAppt(), series_id: "series-old", frequency_type: "weekly" } }],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [{ error: { message: "simulated quarantine failure" } }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+    const res = await POST(req(validBody({ notify_channel: "both" })));
     assert.equal(res.status, 500);
-    const body = await res.json();
-    assert.ok(!JSON.stringify(body).includes("simulated quarantine failure"), "must not leak the raw database error");
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments" && (c.method === "update" || c.method === "insert")), []);
-  });
-
-  test("failure injection: a finalize-stopped failure after a successful mutation still returns success, with a warning -- the old series is never left active", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: { ...oneTimeAppt(), series_id: "series-old", frequency_type: "weekly" } },
-        { data: [{ id: "sib-1" }] },
-        { error: null },
-        { error: null },
-      ],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [
-        { data: { id: "series-old", status: "active" } }, // observe
-        { data: [{ id: "series-old" }] }, // quarantine
-        { error: { message: "simulated finalize-stopped failure" } }, // finalize fails
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.cancelled, 1);
-    assert.ok(body.warning, "expected a structured warning on the still-successful response");
-    assert.equal(body.warning.code, "recurring_series_review_required");
-    assert.ok(!JSON.stringify(body.warning).includes("simulated finalize-stopped failure"));
-  });
-
-  test("race: concurrent review cannot be overwritten by Manage Recurrence -- observed active, but the quarantine CAS finds nothing (already changed elsewhere), aborts 409 with zero appointment writes", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: { ...oneTimeAppt(), series_id: "series-old", frequency_type: "weekly" } }],
-      appointment_employees: [{ data: [] }],
-      recurring_series: [
-        { data: { id: "series-old", status: "active" } }, // observed active
-        { data: [] }, // but the compare-and-set matches nothing -- raced by another request
-      ],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 409);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointments" && (c.method === "update" || c.method === "insert")), []);
-    // No later finalize/reactivate attempt of any kind.
-    assert.equal(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update").length, 1, "only the failed quarantine CAS, nothing else");
-  });
-
-  test("failure injection: a new-series activation RPC error still returns the successful appointment mutation, with a warning", async () => {
-    resetFixtures(
-      {
-        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-        company_settings: [{ data: { timezone: null } }],
-        appointments: [
-          { data: oneTimeAppt() },
-          { error: null },
-          { data: [{ id: "new-1" }] },
-        ],
-        appointment_employees: [{ data: [] }],
-        recurring_series: [{ data: null }],
-      },
-      { activate_recurring_series: [{ error: { message: "simulated activation failure" } }] }
-    );
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 2 }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.ok(body.created > 0);
-    assert.ok(body.warning, "expected a structured warning on the still-successful response");
-    assert.equal(body.warning.code, "recurring_series_review_required");
-  });
-
-  test("outcome 'invalid_timezone' from the RPC still returns the successful appointment mutation, with the same structured warning", async () => {
-    resetFixtures(
-      {
-        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-        company_settings: [{ data: { timezone: null } }],
-        appointments: [
-          { data: oneTimeAppt() },
-          { error: null },
-          { data: [{ id: "new-1" }] },
-        ],
-        appointment_employees: [{ data: [] }],
-        recurring_series: [{ data: null }],
-      },
-      { activate_recurring_series: [{ data: "invalid_timezone" }] }
-    );
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 2 }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.ok(body.created > 0);
-    assert.ok(body.warning);
-    assert.equal(body.warning.code, "recurring_series_review_required");
-  });
-
-  test("race: activating a managed series cannot succeed after its client becomes inactive -- stays review_required, appointment mutation still succeeds with a warning", async () => {
-    resetFixtures(
-      {
-        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-        company_settings: [{ data: { timezone: null } }],
-        appointments: [
-          { data: oneTimeAppt() },
-          { error: null },
-          { data: [{ id: "new-1" }] },
-        ],
-        appointment_employees: [{ data: [] }],
-        recurring_series: [{ data: null }],
-      },
-      // The client-active re-check now happens entirely inside the RPC's
-      // own locked transaction -- simulated here by the RPC itself
-      // reporting client_not_active, not a second JS-level clients fixture.
-      { activate_recurring_series: [{ data: "client_not_active" }] }
-    );
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 2 }));
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.ok(body.created > 0, "the appointment mutation itself must not be blocked or retried");
-    assert.ok(body.warning);
-    assert.equal(body.warning.code, "recurring_series_review_required");
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update"), []);
-  });
-
-  test("a one-time-to-one-time edit (no series involved at all) never touches recurring_series", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: oneTimeAppt() },
-        { error: null },
-      ],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 200);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+    const json = await res.json();
+    assert.match(json.error, /Nothing was saved/);
+    assert.ok(!JSON.stringify(json).includes("deadlock"));
+    assert.equal(notifyCalls.length, 0);
   });
 });
 
-describe("historical-record protection -- recurrence management can never be anchored to a past/completed/cancelled appointment (founder decision)", () => {
-  test("a past (scheduled_end already elapsed) anchor is rejected 409, zero appointment/registry writes", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: { ...oneTimeAppt(), scheduled_for: "2025-11-01T14:00:00.000Z", scheduled_end: "2025-11-01T15:00:00.000Z" } }],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "weekly", repeat_weeks: 1 }));
-    assert.equal(res.status, 409);
-    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
-    assert.equal(writeCalls(currentFake.calls).length, 0);
-    // The origin's assignments ARE read (isHistoricalAppointment needs them
-    // to rule out "completed" before falling back to the time check) but
-    // nothing else -- no registry/series row is ever touched, and the read
-    // itself is never a write.
-    assert.deepEqual(
-      currentFake.calls.filter((c) => c.table !== "appointments" && c.table !== "subscriptions" && c.table !== "workspace_memberships" && c.table !== "appointment_employees"),
-      []
-    );
-  });
-
-  test("an already-cancelled anchor is rejected 409, even though scheduled_for is in the future", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: { ...oneTimeAppt(), status: "cancelled", scheduled_for: "2026-12-01T14:00:00.000Z" } }],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 409);
-    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
-    assert.equal(writeCalls(currentFake.calls).length, 0);
-  });
-
-  test("completed early: scheduled_end is still an hour in the future, but every assigned employee already finished -- rejected 409, zero writes", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{
-        data: {
-          ...oneTimeAppt(),
-          scheduled_for: new Date(Date.now() - 30 * 60_000).toISOString(),
-          scheduled_end: new Date(Date.now() + 60 * 60_000).toISOString(), // an hour in the future
-        },
-      }],
-      appointment_employees: [{
-        data: [{
-          id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
-          actual_started_at: new Date(Date.now() - 25 * 60_000).toISOString(),
-          actual_completed_at: new Date(Date.now() - 5 * 60_000).toISOString(),
-          created_at: "x", updated_at: "x",
-        }],
-      }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
-    assert.equal(res.status, 409);
-    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
-    assert.equal(writeCalls(currentFake.calls).length, 0);
-  });
-
-  test("one employee finished but a second assigned employee has not -- NOT historical, request still succeeds (never assume one employee finishing completes the whole appointment)", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        {
-          data: {
-            ...oneTimeAppt(),
-            scheduled_for: new Date(Date.now() - 30 * 60_000).toISOString(),
-            scheduled_end: new Date(Date.now() + 60 * 60_000).toISOString(),
-          },
-        },
-        { error: null },
-      ],
-      appointment_employees: [{
-        data: [
-          {
-            id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
-            actual_started_at: new Date(Date.now() - 25 * 60_000).toISOString(),
-            actual_completed_at: new Date(Date.now() - 5 * 60_000).toISOString(),
-            created_at: "x", updated_at: "x",
-          },
-          { id: "ae-2", appointment_id: "appt-1", employee_id: "roxana", actual_started_at: null, actual_completed_at: null, created_at: "x", updated_at: "x" },
-        ],
-      }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+describe("notifications: only after a fresh commit -- and no delivery guarantee is claimed", () => {
+  test("a freshly applied, client-visible change notifies once, AFTER the RPC has completed, with the appointment's own client and the chosen channel", async () => {
+    happy();
+    const res = await POST(req(validBody({ notify_channel: "both" })));
     assert.equal(res.status, 200);
+    assert.equal(notifyCalls.length, 1);
+    assert.equal(notifyCalls[0].rpcCallsSoFar, 1, "the notification ran after the transaction returned");
+    assert.deepEqual(notifyCalls[0].params, { workspaceId: REAL_WORKSPACE_ID, appointmentId: "appt-1", clientId: "client-1", channel: "both" });
   });
 
-  test("a still-in-progress appointment (started, scheduled_end not yet reached) is NOT treated as historical -- normal recurrence management still succeeds", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [
-        { data: { ...oneTimeAppt(), scheduled_for: "2025-11-30T23:50:00.000Z", scheduled_end: "2025-12-01T00:50:00.000Z" } },
-        { error: null },
-      ],
-      appointment_employees: [{ data: [] }],
+  const SILENT: Array<[string, { rpc?: Record<string, unknown>; appt?: Record<string, unknown> }, string]> = [
+    ["notify_channel none", {}, "none"],
+    ["an identical replay (already notified the first time)", { rpc: { replayed: true } }, "both"],
+    ["a change the client would not see (fields/date/employees unchanged)", { rpc: { client_visible_change: false } }, "both"],
+    ["demo data", { appt: { is_demo: true } }, "both"],
+  ];
+  for (const [label, over, channel] of SILENT) {
+    test(`no notification for ${label}`, async () => {
+      happy(over);
+      const res = await POST(req(validBody({ notify_channel: channel })));
+      assert.equal(res.status, 200);
+      assert.equal(notifyCalls.length, 0);
     });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", frequency_type: "one_time" }));
+  }
+
+  test("a notification failure after commit never turns a committed change into an error response", async () => {
+    happy();
+    notifyShouldThrow = true;
+    const res = await POST(req(validBody({ notify_channel: "email" })));
     assert.equal(res.status, 200);
+    assert.equal((await res.json()).ok, true);
+    assert.equal(notifyCalls.length, 1);
   });
 });

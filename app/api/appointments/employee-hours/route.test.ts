@@ -1,16 +1,17 @@
-// Phase 5.4E2 + Phase 5.7D-R18: route-level tests for
-// app/api/appointments/employee-hours/route.ts (POST only -- this file has
-// no GET handler). Proves requireCapability(session, "canUseJobTracking")
-// is correctly wired before any read or appointment_employee_hours write,
-// AND (Phase 5.7D-R18) that manual hours can only be saved for an employee
-// who actually has an appointment_employees assignment row for this exact
-// appointment, with the override guard now checking THAT assignment's own
-// Job Tracking timestamps -- never another assignment's, and never the
-// appointment-level (frozen) columns. @/lib/session and @/lib/supabaseAdmin
-// are mocked in-process; @/lib/entitlementServer is DELIBERATELY LEFT
-// UNMOCKED -- the real requireCapability chain runs against a fake
-// "subscriptions" table. No real Supabase/Stripe/network call is
-// reachable. Run with --experimental-test-module-mocks (see package.json).
+// Route-level tests for app/api/appointments/employee-hours/route.ts (POST only).
+//
+// The write itself is now ONE database call, save_employee_hours
+// (migrations/030): it locks the parent appointment FIRST (so a new manual
+// hours row cannot slip past a concurrent recurrence change's recorded-work
+// check), revalidates it, enforces "assigned to THIS appointment" and the
+// tracked-time override guard, and upserts. These tests use a mocked RPC and
+// so prove only the route: the capability gate runs before anything,
+// validation order, that the RPC receives the session's workspace, and the
+// outcome -> HTTP mapping. Locking / rollback / concurrency are proven
+// against real PostgreSQL in test-db/recurrence.test.ts.
+// @/lib/session and @/lib/supabaseAdmin are mocked; @/lib/entitlementServer is
+// DELIBERATELY UNMOCKED (real requireCapability chain over a fake
+// "subscriptions" table).
 process.env.SUPABASE_URL = "http://localhost:54321";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
@@ -23,15 +24,20 @@ let currentFake = createFakeSupabaseAdmin({});
 let sessionToReturn: unknown = { role: "none" };
 
 mock.module("@/lib/supabaseAdmin", {
-  namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
+  namedExports: {
+    supabaseAdmin: {
+      from: (table: string) => currentFake.supabaseAdmin.from(table),
+      rpc: (fn: string, args?: unknown) => currentFake.supabaseAdmin.rpc(fn, args),
+    },
+  },
 });
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => sessionToReturn) });
 
 const { POST } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
-function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpc: FakeSupabaseFixture[] = []) {
+  currentFake = createFakeSupabaseAdmin(responses, rpc.length ? { save_employee_hours: rpc } : {});
 }
 function req(body?: unknown, url = "http://localhost/api/appointments/employee-hours") {
   return new Request(url, {
@@ -44,13 +50,10 @@ function req(body?: unknown, url = "http://localhost/api/appointments/employee-h
 const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
 const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
 const VALID_BODY = { appointment_id: "appt-1", employee_id: "emp-1", hours_worked: 2.5, note: "Forgot to clock in" };
-
-function incompleteAssignment() {
-  return { id: "ae-1", actual_started_at: null, actual_completed_at: null };
-}
-function completeAssignment() {
-  return { id: "ae-1", actual_started_at: "2026-07-21T09:00:00.000Z", actual_completed_at: "2026-07-21T11:00:00.000Z" };
-}
+const MEMBERSHIP = { workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }] };
+const ACTIVE = { ...MEMBERSHIP, subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] };
+const ENTRY = { id: "aeh-1", appointment_id: "appt-1", employee_id: "emp-1", hours_worked: 2.5, note: "Forgot to clock in", created_at: "x", updated_at: "x" };
+const savedOk: FakeSupabaseFixture = { data: { outcome: "ok", entry: ENTRY } };
 
 describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
   const FULL_STATES: Array<[string, ReturnType<typeof subscriptionRow>]> = [
@@ -62,31 +65,22 @@ describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
 
   for (const [label, row] of FULL_STATES) {
     test(`${label} permits saving manual hours, response unchanged`, async () => {
-      resetFixtures({
-        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-        subscriptions: [{ data: row }],
-        appointment_employees: [{ data: incompleteAssignment() }],
-        appointment_employee_hours: [{ data: { id: "aeh-1", appointment_id: "appt-1", employee_id: "emp-1", hours_worked: 2.5, note: "Forgot to clock in" } }],
-      });
+      resetFixtures({ ...MEMBERSHIP, subscriptions: [{ data: row }] }, [savedOk]);
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req(VALID_BODY));
       assert.equal(res.status, 200, label);
-      const body = await res.json();
-      assert.equal(body.ok, true, label);
-      assert.equal(body.entry.id, "aeh-1", label);
-      assert.equal(writeCalls(currentFake.calls).length, 1, label);
+      assert.deepEqual(await res.json(), { ok: true, entry: ENTRY }, label);
+      assert.equal(currentFake.rpcCalls.length, 1);
+      assert.deepEqual(writeCalls(currentFake.calls), [], "the route writes nothing itself; the RPC does");
     });
   }
 
   test("exact trusted demo workspace permits saving manual hours with zero subscriptions-table queries", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }],
-      appointment_employees: [{ data: incompleteAssignment() }],
-      appointment_employee_hours: [{ data: { id: "aeh-1" } }],
-    });
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }] }, [savedOk]);
     sessionToReturn = { role: "owner", workspaceId: DEMO_WORKSPACE_ID, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
     const res = await POST(req(VALID_BODY));
     assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "subscriptions").length, 0);
   });
 
   const RESTRICTED_STATES: Array<[string, ReturnType<typeof subscriptionRow> | null]> = [
@@ -97,73 +91,44 @@ describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
   ];
 
   for (const [label, row] of RESTRICTED_STATES) {
-    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero assignment reads, zero writes`, async () => {
-      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: row }] });
+    test(`${label} returns the exact SUBSCRIPTION_RESTRICTED 403, zero database work`, async () => {
+      resetFixtures({ ...MEMBERSHIP, subscriptions: [{ data: row }] });
       sessionToReturn = OWNER_SESSION;
       const res = await POST(req(VALID_BODY));
       assert.equal(res.status, 403, label);
       assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY, label);
-      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), [], label);
+      assert.equal(currentFake.rpcCalls.length, 0, label);
     });
   }
 
-  test("query_error on the subscriptions read denies, zero assignment access", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ error: { message: "simulated DB error" } }] });
+  test("query_error on the subscriptions read denies (503), zero database work", async () => {
+    resetFixtures({ ...MEMBERSHIP, subscriptions: [{ error: { message: "simulated DB error" } }] });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(VALID_BODY));
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), []);
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 
-  test("non-owner role (employee) retains the existing role-denial response, never SUBSCRIPTION_RESTRICTED", async () => {
-    resetFixtures({});
-    sessionToReturn = { role: "employee", employeeId: "emp-1", workspaceId: REAL_WORKSPACE_ID };
-    const res = await POST(req(VALID_BODY));
-    assert.equal(res.status, 403);
-    const body = await res.json();
-    assert.equal(body.error, "Unauthorized");
-    assert.equal(body.code, undefined);
-    assert.equal(currentFake.calls.length, 0);
-  });
+  for (const [label, session] of [
+    ["employee", { role: "employee", employeeId: "e1", workspaceId: REAL_WORKSPACE_ID }],
+    ["tester", { role: "tester", workspaceId: DEMO_WORKSPACE_ID }],
+    ["unauthenticated", { role: "none" }],
+  ] as const) {
+    test(`${label} keeps the existing role denial and touches nothing (owner-only route)`, async () => {
+      resetFixtures({});
+      sessionToReturn = session;
+      const res = await POST(req(VALID_BODY));
+      assert.equal(res.status, 403);
+      assert.equal(currentFake.calls.length, 0);
+      assert.equal(currentFake.rpcCalls.length, 0);
+    });
+  }
 
-  test("tester role retains the existing role-denial response (owner-only route), never SUBSCRIPTION_RESTRICTED", async () => {
-    resetFixtures({});
-    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
-    const res = await POST(req(VALID_BODY));
-    assert.equal(res.status, 403);
-    const body = await res.json();
-    assert.equal(body.error, "Unauthorized");
-    assert.equal(body.code, undefined);
-  });
-
-  test("unauthenticated (role: none) receives the existing role-denial response and cannot probe subscription status", async () => {
-    resetFixtures({});
-    sessionToReturn = { role: "none" };
-    const res = await POST(req(VALID_BODY));
-    assert.equal(res.status, 403);
-    const body = await res.json();
-    assert.equal(body.error, "Unauthorized");
-    assert.equal(body.code, undefined);
-    assert.equal(currentFake.calls.length, 0);
-  });
-
-  test("a non-demo workspace cannot manufacture demo access by any request-supplied value", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+  test("a spoofed workspace_id in the body/query does not change which workspace's entitlement is checked", async () => {
+    resetFixtures({ ...MEMBERSHIP, subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
     sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ ...VALID_BODY, workspace_id: DEMO_WORKSPACE_ID }));
-    assert.equal(res.status, 403);
-    assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
-  });
-
-  test("a spoofed workspace_id/query-string value does not change which workspace's entitlement is checked", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ ...VALID_BODY, workspace_id: "attacker-ws" }, "http://localhost/api/appointments/employee-hours?workspace_id=attacker-ws-2"));
+    const res = await POST(req({ ...VALID_BODY, workspace_id: DEMO_WORKSPACE_ID }, "http://localhost/api/appointments/employee-hours?workspace_id=attacker"));
     assert.equal(res.status, 403);
     assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
   });
@@ -172,115 +137,106 @@ describe("POST /api/appointments/employee-hours -- entitlement gate", () => {
     test("missing appointment_id + unauthenticated -> the existing role-denial, not 400, zero Supabase calls", async () => {
       resetFixtures({});
       sessionToReturn = { role: "none" };
-      const res = await POST(req({ employee_id: "emp-1", hours_worked: 2, note: "x" }));
+      const res = await POST(req({ ...VALID_BODY, appointment_id: undefined }));
       assert.equal(res.status, 403);
-      assert.equal((await res.json()).error, "Unauthorized");
       assert.equal(currentFake.calls.length, 0);
     });
 
     test("missing appointment_id + restricted workspace -> the exact SUBSCRIPTION_RESTRICTED 403, not 400", async () => {
-      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
+      resetFixtures({ ...MEMBERSHIP, subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });
       sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ employee_id: "emp-1", hours_worked: 2, note: "x" }));
+      const res = await POST(req({ ...VALID_BODY, appointment_id: undefined }));
       assert.equal(res.status, 403);
       assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
     });
 
-    test("missing appointment_id + entitled workspace -> the existing 400 'Missing appointment_id' response", async () => {
-      resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
+    test("missing appointment_id + entitled workspace -> the existing 400, no RPC", async () => {
+      resetFixtures(ACTIVE);
       sessionToReturn = OWNER_SESSION;
-      const res = await POST(req({ employee_id: "emp-1", hours_worked: 2, note: "x" }));
+      const res = await POST(req({ ...VALID_BODY, appointment_id: undefined }));
       assert.equal(res.status, 400);
       assert.deepEqual(await res.json(), { error: "Missing appointment_id" });
-      assert.deepEqual(currentFake.calls.filter((c) => c.table !== "subscriptions" && c.table !== "workspace_memberships"), []);
+      assert.equal(currentFake.rpcCalls.length, 0);
     });
   });
 });
 
-describe("existing manual-hours business rules remain unchanged once entitled", () => {
-  test("missing employee_id -> existing 400, after entitlement passes", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", hours_worked: 2, note: "x" }));
-    assert.equal(res.status, 400);
-    assert.deepEqual(await res.json(), { error: "Missing employee_id" });
-  });
-
-  test("non-positive hours_worked -> existing 400, after entitlement passes", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", employee_id: "emp-1", hours_worked: 0, note: "x" }));
-    assert.equal(res.status, 400);
-    assert.deepEqual(await res.json(), { error: "Hours worked must be a positive number" });
-  });
-
-  test("missing note/reason -> existing 400, after entitlement passes", async () => {
-    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-    subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", employee_id: "emp-1", hours_worked: 2 }));
-    assert.equal(res.status, 400);
-    assert.deepEqual(await res.json(), { error: "A reason is required (e.g. forgot to clock in/out)." });
-  });
-
-  test("genuinely complete Job Tracking on this assignment still blocks manual override with the existing 409, after entitlement passes", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointment_employees: [{ data: completeAssignment() }],
+describe("existing manual-hours validation is unchanged and never reaches the database", () => {
+  for (const [label, body, status, message] of [
+    ["missing employee_id", { ...VALID_BODY, employee_id: undefined }, 400, "Missing employee_id"],
+    ["zero hours", { ...VALID_BODY, hours_worked: 0 }, 400, "Hours worked must be a positive number"],
+    ["negative hours", { ...VALID_BODY, hours_worked: -1 }, 400, "Hours worked must be a positive number"],
+    ["non-numeric hours", { ...VALID_BODY, hours_worked: "abc" }, 400, "Hours worked must be a positive number"],
+    ["missing note/reason", { ...VALID_BODY, note: "  " }, 400, "A reason is required (e.g. forgot to clock in/out)."],
+  ] as const) {
+    test(`${label} -> ${status}`, async () => {
+      resetFixtures(ACTIVE);
+      sessionToReturn = OWNER_SESSION;
+      const res = await POST(req(body));
+      assert.equal(res.status, status);
+      assert.deepEqual(await res.json(), { error: message });
+      assert.equal(currentFake.rpcCalls.length, 0);
     });
+  }
+});
+
+describe("the RPC receives the session's workspace and the trimmed inputs", () => {
+  test("workspace_id in the body is ignored; the note is trimmed; hours are passed as a number", async () => {
+    resetFixtures(ACTIVE, [savedOk]);
     sessionToReturn = OWNER_SESSION;
-    const res = await POST(req(VALID_BODY));
-    assert.equal(res.status, 409);
-    assert.deepEqual(await res.json(), { error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." });
-    assert.equal(writeCalls(currentFake.calls).length, 0);
+    await POST(req({ ...VALID_BODY, workspace_id: "attacker-ws", note: "  Forgot to clock in  " }));
+    assert.deepEqual(currentFake.rpcCalls[0], {
+      fn: "save_employee_hours",
+      args: { p_workspace_id: REAL_WORKSPACE_ID, p_appointment_id: "appt-1", p_employee_id: "emp-1", p_hours_worked: 2.5, p_note: "Forgot to clock in" },
+    });
+  });
+
+  test("this route reads and writes no table itself -- the assignment lookup, override guard and upsert all happen inside the RPC", async () => {
+    resetFixtures(ACTIVE, [savedOk]);
+    sessionToReturn = OWNER_SESSION;
+    await POST(req(VALID_BODY));
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "appointment_employees" || c.table === "appointment_employee_hours"), []);
   });
 });
 
-describe("Phase 5.7D-R18: manual hours require an actual assignment, and never cross-contaminate between employees on a shared appointment", () => {
-  test("an employee with no appointment_employees row for this appointment 404s -- never allowed to log hours for a job they're not assigned to", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointment_employees: [{ data: null }],
-    });
+describe("outcome -> HTTP mapping (existing messages preserved)", () => {
+  test("an employee who is not assigned to this appointment is a 404", async () => {
+    resetFixtures(ACTIVE, [{ data: { outcome: "not_assigned" } }]);
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(VALID_BODY));
     assert.equal(res.status, 404);
     assert.deepEqual(await res.json(), { error: "Employee is not assigned to this appointment." });
   });
 
-  test("the assignment lookup is scoped by appointment_id, employee_id, AND workspace_id -- never trusts employee_id alone", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointment_employees: [{ data: incompleteAssignment() }],
-      appointment_employee_hours: [{ data: { id: "aeh-1" } }],
-    });
+  test("genuinely complete Job Tracking blocks a manual override with the existing 409", async () => {
+    resetFixtures(ACTIVE, [{ data: { outcome: "tracked_time_exists" } }]);
     sessionToReturn = OWNER_SESSION;
-    await POST(req(VALID_BODY));
-    const eqCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "eq");
-    assert.deepEqual(eqCalls.map((c) => c.args[0]), ["appointment_id", "employee_id", "workspace_id"]);
+    const res = await POST(req(VALID_BODY));
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), { error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." });
   });
 
-  test("Teresa's completed tracking on a shared appointment does not block Roxana's own manual entry on the same appointment", async () => {
-    // Same appointment_id, but the assignment fetch is scoped to Roxana's
-    // OWN employee_id -- her assignment row (queued below) is independently
-    // incomplete, regardless of Teresa's completed one on the same job.
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointment_employees: [{ data: { id: "ae-roxana", actual_started_at: null, actual_completed_at: null } }],
-      appointment_employee_hours: [{ data: { id: "aeh-roxana", appointment_id: "appt-1", employee_id: "roxana", hours_worked: 3, note: "Forgot to clock in" } }],
-    });
+  test("a NEW entry on a cancelled or replaced appointment is rejected (revalidated under the parent lock inside the RPC)", async () => {
+    resetFixtures(ACTIVE, [{ data: { outcome: "appointment_not_active" } }]);
     sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", employee_id: "roxana", hours_worked: 3, note: "Forgot to clock in" }));
-    assert.equal(res.status, 200);
+    const res = await POST(req(VALID_BODY));
+    assert.equal(res.status, 409);
     const body = await res.json();
-    assert.equal(body.entry.employee_id, "roxana");
+    assert.equal(body.code, "APPOINTMENT_NOT_ACTIVE");
+    assert.match(body.error, /cancelled or replaced/);
+  });
+
+  test("an RPC error is a 500 and nothing is reported as saved", async () => {
+    resetFixtures(ACTIVE, [{ error: { message: "deadlock detected" } }]);
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req(VALID_BODY));
+    assert.equal(res.status, 500);
+    assert.notEqual((await res.json()).ok, true);
+  });
+
+  test("an unknown outcome is never treated as success", async () => {
+    resetFixtures(ACTIVE, [{ data: { outcome: "surprise" } }]);
+    sessionToReturn = OWNER_SESSION;
+    assert.equal((await POST(req(VALID_BODY))).status, 500);
   });
 });

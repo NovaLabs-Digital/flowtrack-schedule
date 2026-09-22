@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Appointment, Client, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
 import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes } from "@/lib/payroll";
@@ -331,7 +331,44 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const [manageFreq, setManageFreq] = useState<string>(editing?.appointment.frequency_type ?? "one_time");
   const [manageWeeks, setManageWeeks] = useState<number>(editing?.appointment.repeat_weeks ?? 1);
   const [manageMonths, setManageMonths] = useState<number>(editing?.appointment.repeat_months ?? 1);
-  const [savingRecurrence, setSavingRecurrence] = useState(false);
+  // Coordinated-save fix (recurrence changes silently dropped on save): a
+  // pending recurrence change is detected from manageFreq/manageWeeks/
+  // manageMonths against the appointment's CURRENTLY PERSISTED values --
+  // deliberately independent of whether the Manage Recurrence panel is
+  // currently expanded (showManageRecurrence), so collapsing it before
+  // saving can never hide a real, still-pending selection from the save
+  // path. These three fields never change except via direct owner
+  // interaction with this panel's own radio buttons (see the "Manage >"
+  // handlers below, which explicitly re-sync them from the appointment),
+  // so comparing against `editing.appointment` -- stable for this modal's
+  // whole lifetime -- is correct for the entire session, including retries.
+  const hasPendingRecurrenceChange = isEdit && (
+    manageFreq !== (editing!.appointment.frequency_type ?? "one_time") ||
+    (manageFreq === "weekly" && manageWeeks !== (editing!.appointment.repeat_weeks ?? 1)) ||
+    (manageFreq === "monthly" && manageMonths !== (editing!.appointment.repeat_months ?? 1))
+  );
+  // Double-click / re-entrancy guard: a synchronous ref (not state, which
+  // only takes effect on the next render) so two rapid activations of
+  // either save control can never both pass the "not currently saving"
+  // check before the first one's own disabled-button re-render commits.
+  const savingRef = useRef(false);
+  // Atomic recurrence change: identifies ONE specific save to the server
+  // (migrations/029). The server binds this id to the workspace, the
+  // appointment, and the ENTIRE normalized request, so it is only reused
+  // while every input is unchanged -- i.e. a retry of the same click after a
+  // lost response or network error, which the server then answers with the
+  // stored result instead of running the change twice. Changing ANYTHING
+  // (date, time, service, notes, price, employees, pattern) mints a new id,
+  // because the same id with a different request is answered with a
+  // conflict. `for` is the request signature the current id was minted for;
+  // it is cleared once the server confirms the change.
+  const recurrenceOperationRef = useRef<{ id: string; for: string } | null>(null);
+  function getRecurrenceOperationId(signature: string): string {
+    if (!recurrenceOperationRef.current || recurrenceOperationRef.current.for !== signature) {
+      recurrenceOperationRef.current = { id: crypto.randomUUID(), for: signature };
+    }
+    return recurrenceOperationRef.current.id;
+  }
 
   function set(field: string, value: string | number) {
     setForm((prev) => {
@@ -378,6 +415,24 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   // added to importantFieldsChanged's smart-notify trigger below.
   const serviceChanged = isEdit && form.service_type !== editing!.appointment.service_type;
   const importantFieldsChanged = dateTimeChanged || serviceChanged;
+
+  // Coordinated-save fix: whether THIS occurrence's own fields (not its
+  // recurrence pattern) differ from what's currently persisted -- used to
+  // skip sending a redundant, no-op /api/appointments/update call (and its
+  // notification) for a pure recurrence-only edit, and to build the
+  // retry-safety signature below.
+  const notesChanged = isEdit && form.notes.trim() !== (editing!.appointment.notes ?? "");
+  const statusChanged = isEdit && form.status !== editing!.appointment.status;
+  const currentPriceCents = form.price.trim() === "" ? null : parsePriceToCents(form.price);
+  const priceChanged = isEdit && currentPriceCents !== (editing!.appointment.price_cents ?? null);
+  const teamColorChanged = isEdit && teamColor !== (editing!.appointment.team_color ?? null);
+  const employeeIdsChanged = isEdit && (
+    selectedEmployeeIds.length !== initialEmployeeIds.length ||
+    [...selectedEmployeeIds].sort().join(",") !== [...initialEmployeeIds].sort().join(",")
+  );
+  const hasPendingApptFieldChanges = isEdit && (
+    dateTimeChanged || serviceChanged || notesChanged || statusChanged || priceChanged || teamColorChanged || employeeIdsChanged
+  );
 
   // Missing-hours identification is now per assigned employee (Section
   // E.7) -- getMissingHoursEmployeeIds (lib/payroll.ts) is the exact same
@@ -440,61 +495,137 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       return;
     }
 
+    // A pending recurrence change is inherently series-wide -- that's what
+    // "repeat every N weeks" means, it always replaces the series' own
+    // future occurrences regardless of which single occurrence the owner
+    // happened to edit it from -- so the "Only this appointment" / "This and
+    // all future appointments" choice does not apply and is skipped. The
+    // accompanying appointment edits and the recurrence change are saved
+    // TOGETHER, in one transaction (see submitAtomicRecurrenceChange).
+    if (isEdit && hasPendingRecurrenceChange) {
+      executeCoordinatedSave("single");
+      return;
+    }
+
     if (isEdit && isRecurring && !editScope) {
       setEditScope("single");
       return;
     }
 
-    executeEdit(editScope ?? "single");
+    executeCoordinatedSave(editScope ?? "single");
   }
 
-  async function executeEdit(mode: "single" | "future") {
-    // Defense-in-depth: executeEdit has a second call site (the recurring-
-    // appointment edit-scope buttons below) that bypasses handleSubmit's
-    // own guard entirely, so the check is repeated here rather than relied
-    // on only at that one call site.
+  // Saves the pending recurrence change TOGETHER with every other pending
+  // appointment edit as ONE atomic server operation (/api/appointments/
+  // manage-recurrence -> apply_recurrence_change): either everything is saved
+  // (date/time, fields, employees, old series stopped, eligible occurrences
+  // replaced, new series activated) or nothing is. `expected` is what this
+  // modal opened with; the server compares it against the locked row and
+  // rejects the whole request if someone else changed the appointment since.
+  // There is deliberately no "previous scheduled_for" here: the server reads
+  // the original position itself, from the locked row.
+  async function submitAtomicRecurrenceChange(desired: {
+    scheduled_for: string;
+    scheduled_end: string;
+    price_cents: number | null;
+  }): Promise<{ ok: true } | { ok: false; error: string }> {
+    const a = editing!.appointment;
+    const fields = {
+      scheduled_for: desired.scheduled_for,
+      scheduled_end: desired.scheduled_end,
+      service_type: form.service_type,
+      notes: form.notes.trim(),
+      duration_minutes: computedDuration,
+      price_cents: desired.price_cents,
+      team_color: teamColor,
+      status: form.status,
+    };
+    const employee_ids = [...selectedEmployeeIds].sort();
+    const expected = {
+      scheduled_for: a.scheduled_for,
+      scheduled_end: a.scheduled_end ?? null,
+      service_type: a.service_type,
+      notes: a.notes ?? null,
+      duration_minutes: a.duration_minutes ?? null,
+      price_cents: a.price_cents ?? null,
+      team_color: a.team_color ?? null,
+      status: a.status,
+      series_id: a.series_id ?? null,
+      frequency_type: a.frequency_type ?? "one_time",
+      employee_ids: initialEmployeeIds,
+      timezone,
+    };
+    const signature = JSON.stringify({ fields, employee_ids, manageFreq, manageWeeks, manageMonths });
+    try {
+      const res = await fetch("/api/appointments/manage-recurrence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          appointment_id: a.id,
+          client_operation_id: getRecurrenceOperationId(signature),
+          frequency_type: manageFreq,
+          repeat_weeks: manageFreq === "weekly" ? manageWeeks : undefined,
+          repeat_months: manageFreq === "monthly" ? manageMonths : undefined,
+          fields,
+          employee_ids,
+          expected,
+          notify_channel: notifyChannel,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message: string = data?.error || `Request failed (${res.status}). Nothing was saved.`;
+        // A 4xx means the server refused the request before changing anything
+        // (the whole operation is atomic), so "nothing was saved" is exact --
+        // say it for every such rejection, not only the ones whose own wording
+        // already does. A 5xx keeps the server's own wording: it may not know.
+        const refused = res.status >= 400 && res.status < 500;
+        return { ok: false, error: refused && !/nothing was saved/i.test(message) ? `${message} Nothing was saved.` : message };
+      }
+      if (data?.notice?.message) alert(data.notice.message);
+      recurrenceOperationRef.current = null;
+      return { ok: true };
+    } catch {
+      // The request may or may not have reached the server. The operation id
+      // is kept, so retrying the same click is answered with the stored
+      // result if it did commit -- never applied twice.
+      return { ok: false, error: "Network error. Please try again -- nothing will be applied twice." };
+    }
+  }
+
+  // The single save path for an edit session:
+  //   - A pending recurrence change goes through submitAtomicRecurrenceChange
+  //     with every other pending edit: one request, one transaction, all or
+  //     nothing. The modal closes (onSaved()) only after the server confirms.
+  //   - Otherwise only the appointment's own fields are saved via
+  //     /api/appointments/update (and only if something actually changed).
+  // For a brand-new appointment (!isEdit), this preserves the exact
+  // pre-existing create-mode behavior (a single POST to
+  // /api/appointments/create, which already includes frequency_type/
+  // repeat_weeks/repeat_months).
+  async function executeCoordinatedSave(mode: "single" | "future") {
+    // Defense-in-depth: this function has a second call site (the
+    // recurring-appointment edit-scope buttons below) that bypasses
+    // handleSubmit's own guard entirely, so both checks are repeated here.
     if (!canMutateOperationalData) return;
     if (!validateForm()) return;
+    // Double-click / re-entrancy guard -- see savingRef's own declaration.
+    if (savingRef.current) return;
+    savingRef.current = true;
 
-    // Resolved with the workspace's own explicit timezone (Phase 5C) --
-    // never `new Date(`${date}T${time}`)`, which the browser interprets in
-    // its OWN ambient timezone and would silently save the wrong UTC
-    // instant the moment the owner's device timezone differs from the
-    // workspace's. Also catches a nonexistent spring-forward local time
-    // (e.g. 2:30 AM on the day clocks jump to 3:00) rather than silently
-    // shifting it -- see zonedDateTimeToUTC's own doc comment.
     const startResult = zonedDateTimeToUTC(form.date, form.time_in, timezone);
-    if (!startResult.ok) { setError(startResult.error); return; }
+    if (!startResult.ok) { setError(startResult.error); savingRef.current = false; return; }
     const endResult = zonedDateTimeToUTC(form.date, form.time_out, timezone);
-    if (!endResult.ok) { setError(endResult.error); return; }
+    if (!endResult.ok) { setError(endResult.error); savingRef.current = false; return; }
     const scheduled_for = startResult.iso;
     const scheduled_end = endResult.iso;
     const price_cents = form.price.trim() === "" ? null : parsePriceToCents(form.price);
 
     setSubmitting(true);
     setEditScope(null);
+    setError("");
     try {
-      let res: Response;
-
-      if (isEdit) {
-        res = await fetch("/api/appointments/update", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            appointment_id: editing.appointment.id,
-            service_type: form.service_type,
-            scheduled_for, scheduled_end,
-            notes: form.notes.trim(),
-            status: form.status,
-            duration_minutes: computedDuration,
-            employee_ids: selectedEmployeeIds,
-            price_cents,
-            team_color: teamColor,
-            mode,
-            notify_channel: notifyChannel,
-          }),
-        });
-      } else {
+      if (!isEdit) {
         const payload: Record<string, any> = {
           service_type: form.service_type,
           scheduled_for, scheduled_end,
@@ -514,26 +645,65 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
           payload.email = newClient.email.trim();
           payload.phone = newClient.phone.trim();
         }
-        res = await fetch("/api/appointments/create", {
+        const res = await fetch("/api/appointments/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { setError(data?.error || `Request failed (${res.status})`); return; }
+        if (data?.warning?.message) alert(data.warning.message);
+        notifyDemoAction("create-appointment");
+        onSaved();
+        return;
       }
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(data?.error || `Request failed (${res.status})`); return; }
-      // Block 2B safety correction: the appointment mutation above already
-      // fully succeeded -- a registry warning is informational only and
-      // must never trigger a retry of that (already-successful) mutation.
-      if (data?.warning?.message) alert(data.warning.message);
-      if (isEdit && serviceChanged) notifyDemoAction("save-service");
-      if (!isEdit) notifyDemoAction("create-appointment");
+      // Edit mode.
+      if (hasPendingRecurrenceChange) {
+        if (form.status !== "scheduled") {
+          setError("Set the status back to Scheduled before changing the recurrence.");
+          return;
+        }
+        const result = await submitAtomicRecurrenceChange({ scheduled_for, scheduled_end, price_cents });
+        if (!result.ok) { setError(result.error); return; }
+        if (serviceChanged) notifyDemoAction("save-service");
+        onSaved();
+        return;
+      }
+
+      // No recurrence change: only this appointment's own fields, and only
+      // when something actually changed (a no-op save sends nothing).
+      if (hasPendingApptFieldChanges) {
+        const res = await fetch("/api/appointments/update", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            appointment_id: editing.appointment.id,
+            service_type: form.service_type,
+            scheduled_for, scheduled_end,
+            notes: form.notes.trim(),
+            status: form.status,
+            duration_minutes: computedDuration,
+            employee_ids: [...selectedEmployeeIds].sort(),
+            price_cents,
+            team_color: teamColor,
+            mode,
+            notify_channel: notifyChannel,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { setError(data?.error || `Request failed (${res.status})`); return; }
+        if (data?.warning?.message) alert(data.warning.message);
+        if (serviceChanged) notifyDemoAction("save-service");
+      }
+
       onSaved();
+
     } catch {
       setError("Network error. Please try again.");
     } finally {
       setSubmitting(false);
+      savingRef.current = false;
     }
   }
 
@@ -558,31 +728,6 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     } catch {
       setError("Network error. Please try again.");
     } finally { setCancelling(false); setShowDeleteMenu(false); setConfirmDelete(null); }
-  }
-
-  async function saveRecurrence() {
-    if (!editing) return;
-    if (!canMutateOperationalData) return;
-
-    setSavingRecurrence(true);
-    setError("");
-    try {
-      const res = await fetch("/api/appointments/manage-recurrence", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          appointment_id: editing.appointment.id,
-          frequency_type: manageFreq,
-          repeat_weeks: manageWeeks,
-          repeat_months: manageMonths,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { setError(data?.error || "Failed to update recurrence."); return; }
-      if (data?.warning?.message) alert(data.warning.message);
-      onSaved();
-    } catch { setError("Network error."); }
-    finally { setSavingRecurrence(false); }
   }
 
   const inputCls = "w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900";
@@ -947,18 +1092,31 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 </div>
               )}
 
+              {/* This button routes through the exact same save workflow as
+                  the main "Save Changes" button below (proceedAfterValidation),
+                  rather than a separate, independent submission -- so it can
+                  never apply a recurrence change against a stale date/time
+                  still sitting unsaved in the form above it. Any pending
+                  appointment field edits (date, time, service, notes, etc.)
+                  are saved TOGETHER with this recurrence change, in one
+                  atomic server operation. */}
+              {hasPendingApptFieldChanges && (
+                <div className="text-[11px] text-slate-500">
+                  Your other appointment changes above are saved together with this recurrence change -- all of it is saved, or none of it.
+                </div>
+              )}
               <div className="flex gap-2 pt-1">
                 <CapabilityGatedButton
                   type="button"
                   allowed={canMutateOperationalData}
-                  disabled={savingRecurrence}
+                  disabled={submitting}
                   ariaDescribedBy={RESTRICTED_NOTICE_ID}
-                  onClick={saveRecurrence}
+                  onClick={() => proceedAfterValidation()}
                   className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors">
-                  {savingRecurrence ? "Saving..." : "Save Recurrence"}
+                  {submitting ? "Saving..." : "Save Recurrence"}
                 </CapabilityGatedButton>
-                <button type="button" onClick={() => setShowManageRecurrence(false)}
-                  className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-white transition-colors">
+                <button type="button" onClick={() => setShowManageRecurrence(false)} disabled={submitting}
+                  className="rounded-xl border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-white transition-colors disabled:opacity-50">
                   Cancel
                 </button>
               </div>
@@ -1155,8 +1313,8 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                   className="rounded-lg bg-amber-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
                   Yes, Save Unassigned
                 </CapabilityGatedButton>
-                <button type="button" onClick={() => setConfirmUnassign(false)}
-                  className="rounded-lg border border-slate-300 px-4 py-1.5 text-xs text-slate-700 hover:bg-white">
+                <button type="button" onClick={() => setConfirmUnassign(false)} disabled={submitting}
+                  className="rounded-lg border border-slate-300 px-4 py-1.5 text-xs text-slate-700 hover:bg-white disabled:opacity-50">
                   Cancel
                 </button>
               </div>
@@ -1172,7 +1330,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 allowed={canMutateOperationalData}
                 disabled={submitting}
                 ariaDescribedBy={RESTRICTED_NOTICE_ID}
-                onClick={() => executeEdit("single")}
+                onClick={() => executeCoordinatedSave("single")}
                 className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50">
                 <div className="font-medium text-slate-900">Only this appointment</div>
                 <div className="text-slate-500 mt-0.5">Change this one only</div>
@@ -1182,15 +1340,33 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 allowed={canMutateOperationalData}
                 disabled={submitting}
                 ariaDescribedBy={RESTRICTED_NOTICE_ID}
-                onClick={() => executeEdit("future")}
+                onClick={() => executeCoordinatedSave("future")}
                 className="w-full rounded-lg px-3 py-2 text-left text-xs bg-white border border-blue-200 hover:bg-blue-50 disabled:opacity-50">
                 <div className="font-medium text-blue-700">This and all future appointments</div>
                 <div className="text-slate-500 mt-0.5">Apply to all remaining in this series</div>
               </CapabilityGatedButton>
-              <button type="button" onClick={() => setEditScope(null)}
-                className="w-full rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700">
+              <button type="button" onClick={() => setEditScope(null)} disabled={submitting}
+                className="w-full rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700 disabled:opacity-50">
                 Cancel
               </button>
+            </div>
+          )}
+
+          {/* Item 4 (make series scope explicit): whenever a recurrence
+              change is pending, this explanation must be visible regardless
+              of whether the Manage Recurrence panel itself is expanded or
+              collapsed -- a note sitting only inside that panel would be
+              invisible the moment the owner collapses it and clicks the
+              main Save Changes button below, which applies the SAME
+              recurrence change (see hasPendingRecurrenceChange and
+              proceedAfterValidation). Only rendered when a recurrence
+              change is actually pending -- an ordinary date/time-only or
+              occurrence-only edit still gets the normal "Only this
+              appointment" / "This and all future appointments" scope
+              choice below, completely unaffected. */}
+          {!editScope && !confirmUnassign && hasPendingRecurrenceChange && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50/50 px-3 py-2 text-xs text-blue-800">
+              Saving will update this appointment and apply the new recurrence pattern to its eligible future occurrences in this series. Occurrences with recorded work will be left on their current schedule.
             </div>
           )}
 

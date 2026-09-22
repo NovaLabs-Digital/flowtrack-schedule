@@ -45,3 +45,7 @@ next-env.d.ts
 backup_*.csv
 .vercel
 .env*
+
+# exported production schema for local validation (never committed)
+/test-db/production-schema.sql
+/test-db/production-schima.sql

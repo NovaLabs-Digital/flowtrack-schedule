@@ -44,6 +44,26 @@ import { fileURLToPath } from "node:url";
 
 const source = fs.readFileSync(fileURLToPath(new URL("./AppointmentModal.tsx", import.meta.url)), "utf8");
 
+// Shared by every coordinated-save test below -- the full body of
+// executeCoordinatedSave, delimited by the next top-level declaration
+// rather than a fixed character offset, so it never silently truncates
+// mid-function as comments/code inside it grow.
+function coordinatedSaveBody(): string {
+  const fnStart = source.indexOf('async function executeCoordinatedSave(mode: "single" | "future") {');
+  assert.notEqual(fnStart, -1);
+  const fnEnd = source.indexOf("\n  const [confirmDelete", fnStart);
+  assert.notEqual(fnEnd, -1);
+  return source.slice(fnStart, fnEnd);
+}
+
+function atomicBody(): string {
+  const fnStart = source.indexOf("async function submitAtomicRecurrenceChange(");
+  assert.notEqual(fnStart, -1);
+  const fnEnd = source.indexOf("\n  // The single save path for an edit session", fnStart);
+  assert.notEqual(fnEnd, -1);
+  return source.slice(fnStart, fnEnd);
+}
+
 describe("prop wiring: canMutateOperationalData reaches this component and nowhere reproduces entitlement policy", () => {
   test("the component destructures canMutateOperationalData from its props", () => {
     assert.ok(source.includes("prefill, canMutateOperationalData, timezone }: Props)"));
@@ -90,17 +110,22 @@ describe("all six mutation-triggering buttons are wired through CapabilityGatedB
     assert.ok(formIndex > -1 && submitButtonIndex > -1 && formIndex < submitButtonIndex);
   });
 
-  test("the recurring-edit scope buttons ('Only this appointment' / 'This and all future appointments') call executeEdit directly and are governed", () => {
-    assert.ok(source.includes('onClick={() => executeEdit("single")}'));
-    assert.ok(source.includes('onClick={() => executeEdit("future")}'));
+  test("the recurring-edit scope buttons ('Only this appointment' / 'This and all future appointments') call executeCoordinatedSave directly and are governed", () => {
+    assert.ok(source.includes('onClick={() => executeCoordinatedSave("single")}'));
+    assert.ok(source.includes('onClick={() => executeCoordinatedSave("future")}'));
   });
 
   test("the delete-confirm button ('Yes, Delete') calls executeDelete and is governed", () => {
     assert.ok(source.includes("onClick={() => executeDelete(confirmDelete)}"));
   });
 
-  test("the recurrence-save button calls saveRecurrence and is governed", () => {
-    assert.ok(source.includes("onClick={saveRecurrence}"));
+  // Coordinated-save fix: "Save Recurrence" is no longer a separate,
+  // independently-implemented mutation -- it routes through the exact same
+  // proceedAfterValidation entry point the main "Save Changes" submit
+  // button uses, so a pending appointment-field edit is always saved
+  // first, before this recurrence change is applied against it.
+  test("the recurrence-save button routes through proceedAfterValidation -- the same coordinated entry point the main Save Changes button uses, not a separate/independent save", () => {
+    assert.ok(source.includes("onClick={() => proceedAfterValidation()}"));
   });
 
   test("menu/reveal-only controls (Delete ▾, Manage >, scope-menu choice buttons, Cancel/No-Go-Back) remain plain, ungoverned buttons -- they perform no mutation themselves", () => {
@@ -125,13 +150,13 @@ describe("handler guards: each mutation-triggering function refuses to proceed w
     assert.ok(preventDefaultIndex < guardIndex && guardIndex < validateIndex);
   });
 
-  test("executeEdit independently checks canMutateOperationalData as its first statement -- defense-in-depth for its second call site (the edit-scope buttons), which bypasses handleSubmit's guard entirely", () => {
-    const fnStart = source.indexOf('async function executeEdit(mode: "single" | "future") {');
+  test("executeCoordinatedSave independently checks canMutateOperationalData as its first statement -- defense-in-depth for its second call site (the edit-scope buttons), which bypasses handleSubmit's guard entirely", () => {
+    const fnStart = source.indexOf('async function executeCoordinatedSave(mode: "single" | "future") {');
     const guardIndex = source.indexOf("if (!canMutateOperationalData) return;", fnStart);
     const fetchIndex = source.indexOf('fetch("/api/appointments/update"', fnStart);
     const fetchIndex2 = source.indexOf('fetch("/api/appointments/create"', fnStart);
     assert.ok(fnStart > -1 && guardIndex > -1 && fetchIndex > -1 && fetchIndex2 > -1);
-    assert.ok(guardIndex < fetchIndex && guardIndex < fetchIndex2, "the guard must run before either fetch call executeEdit can reach");
+    assert.ok(guardIndex < fetchIndex && guardIndex < fetchIndex2, "the guard must run before either fetch call executeCoordinatedSave can reach");
   });
 
   test("executeDelete checks canMutateOperationalData before the delete fetch", () => {
@@ -142,30 +167,36 @@ describe("handler guards: each mutation-triggering function refuses to proceed w
     assert.ok(guardIndex < fetchIndex);
   });
 
-  test("saveRecurrence checks canMutateOperationalData before the manage-recurrence fetch", () => {
-    const fnStart = source.indexOf("async function saveRecurrence() {");
-    const guardIndex = source.indexOf("if (!canMutateOperationalData) return;", fnStart);
-    const fetchIndex = source.indexOf('fetch("/api/appointments/manage-recurrence"', fnStart);
-    assert.ok(fnStart > -1 && guardIndex > -1 && fetchIndex > -1);
-    assert.ok(guardIndex < fetchIndex);
+  // Coordinated-save fix: applyRecurrenceChange (the manage-recurrence
+  // fetch) is no longer its own independently-guarded entry point -- it is
+  // only ever called from inside executeCoordinatedSave, which has
+  // already checked canMutateOperationalData (and proceedAfterValidation,
+  // which routes every save button into executeCoordinatedSave, adds no
+  // separate mutation path of its own). A second, redundant guard inside
+  // applyRecurrenceChange would just be dead code.
+  test("applyRecurrenceChange has no independent canMutateOperationalData guard of its own -- it is only reachable through executeCoordinatedSave's already-guarded path", () => {
+    const fnStart = source.indexOf("async function applyRecurrenceChange()");
+    const fnEnd = source.indexOf("\n  }", fnStart);
+    const body = source.slice(fnStart, fnEnd);
+    assert.ok(!body.includes("canMutateOperationalData"));
   });
 
-  test("all four guard clauses use the exact same literal check -- no duplicated/divergent entitlement policy across handlers", () => {
+  test("all three guard clauses use the exact same literal check -- no duplicated/divergent entitlement policy across handlers", () => {
     const count = source.split("if (!canMutateOperationalData) return;").length - 1;
-    assert.equal(count, 4, `expected exactly 4 (handleSubmit, executeEdit, executeDelete, saveRecurrence), found ${count}`);
+    assert.equal(count, 3, `expected exactly 3 (handleSubmit, executeCoordinatedSave, executeDelete), found ${count}`);
   });
 });
 
 describe("inline client creation rides along with the main submit guard -- no separate, unguarded mutation path", () => {
-  test("the create-mode payload folds new-client fields into the same executeEdit/create request that is already guarded", () => {
-    const executeEditStart = source.indexOf('async function executeEdit(mode: "single" | "future") {');
-    const newClientPayload = source.indexOf("payload.name = newClient.name.trim();", executeEditStart);
-    const fetchIndex = source.indexOf('fetch("/api/appointments/create"', executeEditStart);
-    assert.ok(executeEditStart > -1 && newClientPayload > -1 && fetchIndex > -1);
+  test("the create-mode payload folds new-client fields into the same executeCoordinatedSave/create request that is already guarded", () => {
+    const executeStart = source.indexOf('async function executeCoordinatedSave(mode: "single" | "future") {');
+    const newClientPayload = source.indexOf("payload.name = newClient.name.trim();", executeStart);
+    const fetchIndex = source.indexOf('fetch("/api/appointments/create"', executeStart);
+    assert.ok(executeStart > -1 && newClientPayload > -1 && fetchIndex > -1);
     assert.ok(newClientPayload < fetchIndex, "new-client fields are assembled before the same guarded create fetch, not a separate request");
   });
 
-  test("no independent client-creation fetch exists outside executeEdit (e.g. no direct POST /api/clients call in this file)", () => {
+  test("no independent client-creation fetch exists outside executeCoordinatedSave (e.g. no direct POST /api/clients call in this file)", () => {
     assert.ok(!source.includes('fetch("/api/clients"'));
   });
 
@@ -471,9 +502,9 @@ describe("Phase 5.7D-R19: Team Color selector (source-level proof)", () => {
     assert.ok(source.includes("const effectiveAccentColor = resolveTeamAccentColor(previewAssignments, employeeById, teamColor);"));
   });
 
-  test("both create and edit payloads send team_color, using the same teamColor state either way", () => {
+  test("create, edit, and atomic-recurrence payloads all send team_color, using the same teamColor state every time", () => {
     const count = source.split("team_color: teamColor,").length - 1;
-    assert.equal(count, 2, "expected exactly 2 occurrences -- one in the edit payload, one in the create payload");
+    assert.equal(count, 3, "expected exactly 3 occurrences -- create payload, plain update payload, atomic recurrence fields");
   });
 });
 
@@ -567,7 +598,7 @@ describe("Phase 2: Monthly Recurring Appointments -- interval options 1 through 
 
   test("both create and manage-recurrence payloads send repeat_months alongside frequency_type/repeat_weeks", () => {
     assert.ok(source.includes("repeat_months: form.repeat_months,"), "create payload must include repeat_months");
-    assert.ok(source.includes("repeat_months: manageMonths,"), "manage-recurrence payload must include repeat_months");
+    assert.ok(source.includes('repeat_months: manageFreq === "monthly" ? manageMonths : undefined,'), "manage-recurrence payload must include repeat_months (monthly only)");
   });
 
   test("switching Manage Recurrence away from monthly resets manageMonths back to 1, mirroring the existing weekly reset", () => {
@@ -592,7 +623,7 @@ describe("Phase 2: Monthly Recurring Appointments -- interval options 1 through 
   test("existing weekly recurrence UI (WEEK_OPTIONS, repeat_weeks, manageWeeks) is completely unchanged by adding monthly", () => {
     assert.ok(source.includes("const WEEK_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];"));
     assert.ok(source.includes("repeat_weeks: form.repeat_weeks,"));
-    assert.ok(source.includes("repeat_weeks: manageWeeks,"));
+    assert.ok(source.includes('repeat_weeks: manageFreq === "weekly" ? manageWeeks : undefined,'));
   });
 });
 
@@ -619,14 +650,14 @@ describe("Phase 5C: workspace-timezone-aware create/edit -- the traveling-owner 
     assert.ok(!source.includes("new Date(`${form.date}T${form.time_out}`)"));
   });
 
-  test("executeEdit resolves scheduled_for/scheduled_end via zonedDateTimeToUTC with the explicit timezone prop, and rejects (setError, no fetch) on a DST-invalid result before constructing the request payload", () => {
-    const fnStart = source.indexOf("async function executeEdit(mode:");
+  test("executeCoordinatedSave resolves scheduled_for/scheduled_end via zonedDateTimeToUTC with the explicit timezone prop, and rejects (setError, no fetch) on a DST-invalid result before constructing the request payload", () => {
+    const fnStart = source.indexOf('async function executeCoordinatedSave(mode: "single" | "future") {');
     assert.notEqual(fnStart, -1);
     const body = source.slice(fnStart, fnStart + 1400);
     assert.ok(body.includes('const startResult = zonedDateTimeToUTC(form.date, form.time_in, timezone);'));
-    assert.ok(body.includes('if (!startResult.ok) { setError(startResult.error); return; }'));
+    assert.ok(body.includes('if (!startResult.ok) { setError(startResult.error); savingRef.current = false; return; }'));
     assert.ok(body.includes('const endResult = zonedDateTimeToUTC(form.date, form.time_out, timezone);'));
-    assert.ok(body.includes('if (!endResult.ok) { setError(endResult.error); return; }'));
+    assert.ok(body.includes('if (!endResult.ok) { setError(endResult.error); savingRef.current = false; return; }'));
     assert.ok(body.includes("const scheduled_for = startResult.iso;"));
     assert.ok(body.includes("const scheduled_end = endResult.iso;"));
     // The DST-rejection guards must appear textually before the price_cents
@@ -670,5 +701,212 @@ describe("Phase 5D: the recurrence occurrence-count preview passes the same expl
 
   test("no bare, unparameterized countFutureOccurrences(...) call remains in this file (the preview and the API generation must never disagree)", () => {
     assert.ok(!/countFutureOccurrences\(manageFreq, manageWeeks, new Date/.test(source));
+  });
+});
+
+describe("coordinated save (recurrence changes silently dropped on save -- the reported bug): a pending recurrence change is detected even with the panel collapsed", () => {
+  test("hasPendingRecurrenceChange compares manageFreq/manageWeeks/manageMonths against editing.appointment's CURRENT persisted values, never against showManageRecurrence (the panel's own open/closed state)", () => {
+    const idx = source.indexOf("const hasPendingRecurrenceChange = isEdit && (");
+    assert.notEqual(idx, -1);
+    const block = source.slice(idx, idx + 400);
+    assert.ok(block.includes('manageFreq !== (editing!.appointment.frequency_type ?? "one_time")'));
+    assert.ok(block.includes('manageFreq === "weekly" && manageWeeks !== (editing!.appointment.repeat_weeks ?? 1)'));
+    assert.ok(block.includes('manageFreq === "monthly" && manageMonths !== (editing!.appointment.repeat_months ?? 1)'));
+    assert.ok(!block.includes("showManageRecurrence"), "must not require the panel to be open to detect a pending change");
+  });
+
+  test("manageFreq/manageWeeks/manageMonths are declared as their own independent useState, never reset when the panel collapses (setShowManageRecurrence(false) never touches them)", () => {
+    const collapseIdx = source.indexOf("onClick={() => setShowManageRecurrence(false)}");
+    assert.notEqual(collapseIdx, -1);
+    const block = source.slice(collapseIdx, collapseIdx + 40);
+    assert.ok(!block.includes("setManageFreq"), "collapsing the panel must not silently discard the pending selection");
+  });
+});
+
+describe("atomic recurrence save (client): one request, one transaction, all or nothing", () => {
+  test("a pending recurrence change is saved by ONE call to /api/appointments/manage-recurrence carrying every pending edit -- the edit branch returns before /api/appointments/update can run", () => {
+    const body = coordinatedSaveBody();
+    const recurrenceBranchIdx = body.indexOf("if (hasPendingRecurrenceChange) {");
+    const atomicCallIdx = body.indexOf("await submitAtomicRecurrenceChange(", recurrenceBranchIdx);
+    const updateFetchIdx = body.indexOf('fetch("/api/appointments/update"');
+    assert.ok(recurrenceBranchIdx > -1 && atomicCallIdx > recurrenceBranchIdx);
+    assert.ok(updateFetchIdx > atomicCallIdx, "the plain update fetch must come AFTER the atomic branch");
+    // the atomic branch always ends in `return;` (never falls through to the plain update)
+    const branchEnd = body.indexOf("return;\n      }", atomicCallIdx);
+    assert.ok(branchEnd > -1 && branchEnd < updateFetchIdx, "atomic branch returns before the plain update path");
+    const fnBody = atomicBody();
+    assert.equal((fnBody.match(/fetch\(/g) ?? []).length, 1, "exactly one request");
+    assert.ok(fnBody.includes('fetch("/api/appointments/manage-recurrence"'));
+  });
+
+  test("the request carries the complete desired end state, the employee set, the expected snapshot, the operation id and the notify choice", () => {
+    const fnBody = atomicBody();
+    for (const needle of [
+      "appointment_id: a.id,",
+      "client_operation_id: getRecurrenceOperationId(signature),",
+      "frequency_type: manageFreq,",
+      'repeat_weeks: manageFreq === "weekly" ? manageWeeks : undefined,',
+      'repeat_months: manageFreq === "monthly" ? manageMonths : undefined,',
+      "fields,",
+      "employee_ids,",
+      "expected,",
+      "notify_channel: notifyChannel,",
+    ]) assert.ok(fnBody.includes(needle), `missing: ${needle}`);
+    for (const f of ["scheduled_for", "scheduled_end", "service_type", "notes", "duration_minutes", "price_cents", "team_color", "status"]) {
+      assert.ok(new RegExp(`fields = \\{[\\s\\S]*?\\b${f}\\b`).test(fnBody), `fields.${f}`);
+    }
+  });
+
+  test("the expected snapshot is what the modal OPENED with (editing.appointment + initial assignments + workspace timezone), never the live form", () => {
+    const fnBody = atomicBody();
+    const start = fnBody.indexOf("const expected = {");
+    const end = fnBody.indexOf("};", start);
+    const block = fnBody.slice(start, end);
+    for (const needle of [
+      "scheduled_for: a.scheduled_for,", "scheduled_end: a.scheduled_end ?? null,", "service_type: a.service_type,",
+      "notes: a.notes ?? null,", "duration_minutes: a.duration_minutes ?? null,", "price_cents: a.price_cents ?? null,",
+      "team_color: a.team_color ?? null,", "status: a.status,", "series_id: a.series_id ?? null,",
+      'frequency_type: a.frequency_type ?? "one_time",', "employee_ids: initialEmployeeIds,", "timezone,",
+    ]) assert.ok(block.includes(needle), `missing: ${needle}`);
+    assert.ok(!block.includes("form."), "no live form value may leak into the expected snapshot");
+  });
+
+  test("the client no longer sends or tracks a 'previous scheduled_for' -- the server reads the original position from the locked row", () => {
+    assert.ok(!source.includes("previous_scheduled_for"));
+    assert.ok(!source.includes("serverConfirmedPreviousScheduledFor"));
+    assert.ok(!source.includes("apptSavedSignature"), "the two-step retry signature is gone with the two-step save");
+  });
+
+  test("failure keeps the modal open with the server's message and never calls onSaved; success calls onSaved once, after the server confirms", () => {
+    const body = coordinatedSaveBody();
+    const callIdx = body.indexOf("await submitAtomicRecurrenceChange(");
+    const failIdx = body.indexOf("if (!result.ok) { setError(result.error); return; }", callIdx);
+    const onSavedIdx = body.indexOf("onSaved();", callIdx);
+    assert.ok(callIdx > -1 && failIdx > callIdx && onSavedIdx > failIdx);
+    const fnBody = atomicBody();
+    assert.ok(fnBody.includes("const message: string = data?.error ||"), "server message is surfaced");
+    // every 4xx (refused before any write) states that nothing was saved; behavior is proven in AppointmentModal.render.test.ts
+    assert.ok(fnBody.includes("Nothing was saved."), "a refusal says nothing was saved");
+    assert.ok(!fnBody.includes("onSaved"), "the helper never closes the modal itself");
+  });
+
+  test("changing the recurrence while the status is Cancelled is rejected client-side with a clear message, before any request", () => {
+    const body = coordinatedSaveBody();
+    const guardIdx = body.indexOf('if (form.status !== "scheduled") {');
+    const callIdx = body.indexOf("await submitAtomicRecurrenceChange(");
+    assert.ok(guardIdx > -1 && guardIdx < callIdx);
+    assert.ok(body.includes('setError("Set the status back to Scheduled before changing the recurrence.");'));
+  });
+});
+
+describe("atomic recurrence save (client): operation identity", () => {
+  test("the operation id is keyed on the WHOLE request (fields, employees, pattern) -- any change mints a new id so the server never sees the same id with a different request", () => {
+    const fnBody = atomicBody();
+    assert.ok(fnBody.includes("const signature = JSON.stringify({ fields, employee_ids, manageFreq, manageWeeks, manageMonths });"));
+    const idx = source.indexOf("function getRecurrenceOperationId(signature: string): string {");
+    assert.notEqual(idx, -1);
+    const block = source.slice(idx, idx + 320);
+    assert.ok(block.includes("recurrenceOperationRef.current.for !== signature"));
+    assert.ok(block.includes("crypto.randomUUID()"));
+  });
+
+  test("the id is cleared only after the server confirms, and KEPT after a network error so an identical retry is replayed, never applied twice", () => {
+    const fnBody = atomicBody();
+    const okIdx = fnBody.indexOf("recurrenceOperationRef.current = null;");
+    const okReturnIdx = fnBody.indexOf("return { ok: true };");
+    assert.ok(okIdx > -1 && okIdx < okReturnIdx);
+    const catchIdx = fnBody.indexOf("} catch {");
+    assert.ok(catchIdx > okReturnIdx);
+    assert.ok(!fnBody.slice(catchIdx).includes("recurrenceOperationRef.current = null"), "network error must not discard the id");
+    assert.ok(fnBody.includes("Network error. Please try again -- nothing will be applied twice."));
+  });
+
+  test("a protected-occurrence notice from the server is shown to the owner, never silently dropped", () => {
+    assert.ok(atomicBody().includes("if (data?.notice?.message) alert(data.notice.message);"));
+  });
+});
+
+describe("coordinated save: re-entrancy and retry guards that remain", () => {
+  test("a double-click / re-entrant call is blocked synchronously via savingRef, before any async work or state update", () => {
+    const body = coordinatedSaveBody();
+    assert.ok(body.includes("if (savingRef.current) return;"));
+    assert.ok(body.includes("savingRef.current = true;"));
+    const guardIdx = body.indexOf("if (savingRef.current) return;");
+    const validateIdx = body.indexOf("if (!validateForm()) return;");
+    assert.ok(guardIdx > validateIdx, "the re-entrancy guard runs after the cheap synchronous validations, before any async fetch");
+  });
+
+  test("savingRef is released in the finally block, so a genuinely new attempt after a completed (successful or failed) save is never permanently blocked", () => {
+    const body = coordinatedSaveBody();
+    const finallyIdx = body.indexOf("} finally {");
+    assert.notEqual(finallyIdx, -1);
+    assert.ok(body.slice(finallyIdx).includes("savingRef.current = false;"));
+  });
+});
+
+describe("coordinated save: edit-scope interaction with a pending recurrence change is explicit, never silently series-wide", () => {
+  test("proceedAfterValidation skips the Only-this/This-and-future scope choice entirely whenever a recurrence change is pending -- checked BEFORE the isRecurring/!editScope gate", () => {
+    const fnStart = source.indexOf("function proceedAfterValidation(unassignConfirmed = confirmUnassign) {");
+    assert.notEqual(fnStart, -1);
+    const fnEnd = source.indexOf("\n  }", source.indexOf("executeCoordinatedSave(editScope ?? \"single\");", fnStart));
+    const body = source.slice(fnStart, fnEnd);
+    const recurrencePendingIdx = body.indexOf("if (isEdit && hasPendingRecurrenceChange) {");
+    const scopeGateIdx = body.indexOf("if (isEdit && isRecurring && !editScope) {");
+    assert.ok(recurrencePendingIdx > -1 && scopeGateIdx > -1);
+    assert.ok(recurrencePendingIdx < scopeGateIdx, "the recurrence-pending short-circuit must be checked first");
+    assert.ok(body.slice(recurrencePendingIdx, recurrencePendingIdx + 120).includes('executeCoordinatedSave("single");'));
+  });
+
+  test("the Manage Recurrence panel tells the owner that other pending edits are saved TOGETHER with the recurrence change (all or nothing)", () => {
+    const idx = source.indexOf("{hasPendingApptFieldChanges && (");
+    assert.notEqual(idx, -1);
+    const block = source.slice(idx, idx + 320);
+    assert.ok(block.includes("saved together with this recurrence change"));
+    assert.ok(block.includes("all of it is saved, or none of it"));
+    assert.ok(!source.includes("will be saved first"), "the old two-step wording is gone");
+  });
+});
+
+describe("coordinated save: recurrence-only and no-recurrence edits each send exactly the request they need", () => {
+  test("hasPendingApptFieldChanges checks date/time, service, notes, status, price, team color, and employee assignments", () => {
+    const idx = source.indexOf("const hasPendingApptFieldChanges = isEdit && (");
+    assert.notEqual(idx, -1);
+    const block = source.slice(idx, idx + 200);
+    assert.ok(block.includes("dateTimeChanged || serviceChanged || notesChanged || statusChanged || priceChanged || teamColorChanged || employeeIdsChanged"));
+  });
+
+  test("with NO recurrence change, /api/appointments/update is sent only when something actually changed (a no-op save sends nothing) and manage-recurrence is never called", () => {
+    const body = coordinatedSaveBody();
+    const plainIdx = body.indexOf("if (hasPendingApptFieldChanges) {");
+    const updateFetchIdx = body.indexOf('fetch("/api/appointments/update"', plainIdx);
+    assert.ok(plainIdx > -1 && updateFetchIdx > plainIdx);
+    const afterAtomicBranch = body.slice(body.indexOf("await submitAtomicRecurrenceChange("));
+    const plainPath = afterAtomicBranch.slice(afterAtomicBranch.indexOf("// No recurrence change"));
+    assert.ok(!plainPath.includes("manage-recurrence"));
+    assert.ok(!plainPath.includes("submitAtomicRecurrenceChange"));
+  });
+});
+
+describe("make series scope explicit (item 4): a pending recurrence change's scope is visible regardless of whether Manage Recurrence is collapsed", () => {
+  test("the scope-explanation banner is gated on hasPendingRecurrenceChange alone -- not on showManageRecurrence -- so it stays visible even when the panel is collapsed", () => {
+    const idx = source.indexOf("{!editScope && !confirmUnassign && hasPendingRecurrenceChange && (");
+    assert.notEqual(idx, -1);
+    const block = source.slice(idx, idx + 400);
+    assert.ok(!block.slice(0, block.indexOf("Saving will update")).includes("showManageRecurrence"));
+    assert.ok(block.includes("Saving will update this appointment and apply the new recurrence pattern to its eligible future occurrences in this series."));
+    assert.ok(block.includes("Occurrences with recorded work will be left on their current schedule."));
+  });
+
+  test("the scope-explanation banner sits in the main render tree (outside the Manage Recurrence panel's own JSX block), not nested inside it", () => {
+    const panelIdx = source.indexOf('{isEdit && showManageRecurrence && (');
+    const panelEndIdx = source.indexOf("{/* Job Tracking / Worked Hours", panelIdx);
+    const bannerIdx = source.indexOf("{!editScope && !confirmUnassign && hasPendingRecurrenceChange && (");
+    assert.ok(panelIdx > -1 && panelEndIdx > -1 && bannerIdx > -1);
+    assert.ok(bannerIdx > panelEndIdx, "the banner must not be inside the collapsible panel's own conditional block");
+  });
+
+  test("the normal Only-this/This-and-future scope choice is completely unaffected -- still gated on editScope && isRecurring, with no new dependency on recurrence state", () => {
+    const idx = source.indexOf("{!confirmUnassign && editScope && isRecurring && (");
+    assert.notEqual(idx, -1);
   });
 });

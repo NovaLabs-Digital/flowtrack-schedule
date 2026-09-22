@@ -50,72 +50,48 @@ export async function POST(req: Request) {
       jobNotes = trimmedNotes || null;
     }
 
-    // Phase 5.7D-R18: Job Tracking is now per-assignment, not per-appointment
-    // -- resolves the AUTHENTICATED employee's own assignment row directly
-    // (employee_id: session.employeeId, never a client-submitted value), so
-    // one employee's Start/Complete action can never reach or change
-    // another employee's timestamps on a shared appointment. A missing row
-    // means either the appointment doesn't exist, doesn't belong to this
-    // workspace, or (most commonly) simply isn't assigned to this employee
-    // -- all three fail closed identically, with no information disclosed
-    // about which case it was.
-    const { data: assignment, error: fetchErr } = await supabaseAdmin
-      .from("appointment_employees")
-      .select("id, actual_started_at, actual_completed_at")
-      .eq("appointment_id", appointmentId)
-      .eq("employee_id", employeeId)
-      .eq("workspace_id", workspaceId)
-      .maybeSingle();
+    // Migration 030's record_job_action does the whole write in one
+    // database call: it locks the PARENT appointment first (FOR SHARE), then
+    // this employee's own assignment row (employee_id: session.employeeId,
+    // never a client-submitted value -- one employee can never touch another's
+    // timestamps), and re-reads the appointment's status AFTER the lock. A
+    // plain read-then-update here (the previous implementation) could not see
+    // that a concurrent recurrence change had just cancelled the appointment,
+    // and could not stop it from being replaced underneath a job that had
+    // just started. Missing appointment / wrong workspace / not assigned all
+    // fail closed identically (403), disclosing nothing about which.
+    const { data, error } = await supabaseAdmin.rpc("record_job_action", {
+      p_workspace_id: workspaceId,
+      p_employee_id: employeeId,
+      p_appointment_id: appointmentId,
+      p_action: action,
+      p_notes: jobNotes,
+    });
+    if (error) throw error;
 
-    if (fetchErr) throw fetchErr;
-    if (!assignment) return json({ error: "Unauthorized" }, 403);
-
-    if (assignment.actual_completed_at) {
-      // Also the enforcement point for "job_notes becomes read-only from
-      // the employee workflow" once complete -- this same guard already
-      // blocks 'start'/'complete' past completion, so 'save_notes' inherits
-      // it for free rather than needing a second, duplicated check.
-      return json({ error: "Job already completed" }, 400);
-    }
-
-    if (action === "save_notes") {
-      if (!assignment.actual_started_at) {
-        return json({ error: "Job has not been started" }, 400);
+    switch (data?.outcome) {
+      case "ok": {
+        const { outcome: _outcome, ...fields } = data;
+        void _outcome;
+        return json({ ok: true, ...fields });
       }
-      const { error: notesErr } = await supabaseAdmin
-        .from("appointment_employees")
-        .update({ job_notes: jobNotes })
-        .eq("id", assignment.id)
-        .eq("workspace_id", workspaceId);
-
-      if (notesErr) throw notesErr;
-      return json({ ok: true, job_notes: jobNotes });
-    }
-
-    const now = new Date().toISOString();
-    const update: Record<string, string> = {};
-
-    if (action === "start") {
-      if (assignment.actual_started_at) {
+      case "unauthorized":
+        return json({ error: "Unauthorized" }, 403);
+      // Also the enforcement point for "job_notes becomes read-only from the
+      // employee workflow" once complete.
+      case "already_completed":
+        return json({ error: "Job already completed" }, 400);
+      case "already_started":
         return json({ error: "Job already started" }, 400);
-      }
-      update.actual_started_at = now;
-    } else {
-      if (!assignment.actual_started_at) {
-        update.actual_started_at = now;
-      }
-      update.actual_completed_at = now;
+      case "not_started":
+        return json({ error: "Job has not been started" }, 400);
+      case "appointment_not_active":
+        return json({ error: "This appointment was cancelled or replaced and can no longer be updated.", code: "APPOINTMENT_NOT_ACTIVE" }, 409);
+      case "invalid_input":
+        return json({ error: "Invalid request" }, 400);
+      default:
+        return json({ error: "Server error" }, 500);
     }
-
-    const { error: updateErr } = await supabaseAdmin
-      .from("appointment_employees")
-      .update(update)
-      .eq("id", assignment.id)
-      .eq("workspace_id", workspaceId);
-
-    if (updateErr) throw updateErr;
-
-    return json({ ok: true, ...update });
   } catch (e: any) {
     console.error("JOB_ACTION_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);
