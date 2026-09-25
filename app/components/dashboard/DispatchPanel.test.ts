@@ -412,11 +412,11 @@ describe("Owner Worked-Time Correction + Needs Review Alert", () => {
     return source.slice(start, end);
   }
 
-  test("scheduledMinutes/findManualHoursEntry/needsWorkedTimeReview/trackedMinutes are imported from lib/payroll (reused, not re-derived)", () => {
+  test("scheduledMinutes/findManualHoursEntry/needsWorkedTimeReview/trackedMinutes/isOwnerReviewConfirmation are imported from lib/payroll (reused, not re-derived)", () => {
     const payrollImportEnd = source.indexOf('} from "@/lib/payroll";');
     assert.notEqual(payrollImportEnd, -1);
     const importBlock = source.slice(0, payrollImportEnd);
-    for (const name of ["scheduledMinutes", "findManualHoursEntry", "needsWorkedTimeReview", "trackedMinutes"]) {
+    for (const name of ["scheduledMinutes", "findManualHoursEntry", "needsWorkedTimeReview", "trackedMinutes", "isOwnerReviewConfirmation"]) {
       assert.ok(importBlock.includes(name), name);
     }
     assert.ok(!source.includes("function scheduledMinutes("), "the local duplicate was removed, not merely shadowed");
@@ -435,6 +435,13 @@ describe("Owner Worked-Time Correction + Needs Review Alert", () => {
     assert.match(invocation, /appointmentId=\{selectedAppt\.id\}/);
     assert.match(invocation, /employeeId=\{emp\.id\}/);
     assert.match(invocation, /onSaved=\{onHoursSaved\}/);
+  });
+
+  test("the correction control receives needsReview straight through, computed from the same needsWorkedTimeReview call the badge uses (no re-derivation)", () => {
+    const block = trackedBlock();
+    const idx = block.indexOf("<AdjustWorkedTimeControl");
+    const invocation = block.slice(idx, block.indexOf("/>", idx) + 2);
+    assert.match(invocation, /needsReview=\{needsReview\}/);
   });
 
   test("the correction control receives timezone, an anchorDate derived from the appointment's own scheduled date, and this assignment's original tracked timestamps (for pre-fill, never for re-writing)", () => {
@@ -461,10 +468,19 @@ describe("Owner Worked-Time Correction + Needs Review Alert", () => {
 
   test("Adjusted by owner / Original tracked time only appear once an owner override (manualEntry) exists -- and only alongside a complete tracked duration for the comparison line", () => {
     const block = trackedBlock();
-    assert.match(block, /isOverride \? "Adjusted by owner\." : tracked \? "Hours tracked automatically\." : "Manually entered\."/);
+    assert.match(block, /isOverride\s*\?\s*"Adjusted by owner\."\s*:\s*tracked\s*\?\s*"Hours tracked automatically\."\s*:\s*"Manually entered\."/);
     assert.match(block, /const isOverride = !!manualEntry && tracked;/);
     assert.match(block, /\{isOverride && \(/);
     assert.match(block, /Original tracked time: \{formatMinutesAsDuration\(trackedMinutes\(assignment\) \?\? 0\)\}/);
+  });
+
+  test("'Reviewed by owner' is distinguished from 'Adjusted by owner.' via isOwnerReviewConfirmation, checked BEFORE isOverride in the display ternary", () => {
+    const block = trackedBlock();
+    assert.match(block, /const isReviewConfirmation = isOverride && manualEntry \? isOwnerReviewConfirmation\(manualEntry, assignment\) : false;/);
+    assert.match(block, /isReviewConfirmation\s*\?\s*"Reviewed by owner/);
+    const reviewConfirmationIdx = block.indexOf("isReviewConfirmation");
+    const isOverrideDeclIdx = block.indexOf("const isOverride = !!manualEntry && tracked;");
+    assert.ok(isOverrideDeclIdx < reviewConfirmationIdx, "isOverride must be computed first (isReviewConfirmation depends on it)");
   });
 
   test("the correction reason (manualEntry.note) is shown, and Employee Job Notes remain visible nearby as supporting information -- never parsed for a time", () => {

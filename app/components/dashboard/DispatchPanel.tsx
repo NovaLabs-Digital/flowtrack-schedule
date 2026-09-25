@@ -18,6 +18,7 @@ import {
   needsWorkedTimeReview,
   scheduledMinutes,
   trackedMinutes,
+  isOwnerReviewConfirmation,
 } from "@/lib/payroll";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import AdjustWorkedTimeControl from "@/app/components/dashboard/AdjustWorkedTimeControl";
@@ -431,6 +432,11 @@ export default function DispatchPanel({
                 const manualEntry = findManualHoursEntry(selectedAppt.id, emp.id, employeeHours);
                 const tracked = isJobTrackingComplete(assignment);
                 const isOverride = !!manualEntry && tracked;
+                // "Keep Time As Is" saves the exact tracked duration back as
+                // the override -- isOwnerReviewConfirmation is what tells
+                // that apart from an actual "Correct Time" duration change,
+                // for display only (both are the same row shape).
+                const isReviewConfirmation = isOverride && manualEntry ? isOwnerReviewConfirmation(manualEntry, assignment) : false;
                 const needsReview = needsWorkedTimeReview(selectedAppt, selectedAppt.id, emp.id, selectedApptAssignments, employeeHours);
                 return (
                   <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
@@ -453,7 +459,13 @@ export default function DispatchPanel({
                         {formatMinutesAsDuration(resolveWorkedMinutes(selectedAppt.id, emp.id, assignment, employeeHours))}
                       </div>
                       <div className="text-[10px] text-emerald-700 mt-1">
-                        {isOverride ? "Adjusted by owner." : tracked ? "Hours tracked automatically." : "Manually entered."}
+                        {isReviewConfirmation
+                          ? "Reviewed by owner ✓"
+                          : isOverride
+                          ? "Adjusted by owner."
+                          : tracked
+                          ? "Hours tracked automatically."
+                          : "Manually entered."}
                       </div>
                       {isOverride && (
                         <div className="text-[10px] text-emerald-700 mt-0.5">
@@ -481,6 +493,7 @@ export default function DispatchPanel({
                       anchorDate={zonedDateValue(selectedAppt.scheduled_for, timezone)}
                       initialStartedAt={assignment.actual_started_at}
                       initialCompletedAt={assignment.actual_completed_at}
+                      needsReview={needsReview}
                     />
                   </div>
                 );

@@ -5,7 +5,7 @@ import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeH
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { toBusinessLocal } from "@/lib/timezone";
-import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";
+import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 
 // Phase 5.5E-E1B: this panel's own restricted notice, distinct from
@@ -228,6 +228,7 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
             // no correction control, this panel has no field it could write
             // to.
             const needsReview = needsWorkedTimeReview(appointment, appointment.id, assignment.employee_id, assignments, employeeHours);
+            const isReviewConfirmation = manualEntry && complete ? isOwnerReviewConfirmation(manualEntry, assignment) : false;
 
             return (
               <div key={assignment.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-1 text-slate-600">
@@ -244,7 +245,7 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
                 {manualEntry ? (
                   <>
                     <div>Worked Time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
-                    <div className="text-emerald-700">Adjusted by owner.</div>
+                    <div className="text-emerald-700">{isReviewConfirmation ? "Reviewed by owner ✓" : "Adjusted by owner."}</div>
                     {complete && (
                       <div>Original tracked time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(trackedMinutes(assignment) ?? 0)}</span></div>
                     )}

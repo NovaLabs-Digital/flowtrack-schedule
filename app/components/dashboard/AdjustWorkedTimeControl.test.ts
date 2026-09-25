@@ -15,7 +15,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { EmployeeHours } from "@/app/components/dashboard/types";
 
-const { default: AdjustWorkedTimeControl, computeCorrectedHours } = await import("./AdjustWorkedTimeControl.ts");
+const { default: AdjustWorkedTimeControl, computeCorrectedHours, computeKeepAsIsHours } = await import("./AdjustWorkedTimeControl.ts");
 
 const APPT_ID = "11111111-1111-4111-8111-111111111111";
 const EMP_ID = "22222222-2222-4222-8222-222222222222";
@@ -53,6 +53,7 @@ function renderControl(props: {
   onSaved?: (e: EmployeeHours) => void;
   initialStartedAt?: string | null;
   initialCompletedAt?: string | null;
+  needsReview?: boolean;
 } = {}) {
   const saved: EmployeeHours[] = [];
   render(
@@ -65,10 +66,18 @@ function renderControl(props: {
       anchorDate: ANCHOR_DATE,
       initialStartedAt: props.initialStartedAt,
       initialCompletedAt: props.initialCompletedAt,
+      needsReview: props.needsReview,
     })
   );
   return { saved };
 }
+
+// Tracked interval shared by the "flagged" (needsReview) tests below -- same
+// 8:55 AM - 10:25 AM / 1.5h pair the unflagged tests above use, so
+// "Keep Time As Is" is expected to post exactly 1.5 hours.
+const TRACKED_STARTED_AT = "2026-09-22T12:55:00.000Z"; // 8:55 AM America/New_York
+const TRACKED_COMPLETED_AT = "2026-09-22T14:25:00.000Z"; // 10:25 AM America/New_York
+const TRACKED_HOURS = 1.5;
 
 const user = () => userEvent.setup();
 const setTime = async (u: ReturnType<typeof user>, input: HTMLElement, hhmm: string) => {
@@ -278,5 +287,177 @@ describe("cancel", () => {
     await u.click(screen.getByText("Adjust Worked Time"));
     assert.equal((screen.getByLabelText("Corrected clock-in time") as HTMLInputElement).value, "08:55", "reset to the original tracked value, not blank");
     assert.equal((screen.getByLabelText("Correction reason") as HTMLInputElement).value, "");
+  });
+});
+
+// ============================================================================
+// Add "Keep Time As Is" Review Action
+// ============================================================================
+
+describe("computeKeepAsIsHours -- pure duration calculation", () => {
+  test("resolves to the exact tracked duration (8:55 AM - 10:25 AM = 1.5 hours)", () => {
+    const r = computeKeepAsIsHours(TRACKED_STARTED_AT, TRACKED_COMPLETED_AT);
+    assert.ok(r.ok);
+    assert.ok(Math.abs(r.hours - TRACKED_HOURS) < 1e-9, r.hours.toString());
+  });
+
+  test("no tracked interval at all -> an error, not a fabricated 0h", () => {
+    const r = computeKeepAsIsHours(null, null);
+    assert.equal(r.ok, false);
+    assert.match((r as { error: string }).error, /no tracked time/i);
+  });
+
+  test("an incomplete interval (only clock-in, no clock-out) -> an error", () => {
+    const r = computeKeepAsIsHours(TRACKED_STARTED_AT, null);
+    assert.equal(r.ok, false);
+  });
+});
+
+describe("flagged (needsReview=true): two owner actions offered instead of one", () => {
+  test("shows 'Correct Time' and 'Keep Time As Is' -- not the plain 'Adjust Worked Time' button", () => {
+    renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    assert.ok(screen.getByText("Correct Time"));
+    assert.ok(screen.getByText(/Keep Time As Is/));
+    assert.equal(screen.queryByText("Adjust Worked Time"), null);
+  });
+
+  test("when not flagged (needsReview=false, the default), the plain single button is shown instead", () => {
+    renderControl({ initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    assert.ok(screen.getByText("Adjust Worked Time"));
+    assert.equal(screen.queryByText("Correct Time"), null);
+    assert.equal(screen.queryByText(/Keep Time As Is/), null);
+  });
+
+  test("when restricted (canCorrect=false), both actions are disabled and a neutral notice is shown", async () => {
+    renderControl({ needsReview: true, canCorrect: false, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const correctBtn = screen.getByText("Correct Time") as HTMLButtonElement;
+    const keepBtn = screen.getByText(/Keep Time As Is/) as HTMLButtonElement;
+    assert.equal(correctBtn.getAttribute("aria-disabled"), "true");
+    assert.equal(keepBtn.getAttribute("aria-disabled"), "true");
+    assert.match(screen.getByText(/temporarily unavailable/i).textContent ?? "", /account notice/i);
+    await user().click(keepBtn);
+    assert.equal(screen.queryByLabelText("Review reason"), null, "form never opens while restricted");
+  });
+});
+
+describe("Correct Time (flagged card) -- identical form/behavior to the unflagged 'Adjust Worked Time' path", () => {
+  test("clicking 'Correct Time' reveals the same Clock-in/Clock-out/Reason form", async () => {
+    renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    await user().click(screen.getByText("Correct Time"));
+    assert.ok(screen.getByLabelText("Corrected clock-in time"));
+    assert.ok(screen.getByLabelText("Corrected clock-out time"));
+    assert.ok(screen.getByLabelText("Correction reason"));
+    assert.ok(screen.getByText("Save Correction"));
+    assert.equal(screen.queryByLabelText("Review reason"), null, "not the Keep Time As Is form");
+  });
+
+  test("saving a real correction from the flagged card posts the computed duration exactly like before", async () => {
+    renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText("Correct Time"));
+    await setTime(u, screen.getByLabelText("Corrected clock-in time"), "09:00");
+    await setTime(u, screen.getByLabelText("Corrected clock-out time"), "12:00");
+    await u.type(screen.getByLabelText("Correction reason"), "Actually finished at noon.");
+    responses.push(json(200, { ok: true, entry: ENTRY }));
+    await u.click(screen.getByText("Save Correction"));
+    assert.equal(calls.length, 1);
+    assert.ok(Math.abs(calls[0].body.hours_worked - 3) < 1e-9);
+    assert.equal(calls[0].body.note, "Actually finished at noon.");
+  });
+});
+
+describe("Keep Time As Is (flagged card) -- reason-only confirmation of the current tracked duration", () => {
+  test("clicking 'Keep Time As Is' reveals ONLY a Reason field -- no Clock-in/Clock-out", async () => {
+    renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    await user().click(screen.getByText(/Keep Time As Is/));
+    assert.ok(screen.getByLabelText("Review reason"));
+    assert.equal(screen.queryByLabelText("Corrected clock-in time"), null);
+    assert.equal(screen.queryByLabelText("Corrected clock-out time"), null);
+    assert.ok(screen.getByText("Confirm Time"));
+    assert.ok(screen.getByText("Cancel"));
+  });
+
+  test("a missing reason is rejected with no request sent", async () => {
+    renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText(/Keep Time As Is/));
+    await u.click(screen.getByText("Confirm Time"));
+    assert.match(screen.getByText(/reason is required/i).textContent ?? "", /confirm this time/i);
+    assert.equal(calls.length, 0);
+  });
+
+  test("saving posts the SAME duration as the current tracked time, plus the reason -- review row saved", async () => {
+    renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText(/Keep Time As Is/));
+    await u.type(screen.getByLabelText("Review reason"), "Used steam mop; job legitimately took longer.");
+    responses.push(json(200, { ok: true, entry: ENTRY }));
+    await u.click(screen.getByText("Confirm Time"));
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/api/appointments/employee-hours");
+    assert.equal(calls[0].body.appointment_id, APPT_ID);
+    assert.equal(calls[0].body.employee_id, EMP_ID);
+    assert.ok(Math.abs(calls[0].body.hours_worked - TRACKED_HOURS) < 1e-9, "stores the same effective duration -- not a new one");
+    assert.equal(calls[0].body.note, "Used steam mop; job legitimately took longer.");
+    // no clock-in/clock-out fields exist for this path, so none are sent
+    assert.deepEqual(Object.keys(calls[0].body).sort(), ["appointment_id", "employee_id", "hours_worked", "note"]);
+  });
+
+  test("on success, onSaved receives the saved entry and the form collapses", async () => {
+    const { saved } = renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText(/Keep Time As Is/));
+    await u.type(screen.getByLabelText("Review reason"), "Used steam mop.");
+    responses.push(json(200, { ok: true, entry: ENTRY }));
+    await u.click(screen.getByText("Confirm Time"));
+
+    assert.deepEqual(saved, [ENTRY]);
+    assert.equal(screen.queryByLabelText("Review reason"), null, "form collapsed");
+  });
+
+  test("a server rejection keeps the form open, shows the server's message, and never calls onSaved", async () => {
+    const { saved } = renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText(/Keep Time As Is/));
+    await u.type(screen.getByLabelText("Review reason"), "test");
+    responses.push(json(404, { error: "Employee is not assigned to this appointment." }));
+    await u.click(screen.getByText("Confirm Time"));
+
+    assert.deepEqual(saved, []);
+    assert.equal(screen.getByText("Employee is not assigned to this appointment.").tagName, "DIV");
+    assert.ok(screen.getByLabelText("Review reason"), "form stays open");
+  });
+
+  test("a network error is reported and never calls onSaved", async () => {
+    const { saved } = renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText(/Keep Time As Is/));
+    await u.type(screen.getByLabelText("Review reason"), "test");
+    responses.push(() => { throw new TypeError("Failed to fetch"); });
+    await u.click(screen.getByText("Confirm Time"));
+
+    assert.deepEqual(saved, []);
+    assert.ok(screen.getByText("Network error."));
+  });
+
+  test("Cancel closes the form, discards the reason, and issues no request", async () => {
+    renderControl({ needsReview: true, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText(/Keep Time As Is/));
+    await u.type(screen.getByLabelText("Review reason"), "scratch input");
+    await u.click(screen.getByText("Cancel"));
+
+    assert.ok(screen.getByText("Correct Time"), "collapsed back to the flagged two-action chooser");
+    assert.ok(screen.getByText(/Keep Time As Is/));
+    assert.equal(calls.length, 0, "nothing was saved");
+  });
+
+  test("restricted (canCorrect=false): opening Keep Time As Is issues no request", async () => {
+    renderControl({ needsReview: true, canCorrect: false, initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: TRACKED_COMPLETED_AT });
+    const u = user();
+    await u.click(screen.getByText(/Keep Time As Is/));
+    assert.equal(screen.queryByLabelText("Review reason"), null);
+    assert.equal(calls.length, 0);
   });
 });

@@ -266,6 +266,24 @@ export function trackedMinutes(assignment: TimestampPair | undefined): number | 
   return Math.round((new Date(assignment.actual_completed_at!).getTime() - new Date(assignment.actual_started_at!).getTime()) / 60_000);
 }
 
+// True when an owner's appointment_employee_hours row represents a
+// same-duration "Keep Time As Is" review confirmation rather than an actual
+// payable-duration change -- i.e. its hours_worked, rounded to the nearest
+// minute, exactly matches the assignment's own raw tracked duration. Both
+// "Correct Time" and "Keep Time As Is" (AdjustWorkedTimeControl.ts) save the
+// exact same appointment_employee_hours row shape; this comparison is the
+// only thing that tells them apart afterward, for display purposes only --
+// "Reviewed by owner" (Keep Time As Is) vs. "Adjusted by owner." (Correct
+// Time actually changed the number). False whenever there is no complete
+// tracked duration to compare against (a first-time manual entry with
+// nothing ever tracked automatically is always "Adjusted" / "Manually
+// entered", never "Reviewed" -- there was nothing to confirm).
+export function isOwnerReviewConfirmation(manual: Pick<EmployeeHours, "hours_worked">, assignment: TimestampPair | undefined): boolean {
+  const tracked = trackedMinutes(assignment);
+  if (tracked === null) return false;
+  return Math.round(manual.hours_worked * 60) === tracked;
+}
+
 // Minimum minutes of difference between scheduled and effective worked
 // duration before Needs Review can trigger, and the minimum fraction of the
 // scheduled duration that difference must also represent -- BOTH must hold
@@ -333,12 +351,27 @@ function median(values: number[]): number {
 //     Teresa specifically, not the appointment as a whole and not her
 //     coworker(s).
 //
+// "Needs Review" means an anomalous worked time that has NOT YET been
+// reviewed by the owner -- so once an appointment_employee_hours row exists
+// for this employee on this appointment, this returns false unconditionally,
+// regardless of how its value compares to anything else. That row is the
+// owner's review record either way: "Correct Time" (AdjustWorkedTimeControl.ts)
+// changes the payable duration, "Keep Time As Is" confirms the tracked
+// duration is correct as-is -- both mean the owner has already looked at
+// it. (Before "Keep Time As Is" existed, this instead recomputed the
+// anomaly check against the override's own value every time, so a
+// still-wrong correction kept the alert showing; that is no longer the
+// behavior -- ANY owner review row resolves the flag, by design, so the
+// owner is never forced to "correct" a number that was already right just
+// to make the warning go away.) There is still no separate "resolved" state
+// stored anywhere -- this is a pure function of whether a row exists, so it
+// is automatically re-derived (and can reappear, e.g. after a hypothetical
+// future "undo review") on every read.
+//
 // Because this reads resolveWorkedMinutes (owner override first) for every
-// employee involved, a correction that brings the effective duration back
-// within threshold of its baseline clears the flag automatically on the
-// very next read -- there is no separate "resolved" state to store or
-// clear, for this employee OR for any peer whose own baseline shifts as a
-// result.
+// OTHER employee involved, a peer's own correction still shifts THIS
+// employee's baseline the moment it's saved -- only this employee's own
+// flag is short-circuited by their own review row.
 export function needsWorkedTimeReview(
   appt: Pick<Appointment, "scheduled_for" | "scheduled_end" | "duration_minutes">,
   appointmentId: string,
@@ -348,6 +381,7 @@ export function needsWorkedTimeReview(
 ): boolean {
   const mine = apptAssignments.find((a) => a.employee_id === employeeId);
   if (!assignmentHasWorkedHours(appointmentId, employeeId, mine, employeeHours)) return false;
+  if (findManualHoursEntry(appointmentId, employeeId, employeeHours)) return false;
   const myMinutes = resolveWorkedMinutes(appointmentId, employeeId, mine, employeeHours);
 
   const peerMinutes = apptAssignments
@@ -410,10 +444,13 @@ export type PayrollRow = {
   employeeName: string;
   hoursWorked: number;
   // Count of this employee's in-range assignments where needsWorkedTimeReview
-  // is true -- independent of `mode` (it always compares the OWNER-OVERRIDE-
-  // FIRST effective worked duration against the scheduled duration, not
-  // whichever value `mode` happened to total), so it stays meaningful even
-  // when hoursWorked itself came from "scheduled_duration" or "manual_hours"
+  // is true -- i.e. UNREVIEWED anomalies only (an appointment_employee_hours
+  // row already saved for that assignment, via either Correct Time or Keep
+  // Time As Is, is excluded -- see needsWorkedTimeReview's own doc comment).
+  // Independent of `mode` (it always compares the OWNER-OVERRIDE-FIRST
+  // effective worked duration against the scheduled duration, not whichever
+  // value `mode` happened to total), so it stays meaningful even when
+  // hoursWorked itself came from "scheduled_duration" or "manual_hours"
   // mode. 0 for an employee with nothing to review.
   reviewCount: number;
 };

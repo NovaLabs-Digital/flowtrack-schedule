@@ -17,6 +17,7 @@ import {
   needsWorkedTimeReview,
   scheduledMinutes,
   trackedMinutes,
+  isOwnerReviewConfirmation,
 } from "./payroll.ts";
 import type { Appointment, EmployeeHours, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "./timezone.ts";
@@ -764,10 +765,19 @@ describe("needsWorkedTimeReview", () => {
     assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], correctedHours), false, "cleared after correction -- no stored resolved state, just recomputed");
   });
 
-  test("a correction that is itself still far off keeps the alert showing (the alert reflects the current effective value, not merely that a correction exists)", () => {
+  test("ANY owner review row clears the alert, even one that is itself still far off -- 'Needs Review' means UNREVIEWED, not 'still mathematically ordinary' (Keep Time As Is / Correct Time refinement)", () => {
+    // Before this refinement, the alert re-derived the anomaly check against
+    // the override's own value every time, so an implausible "correction"
+    // kept it showing. That is no longer the behavior: once an owner has
+    // looked at it and saved ANY appointment_employee_hours row -- whether
+    // via Correct Time (changing the duration) or Keep Time As Is
+    // (confirming it unchanged) -- the review is resolved, full stop. This
+    // is what lets Keep Time As Is clear the flag without pretending the
+    // tracked duration changed (see the Teresa/steam-mop example: 4h17m in,
+    // 4h17m confirmed, alert still clears).
     const { appt: a, assignment: asg } = roxanaScenario();
     const stillWrong = [manualEntry({ hours_worked: 40 })]; // an implausible 40h "correction"
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], stillWrong), true);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], stillWrong), false);
   });
 
   test("never flags an appointment with no worked-hours source at all -- that is the separate, pre-existing missing-hours concern", () => {
@@ -851,6 +861,147 @@ describe("owner correction never opens a payable-hours path for an employee", ()
     const { appt: a, assignment: asg } = roxanaScenario();
     const mins = resolveWorkedMinutes(a.id, asg.employee_id, asg, [manualEntry()]);
     assert.equal(mins, 60, "the row's hours_worked is used exactly as stored -- provenance is enforced elsewhere");
+  });
+});
+
+// ============================================================================
+// Add "Keep Time As Is" Review Action
+//
+// Real example this fixes: Teresa worked 4h17m on a job scheduled for 3h.
+// The time is CORRECT (she used a steam mop; the job legitimately took
+// longer) -- the owner should not have to pretend this is a "correction" by
+// re-entering the exact same clock-in/clock-out just to make the alert go
+// away. "Keep Time As Is" saves the SAME duration back through the existing
+// appointment_employee_hours mechanism, with a required reason, and that
+// alone resolves the review -- see needsWorkedTimeReview's own short-circuit
+// on ANY existing row, added by this feature.
+// ============================================================================
+
+const TERESA_SCHEDULED_MINUTES = 180; // 3h
+const TERESA_TRACKED_MINUTES = 4 * 60 + 17; // 4h17m
+
+function teresaScenario(overrides: { employeeHours?: EmployeeHours[] } = {}) {
+  const startedAgo = TERESA_TRACKED_MINUTES * 60 * 1000;
+  const a = appt({
+    id: "teresa-steam-mop-appt",
+    scheduled_for: new Date(Date.now() - startedAgo).toISOString(),
+    scheduled_end: new Date(Date.now() - startedAgo + TERESA_SCHEDULED_MINUTES * 60 * 1000).toISOString(),
+  });
+  const asg = assignment({
+    id: "ae-teresa-steam", appointment_id: "teresa-steam-mop-appt", employee_id: "teresa",
+    actual_started_at: new Date(Date.now() - startedAgo).toISOString(),
+    actual_completed_at: new Date().toISOString(),
+  });
+  return { appt: a, assignment: asg, employeeHours: overrides.employeeHours ?? [] };
+}
+
+// A "Keep Time As Is" row: hours_worked deliberately equal to the tracked
+// duration (what AdjustWorkedTimeControl's computeKeepAsIsHours computes).
+function keepAsIsEntry(overrides: Partial<EmployeeHours> = {}): EmployeeHours {
+  return {
+    id: "eh-keep", appointment_id: "teresa-steam-mop-appt", employee_id: "teresa",
+    hours_worked: TERESA_TRACKED_MINUTES / 60, note: "Used steam mop; job legitimately took longer.",
+    created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("Keep Time As Is -- owner review confirmation (same duration as tracked)", () => {
+  test("anomalous tracked time with no owner review yet => Needs Review (4h17m tracked vs 3h scheduled)", () => {
+    const { appt: a, assignment: asg } = teresaScenario();
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [asg], []), true);
+  });
+
+  test("Keep Time As Is (same duration + required reason) => review row saved, and the alert clears", () => {
+    const { appt: a, assignment: asg } = teresaScenario();
+    const reviewed = [keepAsIsEntry()];
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [asg], reviewed), false);
+  });
+
+  test("Keep Time As Is stores exactly the tracked duration -- Weekly Worked Hours is unchanged before vs. after", () => {
+    const employees: Employee[] = [{ id: "teresa", name: "Teresa", phone: null, color: "#000", active: true }];
+    const { appt: a, assignment: asg } = teresaScenario();
+    const before = computePayrollRows({ appointments: [a], employees, employeeHours: [], assignments: [asg], ...WIDE_RANGE, timezone: TZ });
+    const after = computePayrollRows({ appointments: [a], employees, employeeHours: [keepAsIsEntry()], assignments: [asg], ...WIDE_RANGE, timezone: TZ });
+    assert.ok(Math.abs(before.rows[0].hoursWorked - TERESA_TRACKED_MINUTES / 60) < 0.01);
+    assert.ok(Math.abs(after.rows[0].hoursWorked - TERESA_TRACKED_MINUTES / 60) < 0.01);
+    assert.ok(Math.abs(before.rows[0].hoursWorked - after.rows[0].hoursWorked) < 0.001, "Keep Time As Is never changes the payable total");
+  });
+
+  test("reviewCount decreases from 1 to 0 after Keep Time As Is, exactly like a Correct Time save does", () => {
+    const employees: Employee[] = [{ id: "teresa", name: "Teresa", phone: null, color: "#000", active: true }];
+    const { appt: a, assignment: asg } = teresaScenario();
+    const before = computePayrollRows({ appointments: [a], employees, employeeHours: [], assignments: [asg], ...WIDE_RANGE, timezone: TZ });
+    assert.equal(before.rows[0].reviewCount, 1);
+    const after = computePayrollRows({ appointments: [a], employees, employeeHours: [keepAsIsEntry()], assignments: [asg], ...WIDE_RANGE, timezone: TZ });
+    assert.equal(after.rows[0].reviewCount, 0);
+  });
+
+  test("Correct Time still works: a genuinely different corrected duration also clears the alert", () => {
+    const { appt: a, assignment: asg } = teresaScenario();
+    const corrected = [keepAsIsEntry({ hours_worked: 3, note: "Miscounted -- actually finished in 3h." })];
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [asg], corrected), false);
+  });
+
+  test("original actual_started_at/actual_completed_at remain untouched by Keep Time As Is -- trackedMinutes still reports the real tracked duration afterward", () => {
+    const { appt: a, assignment: asg } = teresaScenario();
+    const before = { started: asg.actual_started_at, completed: asg.actual_completed_at };
+    needsWorkedTimeReview(a, a.id, "teresa", [asg], [keepAsIsEntry()]);
+    assert.equal(asg.actual_started_at, before.started);
+    assert.equal(asg.actual_completed_at, before.completed);
+    assert.equal(trackedMinutes(asg), TERESA_TRACKED_MINUTES);
+  });
+
+  test("isOwnerReviewConfirmation: true when the saved hours_worked matches the tracked duration exactly (rounded to the minute) -- this is what the UI shows as 'Reviewed by owner'", () => {
+    const { assignment: asg } = teresaScenario();
+    assert.equal(isOwnerReviewConfirmation(keepAsIsEntry(), asg), true);
+  });
+
+  test("isOwnerReviewConfirmation: false when the saved hours_worked differs from the tracked duration -- an actual Correct Time change, shown as 'Adjusted by owner', distinguishable from Keep Time As Is", () => {
+    const { assignment: asg } = teresaScenario();
+    const corrected = keepAsIsEntry({ hours_worked: 3 });
+    assert.equal(isOwnerReviewConfirmation(corrected, asg), false);
+  });
+
+  test("isOwnerReviewConfirmation: false when there is no complete tracked duration to compare against (a first-time manual entry, never 'Reviewed')", () => {
+    const untracked = assignment({ appointment_id: "no-tracking", employee_id: "emp-1", actual_started_at: null, actual_completed_at: null });
+    const entry = keepAsIsEntry({ appointment_id: "no-tracking", employee_id: "emp-1", hours_worked: 2 });
+    assert.equal(isOwnerReviewConfirmation(entry, untracked), false);
+  });
+
+  test("employee cannot perform either owner review action through these pure functions -- no identity check exists here by design; the real boundary is requireOwner on the API route", () => {
+    const { appt: a, assignment: asg } = teresaScenario();
+    // Same shape either an owner OR (hypothetically) anyone else's row would
+    // take -- these functions have no notion of who saved it. The actual
+    // security boundary (owner-only) is enforced server-side and proven in
+    // app/api/appointments/employee-hours/route.test.ts.
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [asg], [keepAsIsEntry()]), false);
+  });
+
+  test("peer-comparison logic remains unchanged: a peer's Keep Time As Is confirmation does NOT shrink the anomaly for other employees -- unlike Correct Time, the stored duration never changes", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "keep-peer-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 120 * 60_000).toISOString(),
+    });
+    const teresaWild = assignment({
+      id: "ae-kp-teresa", appointment_id: "keep-peer-appt", employee_id: "teresa",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 900 * 60_000).toISOString(), // 15h, a genuinely long job
+    });
+    const roxana = assignment({
+      id: "ae-kp-roxana", appointment_id: "keep-peer-appt", employee_id: "roxana",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 121 * 60_000).toISOString(),
+    });
+    const teresaKeepAsIs: EmployeeHours = {
+      id: "eh-kp", appointment_id: "keep-peer-appt", employee_id: "teresa", hours_worked: 900 / 60,
+      note: "Large commercial job, legitimately took 15 hours.", created_at: "x", updated_at: "x",
+    };
+    // Teresa's own flag clears once she's reviewed (Keep Time As Is)...
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresaWild, roxana], [teresaKeepAsIs]), false);
+    // ...but Roxana's baseline is still Teresa's confirmed-unchanged 15h --
+    // Roxana still needs review herself, exactly as before Teresa's
+    // confirmation, because Keep Time As Is never changes the stored number.
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresaWild, roxana], [teresaKeepAsIs]), true);
   });
 });
 

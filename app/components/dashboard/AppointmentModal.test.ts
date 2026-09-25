@@ -417,7 +417,7 @@ describe("Phase 5.7D-R18: multi-employee editor (source-level proof)", () => {
   });
 
   test("missing-hours identification uses getMissingHoursEmployeeIds, the same per-employee predicate driving the schedule grid's warning triangle", () => {
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";'));
     assert.ok(source.includes("const missingHoursEmployeeIds = jobTrackingAppt ? getMissingHoursEmployeeIds(jobTrackingAppt, apptAssignments, employeeHours) : [];"));
   });
 
@@ -510,6 +510,19 @@ describe("Owner Worked-Time Correction + Needs Review Alert (Worked Hours card)"
     assert.match(block, /const needsReview = needsWorkedTimeReview\(editing!\.appointment, editing!\.appointment\.id, assignment\.employee_id, apptAssignments, employeeHours\);/);
     assert.match(block, /\{needsReview && \(/);
     assert.match(block, /Needs Review/);
+  });
+
+  test("the correction control receives needsReview straight through, so the flagged card offers Correct Time / Keep Time As Is", () => {
+    const block = cardBlock();
+    const idx = block.indexOf("<AdjustWorkedTimeControl");
+    const invocation = block.slice(idx, block.indexOf("/>", idx) + 2);
+    assert.match(invocation, /needsReview=\{needsReview\}/);
+  });
+
+  test("'Reviewed by owner' (Keep Time As Is) is distinguished from 'Adjusted by owner.' (Correct Time) via isOwnerReviewConfirmation", () => {
+    const block = cardBlock();
+    assert.match(block, /const isReviewConfirmation = manualEntry && complete \? isOwnerReviewConfirmation\(manualEntry, assignment\) : false;/);
+    assert.match(block, /\{isReviewConfirmation \? "Reviewed by owner/);
   });
 });
 

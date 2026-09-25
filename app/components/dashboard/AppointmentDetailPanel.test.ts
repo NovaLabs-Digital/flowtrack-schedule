@@ -248,7 +248,7 @@ describe("historical-record protection (founder decision): a past/completed/canc
   });
 
   test("isHistoricalAppointment is imported from lib/payroll, never lib/timezone's bare isPastAppointment", () => {
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";'));
     assert.ok(!source.includes("isPastAppointment"));
   });
 
@@ -287,7 +287,7 @@ describe("historical-record protection (founder decision): a past/completed/canc
   });
 
   test("Worked Hours reads Started/Completed/duration/Job Notes from the exact same lib/payroll.ts helpers AppointmentModal's Worked Hours card uses, never a re-derived computation", () => {
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";'));
     assert.ok(source.includes("const manualEntry = findManualHoursEntry(appointment.id, assignment.employee_id, employeeHours);"));
     assert.ok(source.includes("const complete = isJobTrackingComplete(assignment);"));
     assert.ok(source.includes("const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);"));
@@ -308,6 +308,14 @@ describe("historical-record protection (founder decision): a past/completed/canc
     assert.match(block, /Original tracked time: <span className="font-medium text-slate-900">\{formatMinutesAsDuration\(trackedMinutes\(assignment\) \?\? 0\)\}<\/span>/);
     assert.ok(!block.includes("AdjustWorkedTimeControl"), "display-only -- no correction control on this read-only panel");
     assert.ok(!block.includes("<input") && !block.includes("<button"), "no interactive element in this card at all");
+  });
+
+  test("'Reviewed by owner' (Keep Time As Is) is distinguished from 'Adjusted by owner.' (Correct Time) via isOwnerReviewConfirmation, on this read-only panel too", () => {
+    const workedHoursIdx = source.indexOf('<div className="text-xs font-medium text-slate-600">Worked Hours</div>');
+    const cardEnd = source.indexOf("})}", workedHoursIdx);
+    const block = source.slice(workedHoursIdx, cardEnd);
+    assert.match(block, /const isReviewConfirmation = manualEntry && complete \? isOwnerReviewConfirmation\(manualEntry, assignment\) : false;/);
+    assert.match(block, /\{isReviewConfirmation \? "Reviewed by owner/);
   });
 
   test("Started/Completed fall back to the clean 'Not recorded' empty state -- never fabricated -- and Job Notes only renders when assignment.job_notes is truthy", () => {

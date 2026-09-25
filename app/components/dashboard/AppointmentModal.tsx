@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Appointment, Client, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
-import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";
+import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import AdjustWorkedTimeControl from "@/app/components/dashboard/AdjustWorkedTimeControl";
@@ -1202,6 +1202,11 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 // "Manually entered" case (no tracked value to compare
                 // against), exactly like DispatchPanel's own card.
                 const needsReview = needsWorkedTimeReview(editing!.appointment, editing!.appointment.id, assignment.employee_id, apptAssignments, employeeHours);
+                // "Keep Time As Is" saves the exact tracked duration back as
+                // the override -- isOwnerReviewConfirmation is what tells
+                // that apart from an actual "Correct Time" duration change,
+                // for display only (both are the same row shape).
+                const isReviewConfirmation = manualEntry && complete ? isOwnerReviewConfirmation(manualEntry, assignment) : false;
 
                 return (
                   <div
@@ -1224,7 +1229,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                     {manualEntry ? (
                       <>
                         <div>Worked Time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
-                        <div className="text-emerald-700">Adjusted by owner.</div>
+                        <div className="text-emerald-700">{isReviewConfirmation ? "Reviewed by owner ✓" : "Adjusted by owner."}</div>
                         {complete && (
                           <div>Original tracked time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(trackedMinutes(assignment) ?? 0)}</span></div>
                         )}
@@ -1278,6 +1283,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                           anchorDate={zonedDateValue(editing!.appointment.scheduled_for, timezone)}
                           initialStartedAt={assignment.actual_started_at}
                           initialCompletedAt={assignment.actual_completed_at}
+                          needsReview={needsReview}
                         />
                       </div>
                     )}
