@@ -208,12 +208,17 @@ describe("outcome -> HTTP mapping (existing messages preserved)", () => {
     assert.deepEqual(await res.json(), { error: "Employee is not assigned to this appointment." });
   });
 
-  test("genuinely complete Job Tracking blocks a manual override with the existing 409", async () => {
-    resetFixtures(ACTIVE, [{ data: { outcome: "tracked_time_exists" } }]);
+  // migrations/031: a complete Job Tracking duration no longer blocks this
+  // write -- this route is owner-only (requireOwner above), so a save here
+  // is always an owner-approved correction/override. The RPC's "ok" outcome
+  // is what it returns in exactly this case; there is no separate
+  // "tracked_time_exists" outcome to map any more.
+  test("an owner correction succeeds even when Job Tracking is already complete (owner override wins)", async () => {
+    resetFixtures(ACTIVE, [savedOk]);
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req(VALID_BODY));
-    assert.equal(res.status, 409);
-    assert.deepEqual(await res.json(), { error: "This appointment already has tracked time from Job Tracking, which cannot be overridden." });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, entry: ENTRY });
   });
 
   test("a NEW entry on a cancelled or replaced appointment is rejected (revalidated under the parent lock inside the RPC)", async () => {

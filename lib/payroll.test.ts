@@ -13,6 +13,10 @@ import {
   deriveAppointmentTrackingStatus,
   isHistoricalAppointment,
   toDateInputValue,
+  resolveWorkedMinutes,
+  needsWorkedTimeReview,
+  scheduledMinutes,
+  trackedMinutes,
 } from "./payroll.ts";
 import type { Appointment, EmployeeHours, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "./timezone.ts";
@@ -607,5 +611,245 @@ describe("Phase 5E: computePayrollRows -- range inclusion uses the WORKSPACE-LOC
       assert.equal(result.rows.length, 1, timezone);
       assert.equal(result.rows[0].hoursWorked, 2, timezone);
     }
+  });
+});
+
+// ============================================================================
+// Owner Worked-Time Correction + Needs Review Alert
+//
+// Real example this fixes: Roxana forgot to clock out. Scheduled 1h30m,
+// tracked 48h58m -- before this feature, that 48h58m was unconditionally
+// used for payroll with no way for the owner to correct it (see
+// resolveJobTrackingHours's PRE-fix precedence, tracked-always-wins). These
+// tests cover the new precedence (owner override -> tracked -> existing
+// fallback) and the Needs Review alert (scheduled vs. effective worked
+// duration).
+// ============================================================================
+
+const ROXANA_SCHEDULED_MINUTES = 90; // 1h30m
+const ROXANA_TRACKED_MINUTES = 48 * 60 + 58; // 48h58m
+
+function roxanaScenario(overrides: { employeeHours?: EmployeeHours[] } = {}) {
+  const startedAgo = ROXANA_TRACKED_MINUTES * 60 * 1000;
+  const a = appt({
+    id: "franklin-appt",
+    scheduled_for: new Date(Date.now() - startedAgo).toISOString(),
+    scheduled_end: new Date(Date.now() - startedAgo + ROXANA_SCHEDULED_MINUTES * 60 * 1000).toISOString(),
+  });
+  const asg = assignment({
+    id: "ae-roxana", appointment_id: "franklin-appt", employee_id: "roxana",
+    actual_started_at: new Date(Date.now() - startedAgo).toISOString(),
+    actual_completed_at: new Date().toISOString(),
+  });
+  return { appt: a, assignment: asg, employeeHours: overrides.employeeHours ?? [] };
+}
+
+function manualEntry(overrides: Partial<EmployeeHours> = {}): EmployeeHours {
+  return {
+    id: "eh-override", appointment_id: "franklin-appt", employee_id: "roxana",
+    hours_worked: 1, note: "Forgot to clock out. Job completed at 10:32 AM.",
+    created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+const WIDE_RANGE = { rangeStart: "2000-01-01", rangeEnd: "2100-01-01" };
+
+describe("owner override precedence: resolveWorkedMinutes (display) and computePayrollRows (Weekly Worked Hours)", () => {
+  test("with no owner override, a complete Job Tracking duration is used (unchanged behavior)", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    const mins = resolveWorkedMinutes(a.id, asg.employee_id, asg, []);
+    assert.equal(mins, ROXANA_TRACKED_MINUTES);
+  });
+
+  test("owner override wins over an already-complete Job Tracking duration (the fix)", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    const override = manualEntry({ hours_worked: 86 / 60 }); // 1h26m, matches the spec's example
+    const mins = resolveWorkedMinutes(a.id, asg.employee_id, asg, [override]);
+    assert.equal(mins, 86, "1h26m, not the raw 2938-minute tracked duration");
+  });
+
+  test("with neither an override nor complete tracking, resolves to 0", () => {
+    const a = appt({ id: "untracked" });
+    const asg = assignment({ appointment_id: "untracked", employee_id: "emp-1" });
+    assert.equal(resolveWorkedMinutes(a.id, asg.employee_id, asg, []), 0);
+  });
+
+  test("Weekly Worked Hours (computePayrollRows, default job_tracking mode) uses the corrected value, not the raw tracked duration -- Roxana's bug, fixed", () => {
+    const employees: Employee[] = [{ id: "roxana", name: "Roxana", phone: null, color: "#000", active: true }];
+    const { appt: a, assignment: asg } = roxanaScenario();
+
+    const before = computePayrollRows({ appointments: [a], employees, employeeHours: [], assignments: [asg], ...WIDE_RANGE, timezone: TZ });
+    assert.ok(Math.abs(before.rows[0].hoursWorked - ROXANA_TRACKED_MINUTES / 60) < 0.01, "before correction: the raw ~48.97h is what was totaled (the reported defect)");
+
+    const corrected = computePayrollRows({
+      appointments: [a], employees, employeeHours: [manualEntry({ hours_worked: 86 / 60 })], assignments: [asg], ...WIDE_RANGE, timezone: TZ,
+    });
+    assert.ok(Math.abs(corrected.rows[0].hoursWorked - 86 / 60) < 0.01, `after correction: ~1.43h, got ${corrected.rows[0].hoursWorked}`);
+  });
+
+  test("original actual_started_at/actual_completed_at are never read or mutated by the override -- they remain the source of the Original tracked time comparison", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    const before = { started: asg.actual_started_at, completed: asg.actual_completed_at };
+    resolveWorkedMinutes(a.id, asg.employee_id, asg, [manualEntry()]);
+    assert.equal(asg.actual_started_at, before.started);
+    assert.equal(asg.actual_completed_at, before.completed);
+    assert.equal(trackedMinutes(asg), ROXANA_TRACKED_MINUTES, "trackedMinutes still reports the original tracked duration after a correction exists");
+  });
+});
+
+describe("needsWorkedTimeReview", () => {
+  test("flags a large OVERAGE (Roxana's example: 1h30m scheduled, 48h58m tracked)", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    assert.equal(scheduledMinutes(a), ROXANA_SCHEDULED_MINUTES);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), true);
+  });
+
+  test("flags a large UNDERRUN just as readily as an overage", () => {
+    const a = appt({
+      id: "underrun", scheduled_for: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      scheduled_end: new Date(Date.now() - 2 * HOUR_MS + 90 * 60 * 1000).toISOString(), // 90 min scheduled
+    });
+    const asg = assignment({
+      appointment_id: "underrun", employee_id: "emp-1",
+      actual_started_at: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      actual_completed_at: new Date(Date.now() - 2 * HOUR_MS + 5 * 60 * 1000).toISOString(), // 5 min tracked
+    });
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), true);
+  });
+
+  test("no alert when the difference is inside threshold (small, ordinary variance)", () => {
+    const a = appt({
+      id: "ordinary", scheduled_for: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      scheduled_end: new Date(Date.now() - 2 * HOUR_MS + 90 * 60 * 1000).toISOString(), // 90 min scheduled
+    });
+    const asg = assignment({
+      appointment_id: "ordinary", employee_id: "emp-1",
+      actual_started_at: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      actual_completed_at: new Date(Date.now() - 2 * HOUR_MS + 95 * 60 * 1000).toISOString(), // 95 min tracked -- 5 min over
+    });
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+  });
+
+  test("boundary: a difference of EXACTLY 30 minutes does not trigger (must be MORE than 30)", () => {
+    const a = appt({
+      id: "boundary-30", scheduled_for: new Date(Date.now() - 3 * HOUR_MS).toISOString(),
+      scheduled_end: new Date(Date.now() - 3 * HOUR_MS + 100 * 60 * 1000).toISOString(), // 100 min scheduled
+    });
+    const asg = assignment({
+      appointment_id: "boundary-30", employee_id: "emp-1",
+      actual_started_at: new Date(Date.now() - 3 * HOUR_MS).toISOString(),
+      actual_completed_at: new Date(Date.now() - 3 * HOUR_MS + 130 * 60 * 1000).toISOString(), // 130 min: diff=30 (>25% of 100, but not >30)
+    });
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+  });
+
+  test("boundary: a difference of EXACTLY 25% of scheduled does not trigger (must be MORE than 25%)", () => {
+    const a = appt({
+      id: "boundary-25pct", scheduled_for: new Date(Date.now() - 5 * HOUR_MS).toISOString(),
+      scheduled_end: new Date(Date.now() - 5 * HOUR_MS + 200 * 60 * 1000).toISOString(), // 200 min scheduled
+    });
+    const asg = assignment({
+      appointment_id: "boundary-25pct", employee_id: "emp-1",
+      actual_started_at: new Date(Date.now() - 5 * HOUR_MS).toISOString(),
+      actual_completed_at: new Date(Date.now() - 5 * HOUR_MS + 250 * 60 * 1000).toISOString(), // 250 min: diff=50 (>30, but exactly 25% of 200)
+    });
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+  });
+
+  test("an owner correction that brings the effective duration back within threshold clears the alert automatically", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), true, "flagged before correction");
+    const correctedHours = [manualEntry({ hours_worked: 86 / 60 })]; // 1h26m, close to the 1h30m scheduled
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, correctedHours), false, "cleared after correction -- no stored resolved state, just recomputed");
+  });
+
+  test("a correction that is itself still far off keeps the alert showing (the alert reflects the current effective value, not merely that a correction exists)", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    const stillWrong = [manualEntry({ hours_worked: 40 })]; // an implausible 40h "correction"
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, stillWrong), true);
+  });
+
+  test("never flags an appointment with no worked-hours source at all -- that is the separate, pre-existing missing-hours concern", () => {
+    const a = appt({
+      id: "untouched", scheduled_for: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      scheduled_end: new Date(Date.now() - HOUR_MS).toISOString(),
+    });
+    const asg = assignment({ appointment_id: "untouched", employee_id: "emp-1" });
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+  });
+
+  test("never flags when the appointment has no scheduled duration to compare against", () => {
+    const { assignment: asg } = roxanaScenario();
+    const a = appt({ id: "no-schedule", scheduled_end: null, duration_minutes: null });
+    assert.equal(scheduledMinutes(a), 0);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+  });
+});
+
+describe("computePayrollRows -- reviewCount (Weekly Worked Hours review indicator)", () => {
+  test("reviewCount reflects exactly the reviewable assignments for that employee in range", () => {
+    const employees: Employee[] = [{ id: "roxana", name: "Roxana", phone: null, color: "#000", active: true }];
+    const { appt: reviewable, assignment: asgReviewable } = roxanaScenario();
+    const ordinary = appt({
+      id: "ordinary-2", scheduled_for: new Date(Date.now() - 3 * HOUR_MS).toISOString(),
+      scheduled_end: new Date(Date.now() - 3 * HOUR_MS + 60 * 60 * 1000).toISOString(),
+    });
+    const asgOrdinary = assignment({
+      appointment_id: "ordinary-2", employee_id: "roxana",
+      actual_started_at: new Date(Date.now() - 3 * HOUR_MS).toISOString(),
+      actual_completed_at: new Date(Date.now() - 3 * HOUR_MS + 62 * 60 * 1000).toISOString(),
+    });
+    const { rows } = computePayrollRows({
+      appointments: [reviewable, ordinary], employees, employeeHours: [],
+      assignments: [asgReviewable, asgOrdinary], ...WIDE_RANGE, timezone: TZ,
+    });
+    const roxanaRow = rows.find((r) => r.employeeId === "roxana")!;
+    assert.equal(roxanaRow.reviewCount, 1, "only the Roxana-scenario appointment is reviewable");
+  });
+
+  test("reviewCount is 0 for an employee with nothing needing review", () => {
+    const employees: Employee[] = [{ id: "teresa", name: "Teresa", phone: null, color: "#000", active: true }];
+    const a = appt({
+      id: "clean", scheduled_for: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      scheduled_end: new Date(Date.now() - HOUR_MS).toISOString(),
+    });
+    const asg = assignment({
+      appointment_id: "clean", employee_id: "teresa",
+      actual_started_at: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      actual_completed_at: new Date(Date.now() - HOUR_MS).toISOString(),
+    });
+    const { rows } = computePayrollRows({ appointments: [a], employees, employeeHours: [], assignments: [asg], ...WIDE_RANGE, timezone: TZ });
+    assert.equal(rows[0].reviewCount, 0);
+  });
+
+  test("an owner correction clears reviewCount along with the alert", () => {
+    const employees: Employee[] = [{ id: "roxana", name: "Roxana", phone: null, color: "#000", active: true }];
+    const { appt: a, assignment: asg } = roxanaScenario();
+    const before = computePayrollRows({ appointments: [a], employees, employeeHours: [], assignments: [asg], ...WIDE_RANGE, timezone: TZ });
+    assert.equal(before.rows[0].reviewCount, 1);
+    const after = computePayrollRows({
+      appointments: [a], employees, employeeHours: [manualEntry({ hours_worked: 86 / 60 })], assignments: [asg], ...WIDE_RANGE, timezone: TZ,
+    });
+    assert.equal(after.rows[0].reviewCount, 0);
+  });
+});
+
+describe("owner correction never opens a payable-hours path for an employee", () => {
+  // Security: computePayrollRows/resolveWorkedMinutes/needsWorkedTimeReview
+  // are pure functions over whatever employeeHours rows they're given --
+  // they enforce no permission themselves (correct: that boundary is
+  // app/api/appointments/employee-hours/route.ts's requireOwner, proven in
+  // that route's own tests, and migrations/030's record_job_action, which
+  // never writes appointment_employee_hours at all, proven in
+  // test-db/recurrence.test.ts against real PostgreSQL). This test only
+  // confirms these pure functions treat every appointment_employee_hours row
+  // identically regardless of who or what produced it -- there is no
+  // employee-id-based special case anywhere in this precedence to
+  // accidentally bypass.
+  test("resolveWorkedMinutes has no notion of who saved the override -- the security boundary is the API route, not this calculation", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    const mins = resolveWorkedMinutes(a.id, asg.employee_id, asg, [manualEntry()]);
+    assert.equal(mins, 60, "the row's hours_worked is used exactly as stored -- provenance is enforced elsewhere");
   });
 });

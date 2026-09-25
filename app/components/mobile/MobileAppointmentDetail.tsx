@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
-import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";
+import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 
@@ -256,15 +256,36 @@ export default function MobileAppointmentDetail({
                 ? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
                 : "Not recorded";
               const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);
+              // Owner override wins for display -- see resolveWorkedMinutes
+              // (lib/payroll.ts) -- matching desktop's AppointmentDetailPanel
+              // exactly. Display-only here: no correction control, this
+              // screen has no field it could write to.
+              const needsReview = needsWorkedTimeReview(appointment, appointment.id, assignment.employee_id, assignment, employeeHours);
 
               return (
                 <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-1 text-slate-600">
-                  <div className="font-medium text-slate-700">{emp?.name ?? "Unknown employee"}</div>
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium text-slate-700">{emp?.name ?? "Unknown employee"}</div>
+                    {needsReview && (
+                      <span className="text-[10px] font-medium text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">
+                        &#9888; Needs Review
+                      </span>
+                    )}
+                  </div>
                   <div>Started: <span className="font-medium text-slate-900">{startedLabel}</span></div>
                   <div>Completed: <span className="font-medium text-slate-900">{completedLabel}</span></div>
-                  {complete ? (
-                    <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
-                  ) : manualEntry ? (
+                  {manualEntry ? (
+                    <>
+                      <div>Worked Time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                      <div className="text-emerald-700">Adjusted by owner.</div>
+                      {complete && (
+                        <div>Original tracked time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(trackedMinutes(assignment) ?? 0)}</span></div>
+                      )}
+                      {manualEntry.note && (
+                        <div>Reason: <span className="italic">{manualEntry.note}</span></div>
+                      )}
+                    </>
+                  ) : complete ? (
                     <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
                   ) : (
                     <div>Worked duration: not yet available.</div>

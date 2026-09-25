@@ -67,7 +67,18 @@ export default function PayrollSummary({
             {rows.map((r) => (
               <div key={r.employeeId} className="contents">
                 <span className="text-xs text-slate-700">{r.employeeName}</span>
-                <span className="text-xs font-medium text-slate-900 text-right">{r.hoursWorked.toFixed(2)} hrs</span>
+                <span className="text-xs font-medium text-slate-900 text-right">
+                  {r.hoursWorked.toFixed(2)} hrs
+                  {/* Office-manager-facing heads-up, so payroll issues surface
+                      before payroll runs, not after -- see needsWorkedTimeReview
+                      (lib/payroll.ts). Purely a count/link to go look; it never
+                      changes hoursWorked itself. */}
+                  {r.reviewCount > 0 && (
+                    <span className="ml-1.5 text-amber-700 bg-amber-100 rounded px-1 py-0.5 whitespace-nowrap">
+                      &#9888; {r.reviewCount} review{r.reviewCount !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </span>
               </div>
             ))}
           </div>

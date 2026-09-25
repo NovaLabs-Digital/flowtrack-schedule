@@ -82,8 +82,8 @@ function Host() {
   if (!open) return React.createElement("div", { "data-testid": "closed" }, "closed");
   return React.createElement(AppointmentModal, {
     onClose: () => setOpen(false), onSaved: () => { saved++; setOpen(false); },
-    clients: [client], appointments: [appointment], services, employees, employeeHours: [], assignments,
-    editing: { appointment, client }, canMutateOperationalData: true, timezone: TZ,
+    clients: [client], appointments: [appointment], services, employees, employeeHours: [], onHoursSaved: () => {}, assignments,
+    editing: { appointment, client }, canMutateOperationalData: true, canUseJobTracking: true, timezone: TZ,
   });
 }
 

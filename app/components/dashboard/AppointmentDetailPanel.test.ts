@@ -248,7 +248,7 @@ describe("historical-record protection (founder decision): a past/completed/canc
   });
 
   test("isHistoricalAppointment is imported from lib/payroll, never lib/timezone's bare isPastAppointment", () => {
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";'));
     assert.ok(!source.includes("isPastAppointment"));
   });
 
@@ -287,10 +287,27 @@ describe("historical-record protection (founder decision): a past/completed/canc
   });
 
   test("Worked Hours reads Started/Completed/duration/Job Notes from the exact same lib/payroll.ts helpers AppointmentModal's Worked Hours card uses, never a re-derived computation", () => {
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";'));
     assert.ok(source.includes("const manualEntry = findManualHoursEntry(appointment.id, assignment.employee_id, employeeHours);"));
     assert.ok(source.includes("const complete = isJobTrackingComplete(assignment);"));
     assert.ok(source.includes("const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);"));
+  });
+
+  test("Owner Worked-Time Correction: manualEntry (owner override) branches FIRST, Needs Review badge is computed and shown, and this panel remains read-only (no correction control)", () => {
+    const workedHoursIdx = source.indexOf('<div className="text-xs font-medium text-slate-600">Worked Hours</div>');
+    const cardEnd = source.indexOf("})}", workedHoursIdx);
+    assert.ok(workedHoursIdx > -1 && cardEnd > -1);
+    const block = source.slice(workedHoursIdx, cardEnd);
+    assert.match(block, /const needsReview = needsWorkedTimeReview\(appointment, appointment\.id, assignment\.employee_id, assignment, employeeHours\);/);
+    assert.match(block, /\{needsReview && \(/);
+    assert.match(block, /Needs Review/);
+    const manualIdx = block.indexOf("{manualEntry ? (");
+    const completeIdx = block.indexOf("complete ? (", manualIdx);
+    assert.ok(manualIdx > -1 && completeIdx > manualIdx, "manualEntry (owner override) branches first, matching resolveWorkedMinutes precedence");
+    assert.match(block, /Adjusted by owner\./);
+    assert.match(block, /Original tracked time: <span className="font-medium text-slate-900">\{formatMinutesAsDuration\(trackedMinutes\(assignment\) \?\? 0\)\}<\/span>/);
+    assert.ok(!block.includes("AdjustWorkedTimeControl"), "display-only -- no correction control on this read-only panel");
+    assert.ok(!block.includes("<input") && !block.includes("<button"), "no interactive element in this card at all");
   });
 
   test("Started/Completed fall back to the clean 'Not recorded' empty state -- never fabricated -- and Job Notes only renders when assignment.job_notes is truthy", () => {

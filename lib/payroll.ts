@@ -65,11 +65,14 @@ export function findManualHoursEntry(appointmentId: string, employeeId: string, 
 
 // True when one employee's assignment on one appointment has a usable
 // worked-hours source: a completed Job Tracking duration on that
-// assignment (preferred) or a manually-saved appointment_employee_hours
-// entry for that same appointment+employee (fallback only). Single source
-// of truth for "has worked hours been entered for this employee on this
-// job?" — used by both the schedule grid's warning triangle and the
-// Employee Worked Hours card, so they never disagree.
+// assignment, OR an owner-saved appointment_employee_hours entry for that
+// same appointment+employee (an owner correction/override -- see
+// resolveWorkedMinutes below for which one WINS when both exist; this
+// predicate only asks "is there anything to show at all," so it is
+// order-independent). Single source of truth for "has worked hours been
+// entered for this employee on this job?" — used by both the schedule
+// grid's warning triangle and the Employee Worked Hours card, so they
+// never disagree.
 export function assignmentHasWorkedHours(
   appointmentId: string,
   employeeId: string,
@@ -95,6 +98,23 @@ function effectiveEndMs(appt: Pick<Appointment, "scheduled_for" | "scheduled_end
   }
   const startMs = new Date(appt.scheduled_for).getTime();
   return startMs + (appt.duration_minutes ?? 0) * 60_000;
+}
+
+// The appointment's own scheduled duration in whole minutes: scheduled_end
+// minus scheduled_for when both are set and positive, otherwise
+// duration_minutes, otherwise 0. Single source of truth for "how long was
+// this job supposed to take" -- shared by needsWorkedTimeReview below and
+// every UI surface that shows a "Scheduled Time" line next to worked time,
+// so they can never disagree about the scheduled duration one is being
+// compared against. (scheduledHours further down is the identical
+// calculation in decimal hours, for payroll's "scheduled_duration" mode --
+// it now delegates to this function rather than re-deriving it.)
+export function scheduledMinutes(appt: Pick<Appointment, "scheduled_for" | "scheduled_end" | "duration_minutes">): number {
+  if (appt.scheduled_end) {
+    const mins = Math.round((new Date(appt.scheduled_end).getTime() - new Date(appt.scheduled_for).getTime()) / 60_000);
+    if (mins > 0) return mins;
+  }
+  return appt.duration_minutes ?? 0;
 }
 
 // True only once an appointment's scheduled end has actually passed --
@@ -205,22 +225,86 @@ export function needsWorkedHoursAttention(
   return getMissingHoursEmployeeIds(appt, assignments, employeeHours).length > 0;
 }
 
-// Resolves one employee's actual worked minutes on one appointment, with
-// the same Job-Tracking-preferred, manual-entry-fallback precedence as
-// assignmentHasWorkedHours above. Display-only (e.g. the Employee Worked
-// Hours card's read-only "Worked Time" value) — does not affect
-// computePayrollRows.
+// Resolves one employee's EFFECTIVE worked minutes on one appointment:
+//
+//   1. an owner-saved appointment_employee_hours entry, if one exists --
+//      the owner-approved override/correction, and it wins even when a
+//      complete Job Tracking duration also exists (that is the whole point
+//      of the correction workflow: Job Tracking's own actual_started_at/
+//      actual_completed_at are never modified -- see migrations/030 -- so
+//      once an owner has corrected a mistake, this is the one place that
+//      correction is allowed to outrank the raw tracked duration);
+//   2. otherwise a complete Job Tracking duration on the assignment;
+//   3. otherwise 0 (nothing recorded yet).
+//
+// This is the single precedence used everywhere worked time is displayed
+// or totaled -- this function, resolveJobTrackingHours (computePayrollRows'
+// own resolver) and needsWorkedTimeReview below must never diverge on it.
+// Display-only in the sense that computePayrollRows has its own resolver
+// (identical precedence, decimal hours instead of minutes) rather than
+// calling this one directly, but the two are kept in lockstep deliberately.
 export function resolveWorkedMinutes(
   appointmentId: string,
   employeeId: string,
   assignment: TimestampPair | undefined,
   employeeHours: EmployeeHours[]
 ): number {
+  const manual = findManualHoursEntry(appointmentId, employeeId, employeeHours);
+  if (manual) return Math.round(manual.hours_worked * 60);
   if (assignment && isJobTrackingComplete(assignment)) {
     return Math.round((new Date(assignment.actual_completed_at!).getTime() - new Date(assignment.actual_started_at!).getTime()) / 60_000);
   }
-  const manual = findManualHoursEntry(appointmentId, employeeId, employeeHours);
-  return manual ? Math.round(manual.hours_worked * 60) : 0;
+  return 0;
+}
+
+// The raw tracked duration in minutes when Job Tracking is complete, or null
+// otherwise. Used only for the "Original tracked time" comparison line shown
+// once an owner override exists (resolveWorkedMinutes above is what actually
+// wins for display/payroll) -- never itself used for a payroll total.
+export function trackedMinutes(assignment: TimestampPair | undefined): number | null {
+  if (!assignment || !isJobTrackingComplete(assignment)) return null;
+  return Math.round((new Date(assignment.actual_completed_at!).getTime() - new Date(assignment.actual_started_at!).getTime()) / 60_000);
+}
+
+// Minimum minutes of difference between scheduled and effective worked
+// duration before Needs Review can trigger, and the minimum fraction of the
+// scheduled duration that difference must also represent -- BOTH must hold
+// (see needsWorkedTimeReview below). Exported so the UI can explain the
+// threshold in copy without hardcoding it a second time.
+export const REVIEW_MIN_DIFF_MINUTES = 30;
+export const REVIEW_MIN_DIFF_FRACTION = 0.25;
+
+// True when this employee's assignment on this appointment needs office
+// review before payroll: it has a usable effective worked duration (an
+// owner override or a complete Job Tracking duration -- see
+// assignmentHasWorkedHours/resolveWorkedMinutes above; an appointment with
+// no worked-hours source at all is a "missing hours" case, a different,
+// pre-existing concern handled by getMissingHoursEmployeeIds, not this
+// one), AND that effective duration differs from the appointment's own
+// scheduled duration by more than REVIEW_MIN_DIFF_MINUTES minutes AND by
+// more than REVIEW_MIN_DIFF_FRACTION of the scheduled duration -- checked
+// in both directions (a suspiciously short job is just as reviewable as a
+// suspiciously long one, e.g. Roxana's 48h58m against a 1h30m scheduled
+// job). An appointment with no scheduled duration at all (0 minutes) has
+// nothing meaningful to compare against, so it is never flagged.
+//
+// Because this reads resolveWorkedMinutes (owner override first), a
+// correction that brings the effective duration back within threshold
+// clears the flag automatically on the very next read -- there is no
+// separate "resolved" state to store or clear.
+export function needsWorkedTimeReview(
+  appt: Pick<Appointment, "scheduled_for" | "scheduled_end" | "duration_minutes">,
+  appointmentId: string,
+  employeeId: string,
+  assignment: TimestampPair | undefined,
+  employeeHours: EmployeeHours[]
+): boolean {
+  if (!assignmentHasWorkedHours(appointmentId, employeeId, assignment, employeeHours)) return false;
+  const scheduled = scheduledMinutes(appt);
+  if (scheduled <= 0) return false;
+  const worked = resolveWorkedMinutes(appointmentId, employeeId, assignment, employeeHours);
+  const diff = Math.abs(worked - scheduled);
+  return diff > REVIEW_MIN_DIFF_MINUTES && diff > scheduled * REVIEW_MIN_DIFF_FRACTION;
 }
 
 // Formats a decimal hours value (e.g. a PayrollRow's hoursWorked) as "45m",
@@ -263,6 +347,13 @@ export type PayrollRow = {
   employeeId: string;
   employeeName: string;
   hoursWorked: number;
+  // Count of this employee's in-range assignments where needsWorkedTimeReview
+  // is true -- independent of `mode` (it always compares the OWNER-OVERRIDE-
+  // FIRST effective worked duration against the scheduled duration, not
+  // whichever value `mode` happened to total), so it stays meaningful even
+  // when hoursWorked itself came from "scheduled_duration" or "manual_hours"
+  // mode. 0 for an employee with nothing to review.
+  reviewCount: number;
 };
 
 export type PayrollComputation = {
@@ -282,11 +373,7 @@ export type PayrollComputation = {
 // rather than re-deriving it keeps the two features from ever disagreeing
 // about what "the scheduled duration of an appointment" means.
 export function scheduledHours(appt: Appointment): number {
-  if (appt.scheduled_end) {
-    const mins = Math.round((new Date(appt.scheduled_end).getTime() - new Date(appt.scheduled_for).getTime()) / 60_000);
-    if (mins > 0) return mins / 60;
-  }
-  return (appt.duration_minutes ?? 0) / 60;
+  return scheduledMinutes(appt) / 60;
 }
 
 // Resolves hours for one appointment/employee under "scheduled_duration" mode: a
@@ -315,27 +402,29 @@ function resolveManualHoursOnly(
   return savedHoursByKey.has(key) ? savedHoursByKey.get(key)! : null;
 }
 
-// Resolves hours for one employee's assignment under "job_tracking" mode:
-// that assignment's own actual Start/Complete timestamps first, converted
-// to decimal hours (e.g. 3h32m -> 3.5333... -> displayed as 3.53 hrs);
-// falls back to a manually-saved appointment_employee_hours entry when Job
-// Tracking wasn't used for this assignment. Returns null — counted as
-// missing — only when neither source is available. Phase 5.7D-R18: reads
-// the ASSIGNMENT's own timestamps, never the appointment's (legacy)
-// actual_started_at/actual_completed_at, so two employees on the same
-// appointment are never conflated.
+// Resolves hours for one employee's assignment under "job_tracking" mode,
+// with the same owner-override-first precedence as resolveWorkedMinutes
+// above: a manually-saved appointment_employee_hours entry (the owner's
+// correction/override) wins first, even over a complete tracked duration;
+// otherwise that assignment's own actual Start/Complete timestamps,
+// converted to decimal hours (e.g. 3h32m -> 3.5333... -> displayed as 3.53
+// hrs). Returns null — counted as missing — only when neither source is
+// available. Phase 5.7D-R18: reads the ASSIGNMENT's own timestamps, never
+// the appointment's (legacy) actual_started_at/actual_completed_at, so two
+// employees on the same appointment are never conflated.
 function resolveJobTrackingHours(
   assignment: TimestampPair,
   appointmentId: string,
   employeeId: string,
   savedHoursByKey: Map<string, number>
 ): number | null {
+  const key = `${appointmentId}|${employeeId}`;
+  if (savedHoursByKey.has(key)) return savedHoursByKey.get(key)!;
   if (isJobTrackingComplete(assignment)) {
     const mins = (new Date(assignment.actual_completed_at!).getTime() - new Date(assignment.actual_started_at!).getTime()) / 60_000;
     return mins / 60;
   }
-  const key = `${appointmentId}|${employeeId}`;
-  return savedHoursByKey.has(key) ? savedHoursByKey.get(key)! : null;
+  return null;
 }
 
 export function computePayrollRows({
@@ -385,6 +474,7 @@ export function computePayrollRows({
   }
 
   const totals = new Map<string, number>();
+  const reviewCounts = new Map<string, number>();
   let missingHoursCount = 0;
 
   for (const appt of appointments) {
@@ -413,6 +503,17 @@ export function computePayrollRows({
           break;
       }
 
+      // Needs Review is computed independently of `mode` above (it always
+      // uses the owner-override-first effective duration -- see
+      // needsWorkedTimeReview's own doc comment) and independently of
+      // whether `hours` ended up null for the selected mode, so a
+      // "manual_hours"-mode caller still gets an accurate review count even
+      // though this employee's Job Tracking duration isn't what's being
+      // totaled.
+      if (needsWorkedTimeReview(appt, appt.id, employeeId, assignment, employeeHours)) {
+        reviewCounts.set(employeeId, (reviewCounts.get(employeeId) ?? 0) + 1);
+      }
+
       if (hours === null) {
         // A future or currently-in-progress appointment simply hasn't
         // happened yet -- it is never "missing" worked hours, only not due
@@ -428,11 +529,19 @@ export function computePayrollRows({
     }
   }
 
+  // Rows are still driven by `totals` alone (unchanged from before this
+  // feature) -- reviewCount is looked up per row, never adds a row on its
+  // own. In "job_tracking" mode (the only mode any caller actually uses
+  // today) this never diverges: needsWorkedTimeReview already requires
+  // assignmentHasWorkedHours, which is exactly resolveJobTrackingHours'
+  // own non-null condition, so a reviewable assignment always already has a
+  // totaled value and therefore always already has a row.
   const rows = Array.from(totals.entries())
     .map(([employeeId, hoursWorked]) => ({
       employeeId,
       employeeName: employeeById[employeeId]?.name ?? "Unknown",
       hoursWorked,
+      reviewCount: reviewCounts.get(employeeId) ?? 0,
     }))
     .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
 

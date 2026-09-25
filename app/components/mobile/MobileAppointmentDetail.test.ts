@@ -358,8 +358,24 @@ describe("Phase 5C: workspace-timezone-aware date/time display", () => {
 describe("historical-record protection (founder decision): mobile's sole edit entry point matches desktop's AppointmentDetailPanel", () => {
   test("isHistorical is derived from the canonical isHistoricalAppointment(appointment, assignments) predicate, never a locally re-derived date/completion check, and never lib/timezone's bare isPastAppointment", () => {
     assert.ok(source.includes("const isHistorical = isHistoricalAppointment(appointment, assignments);"));
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";'));
     assert.ok(!source.includes("isPastAppointment"));
+  });
+
+  test("Owner Worked-Time Correction: manualEntry (owner override) branches FIRST, Needs Review badge is computed and shown, and this screen remains read-only (no correction control)", () => {
+    const workedHoursIdx = source.indexOf('<div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Worked Hours</div>');
+    const cardEnd = source.indexOf("})}", workedHoursIdx);
+    assert.ok(workedHoursIdx > -1 && cardEnd > -1);
+    const block = source.slice(workedHoursIdx, cardEnd);
+    assert.match(block, /const needsReview = needsWorkedTimeReview\(appointment, appointment\.id, assignment\.employee_id, assignment, employeeHours\);/);
+    assert.match(block, /\{needsReview && \(/);
+    assert.match(block, /Needs Review/);
+    const manualIdx = block.indexOf("{manualEntry ? (");
+    const completeIdx = block.indexOf("complete ? (", manualIdx);
+    assert.ok(manualIdx > -1 && completeIdx > manualIdx, "manualEntry (owner override) branches first, matching resolveWorkedMinutes precedence");
+    assert.match(block, /Adjusted by owner\./);
+    assert.ok(!block.includes("AdjustWorkedTimeControl"), "display-only -- no correction control on this read-only screen");
+    assert.ok(!block.includes("<input") && !block.includes("<button"), "no interactive element in this card at all");
   });
 
   test("statusLabel is Cancelled/Completed/Scheduled, derived from appointment.status and isHistorical, not fabricated", () => {

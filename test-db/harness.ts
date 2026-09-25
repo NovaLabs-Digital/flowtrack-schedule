@@ -46,6 +46,7 @@ export const MIGRATIONS = [
   "028_add_appointment_employees_job_notes.sql",
   "029_add_atomic_recurrence_change.sql",
   "030_add_work_recording_locking_protocol.sql",
+  "031_add_owner_worked_time_override.sql",
 ];
 
 async function freePort(): Promise<number> {
@@ -65,10 +66,12 @@ export type TestDb = {
   stop(): Promise<void>;
 };
 
-// Migrations 029/030 are the only ones an exported production schema lacks.
-// (026-028 must already be applied in production; if they are not, the restored
-// schema is missing them and the failure that follows is the finding.)
-export const NEW_MIGRATIONS = MIGRATIONS.slice(-2);
+// Migrations 029/030/031 are the only ones the exported production schema
+// (test-db/production-schema.sql, taken 2026-09-21, before any of the three
+// were applied) lacks. (026-028 must already be applied in production; if
+// they are not, the restored schema is missing them and the failure that
+// follows is the finding.)
+export const NEW_MIGRATIONS = MIGRATIONS.slice(-3);
 
 // Where a schema-only export of the real database is expected, if Alberto has
 // produced one (see test-db/SCHEMA_VALIDATION.md). Gitignored; never committed.
@@ -77,7 +80,7 @@ export const PRODUCTION_SCHEMA_FILE = path.join(ROOT, "test-db", "production-sch
 // Options:
 //  - schemaSql: restore this exported schema INSTEAD of test-db/baseline.sql
 //    (defaults to the file named by TEST_DB_SCHEMA_FILE, when that is set).
-//    Migrations then default to just the new ones (029/030).
+//    Migrations then default to just the new ones (NEW_MIGRATIONS).
 //  - migrations: explicit migration list to apply afterwards.
 export async function startTestDb(opts: { migrations?: string[]; schemaSql?: string } = {}): Promise<TestDb> {
   const schemaFile = process.env.TEST_DB_SCHEMA_FILE;

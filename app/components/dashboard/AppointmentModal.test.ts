@@ -66,7 +66,7 @@ function atomicBody(): string {
 
 describe("prop wiring: canMutateOperationalData reaches this component and nowhere reproduces entitlement policy", () => {
   test("the component destructures canMutateOperationalData from its props", () => {
-    assert.ok(source.includes("prefill, canMutateOperationalData, timezone }: Props)"));
+    assert.ok(source.includes("prefill, canMutateOperationalData, canUseJobTracking, timezone }: Props)"));
   });
 
   test("Props declares canMutateOperationalData: boolean, and no EntitlementView/EntitlementResult type is imported", () => {
@@ -417,7 +417,7 @@ describe("Phase 5.7D-R18: multi-employee editor (source-level proof)", () => {
   });
 
   test("missing-hours identification uses getMissingHoursEmployeeIds, the same per-employee predicate driving the schedule grid's warning triangle", () => {
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";'));
     assert.ok(source.includes("const missingHoursEmployeeIds = jobTrackingAppt ? getMissingHoursEmployeeIds(jobTrackingAppt, apptAssignments, employeeHours) : [];"));
   });
 
@@ -451,6 +451,55 @@ describe("Phase 5.7D-R18: multi-employee editor (source-level proof)", () => {
 
   test("assignments prop is documented as authoritative, filtered internally to this appointment -- never pre-filtered by the caller", () => {
     assert.ok(source.includes("assignments: AppointmentEmployeeAssignment[];"));
+  });
+});
+
+describe("Owner Worked-Time Correction + Needs Review Alert (Worked Hours card)", () => {
+  function cardBlock(): string {
+    const workedHoursIdx = source.indexOf('<div className="text-xs font-medium text-slate-600">Worked Hours</div>');
+    const mapEndIdx = source.indexOf("})}", workedHoursIdx);
+    assert.ok(workedHoursIdx > -1 && mapEndIdx > -1);
+    return source.slice(workedHoursIdx, mapEndIdx);
+  }
+
+  test("Props declares onHoursSaved and canUseJobTracking, both destructured, both threaded from DashboardShell", () => {
+    assert.ok(source.includes("onHoursSaved: (entry: EmployeeHours) => void;"));
+    assert.ok(source.includes("canUseJobTracking: boolean;"));
+    const shellSource = fs.readFileSync(fileURLToPath(new URL("./DashboardShell.tsx", import.meta.url)), "utf8");
+    assert.match(shellSource, /onHoursSaved=\{handleHoursSaved\}/);
+    assert.match(shellSource, /canUseJobTracking=\{entitlement\.canUseJobTracking\}/);
+  });
+
+  test("AdjustWorkedTimeControl is imported and rendered inside the Worked Hours card, gated on complete or manualEntry, wired to this appointment/employee, canUseJobTracking, and onHoursSaved", () => {
+    assert.match(source, /import AdjustWorkedTimeControl from "@\/app\/components\/dashboard\/AdjustWorkedTimeControl";/);
+    const block = cardBlock();
+    const idx = block.indexOf("<AdjustWorkedTimeControl");
+    assert.notEqual(idx, -1);
+    assert.match(block, /\{\(complete \|\| manualEntry\) && \(/, "only shown once there is a value to correct");
+    const invocation = block.slice(idx, block.indexOf("/>", idx) + 2);
+    assert.match(invocation, /appointmentId=\{editing!\.appointment\.id\}/);
+    assert.match(invocation, /employeeId=\{assignment\.employee_id\}/);
+    assert.match(invocation, /canCorrect=\{canUseJobTracking\}/);
+    assert.match(invocation, /onSaved=\{onHoursSaved\}/);
+  });
+
+  test("manualEntry (owner override) is branched on FIRST, ahead of `complete` -- matching lib/payroll.ts's resolveWorkedMinutes precedence", () => {
+    const block = cardBlock();
+    const manualIdx = block.indexOf("{manualEntry ? (");
+    const completeIdx = block.indexOf("complete ? (", manualIdx);
+    assert.notEqual(manualIdx, -1);
+    assert.ok(completeIdx > manualIdx, "the complete-only branch is the ELSE of the manualEntry check, not checked first");
+    assert.match(block, /Worked Time: <span className="font-medium text-slate-900">\{formatMinutesAsDuration\(workedMins\)\}<\/span>/);
+    assert.match(block, /Adjusted by owner\./);
+    assert.match(block, /\{complete && \(/, "Original tracked time only shown when a real tracked duration also exists");
+    assert.match(block, /Original tracked time: <span className="font-medium text-slate-900">\{formatMinutesAsDuration\(trackedMinutes\(assignment\) \?\? 0\)\}<\/span>/);
+  });
+
+  test("Needs Review badge: computed with needsWorkedTimeReview against this appointment/employee, rendered conditionally next to the employee name", () => {
+    const block = cardBlock();
+    assert.match(block, /const needsReview = needsWorkedTimeReview\(editing!\.appointment, editing!\.appointment\.id, assignment\.employee_id, assignment, employeeHours\);/);
+    assert.match(block, /\{needsReview && \(/);
+    assert.match(block, /Needs Review/);
   });
 });
 
@@ -630,7 +679,7 @@ describe("Phase 2: Monthly Recurring Appointments -- interval options 1 through 
 describe("Phase 5C: workspace-timezone-aware create/edit -- the traveling-owner fix", () => {
   test("Props declares timezone: string, and the component receives it as an explicit prop", () => {
     assert.ok(source.includes("timezone: string;"));
-    assert.ok(source.includes("prefill, canMutateOperationalData, timezone }: Props)"));
+    assert.ok(source.includes("prefill, canMutateOperationalData, canUseJobTracking, timezone }: Props)"));
   });
 
   test("the old device-local toDateValue/toHHMM helpers (native Date getters on a raw new Date(iso)) are completely gone", () => {

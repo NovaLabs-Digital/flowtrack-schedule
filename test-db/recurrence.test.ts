@@ -852,16 +852,57 @@ describe("concurrency with Job Tracking and manual hours", () => {
     assert.ok(both.actual_started_at && both.actual_completed_at);
   });
 
-  test("hours rules preserved: tracked time cannot be overridden, unassigned employee, and an existing entry on a cancelled appointment may still be corrected", async () => {
+  test("hours rules preserved: unassigned employee rejected, an existing entry on a cancelled appointment may still be corrected", async () => {
     const fx = await makeWorkspace(c, { employees: 2 });
     const apptId = await makeAppointment(c, fx, { scheduledFor: futureNineAm(), employees: [fx.employeeIds[0]] });
     assert.equal((await c.query("SELECT save_employee_hours($1,$2,$3,1,'x') AS r", [fx.workspaceId, apptId, fx.employeeIds[1]])).rows[0].r.outcome, "not_assigned");
     assert.equal((await hours(c, fx, apptId)).outcome, "ok");
     await c.query("UPDATE appointments SET status='cancelled' WHERE id=$1", [apptId]);
     assert.equal((await hours(c, fx, apptId)).outcome, "ok", "existing entry can be corrected");
-    const other = await makeAppointment(c, fx, { scheduledFor: futureNineAm(50), employees: [fx.employeeIds[0]] });
-    await c.query("UPDATE appointment_employees SET actual_started_at = now() - interval '2 hours', actual_completed_at = now() WHERE appointment_id=$1", [other]);
-    assert.equal((await hours(c, fx, other)).outcome, "tracked_time_exists");
+  });
+
+  // migrations/031: an owner correction (save_employee_hours) now succeeds
+  // even when Job Tracking is already complete -- this is the whole point
+  // of the owner-override workflow (Roxana's 48h58m mistake). The original
+  // tracked timestamps must remain exactly as recorded.
+  test("an owner correction wins over an already-complete Job Tracking duration, and never touches the original tracked timestamps", async () => {
+    const fx = await makeWorkspace(c, { employees: 1 });
+    const apptId = await makeAppointment(c, fx, { scheduledFor: futureNineAm(), employees: [fx.employeeIds[0]] });
+    const startedAt = new Date(Date.now() - 49 * 3600_000).toISOString();
+    const completedAt = new Date().toISOString();
+    await c.query("UPDATE appointment_employees SET actual_started_at=$2, actual_completed_at=$3 WHERE appointment_id=$1", [apptId, startedAt, completedAt]);
+
+    const corrected = await hours(c, fx, apptId);
+    assert.equal(corrected.outcome, "ok", "owner correction succeeds even though tracking is complete");
+    assert.equal(corrected.entry.hours_worked, 2.5);
+    assert.equal(corrected.entry.note, "forgot to clock in");
+
+    const asg = await c.query("SELECT actual_started_at, actual_completed_at FROM appointment_employees WHERE appointment_id=$1", [apptId]);
+    assert.equal(new Date(asg.rows[0].actual_started_at).toISOString(), startedAt, "original actual_started_at untouched");
+    assert.equal(new Date(asg.rows[0].actual_completed_at).toISOString(), completedAt, "original actual_completed_at untouched");
+
+    // re-correcting (the owner adjusting again) still succeeds and still never touches the tracked timestamps
+    await c.query("SELECT save_employee_hours($1,$2,$3,1.43,'adjusted again') AS r", [fx.workspaceId, apptId, fx.employeeIds[0]]);
+    const asg2 = await c.query("SELECT actual_started_at, actual_completed_at FROM appointment_employees WHERE appointment_id=$1", [apptId]);
+    assert.equal(new Date(asg2.rows[0].actual_started_at).toISOString(), startedAt);
+    assert.equal(new Date(asg2.rows[0].actual_completed_at).toISOString(), completedAt);
+  });
+
+  // migrations/030's own employee-side write path (record_job_action) is
+  // completely separate from save_employee_hours and remains employee-only
+  // -- an owner correction never opens a path for an employee to touch
+  // their own payable hours, and record_job_action still refuses to run at
+  // all once actual_completed_at is set (frozen the moment tracking
+  // completes, independent of any later owner correction).
+  test("an employee still cannot alter payable hours: record_job_action never writes appointment_employee_hours, and is frozen once completed", async () => {
+    const fx = await makeWorkspace(c, { employees: 1 });
+    const apptId = await makeAppointment(c, fx, { scheduledFor: futureNineAm(), employees: [fx.employeeIds[0]] });
+    assert.equal((await job(c, fx, apptId, "start")).outcome, "ok");
+    assert.equal((await job(c, fx, apptId, "complete")).outcome, "ok");
+    assert.equal((await job(c, fx, apptId, "start")).outcome, "already_completed", "frozen once completed");
+    assert.equal((await job(c, fx, apptId, "save_notes")).outcome, "already_completed");
+    const rows = await c.query("SELECT count(*)::int AS n FROM appointment_employee_hours WHERE appointment_id=$1", [apptId]);
+    assert.equal(rows.rows[0].n, 0, "record_job_action never wrote appointment_employee_hours");
   });
 });
 

@@ -182,17 +182,27 @@ describe("notice block", () => {
 });
 
 describe("read-only actions and navigation remain unconditional", () => {
-  test("the already-tracked (Job Tracking complete) read-only display block is not wrapped in a canUseJobTracking check", () => {
-    // Phase 5.7D-R18: per-employee now -- one read-only block per assigned
-    // employee who already has worked hours, inside the
-    // selectedApptAssignments.map() loop, before the manual-entry
-    // (EmployeeHoursSection) branch for employees still missing hours.
+  test("the already-tracked (Job Tracking complete / owner-adjusted) display block: the VALUE/label display itself is unconditional, and canUseJobTracking gates only the new correction control", () => {
+    // Phase 5.7D-R18: per-employee -- one block per assigned employee who
+    // already has worked hours, inside the selectedApptAssignments.map()
+    // loop, before the manual-entry (EmployeeHoursSection) branch for
+    // employees still missing hours. Owner Worked-Time Correction: this
+    // block is no longer purely read-only -- it now also renders
+    // AdjustWorkedTimeControl, a real mutation control, so canUseJobTracking
+    // legitimately appears here now (passed straight through, not
+    // re-derived) -- but only on that one control, never on the Worked
+    // Time value/label text itself, which stays unconditional.
     const readOnlyStart = source.indexOf("if (assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)) {");
     const readOnlyEnd = source.indexOf("if (missingHoursEmployeeIds.includes(emp.id)) {", readOnlyStart);
     assert.notEqual(readOnlyStart, -1);
     assert.notEqual(readOnlyEnd, -1);
     const block = source.slice(readOnlyStart, readOnlyEnd);
-    assert.ok(!block.includes("canUseJobTracking"));
+    const controlIdx = block.indexOf("<AdjustWorkedTimeControl");
+    assert.notEqual(controlIdx, -1, "the correction control is rendered in this block");
+    const beforeControl = block.slice(0, controlIdx);
+    assert.ok(!beforeControl.includes("canUseJobTracking"), "the Worked Time value/label display above it is unconditional");
+    const controlInvocation = block.slice(controlIdx, block.indexOf("/>", controlIdx) + 2);
+    assert.match(controlInvocation, /canCorrect=\{canUseJobTracking\}/, "canUseJobTracking gates only the correction control, passed straight through");
   });
 
   test("PayrollSummary (Weekly Worked Hours date-range display) is rendered unconditionally -- it is pure read-only, no fetch, no mutation, out of this phase's scope", () => {
@@ -391,5 +401,76 @@ describe("Phase 5E: mondayOfCurrentWeek/startOfBusinessDay (Weekly Worked Hours 
     assert.notEqual(payrollIdx, -1);
     const payrollClose = source.indexOf("/>", payrollIdx);
     assert.match(source.slice(payrollIdx, payrollClose), /timezone=\{timezone\}/);
+  });
+});
+
+describe("Owner Worked-Time Correction + Needs Review Alert", () => {
+  function trackedBlock(): string {
+    const start = source.indexOf("if (assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)) {");
+    const end = source.indexOf("if (missingHoursEmployeeIds.includes(emp.id)) {", start);
+    assert.notEqual(start, -1);
+    return source.slice(start, end);
+  }
+
+  test("scheduledMinutes/findManualHoursEntry/needsWorkedTimeReview/trackedMinutes are imported from lib/payroll (reused, not re-derived)", () => {
+    const payrollImportEnd = source.indexOf('} from "@/lib/payroll";');
+    assert.notEqual(payrollImportEnd, -1);
+    const importBlock = source.slice(0, payrollImportEnd);
+    for (const name of ["scheduledMinutes", "findManualHoursEntry", "needsWorkedTimeReview", "trackedMinutes"]) {
+      assert.ok(importBlock.includes(name), name);
+    }
+    assert.ok(!source.includes("function scheduledMinutes("), "the local duplicate was removed, not merely shadowed");
+  });
+
+  test("AdjustWorkedTimeControl is imported and used exactly once, inside the tracked/adjusted display block", () => {
+    assert.match(source, /import AdjustWorkedTimeControl from "@\/app\/components\/dashboard\/AdjustWorkedTimeControl";/);
+    assert.equal((source.match(/<AdjustWorkedTimeControl/g) ?? []).length, 1);
+    assert.ok(trackedBlock().includes("<AdjustWorkedTimeControl"));
+  });
+
+  test("the correction control receives this exact appointment/employee and DispatchPanel's own onHoursSaved straight through", () => {
+    const block = trackedBlock();
+    const idx = block.indexOf("<AdjustWorkedTimeControl");
+    const invocation = block.slice(idx, block.indexOf("/>", idx) + 2);
+    assert.match(invocation, /appointmentId=\{selectedAppt\.id\}/);
+    assert.match(invocation, /employeeId=\{emp\.id\}/);
+    assert.match(invocation, /onSaved=\{onHoursSaved\}/);
+  });
+
+  test("the Needs Review badge is computed with needsWorkedTimeReview and rendered conditionally, before the correction control", () => {
+    const block = trackedBlock();
+    const needsReviewIdx = block.indexOf("needsWorkedTimeReview(selectedAppt, selectedAppt.id, emp.id, assignment, employeeHours)");
+    const badgeIdx = block.indexOf("Needs Review");
+    const controlIdx = block.indexOf("<AdjustWorkedTimeControl");
+    assert.notEqual(needsReviewIdx, -1);
+    assert.notEqual(badgeIdx, -1);
+    assert.ok(needsReviewIdx < badgeIdx && badgeIdx < controlIdx, "computed, then shown, then the control -- in that order");
+    assert.match(block, /\{needsReview && \(/, "conditionally rendered, not always shown");
+  });
+
+  test("Adjusted by owner / Original tracked time only appear once an owner override (manualEntry) exists -- and only alongside a complete tracked duration for the comparison line", () => {
+    const block = trackedBlock();
+    assert.match(block, /isOverride \? "Adjusted by owner\." : tracked \? "Hours tracked automatically\." : "Manually entered\."/);
+    assert.match(block, /const isOverride = !!manualEntry && tracked;/);
+    assert.match(block, /\{isOverride && \(/);
+    assert.match(block, /Original tracked time: \{formatMinutesAsDuration\(trackedMinutes\(assignment\) \?\? 0\)\}/);
+  });
+
+  test("the correction reason (manualEntry.note) is shown, and Employee Job Notes remain visible nearby as supporting information -- never parsed for a time", () => {
+    const block = trackedBlock();
+    assert.match(block, /manualEntry\?\.note && \(/);
+    assert.match(block, /Reason: <span className="italic">\{manualEntry\.note\}<\/span>/);
+    assert.match(block, /assignment\.job_notes && \(/);
+    assert.match(block, /Job Notes:<\/span>/);
+    // never any time-parsing regex/logic applied to job_notes text anywhere in the file
+    assert.ok(!source.includes("job_notes.match") && !source.includes("parseTime") && !source.includes("job_notes.replace"));
+  });
+
+  test("PayrollSummary's own per-row review indicator: reviewCount is read and only rendered when > 0, never altering hoursWorked", () => {
+    const payrollSource = fs.readFileSync(fileURLToPath(new URL("./PayrollSummary.tsx", import.meta.url)), "utf8");
+    assert.match(payrollSource, /r\.reviewCount > 0/);
+    assert.match(payrollSource, /review\{r\.reviewCount !== 1 \? "s" : ""\}/);
+    // hoursWorked is rendered from r.hoursWorked directly -- the review badge is additive text, not a substituted value
+    assert.match(payrollSource, /\{r\.hoursWorked\.toFixed\(2\)\} hrs/);
   });
 });

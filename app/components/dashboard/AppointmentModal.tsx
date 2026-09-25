@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Appointment, Client, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { countFutureOccurrences } from "@/lib/recurrence";
-import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes } from "@/lib/payroll";
+import { findManualHoursEntry, formatMinutesAsDuration, hasInvalidJobTrackingDuration, isJobTrackingComplete, getMissingHoursEmployeeIds, resolveWorkedMinutes, needsWorkedTimeReview, trackedMinutes } from "@/lib/payroll";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import AdjustWorkedTimeControl from "@/app/components/dashboard/AdjustWorkedTimeControl";
 import { centsToInputValue, parsePriceToCents } from "@/lib/money";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";
@@ -176,6 +177,12 @@ type Props = {
   services: Service[];
   employees: Employee[];
   employeeHours: EmployeeHours[];
+  // Called whenever the Worked Hours card's "Adjust Worked Time" control
+  // saves a correction -- same shape and same purpose as DispatchPanel's own
+  // onHoursSaved (DashboardShell.tsx's handleHoursSaved), so a correction
+  // made from either surface updates the same shared employeeHours state
+  // immediately, without waiting on this modal's own onSaved()/close.
+  onHoursSaved: (entry: EmployeeHours) => void;
   // Phase 5.7D-R18: every appointment_employees row for the workspace (not
   // pre-filtered to this appointment) -- filtered internally below to the
   // appointment being edited, for both the multi-employee selector's
@@ -191,6 +198,11 @@ type Props = {
   // manage-recurrence (unchanged by this phase) remains the sole security
   // boundary; this is UX only.
   canMutateOperationalData: boolean;
+  // The owner-correction capability gate for the "Adjust Worked Time"
+  // control -- the same EntitlementView field (not canMutateOperationalData)
+  // DispatchPanel's own manual-hours correction already uses, matching the
+  // capability the server route (save_employee_hours) actually enforces.
+  canUseJobTracking: boolean;
   // Phase 5C: the workspace's own resolved timezone -- every date/time form
   // field reads/writes through this explicitly (via
   // zonedDateValue/zonedTimeValue/zonedDateTimeToUTC in lib/timezone.ts),
@@ -200,7 +212,7 @@ type Props = {
   timezone: string;
 };
 
-export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, assignments, editing, prefill, canMutateOperationalData, timezone }: Props) {
+export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, onHoursSaved, assignments, editing, prefill, canMutateOperationalData, canUseJobTracking, timezone }: Props) {
   const isEdit = !!editing;
 
   // Phase 5.7D-R18: this appointment's own assignment rows (edit mode
@@ -1182,6 +1194,14 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                   ? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
                   : "Not recorded";
                 const workedMins = resolveWorkedMinutes(editing!.appointment.id, assignment.employee_id, assignment, employeeHours);
+                // An owner override (appointment_employee_hours row) wins for
+                // display now -- see resolveWorkedMinutes (lib/payroll.ts) --
+                // so this branches on manualEntry FIRST, matching that same
+                // precedence. `complete` still distinguishes "Adjusted by
+                // owner, original tracked time was X" from the pre-existing
+                // "Manually entered" case (no tracked value to compare
+                // against), exactly like DispatchPanel's own card.
+                const needsReview = needsWorkedTimeReview(editing!.appointment, editing!.appointment.id, assignment.employee_id, assignment, employeeHours);
 
                 return (
                   <div
@@ -1191,21 +1211,31 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                       isWarning ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600",
                     ].join(" ")}
                   >
-                    <div className={isWarning ? "font-medium text-amber-800" : "font-medium text-slate-700"}>{emp?.name ?? "Unknown employee"}</div>
+                    <div className="flex items-center justify-between">
+                      <div className={isWarning ? "font-medium text-amber-800" : "font-medium text-slate-700"}>{emp?.name ?? "Unknown employee"}</div>
+                      {needsReview && (
+                        <span className="text-[10px] font-medium text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">
+                          &#9888; Needs Review
+                        </span>
+                      )}
+                    </div>
                     <div>Started: <span className="font-medium text-slate-900">{startedLabel}</span></div>
                     <div>Completed: <span className="font-medium text-slate-900">{completedLabel}</span></div>
-                    {complete ? (
+                    {manualEntry ? (
                       <>
-                        <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
-                        <div className="text-emerald-700">Tracked automatically.</div>
-                      </>
-                    ) : manualEntry ? (
-                      <>
-                        <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
-                        <div className="font-medium text-slate-700">Manually entered.</div>
+                        <div>Worked Time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                        <div className="text-emerald-700">Adjusted by owner.</div>
+                        {complete && (
+                          <div>Original tracked time: <span className="font-medium text-slate-900">{formatMinutesAsDuration(trackedMinutes(assignment) ?? 0)}</span></div>
+                        )}
                         {manualEntry.note && (
                           <div>Reason: <span className="italic">{manualEntry.note}</span></div>
                         )}
+                      </>
+                    ) : complete ? (
+                      <>
+                        <div>Actual duration: <span className="font-medium text-slate-900">{formatMinutesAsDuration(workedMins)}</span></div>
+                        <div className="text-emerald-700">Tracked automatically.</div>
                       </>
                     ) : (
                       <>
@@ -1227,11 +1257,24 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                         elsewhere in this modal, owner-authored) and from
                         a manual hours entry's `note` correction reason
                         (shown above, in the branch that reads
-                        manualEntry.note) -- read-only here in V1. */}
+                        manualEntry.note) -- read-only here in V1, but kept
+                        visible right next to the correction control below
+                        as supporting information for the owner. Never
+                        parsed for a time, never used to alter payroll. */}
                     {assignment.job_notes && (
                       <div className="pt-1 border-t border-slate-200 mt-1">
                         <div className="font-medium text-slate-700">Job Notes:</div>
                         <div className="whitespace-pre-wrap">{assignment.job_notes}</div>
+                      </div>
+                    )}
+                    {(complete || manualEntry) && (
+                      <div className="pt-1">
+                        <AdjustWorkedTimeControl
+                          appointmentId={editing!.appointment.id}
+                          employeeId={assignment.employee_id}
+                          canCorrect={canUseJobTracking}
+                          onSaved={onHoursSaved}
+                        />
                       </div>
                     )}
                   </div>

@@ -14,8 +14,13 @@ import {
   resolveWorkedMinutes,
   formatMinutesAsDuration,
   toDateInputValue,
+  findManualHoursEntry,
+  needsWorkedTimeReview,
+  scheduledMinutes,
+  trackedMinutes,
 } from "@/lib/payroll";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import AdjustWorkedTimeControl from "@/app/components/dashboard/AdjustWorkedTimeControl";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 
 // Moved here from PayrollSummary.tsx unchanged -- the Mon-Fri default week,
@@ -79,13 +84,9 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function scheduledMinutes(appt: Appointment): number {
-  if (appt.scheduled_end) {
-    const mins = Math.round((new Date(appt.scheduled_end).getTime() - new Date(appt.scheduled_for).getTime()) / 60_000);
-    if (mins > 0) return mins;
-  }
-  return appt.duration_minutes ?? 0;
-}
+// scheduledMinutes itself now lives in lib/payroll.ts (imported above) --
+// shared with needsWorkedTimeReview so the "Scheduled Time" this card shows
+// and the value Needs Review compares against can never disagree.
 
 function formatDuration(mins: number) {
   if (mins <= 0) return "—";
@@ -420,6 +421,17 @@ export default function DispatchPanel({
               const emp = employeeById[assignment.employee_id];
               if (!emp) return null;
               if (assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)) {
+                // An owner override (appointment_employee_hours row) always wins
+                // for display now -- see resolveWorkedMinutes (lib/payroll.ts).
+                // "tracked" is true whenever Job Tracking is ALSO complete,
+                // independent of whether an override exists -- it is what
+                // distinguishes "Adjusted by owner, tracked was X" from the
+                // plain pre-existing "Manually entered" case (no tracked value
+                // to compare against).
+                const manualEntry = findManualHoursEntry(selectedAppt.id, emp.id, employeeHours);
+                const tracked = isJobTrackingComplete(assignment);
+                const isOverride = !!manualEntry && tracked;
+                const needsReview = needsWorkedTimeReview(selectedAppt, selectedAppt.id, emp.id, assignment, employeeHours);
                 return (
                   <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
                     <div className="flex items-center justify-between text-xs">
@@ -427,16 +439,45 @@ export default function DispatchPanel({
                       <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(selectedAppt))}</span>
                     </div>
                     <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
-                      <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">
-                        Worked Time <span className="text-emerald-600">&#10003;</span>
+                      <div className="flex items-center justify-between">
+                        <div className="text-[10px] font-medium uppercase tracking-wide text-emerald-700">
+                          Worked Time <span className="text-emerald-600">&#10003;</span>
+                        </div>
+                        {needsReview && (
+                          <span className="text-[10px] font-medium text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">
+                            &#9888; Needs Review
+                          </span>
+                        )}
                       </div>
                       <div className="text-sm font-semibold text-emerald-900 mt-0.5">
                         {formatMinutesAsDuration(resolveWorkedMinutes(selectedAppt.id, emp.id, assignment, employeeHours))}
                       </div>
                       <div className="text-[10px] text-emerald-700 mt-1">
-                        {isJobTrackingComplete(assignment) ? "Hours tracked automatically." : "Manually entered."}
+                        {isOverride ? "Adjusted by owner." : tracked ? "Hours tracked automatically." : "Manually entered."}
                       </div>
+                      {isOverride && (
+                        <div className="text-[10px] text-emerald-700 mt-0.5">
+                          Original tracked time: {formatMinutesAsDuration(trackedMinutes(assignment) ?? 0)}
+                        </div>
+                      )}
+                      {manualEntry?.note && (
+                        <div className="text-[10px] text-emerald-700 mt-0.5">Reason: <span className="italic">{manualEntry.note}</span></div>
+                      )}
                     </div>
+                    {/* Employee Job Notes stay visible next to the correction
+                        control as supporting information -- never parsed for a
+                        time, never used to alter payroll on their own. */}
+                    {assignment.job_notes && (
+                      <div className="text-[11px] text-slate-600">
+                        <span className="font-medium text-slate-700">Job Notes:</span> <span className="whitespace-pre-wrap">{assignment.job_notes}</span>
+                      </div>
+                    )}
+                    <AdjustWorkedTimeControl
+                      appointmentId={selectedAppt.id}
+                      employeeId={emp.id}
+                      canCorrect={canUseJobTracking}
+                      onSaved={onHoursSaved}
+                    />
                   </div>
                 );
               }

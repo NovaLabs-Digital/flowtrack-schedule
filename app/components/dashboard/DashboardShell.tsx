@@ -304,6 +304,7 @@ export default function DashboardShell({
       services={services}
       employees={employees}
       employeeHours={employeeHoursState}
+      onHoursSaved={handleHoursSaved}
       assignments={assignments}
       editing={
         modal.mode === "edit"
@@ -316,6 +317,7 @@ export default function DashboardShell({
           : undefined
       }
       canMutateOperationalData={entitlement.canMutateOperationalData}
+      canUseJobTracking={entitlement.canUseJobTracking}
       timezone={timezone}
     />
   );
