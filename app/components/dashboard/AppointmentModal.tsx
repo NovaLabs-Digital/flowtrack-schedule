@@ -1201,7 +1201,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 // owner, original tracked time was X" from the pre-existing
                 // "Manually entered" case (no tracked value to compare
                 // against), exactly like DispatchPanel's own card.
-                const needsReview = needsWorkedTimeReview(editing!.appointment, editing!.appointment.id, assignment.employee_id, assignment, employeeHours);
+                const needsReview = needsWorkedTimeReview(editing!.appointment, editing!.appointment.id, assignment.employee_id, apptAssignments, employeeHours);
 
                 return (
                   <div
@@ -1274,6 +1274,10 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                           employeeId={assignment.employee_id}
                           canCorrect={canUseJobTracking}
                           onSaved={onHoursSaved}
+                          timezone={timezone}
+                          anchorDate={zonedDateValue(editing!.appointment.scheduled_for, timezone)}
+                          initialStartedAt={assignment.actual_started_at}
+                          initialCompletedAt={assignment.actual_completed_at}
                         />
                       </div>
                     )}

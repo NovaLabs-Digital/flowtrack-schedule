@@ -6,7 +6,7 @@
 // same structural reason CapabilityGatedButton.ts/EmployeeJobActionButton.ts
 // are: Node's built-in test runner cannot load a .tsx file at all, and this
 // is exactly the kind of control that needs real rendered click/keyboard
-// interaction proof (Hours/Minutes/Reason entry, Save, Cancel, error
+// interaction proof (Clock-in/Clock-out/Reason entry, Save, Cancel, error
 // states) rather than source inspection.
 //
 // This is deliberately separate from DispatchPanel's own EmployeeHoursSection
@@ -14,6 +14,17 @@
 // job is unchanged by this feature. This control is only ever shown once a
 // worked-hours value already exists (tracked or previously manually
 // entered) -- it is the CORRECTION path, not the first-entry path.
+//
+// The owner corrects the WORKING INTERVAL (Clock-in / Clock-out), not a
+// duration directly -- SFT computes the payable duration from the two times.
+// Both fields default to the ORIGINAL tracked actual_started_at/
+// actual_completed_at (converted to the workspace's local wall-clock time),
+// when there is one, so the owner is nudging a real interval rather than
+// reconstructing it from scratch. The two corrected clock times themselves
+// are NOT persisted anywhere -- see the computeCorrectedHours doc comment
+// below for why -- only the computed duration and the reason are sent, via
+// the existing appointment_employee_hours override (hours_worked, note): no
+// new column, no API change.
 //
 // Posts to the existing /api/appointments/employee-hours route
 // (save_employee_hours, migrations/030 + 031) -- the same endpoint the
@@ -27,6 +38,7 @@
 import { createElement, Fragment, useState, type ReactNode } from "react";
 import type { EmployeeHours } from "@/app/components/dashboard/types";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { zonedTimeValue, zonedDateTimeToUTC } from "@/lib/timezone";
 
 // Rendered next to the button/form whenever restricted, in both the
 // collapsed and expanded states -- so CapabilityGatedButton's
@@ -44,15 +56,71 @@ export type AdjustWorkedTimeControlProps = {
   // this only decides whether the client even attempts the request.
   canCorrect: boolean;
   onSaved: (entry: EmployeeHours) => void;
+  // The workspace's own resolved timezone -- Clock-in/Clock-out are entered
+  // and interpreted in this zone, never the browser/device's ambient one
+  // (same convention as every other date/time field in this codebase; see
+  // lib/timezone.ts).
+  timezone: string;
+  // The business-local calendar date ("YYYY-MM-DD") Clock-in and Clock-out
+  // are both ON -- normally the appointment's own scheduled date. A
+  // same-day interval only; this control does not support a shift that
+  // crosses midnight (Clock-out must be later the SAME day).
+  anchorDate: string;
+  // The assignment's own original actual_started_at/actual_completed_at
+  // (ISO, or null/undefined when never tracked) -- used ONLY to pre-fill
+  // Clock-in/Clock-out with a sensible starting point; never read again
+  // after that, and never written back to. Preserved exactly as-is by this
+  // control, which writes only to appointment_employee_hours.
+  initialStartedAt?: string | null;
+  initialCompletedAt?: string | null;
 };
 
 function field(label: string, input: ReactNode) {
   return createElement(
     "div",
     { className: "flex items-center gap-2" },
-    createElement("label", { className: "text-[11px] text-slate-500 shrink-0 w-14" }, label),
+    createElement("label", { className: "text-[11px] text-slate-500 shrink-0 w-16" }, label),
     input
   );
+}
+
+// Resolves Clock-in + Clock-out (workspace-local "HH:mm", both on
+// `anchorDate`) to a payable duration in decimal hours, or an error.
+//
+// Why the corrected clock-in/clock-out pair itself is NOT persisted:
+// appointment_employee_hours (the owner-override table) has exactly two
+// relevant columns, hours_worked and note (migrations/010) -- there is no
+// column to hold a second timestamp pair, and the owner's actual payroll
+// value is the DURATION, not the specific clock times. Adding two new
+// columns for this would be new schema for a value that is fully
+// recoverable from -- and only ever used to produce -- the duration
+// already being stored; the existing `note` (the required reason) already
+// gives the owner room to record the specific correction in their own
+// words, exactly as the very first review of this feature's Roxana example
+// did ("Forgot to clock out. Job completed at 10:32 AM."). If a future
+// phase needs the exact corrected instants preserved (e.g. for a payroll
+// audit export), that is a deliberate, separate schema decision -- not
+// something to add quietly here.
+export function computeCorrectedHours(
+  clockIn: string,
+  clockOut: string,
+  anchorDate: string,
+  timezone: string
+): { ok: true; hours: number } | { ok: false; error: string } {
+  if (!clockIn || !clockOut) {
+    return { ok: false, error: "Enter both a clock-in and a clock-out time." };
+  }
+  const inResult = zonedDateTimeToUTC(anchorDate, clockIn, timezone);
+  if (!inResult.ok) return { ok: false, error: inResult.error };
+  const outResult = zonedDateTimeToUTC(anchorDate, clockOut, timezone);
+  if (!outResult.ok) return { ok: false, error: outResult.error };
+
+  const startMs = new Date(inResult.iso).getTime();
+  const endMs = new Date(outResult.iso).getTime();
+  if (endMs <= startMs) {
+    return { ok: false, error: "Clock-out must be after clock-in." };
+  }
+  return { ok: true, hours: (endMs - startMs) / 3_600_000 };
 }
 
 export default function AdjustWorkedTimeControl({
@@ -60,6 +128,10 @@ export default function AdjustWorkedTimeControl({
   employeeId,
   canCorrect,
   onSaved,
+  timezone,
+  anchorDate,
+  initialStartedAt,
+  initialCompletedAt,
 }: AdjustWorkedTimeControlProps) {
   // Self-contained (per DispatchPanel's own EmployeeHoursSection precedent
   // right above in this same file's history) rather than a shared/global
@@ -68,16 +140,18 @@ export default function AdjustWorkedTimeControl({
   // notice element instead of depending on some other component instance
   // happening to be mounted.
   const noticeId = `adjust-worked-time-restricted-${appointmentId}-${employeeId}`;
+  const initialClockIn = initialStartedAt ? zonedTimeValue(initialStartedAt, timezone) : "";
+  const initialClockOut = initialCompletedAt ? zonedTimeValue(initialCompletedAt, timezone) : "";
   const [open, setOpen] = useState(false);
-  const [hoursPart, setHoursPart] = useState("");
-  const [minutesPart, setMinutesPart] = useState("");
+  const [clockIn, setClockIn] = useState(initialClockIn);
+  const [clockOut, setClockOut] = useState(initialClockOut);
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   function reset() {
-    setHoursPart("");
-    setMinutesPart("");
+    setClockIn(initialClockIn);
+    setClockOut(initialClockOut);
     setReason("");
     setError("");
   }
@@ -88,10 +162,9 @@ export default function AdjustWorkedTimeControl({
     // guard only prevents a restricted owner's client from ever issuing the
     // request at all.
     if (!canCorrect) return;
-    const h = hoursPart.trim() === "" ? 0 : Number(hoursPart);
-    const m = minutesPart.trim() === "" ? 0 : Number(minutesPart);
-    if (!Number.isFinite(h) || h < 0 || !Number.isFinite(m) || m < 0 || m > 59 || (h === 0 && m === 0)) {
-      setError("Enter a corrected time greater than 0 (hours and/or minutes, minutes 0-59).");
+    const computed = computeCorrectedHours(clockIn, clockOut, anchorDate, timezone);
+    if (!computed.ok) {
+      setError(computed.error);
       return;
     }
     if (!reason.trim()) {
@@ -107,9 +180,10 @@ export default function AdjustWorkedTimeControl({
         body: JSON.stringify({
           appointment_id: appointmentId,
           employee_id: employeeId,
-          // Hours + Minutes -> the decimal-hours value the existing route/
-          // column (NUMERIC(5,2)) already expects -- no API or schema change.
-          hours_worked: h + m / 60,
+          // The corrected CLOCK TIMES are only ever used locally to compute
+          // this decimal-hours value -- see computeCorrectedHours above for
+          // why the interval itself is not sent or stored.
+          hours_worked: computed.hours,
           note: reason.trim(),
         }),
       });
@@ -156,32 +230,25 @@ export default function AdjustWorkedTimeControl({
     { className: "rounded-lg border border-slate-200 bg-white px-2 py-2 space-y-1.5 mt-1" },
     restrictedNotice,
     field(
-      "Hours",
+      "Clock-in",
       createElement("input", {
-        type: "number",
-        min: "0",
-        step: "1",
-        value: hoursPart,
-        onChange: (e: React.ChangeEvent<HTMLInputElement>) => setHoursPart(e.target.value),
-        placeholder: "0",
+        type: "time",
+        value: clockIn,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => setClockIn(e.target.value),
         disabled: !canCorrect,
-        "aria-label": "Corrected hours",
-        className: "w-16 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50",
+        "aria-label": "Corrected clock-in time",
+        className: "rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50",
       })
     ),
     field(
-      "Minutes",
+      "Clock-out",
       createElement("input", {
-        type: "number",
-        min: "0",
-        max: "59",
-        step: "1",
-        value: minutesPart,
-        onChange: (e: React.ChangeEvent<HTMLInputElement>) => setMinutesPart(e.target.value),
-        placeholder: "0",
+        type: "time",
+        value: clockOut,
+        onChange: (e: React.ChangeEvent<HTMLInputElement>) => setClockOut(e.target.value),
         disabled: !canCorrect,
-        "aria-label": "Corrected minutes",
-        className: "w-16 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50",
+        "aria-label": "Corrected clock-out time",
+        className: "rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50",
       })
     ),
     field(

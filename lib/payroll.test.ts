@@ -702,7 +702,7 @@ describe("needsWorkedTimeReview", () => {
   test("flags a large OVERAGE (Roxana's example: 1h30m scheduled, 48h58m tracked)", () => {
     const { appt: a, assignment: asg } = roxanaScenario();
     assert.equal(scheduledMinutes(a), ROXANA_SCHEDULED_MINUTES);
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), true);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), true);
   });
 
   test("flags a large UNDERRUN just as readily as an overage", () => {
@@ -715,7 +715,7 @@ describe("needsWorkedTimeReview", () => {
       actual_started_at: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
       actual_completed_at: new Date(Date.now() - 2 * HOUR_MS + 5 * 60 * 1000).toISOString(), // 5 min tracked
     });
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), true);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), true);
   });
 
   test("no alert when the difference is inside threshold (small, ordinary variance)", () => {
@@ -728,7 +728,7 @@ describe("needsWorkedTimeReview", () => {
       actual_started_at: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
       actual_completed_at: new Date(Date.now() - 2 * HOUR_MS + 95 * 60 * 1000).toISOString(), // 95 min tracked -- 5 min over
     });
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), false);
   });
 
   test("boundary: a difference of EXACTLY 30 minutes does not trigger (must be MORE than 30)", () => {
@@ -741,7 +741,7 @@ describe("needsWorkedTimeReview", () => {
       actual_started_at: new Date(Date.now() - 3 * HOUR_MS).toISOString(),
       actual_completed_at: new Date(Date.now() - 3 * HOUR_MS + 130 * 60 * 1000).toISOString(), // 130 min: diff=30 (>25% of 100, but not >30)
     });
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), false);
   });
 
   test("boundary: a difference of EXACTLY 25% of scheduled does not trigger (must be MORE than 25%)", () => {
@@ -754,20 +754,20 @@ describe("needsWorkedTimeReview", () => {
       actual_started_at: new Date(Date.now() - 5 * HOUR_MS).toISOString(),
       actual_completed_at: new Date(Date.now() - 5 * HOUR_MS + 250 * 60 * 1000).toISOString(), // 250 min: diff=50 (>30, but exactly 25% of 200)
     });
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), false);
   });
 
   test("an owner correction that brings the effective duration back within threshold clears the alert automatically", () => {
     const { appt: a, assignment: asg } = roxanaScenario();
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), true, "flagged before correction");
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), true, "flagged before correction");
     const correctedHours = [manualEntry({ hours_worked: 86 / 60 })]; // 1h26m, close to the 1h30m scheduled
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, correctedHours), false, "cleared after correction -- no stored resolved state, just recomputed");
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], correctedHours), false, "cleared after correction -- no stored resolved state, just recomputed");
   });
 
   test("a correction that is itself still far off keeps the alert showing (the alert reflects the current effective value, not merely that a correction exists)", () => {
     const { appt: a, assignment: asg } = roxanaScenario();
     const stillWrong = [manualEntry({ hours_worked: 40 })]; // an implausible 40h "correction"
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, stillWrong), true);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], stillWrong), true);
   });
 
   test("never flags an appointment with no worked-hours source at all -- that is the separate, pre-existing missing-hours concern", () => {
@@ -776,14 +776,14 @@ describe("needsWorkedTimeReview", () => {
       scheduled_end: new Date(Date.now() - HOUR_MS).toISOString(),
     });
     const asg = assignment({ appointment_id: "untouched", employee_id: "emp-1" });
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), false);
   });
 
   test("never flags when the appointment has no scheduled duration to compare against", () => {
     const { assignment: asg } = roxanaScenario();
     const a = appt({ id: "no-schedule", scheduled_end: null, duration_minutes: null });
     assert.equal(scheduledMinutes(a), 0);
-    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, asg, []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), false);
   });
 });
 
@@ -851,5 +851,173 @@ describe("owner correction never opens a payable-hours path for an employee", ()
     const { appt: a, assignment: asg } = roxanaScenario();
     const mins = resolveWorkedMinutes(a.id, asg.employee_id, asg, [manualEntry()]);
     assert.equal(mins, 60, "the row's hours_worked is used exactly as stored -- provenance is enforced elsewhere");
+  });
+});
+
+// ============================================================================
+// Refine Worked-Time Review + Correction UX -- multi-employee peer comparison
+//
+// Real examples this fixes:
+//   - Dave Cloutier appointment, 1h30m scheduled: Teresa 2h01m, Roxana 1h59m.
+//     The OLD per-employee-vs-scheduled comparison flagged Teresa (2h01m vs
+//     1h30m is >30min and >25%) even though she and Roxana independently
+//     recorded almost identical durations -- the job just ran long. Neither
+//     should be flagged.
+//   - Lisa appointment: Teresa clocked in ~30+ minutes late while a
+//     coworker's duration shows the normal length. Teresa SHOULD be
+//     flagged -- comparing her against her coworker's own duration (not a
+//     blend/average of the two) is what catches this.
+// ============================================================================
+
+describe("needsWorkedTimeReview -- multi-employee peer comparison (Dave/Lisa examples)", () => {
+  const DAVE_SCHEDULED_MINUTES = 90; // 1h30m
+
+  // Both started ~8:55-8:57 AM and ran long by almost exactly the same
+  // amount -- Teresa 2h01m (121min), Roxana 1h59m (119min).
+  function daveScenario() {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "dave-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + DAVE_SCHEDULED_MINUTES * 60_000).toISOString(),
+    });
+    const teresa = assignment({
+      id: "ae-dave-teresa", appointment_id: "dave-appt", employee_id: "teresa",
+      actual_started_at: start.toISOString(),
+      actual_completed_at: new Date(start.getTime() + 121 * 60_000).toISOString(),
+    });
+    const roxana = assignment({
+      id: "ae-dave-roxana", appointment_id: "dave-appt", employee_id: "roxana",
+      actual_started_at: new Date(start.getTime() + 2 * 60_000).toISOString(),
+      actual_completed_at: new Date(start.getTime() + 2 * 60_000 + 119 * 60_000).toISOString(),
+    });
+    return { appt: a, teresa, roxana };
+  }
+
+  test("Dave example: Teresa 2h01m / Roxana 1h59m -- NEITHER is flagged, even though both differ from the 1h30m scheduled estimate", () => {
+    const { appt: a, teresa, roxana } = daveScenario();
+    assert.equal(resolveWorkedMinutes(a.id, "teresa", teresa, []), 121);
+    assert.equal(resolveWorkedMinutes(a.id, "roxana", roxana, []), 119);
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], []), false, "Teresa: 2h01m vs 1h30m scheduled would have flagged under the OLD per-employee-only logic");
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), false);
+  });
+
+  test("Lisa example: Teresa clocked in materially late while a coworker's duration shows the normal length -- Teresa IS flagged", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "lisa-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 120 * 60_000).toISOString(), // 2h scheduled
+    });
+    const onTime = assignment({
+      id: "ae-lisa-normal", appointment_id: "lisa-appt", employee_id: "coworker",
+      actual_started_at: start.toISOString(),
+      actual_completed_at: new Date(start.getTime() + 120 * 60_000).toISOString(), // exactly 120min, the "normal" duration
+    });
+    const teresaLate = assignment({
+      id: "ae-lisa-teresa", appointment_id: "lisa-appt", employee_id: "teresa",
+      actual_started_at: new Date(start.getTime() + 35 * 60_000).toISOString(), // ~35 minutes late
+      actual_completed_at: new Date(start.getTime() + 120 * 60_000).toISOString(), // same finish time -- 85min effective
+    });
+    assert.equal(resolveWorkedMinutes(a.id, "coworker", onTime, []), 120);
+    assert.equal(resolveWorkedMinutes(a.id, "teresa", teresaLate, []), 85);
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [onTime, teresaLate], []), true, "35 minutes short of her coworker's duration");
+    // With exactly two employees and a genuine mutual gap this large (35min
+    // apart, >25% of either side), BOTH surface for review -- there is no
+    // third reference point to determine algorithmically which of the two
+    // is "the mistake," so the office manager sees both entries and decides
+    // (Teresa's own Job Notes / the specific gap size makes it obvious in
+    // practice). This is symmetric by design, the same way mode A already
+    // flags both an overage and an underrun against the schedule.
+    assert.equal(needsWorkedTimeReview(a, a.id, "coworker", [onTime, teresaLate], []), true, "a genuine 2-person mismatch this large surfaces both entries for review");
+  });
+
+  test("exactly 2 employees CAN also flag only one of them (not always symmetric) -- a modest-enough gap clears the percentage threshold from one side but not the other", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "asym-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 132 * 60_000).toISOString(),
+    });
+    const shorter = assignment({
+      id: "ae-asym-shorter", appointment_id: "asym-appt", employee_id: "shorter",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 100 * 60_000).toISOString(),
+    });
+    const longer = assignment({
+      id: "ae-asym-longer", appointment_id: "asym-appt", employee_id: "longer",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 132 * 60_000).toISOString(),
+    });
+    // diff=32min either way: 32 > 25%*100(=25) -> "longer" (baseline=100) is flagged.
+    // 32 is NOT > 25%*132(=33) -> "shorter" (baseline=132) is not.
+    assert.equal(needsWorkedTimeReview(a, a.id, "longer", [shorter, longer], []), true);
+    assert.equal(needsWorkedTimeReview(a, a.id, "shorter", [shorter, longer], []), false);
+  });
+
+  test("3+ employees: only the one employee whose duration materially differs is flagged -- the others are not contaminated by the single outlier", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "trio-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 120 * 60_000).toISOString(),
+    });
+    const mk = (id: string, mins: number) => assignment({
+      id: `ae-trio-${id}`, appointment_id: "trio-appt", employee_id: id,
+      actual_started_at: start.toISOString(),
+      actual_completed_at: new Date(start.getTime() + mins * 60_000).toISOString(),
+    });
+    const a1 = mk("a", 120), b1 = mk("b", 125), c1 = mk("c", 20); // c is the outlier (forgot to clock in until late, or similar)
+    const all = [a1, b1, c1];
+    assert.equal(needsWorkedTimeReview(a, a.id, "a", all, []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, "b", all, []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, "c", all, []), true, "the outlier is flagged");
+  });
+
+  test("single-employee job: still compares against the scheduled duration exactly as before (Roxana's original example)", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg], []), true, "no peers -- mode A, scheduled comparison");
+  });
+
+  test("two assigned, but only one has recorded any work yet: the tracked one is still compared against the scheduled estimate (not blocked waiting for a peer)", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    const untouched = assignment({ id: "ae-untouched", appointment_id: a.id, employee_id: "not-yet-started" });
+    assert.equal(needsWorkedTimeReview(a, a.id, asg.employee_id, [asg, untouched], []), true);
+    // the untracked employee itself is never flagged (no usable duration at all -- a different, pre-existing concern)
+    assert.equal(needsWorkedTimeReview(a, a.id, "not-yet-started", [asg, untouched], []), false);
+  });
+
+  test("an owner override participates in the peer comparison exactly like a tracked duration -- both as the evaluated employee's own value and as a peer's baseline value", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "override-peer-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 120 * 60_000).toISOString(),
+    });
+    const teresa = assignment({
+      id: "ae-op-teresa", appointment_id: "override-peer-appt", employee_id: "teresa",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 900 * 60_000).toISOString(), // wildly wrong, 15h
+    });
+    const roxana = assignment({
+      id: "ae-op-roxana", appointment_id: "override-peer-appt", employee_id: "roxana",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 121 * 60_000).toISOString(),
+    });
+    const teresaOverride: EmployeeHours = {
+      id: "eh-op", appointment_id: "override-peer-appt", employee_id: "teresa", hours_worked: 119 / 60,
+      note: "corrected", created_at: "x", updated_at: "x",
+    };
+    // Before the correction: Teresa's raw tracked value is a wild outlier against Roxana's.
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], []), true);
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), true, "Roxana's baseline (Teresa's 15h) is also thrown off before the correction");
+    // After the correction: Teresa's EFFECTIVE duration (the override, 119min) is what both
+    // her own flag AND Roxana's baseline now use -- both clear.
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], [teresaOverride]), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], [teresaOverride]), false, "Roxana's baseline now uses Teresa's corrected value, not her raw tracked one");
+  });
+
+  test("Weekly Worked Hours (computePayrollRows) reviewCount reflects the peer-aware result, not the old per-employee-vs-scheduled result", () => {
+    const employees: Employee[] = [
+      { id: "teresa", name: "Teresa", phone: null, color: "#000", active: true },
+      { id: "roxana", name: "Roxana", phone: null, color: "#111", active: true },
+    ];
+    const { appt: a, teresa, roxana } = daveScenario();
+    const { rows } = computePayrollRows({ appointments: [a], employees, employeeHours: [], assignments: [teresa, roxana], ...WIDE_RANGE, timezone: TZ });
+    const teresaRow = rows.find((r) => r.employeeId === "teresa")!;
+    const roxanaRow = rows.find((r) => r.employeeId === "roxana")!;
+    assert.equal(teresaRow.reviewCount, 0, "the old (pre-fix) logic would have set this to 1");
+    assert.equal(roxanaRow.reviewCount, 0);
   });
 });

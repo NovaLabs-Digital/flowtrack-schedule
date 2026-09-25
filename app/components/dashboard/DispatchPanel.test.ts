@@ -437,9 +437,20 @@ describe("Owner Worked-Time Correction + Needs Review Alert", () => {
     assert.match(invocation, /onSaved=\{onHoursSaved\}/);
   });
 
+  test("the correction control receives timezone, an anchorDate derived from the appointment's own scheduled date, and this assignment's original tracked timestamps (for pre-fill, never for re-writing)", () => {
+    const block = trackedBlock();
+    const idx = block.indexOf("<AdjustWorkedTimeControl");
+    const invocation = block.slice(idx, block.indexOf("/>", idx) + 2);
+    assert.match(invocation, /timezone=\{timezone\}/);
+    assert.match(invocation, /anchorDate=\{zonedDateValue\(selectedAppt\.scheduled_for, timezone\)\}/);
+    assert.match(invocation, /initialStartedAt=\{assignment\.actual_started_at\}/);
+    assert.match(invocation, /initialCompletedAt=\{assignment\.actual_completed_at\}/);
+    assert.match(source, /import \{ nowInBusinessTz, startOfBusinessDay, toBusinessLocal, zonedDateValue \} from "@\/lib\/timezone";/);
+  });
+
   test("the Needs Review badge is computed with needsWorkedTimeReview and rendered conditionally, before the correction control", () => {
     const block = trackedBlock();
-    const needsReviewIdx = block.indexOf("needsWorkedTimeReview(selectedAppt, selectedAppt.id, emp.id, assignment, employeeHours)");
+    const needsReviewIdx = block.indexOf("needsWorkedTimeReview(selectedAppt, selectedAppt.id, emp.id, selectedApptAssignments, employeeHours)");
     const badgeIdx = block.indexOf("Needs Review");
     const controlIdx = block.indexOf("<AdjustWorkedTimeControl");
     assert.notEqual(needsReviewIdx, -1);

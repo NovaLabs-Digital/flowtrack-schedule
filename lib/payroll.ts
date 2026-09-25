@@ -274,37 +274,99 @@ export function trackedMinutes(assignment: TimestampPair | undefined): number | 
 export const REVIEW_MIN_DIFF_MINUTES = 30;
 export const REVIEW_MIN_DIFF_FRACTION = 0.25;
 
+// Sorted-array median: the middle value for an odd count, the average of
+// the two middle values for an even count. Not exported -- an internal
+// building block of needsWorkedTimeReview's peer comparison below.
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 // True when this employee's assignment on this appointment needs office
-// review before payroll: it has a usable effective worked duration (an
-// owner override or a complete Job Tracking duration -- see
-// assignmentHasWorkedHours/resolveWorkedMinutes above; an appointment with
-// no worked-hours source at all is a "missing hours" case, a different,
-// pre-existing concern handled by getMissingHoursEmployeeIds, not this
-// one), AND that effective duration differs from the appointment's own
-// scheduled duration by more than REVIEW_MIN_DIFF_MINUTES minutes AND by
-// more than REVIEW_MIN_DIFF_FRACTION of the scheduled duration -- checked
-// in both directions (a suspiciously short job is just as reviewable as a
-// suspiciously long one, e.g. Roxana's 48h58m against a 1h30m scheduled
-// job). An appointment with no scheduled duration at all (0 minutes) has
+// review before payroll. It always requires a usable effective worked
+// duration first (an owner override or a complete Job Tracking duration --
+// see assignmentHasWorkedHours/resolveWorkedMinutes above; an appointment
+// with no worked-hours source at all is a "missing hours" case, a
+// different, pre-existing concern handled by getMissingHoursEmployeeIds,
+// not this one). What it is compared AGAINST then depends on how many of
+// this appointment's assigned employees also have a usable duration:
+//
+//   A. Fewer than two (this is the only one, or every other assigned
+//      employee is still untracked) -- compare against the appointment's
+//      own scheduled duration, exactly as before.
+//   B. Exactly one other employee has a usable duration -- compare
+//      directly against THAT employee's duration (comparing against a
+//      blend of the two, e.g. their average, would halve a real gap and
+//      miss it -- see the "Teresa clocked in late" example below). With
+//      only two employees, a large enough MUTUAL gap flags BOTH of them
+//      (there is no third reference point to say algorithmically which one
+//      is "the mistake" -- the office manager sees both entries and
+//      decides); a smaller, one-sided gap can flag only one, because the
+//      percentage test's own denominator (the OTHER employee's duration)
+//      differs depending on which of the two is being evaluated.
+//   C. Two or more other employees have a usable duration (three or more
+//      total) -- compare against the MEDIAN of every employee's duration,
+//      including this one's own. A single outlier does not drag every
+//      other employee's baseline down with it the way comparing against
+//      "everyone else's average" would (median is robust to one outlier;
+//      an average, or a per-employee "leave this one out" mean, is not).
+//
+// Either way: difference > REVIEW_MIN_DIFF_MINUTES minutes AND >
+// REVIEW_MIN_DIFF_FRACTION of the baseline, checked in both directions (a
+// suspiciously short job is just as reviewable as a suspiciously long
+// one -- e.g. Roxana's 48h58m against a 1h30m scheduled job in mode A, or
+// an employee who clocked in ~30 minutes late while a coworker's tracking
+// shows the normal duration in mode B). A zero-or-less baseline (no
+// scheduled duration in mode A; a genuinely zero-minute peer duration in
+// B/C, which isJobTrackingComplete already forbids in practice) has
 // nothing meaningful to compare against, so it is never flagged.
 //
-// Because this reads resolveWorkedMinutes (owner override first), a
-// correction that brings the effective duration back within threshold
-// clears the flag automatically on the very next read -- there is no
-// separate "resolved" state to store or clear.
+// Two real appointments this distinction exists for:
+//   - Teresa 2h01m / Roxana 1h59m on a 1h30m-scheduled job: nearly
+//     identical to each other, so mode B/C must NOT flag either of them
+//     just because both differ from the scheduled estimate -- the job
+//     simply ran long. (Compare this to the OLD per-employee-only
+//     comparison, mode A applied unconditionally, which flagged Teresa.)
+//   - Teresa clocked in ~30 minutes late while a coworker's duration shows
+//     the normal length: mode B (or C, with more coworkers) must flag
+//     Teresa specifically, not the appointment as a whole and not her
+//     coworker(s).
+//
+// Because this reads resolveWorkedMinutes (owner override first) for every
+// employee involved, a correction that brings the effective duration back
+// within threshold of its baseline clears the flag automatically on the
+// very next read -- there is no separate "resolved" state to store or
+// clear, for this employee OR for any peer whose own baseline shifts as a
+// result.
 export function needsWorkedTimeReview(
   appt: Pick<Appointment, "scheduled_for" | "scheduled_end" | "duration_minutes">,
   appointmentId: string,
   employeeId: string,
-  assignment: TimestampPair | undefined,
+  apptAssignments: Pick<AppointmentEmployeeAssignment, "employee_id" | "actual_started_at" | "actual_completed_at">[],
   employeeHours: EmployeeHours[]
 ): boolean {
-  if (!assignmentHasWorkedHours(appointmentId, employeeId, assignment, employeeHours)) return false;
-  const scheduled = scheduledMinutes(appt);
-  if (scheduled <= 0) return false;
-  const worked = resolveWorkedMinutes(appointmentId, employeeId, assignment, employeeHours);
-  const diff = Math.abs(worked - scheduled);
-  return diff > REVIEW_MIN_DIFF_MINUTES && diff > scheduled * REVIEW_MIN_DIFF_FRACTION;
+  const mine = apptAssignments.find((a) => a.employee_id === employeeId);
+  if (!assignmentHasWorkedHours(appointmentId, employeeId, mine, employeeHours)) return false;
+  const myMinutes = resolveWorkedMinutes(appointmentId, employeeId, mine, employeeHours);
+
+  const peerMinutes = apptAssignments
+    .filter((a) => a.employee_id !== employeeId)
+    .filter((a) => assignmentHasWorkedHours(appointmentId, a.employee_id, a, employeeHours))
+    .map((a) => resolveWorkedMinutes(appointmentId, a.employee_id, a, employeeHours));
+
+  let baseline: number;
+  if (peerMinutes.length === 0) {
+    baseline = scheduledMinutes(appt); // mode A
+  } else if (peerMinutes.length === 1) {
+    baseline = peerMinutes[0]; // mode B
+  } else {
+    baseline = median([myMinutes, ...peerMinutes]); // mode C
+  }
+  if (baseline <= 0) return false;
+
+  const diff = Math.abs(myMinutes - baseline);
+  return diff > REVIEW_MIN_DIFF_MINUTES && diff > baseline * REVIEW_MIN_DIFF_FRACTION;
 }
 
 // Formats a decimal hours value (e.g. a PayrollRow's hoursWorked) as "45m",
@@ -510,7 +572,7 @@ export function computePayrollRows({
       // "manual_hours"-mode caller still gets an accurate review count even
       // though this employee's Job Tracking duration isn't what's being
       // totaled.
-      if (needsWorkedTimeReview(appt, appt.id, employeeId, assignment, employeeHours)) {
+      if (needsWorkedTimeReview(appt, appt.id, employeeId, apptAssignments, employeeHours)) {
         reviewCounts.set(employeeId, (reviewCounts.get(employeeId) ?? 0) + 1);
       }
 

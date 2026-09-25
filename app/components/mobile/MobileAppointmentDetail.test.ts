@@ -367,7 +367,7 @@ describe("historical-record protection (founder decision): mobile's sole edit en
     const cardEnd = source.indexOf("})}", workedHoursIdx);
     assert.ok(workedHoursIdx > -1 && cardEnd > -1);
     const block = source.slice(workedHoursIdx, cardEnd);
-    assert.match(block, /const needsReview = needsWorkedTimeReview\(appointment, appointment\.id, assignment\.employee_id, assignment, employeeHours\);/);
+    assert.match(block, /const needsReview = needsWorkedTimeReview\(appointment, appointment\.id, assignment\.employee_id, assignments, employeeHours\);/);
     assert.match(block, /\{needsReview && \(/);
     assert.match(block, /Needs Review/);
     const manualIdx = block.indexOf("{manualEntry ? (");

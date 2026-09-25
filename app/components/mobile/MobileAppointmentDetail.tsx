@@ -260,7 +260,7 @@ export default function MobileAppointmentDetail({
               // (lib/payroll.ts) -- matching desktop's AppointmentDetailPanel
               // exactly. Display-only here: no correction control, this
               // screen has no field it could write to.
-              const needsReview = needsWorkedTimeReview(appointment, appointment.id, assignment.employee_id, assignment, employeeHours);
+              const needsReview = needsWorkedTimeReview(appointment, appointment.id, assignment.employee_id, assignments, employeeHours);
 
               return (
                 <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-1 text-slate-600">

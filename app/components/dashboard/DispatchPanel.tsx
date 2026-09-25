@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Appointment, Client, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
 import IncomeProjection from "@/app/components/dashboard/IncomeProjection";
-import { nowInBusinessTz, startOfBusinessDay, toBusinessLocal } from "@/lib/timezone";
+import { nowInBusinessTz, startOfBusinessDay, toBusinessLocal, zonedDateValue } from "@/lib/timezone";
 import {
   hasInvalidJobTrackingDuration,
   assignmentHasWorkedHours,
@@ -431,7 +431,7 @@ export default function DispatchPanel({
                 const manualEntry = findManualHoursEntry(selectedAppt.id, emp.id, employeeHours);
                 const tracked = isJobTrackingComplete(assignment);
                 const isOverride = !!manualEntry && tracked;
-                const needsReview = needsWorkedTimeReview(selectedAppt, selectedAppt.id, emp.id, assignment, employeeHours);
+                const needsReview = needsWorkedTimeReview(selectedAppt, selectedAppt.id, emp.id, selectedApptAssignments, employeeHours);
                 return (
                   <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
                     <div className="flex items-center justify-between text-xs">
@@ -477,6 +477,10 @@ export default function DispatchPanel({
                       employeeId={emp.id}
                       canCorrect={canUseJobTracking}
                       onSaved={onHoursSaved}
+                      timezone={timezone}
+                      anchorDate={zonedDateValue(selectedAppt.scheduled_for, timezone)}
+                      initialStartedAt={assignment.actual_started_at}
+                      initialCompletedAt={assignment.actual_completed_at}
                     />
                   </div>
                 );

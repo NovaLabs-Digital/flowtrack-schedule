@@ -227,7 +227,7 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
             // exactly (branches on manualEntry FIRST). Display-only here:
             // no correction control, this panel has no field it could write
             // to.
-            const needsReview = needsWorkedTimeReview(appointment, appointment.id, assignment.employee_id, assignment, employeeHours);
+            const needsReview = needsWorkedTimeReview(appointment, appointment.id, assignment.employee_id, assignments, employeeHours);
 
             return (
               <div key={assignment.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs space-y-1 text-slate-600">

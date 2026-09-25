@@ -483,6 +483,16 @@ describe("Owner Worked-Time Correction + Needs Review Alert (Worked Hours card)"
     assert.match(invocation, /onSaved=\{onHoursSaved\}/);
   });
 
+  test("the correction control receives timezone, an anchorDate derived from the appointment's own scheduled date, and this assignment's original tracked timestamps (for pre-fill, never for re-writing)", () => {
+    const block = cardBlock();
+    const idx = block.indexOf("<AdjustWorkedTimeControl");
+    const invocation = block.slice(idx, block.indexOf("/>", idx) + 2);
+    assert.match(invocation, /timezone=\{timezone\}/);
+    assert.match(invocation, /anchorDate=\{zonedDateValue\(editing!\.appointment\.scheduled_for, timezone\)\}/);
+    assert.match(invocation, /initialStartedAt=\{assignment\.actual_started_at\}/);
+    assert.match(invocation, /initialCompletedAt=\{assignment\.actual_completed_at\}/);
+  });
+
   test("manualEntry (owner override) is branched on FIRST, ahead of `complete` -- matching lib/payroll.ts's resolveWorkedMinutes precedence", () => {
     const block = cardBlock();
     const manualIdx = block.indexOf("{manualEntry ? (");
@@ -497,7 +507,7 @@ describe("Owner Worked-Time Correction + Needs Review Alert (Worked Hours card)"
 
   test("Needs Review badge: computed with needsWorkedTimeReview against this appointment/employee, rendered conditionally next to the employee name", () => {
     const block = cardBlock();
-    assert.match(block, /const needsReview = needsWorkedTimeReview\(editing!\.appointment, editing!\.appointment\.id, assignment\.employee_id, assignment, employeeHours\);/);
+    assert.match(block, /const needsReview = needsWorkedTimeReview\(editing!\.appointment, editing!\.appointment\.id, assignment\.employee_id, apptAssignments, employeeHours\);/);
     assert.match(block, /\{needsReview && \(/);
     assert.match(block, /Needs Review/);
   });
