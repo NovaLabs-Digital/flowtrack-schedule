@@ -54,6 +54,7 @@ function renderControl(props: {
   initialStartedAt?: string | null;
   initialCompletedAt?: string | null;
   needsReview?: boolean;
+  variant?: "correction" | "missing";
 } = {}) {
   const saved: EmployeeHours[] = [];
   render(
@@ -67,6 +68,7 @@ function renderControl(props: {
       initialStartedAt: props.initialStartedAt,
       initialCompletedAt: props.initialCompletedAt,
       needsReview: props.needsReview,
+      variant: props.variant,
     })
   );
   return { saved };
@@ -459,5 +461,151 @@ describe("Keep Time As Is (flagged card) -- reason-only confirmation of the curr
     await u.click(screen.getByText(/Keep Time As Is/));
     assert.equal(screen.queryByLabelText("Review reason"), null);
     assert.equal(calls.length, 0);
+  });
+});
+
+// ============================================================================
+// Unify Owner Worked-Time Correction UX -- variant "missing": the direct
+// replacement for the old, now-removed, standalone decimal "Hours Worked"
+// form (DispatchPanel's EmployeeHoursSection). Same control, same
+// computeCorrectedHours math -- the owner never calculates decimal hours.
+// ============================================================================
+
+describe("variant \"missing\": the form is open immediately, no collapsed button", () => {
+  test("Clock-in, Clock-out, and Reason are visible immediately -- no 'Adjust Worked Time'/'Correct Time' button to click first", () => {
+    renderControl({ variant: "missing" });
+    assert.ok(screen.getByLabelText("Corrected clock-in time"));
+    assert.ok(screen.getByLabelText("Corrected clock-out time"));
+    assert.ok(screen.getByLabelText("Correction reason"));
+    assert.equal(screen.queryByText("Adjust Worked Time"), null);
+    assert.equal(screen.queryByText("Correct Time"), null);
+  });
+
+  test("no old decimal 'Hours Worked' numeric input is exposed to the owner", () => {
+    renderControl({ variant: "missing" });
+    assert.equal(screen.queryByLabelText("Hours Worked"), null);
+    const numberInputs = document.querySelectorAll('input[type="number"]');
+    assert.equal(numberInputs.length, 0, "no decimal-hour input anywhere in this variant");
+  });
+
+  test("no Keep Time As Is option -- there is nothing tracked yet to confirm", () => {
+    renderControl({ variant: "missing" });
+    assert.equal(screen.queryByText(/Keep Time As Is/), null);
+  });
+
+  test("the Save button reads 'Save Worked Time', not 'Save Correction'", () => {
+    renderControl({ variant: "missing" });
+    assert.ok(screen.getByText("Save Worked Time"));
+    assert.equal(screen.queryByText("Save Correction"), null);
+  });
+
+  test("no Cancel button -- this form IS the whole control here, unlike a correction which collapses back to its own trigger button", () => {
+    renderControl({ variant: "missing" });
+    assert.equal(screen.queryByText("Cancel"), null);
+  });
+
+  test("with nothing ever tracked (initialStartedAt/initialCompletedAt both null), Clock-in/Clock-out start blank", () => {
+    renderControl({ variant: "missing", initialStartedAt: null, initialCompletedAt: null });
+    assert.equal((screen.getByLabelText("Corrected clock-in time") as HTMLInputElement).value, "");
+    assert.equal((screen.getByLabelText("Corrected clock-out time") as HTMLInputElement).value, "");
+  });
+
+  test("with a partial recording (clocked in but never clocked out), Clock-in pre-fills and Clock-out stays blank", () => {
+    renderControl({ variant: "missing", initialStartedAt: TRACKED_STARTED_AT, initialCompletedAt: null });
+    assert.equal((screen.getByLabelText("Corrected clock-in time") as HTMLInputElement).value, "08:55");
+    assert.equal((screen.getByLabelText("Corrected clock-out time") as HTMLInputElement).value, "");
+  });
+});
+
+describe("variant \"missing\": 9:00 AM -> 11:30 AM produces 2.5 hours, no decimal math from the owner", () => {
+  test("saving 9:00 AM -> 11:30 AM with a reason posts exactly 2.5 hours to the existing API, under the exact same request shape as a correction", async () => {
+    renderControl({ variant: "missing" });
+    const u = user();
+    await setTime(u, screen.getByLabelText("Corrected clock-in time"), "09:00");
+    await setTime(u, screen.getByLabelText("Corrected clock-out time"), "11:30");
+    await u.type(screen.getByLabelText("Correction reason"), "Forgot to clock in/out");
+    responses.push(json(200, { ok: true, entry: ENTRY }));
+    await u.click(screen.getByText("Save Worked Time"));
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "/api/appointments/employee-hours");
+    assert.equal(calls[0].body.appointment_id, APPT_ID);
+    assert.equal(calls[0].body.employee_id, EMP_ID);
+    assert.ok(Math.abs(calls[0].body.hours_worked - 2.5) < 1e-9, calls[0].body.hours_worked.toString());
+    assert.equal(calls[0].body.note, "Forgot to clock in/out");
+    // no raw clock-in/clock-out strings, and no actual_started_at/
+    // actual_completed_at of any kind -- only the computed duration and the
+    // reason, exactly like a correction (original employee timestamps are
+    // never read back from this control at all, let alone sent).
+    assert.deepEqual(Object.keys(calls[0].body).sort(), ["appointment_id", "employee_id", "hours_worked", "note"]);
+  });
+
+  test("on success, onSaved receives the saved entry and the form stays open with fields reset (no 'closed' state exists for this variant)", async () => {
+    const { saved } = renderControl({ variant: "missing" });
+    const u = user();
+    await setTime(u, screen.getByLabelText("Corrected clock-in time"), "09:00");
+    await setTime(u, screen.getByLabelText("Corrected clock-out time"), "11:30");
+    await u.type(screen.getByLabelText("Correction reason"), "Forgot to clock in/out");
+    responses.push(json(200, { ok: true, entry: ENTRY }));
+    await u.click(screen.getByText("Save Worked Time"));
+
+    assert.deepEqual(saved, [ENTRY]);
+    assert.ok(screen.getByLabelText("Corrected clock-in time"), "still the same form -- no collapsed button ever appears");
+    assert.equal((screen.getByLabelText("Corrected clock-in time") as HTMLInputElement).value, "", "reset to blank (no initial tracked value in this scenario)");
+    assert.equal((screen.getByLabelText("Correction reason") as HTMLInputElement).value, "");
+  });
+});
+
+describe("variant \"missing\": validation matches the correction form exactly", () => {
+  test("clock-out at or before clock-in is rejected with no request sent", async () => {
+    renderControl({ variant: "missing" });
+    const u = user();
+    await setTime(u, screen.getByLabelText("Corrected clock-in time"), "11:30");
+    await setTime(u, screen.getByLabelText("Corrected clock-out time"), "09:00");
+    await u.type(screen.getByLabelText("Correction reason"), "test");
+    await u.click(screen.getByText("Save Worked Time"));
+    assert.match(screen.getByText(/after clock-in/i).textContent ?? "", /Clock-out must be after clock-in/);
+    assert.equal(calls.length, 0);
+  });
+
+  test("a missing reason is rejected with no request sent", async () => {
+    renderControl({ variant: "missing" });
+    const u = user();
+    await setTime(u, screen.getByLabelText("Corrected clock-in time"), "09:00");
+    await setTime(u, screen.getByLabelText("Corrected clock-out time"), "11:30");
+    await u.click(screen.getByText("Save Worked Time"));
+    assert.match(screen.getByText(/reason is required/i).textContent ?? "", /forgot to clock in\/out/i);
+    assert.equal(calls.length, 0);
+  });
+
+  test("an empty clock-in or clock-out is rejected client-side", async () => {
+    renderControl({ variant: "missing" });
+    const u = user();
+    await setTime(u, screen.getByLabelText("Corrected clock-out time"), "11:30");
+    await u.type(screen.getByLabelText("Correction reason"), "test");
+    await u.click(screen.getByText("Save Worked Time"));
+    assert.equal(calls.length, 0);
+  });
+
+  test("restricted (canCorrect=false): the fields are disabled and no request is issued", async () => {
+    renderControl({ variant: "missing", canCorrect: false });
+    const clockIn = screen.getByLabelText("Corrected clock-in time") as HTMLInputElement;
+    assert.equal(clockIn.disabled, true);
+    const btn = screen.getByText("Save Worked Time") as HTMLButtonElement;
+    assert.equal(btn.getAttribute("aria-disabled"), "true");
+    await user().click(btn);
+    assert.equal(calls.length, 0);
+  });
+
+  test("a server rejection shows the server's message and never calls onSaved", async () => {
+    const { saved } = renderControl({ variant: "missing" });
+    const u = user();
+    await setTime(u, screen.getByLabelText("Corrected clock-in time"), "09:00");
+    await setTime(u, screen.getByLabelText("Corrected clock-out time"), "11:30");
+    await u.type(screen.getByLabelText("Correction reason"), "test");
+    responses.push(json(404, { error: "Employee is not assigned to this appointment." }));
+    await u.click(screen.getByText("Save Worked Time"));
+    assert.deepEqual(saved, []);
+    assert.equal(screen.getByText("Employee is not assigned to this appointment.").tagName, "DIV");
   });
 });

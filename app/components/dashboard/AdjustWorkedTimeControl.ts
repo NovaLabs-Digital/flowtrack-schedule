@@ -1,55 +1,76 @@
 "use client";
 
-// Owner-only "Adjust Worked Time" correction control -- payroll fix for the
-// case where automatic Job Tracking is wrong (e.g. an employee forgot to
-// clock out). A plain .ts file using React.createElement, not JSX, for the
+// Owner-only worked-time entry/correction control -- the SINGLE
+// implementation for every owner-facing appointment_employee_hours write:
+// a first-time entry when Job Tracking never ran at all (`variant:
+// "missing"`, replacing the old standalone decimal "Hours Worked" form that
+// used to live in DispatchPanel's now-removed EmployeeHoursSection), and a
+// correction/review of an already-tracked duration (`variant: "correction"`,
+// the default). A plain .ts file using React.createElement, not JSX, for the
 // same structural reason CapabilityGatedButton.ts/EmployeeJobActionButton.ts
 // are: Node's built-in test runner cannot load a .tsx file at all, and this
 // is exactly the kind of control that needs real rendered click/keyboard
 // interaction proof (Clock-in/Clock-out/Reason entry, Save, Cancel, error
 // states) rather than source inspection.
 //
-// This is deliberately separate from DispatchPanel's own EmployeeHoursSection
-// (the pre-existing "no worked-hours source yet" entry form): that form's
-// job is unchanged by this feature. This control is only ever shown once a
-// worked-hours value already exists (tracked or previously manually
-// entered) -- it is the CORRECTION/REVIEW path, not the first-entry path.
+// Unify Owner Worked-Time Correction UX: there used to be two different
+// owner-facing entry methods -- this Clock-in/Clock-out/Reason control for
+// correcting/reviewing an existing tracked duration, and a separate
+// "Hours Worked" decimal-number form (EmployeeHoursSection) for an employee
+// who never tracked at all. The owner had to calculate decimal hours by hand
+// for the latter. `variant: "missing"` closes that gap: the exact same
+// Clock-in/Clock-out/Reason form and computeCorrectedHours math now cover
+// BOTH cases, so there is only ever one correction implementation in this
+// codebase, never two that could drift apart.
 //
-// Two distinct owner actions, both writing the SAME appointment_employee_hours
+// Three distinct owner actions, all writing the SAME appointment_employee_hours
 // row shape (hours_worked + note -- no new column, no API change):
 //
-//   - "Correct Time" (mode "correct"): the tracked duration is WRONG. The
-//     owner corrects the WORKING INTERVAL (Clock-in / Clock-out), not a
+//   - "Correct Time" / the missing-tracking form (mode "correct"): the
+//     tracked duration is WRONG, or there is no tracked duration at all yet.
+//     The owner enters the WORKING INTERVAL (Clock-in / Clock-out), not a
 //     duration directly -- SFT computes the payable duration from the two
-//     times. Both fields default to the ORIGINAL tracked actual_started_at/
+//     times, so the owner never calculates decimal/total hours by hand.
+//     Both fields default to the ORIGINAL tracked actual_started_at/
 //     actual_completed_at (converted to the workspace's local wall-clock
-//     time), when there is one, so the owner is nudging a real interval
-//     rather than reconstructing it from scratch. The two corrected clock
-//     times themselves are NOT persisted anywhere -- see
+//     time), when there is one -- blank when there is none (variant
+//     "missing" with nothing recorded at all) -- so the owner is nudging a
+//     real interval rather than reconstructing it from scratch whenever
+//     partial data exists (e.g. clocked in but forgot to clock out). The
+//     two entered clock times themselves are NOT persisted anywhere -- see
 //     computeCorrectedHours' own doc comment below for why -- only the
 //     computed duration and the reason are sent.
-//   - "Keep Time As Is" (mode "keep"): the tracked duration is CORRECT (e.g.
-//     the job legitimately ran long) -- the owner is confirming it, not
-//     changing it. Only a reason is asked for; the duration sent is exactly
-//     the current tracked duration (see computeKeepAsIsHours below), so
-//     Weekly Worked Hours is unaffected. This is what turns "Needs Review"
-//     into "Reviewed by owner" without pretending a correction happened.
+//   - "Keep Time As Is" (mode "keep", variant "correction" only -- there is
+//     nothing tracked yet to confirm in variant "missing"): the tracked
+//     duration is CORRECT (e.g. the job legitimately ran long) -- the owner
+//     is confirming it, not changing it. Only a reason is asked for; the
+//     duration sent is exactly the current tracked duration (see
+//     computeKeepAsIsHours below), so Weekly Worked Hours is unaffected.
+//     This is what turns "Needs Review" into "Reviewed by owner" without
+//     pretending a correction happened.
 //
-// "Correct Time" / "Keep Time As Is" are only offered as a pair when this
-// employee's current worked time is flagged (needsReview) -- otherwise this
-// renders the original single "Adjust Worked Time" button (opens the
-// Correct Time form directly), unchanged from before Keep Time As Is
-// existed. Either action clears "Needs Review" the moment it saves, because
-// needsWorkedTimeReview (lib/payroll.ts) treats the mere EXISTENCE of an
-// appointment_employee_hours row as "already reviewed by the owner",
-// regardless of which action produced it or what value it holds.
+// variant "correction" (default): "Correct Time" / "Keep Time As Is" are
+// only offered as a pair when this employee's current worked time is
+// flagged (needsReview) -- otherwise this renders the original single
+// "Adjust Worked Time" button (opens the Correct Time form directly).
+// variant "missing": there is no worked-hours source at all yet, so the
+// Clock-in/Clock-out/Reason form is shown immediately (no collapsed button,
+// no Keep Time As Is, no Cancel -- there is nothing to collapse back to),
+// labeled "Save Worked Time".
+//
+// Either "Correct Time"/missing-entry action or "Keep Time As Is" clears
+// "Needs Review" the moment it saves, because needsWorkedTimeReview
+// (lib/payroll.ts) treats the mere EXISTENCE of an appointment_employee_hours
+// row as "already reviewed by the owner", regardless of which action
+// produced it or what value it holds.
 //
 // Posts to the existing /api/appointments/employee-hours route
-// (save_employee_hours, migrations/030 + 031) -- the same endpoint the
-// missing-hours form already used. The only behavioral difference from a
-// first-time manual entry is that this may now succeed even when Job
-// Tracking is already complete, which the database function allows
-// specifically because that route is already owner-only
+// (save_employee_hours, migrations/030 + 031) -- the exact same endpoint and
+// payload shape (appointment_id, employee_id, hours_worked, note) regardless
+// of variant. The only behavioral difference a correction (as opposed to a
+// first-time entry) has at the database level is that it may now succeed
+// even when Job Tracking is already complete, which the database function
+// allows specifically because that route is already owner-only
 // (requireOwner) -- see migrations/031's header. Nothing here ever touches
 // appointment_employees.actual_started_at/actual_completed_at; only the
 // server route below can write appointment_employee_hours at all.
@@ -69,10 +90,9 @@ const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account
 export type AdjustWorkedTimeControlProps = {
   appointmentId: string;
   employeeId: string;
-  // The owner capability gate (canUseJobTracking) -- identical to the one
-  // DispatchPanel's own EmployeeHoursSection already uses for the same
-  // server route. The server-side gate remains the sole security boundary;
-  // this only decides whether the client even attempts the request.
+  // The owner capability gate (canUseJobTracking). The server-side gate
+  // remains the sole security boundary; this only decides whether the
+  // client even attempts the request.
   canCorrect: boolean;
   onSaved: (entry: EmployeeHours) => void;
   // The workspace's own resolved timezone -- Clock-in/Clock-out are entered
@@ -99,8 +119,17 @@ export type AdjustWorkedTimeControlProps = {
   // (the default) renders the original single "Adjust Worked Time" button.
   // True additionally offers "Keep Time As Is" alongside "Correct Time", so
   // the owner can confirm a legitimately long/short job instead of having
-  // to pretend it's a correction.
+  // to pretend it's a correction. Ignored when variant is "missing" (there
+  // is nothing tracked yet to be "flagged").
   needsReview?: boolean;
+  // "correction" (the default): the normal tracked-time correction/review
+  // flow described above. "missing": there is no worked-hours source at all
+  // yet for this employee on this appointment (Job Tracking was never
+  // completed and no owner entry exists) -- the form opens immediately
+  // (Clock-in/Clock-out/Reason, "Save Worked Time"), replacing what used to
+  // be a separate decimal "Hours Worked" form. Both variants send the exact
+  // same request shape to the exact same route.
+  variant?: "correction" | "missing";
 };
 
 function field(label: string, input: ReactNode) {
@@ -187,20 +216,26 @@ export default function AdjustWorkedTimeControl({
   initialStartedAt,
   initialCompletedAt,
   needsReview = false,
+  variant = "correction",
 }: AdjustWorkedTimeControlProps) {
-  // Self-contained (per DispatchPanel's own EmployeeHoursSection precedent
-  // right above in this same file's history) rather than a shared/global
-  // notice -- this control can appear more than once at a time (one per
-  // assigned employee), so each instance renders and points at its own
-  // notice element instead of depending on some other component instance
-  // happening to be mounted.
+  const isMissing = variant === "missing";
+  // Self-contained (per DispatchPanel's now-removed EmployeeHoursSection
+  // precedent) rather than a shared/global notice -- this control can appear
+  // more than once at a time (one per assigned employee), so each instance
+  // renders and points at its own notice element instead of depending on
+  // some other component instance happening to be mounted.
   const noticeId = `adjust-worked-time-restricted-${appointmentId}-${employeeId}`;
   const initialClockIn = initialStartedAt ? zonedTimeValue(initialStartedAt, timezone) : "";
   const initialClockOut = initialCompletedAt ? zonedTimeValue(initialCompletedAt, timezone) : "";
-  // "closed" -- collapsed, showing only the button(s). "correct" -- the
-  // Clock-in/Clock-out/Reason form (the tracked time is wrong). "keep" --
-  // the Reason-only form (the tracked time is right, confirm it as-is).
-  const [mode, setMode] = useState<"closed" | "correct" | "keep">("closed");
+  // "closed" -- collapsed, showing only the button(s); unreachable for
+  // variant "missing", which starts (and stays) in "correct" -- there is no
+  // collapsed state to show, since there is nothing to collapse back to
+  // (see the missing-variant Cancel-button note further below). "correct"
+  // -- the Clock-in/Clock-out/Reason form (the tracked time is wrong, or
+  // there simply isn't one yet). "keep" -- the Reason-only form (the
+  // tracked time is right, confirm it as-is; never reachable in variant
+  // "missing").
+  const [mode, setMode] = useState<"closed" | "correct" | "keep">(isMissing ? "correct" : "closed");
   const [clockIn, setClockIn] = useState(initialClockIn);
   const [clockOut, setClockOut] = useState(initialClockOut);
   const [reason, setReason] = useState("");
@@ -241,6 +276,8 @@ export default function AdjustWorkedTimeControl({
       setError(
         mode === "keep"
           ? "A reason is required to confirm this time (e.g. used new equipment, job legitimately took longer)."
+          : isMissing
+          ? "A reason is required (e.g. forgot to clock in/out)."
           : "A reason is required (e.g. forgot to clock out)."
       );
       return;
@@ -270,7 +307,13 @@ export default function AdjustWorkedTimeControl({
         return;
       }
       onSaved(data.entry);
-      setMode("closed");
+      // Variant "missing" has no "closed" state to return to (see the mode
+      // useState init above) -- the parent normally swaps this whole branch
+      // out for the tracked/correction one on its next render anyway (this
+      // employee no longer has missing hours once saved), but resetting
+      // fields here keeps this instance's own state correct in the
+      // meantime, rather than falling into an undefined "closed" render.
+      if (!isMissing) setMode("closed");
       reset();
     } catch {
       setError("Network error.");
@@ -423,7 +466,7 @@ export default function AdjustWorkedTimeControl({
         type: "text",
         value: reason,
         onChange: (e: React.ChangeEvent<HTMLInputElement>) => setReason(e.target.value),
-        placeholder: "e.g. forgot to clock out",
+        placeholder: isMissing ? "e.g. forgot to clock in/out" : "e.g. forgot to clock out",
         disabled: !canCorrect,
         "aria-label": "Correction reason",
         className: "flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50",
@@ -443,18 +486,25 @@ export default function AdjustWorkedTimeControl({
           onClick: save,
           className: "rounded-lg bg-slate-900 px-3 py-1 text-[11px] font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors",
         },
-        saving ? "Saving..." : "Save Correction"
+        saving ? "Saving..." : isMissing ? "Save Worked Time" : "Save Correction"
       ),
-      createElement(
-        "button",
-        {
-          type: "button",
-          onClick: cancel,
-          disabled: saving,
-          className: "rounded-lg border border-slate-300 px-3 py-1 text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-50",
-        },
-        "Cancel"
-      )
+      // No Cancel button for variant "missing" -- unlike a correction (which
+      // collapses back to its own trigger button), there is no closed state
+      // to return to: this form IS the whole control for a not-yet-tracked
+      // employee, the direct replacement for the old always-visible
+      // "Hours Worked" form, which never had a Cancel button either.
+      isMissing
+        ? null
+        : createElement(
+            "button",
+            {
+              type: "button",
+              onClick: cancel,
+              disabled: saving,
+              className: "rounded-lg border border-slate-300 px-3 py-1 text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-50",
+            },
+            "Cancel"
+          )
     )
   );
 }

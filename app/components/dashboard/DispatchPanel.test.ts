@@ -13,7 +13,12 @@
 // -- is already proven exhaustively, for the exact same component this file
 // wires in, by CapabilityGatedButton.test.ts's 20 real rendered-DOM tests.
 // That proof is not re-executed here; it is cited as already covering the
-// shared primitive this component's "Save Worked Hours" control now uses.
+// shared primitive AdjustWorkedTimeControl (the ONLY worked-time entry/
+// correction control this file now renders, in either variant) uses.
+// AdjustWorkedTimeControl's own real rendered-interaction tests live in
+// AdjustWorkedTimeControl.test.ts, including its "missing" variant (the
+// direct replacement for this file's old, now-removed, standalone
+// "Hours Worked" decimal-entry form/EmployeeHoursSection).
 process.env.SUPABASE_URL = "http://localhost:54321";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 
@@ -25,7 +30,25 @@ import { fileURLToPath } from "node:url";
 const source = fs.readFileSync(fileURLToPath(new URL("./DispatchPanel.tsx", import.meta.url)), "utf8");
 const shellSource = fs.readFileSync(fileURLToPath(new URL("./DashboardShell.tsx", import.meta.url)), "utf8");
 
-const APPROVED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
+// The tracked/adjusted (default variant) and missing-hours (variant
+// "missing") AdjustWorkedTimeControl call sites -- module-scoped so both the
+// "Owner Worked-Time Correction + Needs Review Alert" describe block and the
+// "Unify Owner Worked-Time Correction UX" describe block below it can use
+// them without redeclaring.
+function trackedBlock(): string {
+  const start = source.indexOf("if (assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)) {");
+  const end = source.indexOf("if (missingHoursEmployeeIds.includes(emp.id)) {", start);
+  assert.notEqual(start, -1);
+  return source.slice(start, end);
+}
+
+function missingBlock(): string {
+  const start = source.indexOf("if (missingHoursEmployeeIds.includes(emp.id)) {");
+  assert.notEqual(start, -1);
+  const end = source.indexOf("// Phase 5.7D-R19: neither tracked/manually-entered nor", start);
+  assert.notEqual(end, -1);
+  return source.slice(start, end);
+}
 
 describe("prop wiring", () => {
   test("DispatchPanel's own Props includes canUseJobTracking: boolean", () => {
@@ -34,22 +57,6 @@ describe("prop wiring", () => {
     const params = source.slice(fnStart, paramsEnd);
     assert.match(params, /canUseJobTracking:\s*boolean;/);
     assert.match(params, /^\s*canUseJobTracking,$/m);
-  });
-
-  test("EmployeeHoursSection's own Props includes canUseJobTracking: boolean", () => {
-    const fnStart = source.indexOf("function EmployeeHoursSection({");
-    const paramsEnd = source.indexOf("}) {", fnStart);
-    const params = source.slice(fnStart, paramsEnd);
-    assert.match(params, /canUseJobTracking:\s*boolean;/);
-    assert.match(params, /^\s*appointment, employee, assignment, onSaved, canUseJobTracking,$/m);
-  });
-
-  test("DispatchPanel passes its own canUseJobTracking prop straight through to EmployeeHoursSection -- no re-derivation, no new resolution path", () => {
-    const idx = source.indexOf("<EmployeeHoursSection");
-    assert.notEqual(idx, -1);
-    const closeIdx = source.indexOf("/>", idx);
-    const jsx = source.slice(idx, closeIdx);
-    assert.match(jsx, /canUseJobTracking=\{canUseJobTracking\}/);
   });
 
   test("DashboardShell passes entitlement.canUseJobTracking (not canMutateOperationalData) to DispatchPanel", () => {
@@ -73,120 +80,13 @@ describe("prop wiring", () => {
   });
 });
 
-describe("save() guard", () => {
-  test("save guards on canUseJobTracking before validation and before the fetch call", () => {
-    const fnStart = source.indexOf("async function save()");
-    assert.notEqual(fnStart, -1);
-    const guardIdx = source.indexOf("if (!canUseJobTracking) return;", fnStart);
-    const validationIdx = source.indexOf("const hoursNum = Number(hours);", fnStart);
-    const fetchIdx = source.indexOf('fetch("/api/appointments/employee-hours"', fnStart);
-    assert.notEqual(guardIdx, -1, "save must contain the capability guard");
-    assert.ok(guardIdx < validationIdx, "guard must run before hours/reason validation");
-    assert.ok(guardIdx < fetchIdx, "guard must run before the fetch call");
-  });
-
-  test("the guard is the first statement inside save() (defense-in-depth, independent of the button's own disabled state)", () => {
-    const fnStart = source.indexOf("async function save()");
-    const braceIdx = source.indexOf("{", fnStart);
-    const afterBrace = source.slice(braceIdx + 1, braceIdx + 400);
-    const firstNonCommentNonBlank = afterBrace.split("\n").map((l) => l.trim()).find((l) => l.length > 0 && !l.startsWith("//"));
-    assert.equal(firstNonCommentNonBlank, "if (!canUseJobTracking) return;");
-  });
-});
-
-describe("Save Worked Hours control", () => {
-  test("the control is a CapabilityGatedButton, not a plain <button>", () => {
-    assert.ok(source.includes("import CapabilityGatedButton from"));
-    assert.match(source, /<CapabilityGatedButton[\s\S]{0,300}onClick=\{save\}/);
-  });
-
-  test("allowed is wired to canUseJobTracking", () => {
-    const idx = source.indexOf("onClick={save}");
-    const block = source.slice(Math.max(0, idx - 200), idx + 50);
-    assert.match(block, /allowed=\{canUseJobTracking\}/);
-  });
-
-  test("existing loading-protection disabled={saving} is preserved unchanged", () => {
-    const idx = source.indexOf("onClick={save}");
-    const block = source.slice(idx, idx + 100);
-    assert.match(block, /disabled=\{saving\}/);
-  });
-
-  test("ariaDescribedBy points at this control's own notice id", () => {
-    const idx = source.indexOf("onClick={save}");
-    const block = source.slice(idx, idx + 150);
-    assert.match(block, /ariaDescribedBy=\{RESTRICTED_NOTICE_ID\}/);
-  });
-
-  test("the button's className and loading label text are unchanged", () => {
-    assert.ok(source.includes('className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"'));
-    assert.ok(source.includes('{saving ? "Saving..." : "Save Worked Hours"}'));
-  });
-});
-
-describe("the form cannot be entered/edited while restricted (no separate 'entry' step exists here -- the form appears automatically whenever hours are missing)", () => {
-  test("the Hours Worked input is disabled when restricted, preventing any typed local state change that would simulate beginning the mutation", () => {
-    const idx = source.indexOf('placeholder="2.5"');
-    assert.notEqual(idx, -1);
-    const block = source.slice(idx, idx + 150);
-    assert.match(block, /disabled=\{!canUseJobTracking\}/);
-  });
-
-  test("the Reason input is disabled when restricted", () => {
-    const idx = source.indexOf('placeholder="e.g. forgot to clock in/out"');
-    assert.notEqual(idx, -1);
-    const block = source.slice(idx, idx + 150);
-    assert.match(block, /disabled=\{!canUseJobTracking\}/);
-  });
-
-  test("both inputs preserve their onChange local-state handlers unchanged -- disabling only removes interactivity, it does not remove the field or its wiring", () => {
-    assert.ok(source.includes("onChange={(e) => setHours(e.target.value)}"));
-    assert.ok(source.includes("onChange={(e) => setReason(e.target.value)}"));
-  });
-});
-
-describe("notice block", () => {
-  test("exact approved wording constant", () => {
-    assert.ok(source.includes(`const RESTRICTED_WORDING = "${APPROVED_WORDING}";`));
-  });
-
-  test("notice only renders when restricted (negated condition)", () => {
-    assert.match(source, /\{!canUseJobTracking && \(/);
-  });
-
-  test("notice id's declared value is unique to this component", () => {
-    const declared = source.match(/const RESTRICTED_NOTICE_ID = "([^"]+)";/)?.[1];
-    assert.equal(declared, "employee-hours-restricted-notice");
-    for (const other of [
-      "appointment-modal-restricted-notice",
-      "appointment-detail-restricted-notice",
-      "move-confirm-dialog-restricted-notice",
-      "topbar-restricted-notice",
-      "mobile-dashboard-restricted-notice",
-      "mobile-appointment-detail-restricted-notice",
-      "client-panel-restricted-notice",
-      "archived-clients-panel-restricted-notice",
-      "company-info-restricted-notice",
-      "company-automation-restricted-notice",
-      "services-panel-restricted-notice",
-      "staff-panel-restricted-notice",
-    ]) {
-      assert.notEqual(declared, other);
-    }
-  });
-
-  test("only one notice block exists in this file, and since EmployeeHoursSection is only ever mounted for one selected appointment at a time, only one can ever be on screen at once", () => {
-    const matches = source.match(/id=\{RESTRICTED_NOTICE_ID\}/g) ?? [];
-    assert.equal(matches.length, 1);
-  });
-});
-
 describe("read-only actions and navigation remain unconditional", () => {
   test("the already-tracked (Job Tracking complete / owner-adjusted) display block: the VALUE/label display itself is unconditional, and canUseJobTracking gates only the new correction control", () => {
     // Phase 5.7D-R18: per-employee -- one block per assigned employee who
     // already has worked hours, inside the selectedApptAssignments.map()
-    // loop, before the manual-entry (EmployeeHoursSection) branch for
-    // employees still missing hours. Owner Worked-Time Correction: this
+    // loop, before the missing-hours (AdjustWorkedTimeControl variant
+    // "missing") branch for employees still missing hours. Owner
+    // Worked-Time Correction: this
     // block is no longer purely read-only -- it now also renders
     // AdjustWorkedTimeControl, a real mutation control, so canUseJobTracking
     // legitimately appears here now (passed straight through, not
@@ -356,7 +256,7 @@ describe("Phase 5.7D-R19: Employee Worked Hours -- 'Not tracked yet' + cancelled
     const block = source.slice(blockStart, blockEnd);
     assert.ok(!block.includes("appointment_employee_hours"));
     assert.ok(!block.includes("actual_started_at:"));
-    assert.ok(!block.includes("EmployeeHoursSection"), "must not offer a manual-entry override for a not-yet-due assignment");
+    assert.ok(!block.includes("AdjustWorkedTimeControl"), "must not offer a manual-entry/correction control for a not-yet-due assignment");
   });
 });
 
@@ -405,13 +305,6 @@ describe("Phase 5E: mondayOfCurrentWeek/startOfBusinessDay (Weekly Worked Hours 
 });
 
 describe("Owner Worked-Time Correction + Needs Review Alert", () => {
-  function trackedBlock(): string {
-    const start = source.indexOf("if (assignmentHasWorkedHours(selectedAppt.id, emp.id, assignment, employeeHours)) {");
-    const end = source.indexOf("if (missingHoursEmployeeIds.includes(emp.id)) {", start);
-    assert.notEqual(start, -1);
-    return source.slice(start, end);
-  }
-
   test("scheduledMinutes/findManualHoursEntry/needsWorkedTimeReview/trackedMinutes/isOwnerReviewConfirmation are imported from lib/payroll (reused, not re-derived)", () => {
     const payrollImportEnd = source.indexOf('} from "@/lib/payroll";');
     assert.notEqual(payrollImportEnd, -1);
@@ -422,10 +315,11 @@ describe("Owner Worked-Time Correction + Needs Review Alert", () => {
     assert.ok(!source.includes("function scheduledMinutes("), "the local duplicate was removed, not merely shadowed");
   });
 
-  test("AdjustWorkedTimeControl is imported and used exactly once, inside the tracked/adjusted display block", () => {
+  test("AdjustWorkedTimeControl is imported and used exactly twice -- the tracked/adjusted display block (default variant) and the missing-hours block (variant \"missing\") -- never a third, separate implementation", () => {
     assert.match(source, /import AdjustWorkedTimeControl from "@\/app\/components\/dashboard\/AdjustWorkedTimeControl";/);
-    assert.equal((source.match(/<AdjustWorkedTimeControl/g) ?? []).length, 1);
+    assert.equal((source.match(/<AdjustWorkedTimeControl/g) ?? []).length, 2);
     assert.ok(trackedBlock().includes("<AdjustWorkedTimeControl"));
+    assert.ok(missingBlock().includes("<AdjustWorkedTimeControl"));
   });
 
   test("the correction control receives this exact appointment/employee and DispatchPanel's own onHoursSaved straight through", () => {
@@ -499,5 +393,55 @@ describe("Owner Worked-Time Correction + Needs Review Alert", () => {
     assert.match(payrollSource, /review\{r\.reviewCount !== 1 \? "s" : ""\}/);
     // hoursWorked is rendered from r.hoursWorked directly -- the review badge is additive text, not a substituted value
     assert.match(payrollSource, /\{r\.hoursWorked\.toFixed\(2\)\} hrs/);
+  });
+});
+
+describe("Unify Owner Worked-Time Correction UX: the old 'Hours Worked' manual-entry form is gone", () => {
+  test("EmployeeHoursSection no longer exists anywhere in this file -- no function, no JSX usage", () => {
+    assert.ok(!source.includes("function EmployeeHoursSection"));
+    assert.ok(!source.includes("<EmployeeHoursSection"));
+  });
+
+  test("no decimal 'Hours Worked' numeric input, its old placeholder, or its old Save button label remain in this file", () => {
+    assert.ok(!source.includes('placeholder="2.5"'));
+    assert.ok(!source.includes('step="0.25"'));
+    assert.ok(!source.includes(">Hours Worked<"));
+    assert.ok(!source.includes("Save Worked Hours"));
+    assert.ok(!source.includes("setHours(e.target.value)"));
+  });
+
+  test("the old EmployeeHoursSection-only restricted notice id/wording constants are gone -- AdjustWorkedTimeControl owns its own notice now, so this file has none of its own left to declare", () => {
+    assert.ok(!source.includes("RESTRICTED_NOTICE_ID"));
+    assert.ok(!source.includes("RESTRICTED_WORDING"));
+    assert.ok(!source.includes("employee-hours-restricted-notice"));
+  });
+
+  test("CapabilityGatedButton is no longer imported here -- it was only ever used by the now-removed EmployeeHoursSection's own Save button (AdjustWorkedTimeControl renders its own, from its own module)", () => {
+    assert.ok(!source.includes("CapabilityGatedButton"));
+  });
+
+  test("the missing-hours block renders AdjustWorkedTimeControl with variant=\"missing\", wired to this exact appointment/employee, canUseJobTracking, onHoursSaved, timezone, and this assignment's original tracked timestamps -- the identical prop shape the tracked/correction block uses, plus variant", () => {
+    const block = missingBlock();
+    const idx = block.indexOf("<AdjustWorkedTimeControl");
+    const invocation = block.slice(idx, block.indexOf("/>", idx) + 2);
+    assert.match(invocation, /variant="missing"/);
+    assert.match(invocation, /appointmentId=\{selectedAppt\.id\}/);
+    assert.match(invocation, /employeeId=\{emp\.id\}/);
+    assert.match(invocation, /canCorrect=\{canUseJobTracking\}/);
+    assert.match(invocation, /onSaved=\{onHoursSaved\}/);
+    assert.match(invocation, /timezone=\{timezone\}/);
+    assert.match(invocation, /anchorDate=\{zonedDateValue\(selectedAppt\.scheduled_for, timezone\)\}/);
+    assert.match(invocation, /initialStartedAt=\{assignment\.actual_started_at\}/);
+    assert.match(invocation, /initialCompletedAt=\{assignment\.actual_completed_at\}/);
+    // never passed here -- there is nothing tracked yet to be "flagged"
+    assert.ok(!invocation.includes("needsReview"));
+  });
+
+  test("the missing-hours block still shows the employee name, Scheduled Time, and the same amber Job-Tracking warning text as before -- only the entry FORM itself changed", () => {
+    const block = missingBlock();
+    assert.match(block, /Scheduled Time: \{formatDuration\(scheduledMinutes\(selectedAppt\)\)\}/);
+    assert.match(block, /hasInvalidJobTrackingDuration\(assignment\)/);
+    assert.match(block, /Clock-in and clock-out produced no valid worked time\./);
+    assert.match(block, /Employee did not complete Job Tracking\./);
   });
 });

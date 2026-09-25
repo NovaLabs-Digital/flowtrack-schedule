@@ -20,7 +20,6 @@ import {
   trackedMinutes,
   isOwnerReviewConfirmation,
 } from "@/lib/payroll";
-import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import AdjustWorkedTimeControl from "@/app/components/dashboard/AdjustWorkedTimeControl";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 
@@ -49,16 +48,6 @@ function addDays(d: Date, n: number) {
   x.setDate(x.getDate() + n);
   return x;
 }
-
-// Phase 5.5E-E1G: this control's own restricted notice, distinct from every
-// other component's. Gated on canUseJobTracking, not canMutateOperationalData
-// -- this manual-hours correction is the owner-invoked counterpart to
-// employee Job Tracking (the server route it reaches already enforces the
-// same capability), not a general operational-data edit. Employee Start/
-// Complete Job actions (EmployeeJobActionButton.ts) are a completely
-// separate component/session/policy and are untouched by this file.
-const RESTRICTED_NOTICE_ID = "employee-hours-restricted-notice";
-const RESTRICTED_WORDING = "Changes are temporarily unavailable. See the account notice for details.";
 
 // `tz` is the workspace's own resolved timezone -- required, no default.
 function formatDateTime(iso: string, tz: string) {
@@ -97,127 +86,18 @@ function formatDuration(mins: number) {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-// Only ever rendered by DispatchPanel when needsWorkedHoursAttention() is
-// true for this appointment (past, not cancelled, no Job Tracking, no saved
-// manual entry yet) — so this form is always the missing-hours exception,
-// never a way to edit an appointment's tracked duration.
-function EmployeeHoursSection({
-  appointment, employee, assignment, onSaved, canUseJobTracking,
-}: {
-  appointment: Appointment;
-  employee: Employee;
-  // Phase 5.7D-R18: this employee's own assignment row -- the source of
-  // the invalid-duration check below, never the appointment-level (legacy,
-  // frozen as of this phase) timestamps.
-  assignment: Pick<AppointmentEmployeeAssignment, "actual_started_at" | "actual_completed_at">;
-  onSaved: (entry: EmployeeHours) => void;
-  canUseJobTracking: boolean;
-}) {
-  const [hours, setHours] = useState("");
-  const [reason, setReason] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
-
-  async function save() {
-    // Defense-in-depth: the server route this reaches already enforces this
-    // same capability before mutating anything -- this guard only prevents
-    // a restricted owner's client from ever issuing the request at all.
-    if (!canUseJobTracking) return;
-    const hoursNum = Number(hours);
-    if (!hours.trim() || !Number.isFinite(hoursNum) || hoursNum <= 0) {
-      setMessage({ type: "error", text: "Enter hours worked (e.g. 2.5)." });
-      return;
-    }
-    if (!reason.trim()) {
-      setMessage({ type: "error", text: "Enter a reason (e.g. forgot to clock in/out)." });
-      return;
-    }
-    setSaving(true);
-    setMessage(null);
-    try {
-      const res = await fetch("/api/appointments/employee-hours", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          appointment_id: appointment.id,
-          employee_id: employee.id,
-          hours_worked: hoursNum,
-          note: reason.trim(),
-        }),
-      });
-      const data: { entry?: EmployeeHours; error?: string } = await res.json().catch(() => ({}));
-      if (!res.ok || !data.entry) { setMessage({ type: "error", text: data?.error || "Save failed." }); return; }
-      setMessage({ type: "success", text: "Hours saved." });
-      onSaved(data.entry);
-    } catch {
-      setMessage({ type: "error", text: "Network error." });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
-      <div className="flex items-center justify-between text-xs">
-        <span className="font-medium text-slate-800">{employee.name}</span>
-        <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(appointment))}</span>
-      </div>
-
-      <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
-        &#9888; {hasInvalidJobTrackingDuration(assignment)
-          ? "Clock-in and clock-out produced no valid worked time."
-          : "Employee did not complete Job Tracking."}
-      </div>
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-slate-500 shrink-0">Hours Worked</label>
-        <input
-          type="number"
-          step="0.25"
-          min="0"
-          value={hours}
-          onChange={(e) => setHours(e.target.value)}
-          placeholder="2.5"
-          disabled={!canUseJobTracking}
-          className="w-20 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-        />
-      </div>
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-slate-500 shrink-0">Reason</label>
-        <input
-          type="text"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder="e.g. forgot to clock in/out"
-          disabled={!canUseJobTracking}
-          className="flex-1 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-        />
-      </div>
-      {message && (
-        <div className={[
-          "text-[11px] px-2 py-1 rounded",
-          message.type === "success" ? "text-emerald-700 bg-emerald-50" : "text-rose-700 bg-rose-50",
-        ].join(" ")}>
-          {message.text}
-        </div>
-      )}
-      {!canUseJobTracking && (
-        <div id={RESTRICTED_NOTICE_ID} className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-[11px] text-slate-600">
-          {RESTRICTED_WORDING}
-        </div>
-      )}
-      <CapabilityGatedButton
-        type="button"
-        allowed={canUseJobTracking}
-        onClick={save}
-        disabled={saving}
-        ariaDescribedBy={RESTRICTED_NOTICE_ID}
-        className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
-      >
-        {saving ? "Saving..." : "Save Worked Hours"}
-      </CapabilityGatedButton>
-    </div>
-  );
-}
+// Unify Owner Worked-Time Correction UX: the old standalone "Hours Worked"
+// decimal-entry form (EmployeeHoursSection) that used to live here -- shown
+// only when needsWorkedHoursAttention() is true for this appointment (past,
+// not cancelled, no Job Tracking, no saved manual entry yet) -- required the
+// owner to calculate decimal/total hours by hand. It is now GONE: the
+// missing-hours branch below (missingHoursEmployeeIds.includes(emp.id))
+// renders AdjustWorkedTimeControl in its "missing" variant instead, the
+// exact same Clock-in/Clock-out/Reason control the tracked/correction branch
+// above already uses -- one implementation for every owner-facing
+// appointment_employee_hours write, never two that could drift apart. See
+// AdjustWorkedTimeControl.ts's own header comment for the full variant
+// design.
 
 export default function DispatchPanel({
   appointments,
@@ -499,15 +379,36 @@ export default function DispatchPanel({
                 );
               }
               if (missingHoursEmployeeIds.includes(emp.id)) {
+                // Job Tracking never produced a usable duration for this
+                // employee (never started, or a sub-minute/invalid gap --
+                // see hasInvalidJobTrackingDuration) and no owner entry
+                // exists yet. Same Clock-in/Clock-out/Reason control as the
+                // tracked-time correction branch above, in its "missing"
+                // variant: form open immediately, "Save Worked Time",
+                // no Keep Time As Is (nothing tracked to confirm).
                 return (
-                  <EmployeeHoursSection
-                    key={assignment.id}
-                    appointment={selectedAppt}
-                    employee={emp}
-                    assignment={assignment}
-                    onSaved={onHoursSaved}
-                    canUseJobTracking={canUseJobTracking}
-                  />
+                  <div key={assignment.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-slate-800">{emp.name}</span>
+                      <span className="text-slate-500">Scheduled Time: {formatDuration(scheduledMinutes(selectedAppt))}</span>
+                    </div>
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">
+                      &#9888; {hasInvalidJobTrackingDuration(assignment)
+                        ? "Clock-in and clock-out produced no valid worked time."
+                        : "Employee did not complete Job Tracking."}
+                    </div>
+                    <AdjustWorkedTimeControl
+                      variant="missing"
+                      appointmentId={selectedAppt.id}
+                      employeeId={emp.id}
+                      canCorrect={canUseJobTracking}
+                      onSaved={onHoursSaved}
+                      timezone={timezone}
+                      anchorDate={zonedDateValue(selectedAppt.scheduled_for, timezone)}
+                      initialStartedAt={assignment.actual_started_at}
+                      initialCompletedAt={assignment.actual_completed_at}
+                    />
+                  </div>
                 );
               }
               // Phase 5.7D-R19: neither tracked/manually-entered nor
