@@ -193,6 +193,9 @@ export default function LandingPage() {
             <Link href="/contact" className="hover:text-slate-700 transition-colors">
               Contact Us
             </Link>
+            <Link href="/learn" className="hover:text-slate-700 transition-colors">
+              Learning Center
+            </Link>
             <span>Powered by Nova Labs Digital</span>
           </div>
         </div>

@@ -166,3 +166,25 @@ describe("app/page.tsx -- footer Contact Us link (replaces the old Support mailt
     assert.ok(!/>\s*Support\s*</.test(footerBlock), "the redundant 'Support' mailto link must be gone from the footer");
   });
 });
+
+describe("Learning Center Phase 1 -- subtle public footer link", () => {
+  test("the footer renders a Learning Center link pointing to /learn, alongside the existing Terms/Privacy/Contact links", () => {
+    const footerStart = source.indexOf("{/* Footer */}");
+    assert.notEqual(footerStart, -1);
+    const footerBlock = source.slice(footerStart);
+    const hrefIdx = footerBlock.indexOf('href="/learn"');
+    assert.notEqual(hrefIdx, -1, "expected a footer link to /learn");
+    assert.ok(footerBlock.slice(hrefIdx, hrefIdx + 100).includes("Learning Center"));
+    // Still exactly one link each to the existing destinations -- this is
+    // additive, not a replacement of anything.
+    assert.match(footerBlock, /href="\/terms"/);
+    assert.match(footerBlock, /href="\/privacy"/);
+    assert.match(footerBlock, /href="\/contact"/);
+  });
+
+  test("the rest of the page (nav, hero, features, pricing, CTA) is untouched by the Learning Center addition", () => {
+    const footerStart = source.indexOf("{/* Footer */}");
+    const beforeFooter = source.slice(0, footerStart);
+    assert.ok(!beforeFooter.includes("/learn"), "the Learning Center link only appears in the footer, nothing else on this page changed");
+  });
+});
