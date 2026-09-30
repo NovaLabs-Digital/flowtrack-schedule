@@ -64,10 +64,10 @@ export default function LandingPage() {
       <section className="max-w-6xl mx-auto px-6 pb-16">
         <div className="rounded-2xl border border-slate-200 shadow-lg overflow-hidden">
           <Image
-            src="/screenshots/sft-schedule-desktop.png"
-            alt="Schedule FlowTrack weekly schedule view, showing appointments, client details, and dispatch status"
-            width={2048}
-            height={970}
+            src="/screenshots/sft-schedule-calendar.png"
+            alt="Schedule FlowTrack weekly schedule view, showing a week of appointments across Monday through Friday"
+            width={1560}
+            height={660}
             className="w-full h-auto"
             priority
           />
@@ -78,15 +78,15 @@ export default function LandingPage() {
       <section className="bg-slate-50 border-y border-slate-100">
         <div className="max-w-6xl mx-auto px-6 py-16">
           <div className="text-center mb-12">
-            <h2 className="text-2xl font-bold text-slate-900">Everything you need to run your schedule</h2>
-            <p className="mt-2 text-sm text-slate-600">No bloat. No learning curve. Just the tools that matter.</p>
+            <h2 className="text-2xl font-bold text-slate-900">Everything your service business needs to stay organized</h2>
+            <p className="mt-2 text-sm text-slate-600">Keep recurring jobs, employees, client details, worked hours, and communication together—without making scheduling complicated.</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {[
               { Icon: Users, title: "Client Management", desc: "Keep every client's details, contact info, and preferences in one place. Never lose track of a customer again." },
               { Icon: Repeat, title: "Recurring Appointments", desc: "Set up weekly, biweekly, or custom recurring jobs. They stay organized on your calendar automatically." },
               { Icon: Clock, title: "Employees & Worked Hours", desc: "See who's working, on what job, and for how long. Track worked hours per employee without spreadsheets." },
-              { Icon: Calendar, title: "Weekly Schedule", desc: "See your whole day or week at a glance. Navigate forward and back with one click." },
+              { Icon: Calendar, title: "Weekly Schedule", desc: "See your whole day or week at a glance, so nothing slips through the cracks." },
               { Icon: NotebookPen, title: "Job Notes & History", desc: "Gate codes, pet info, and preferences attached to each client, with full service history preserved." },
               { Icon: MessageCircle, title: "Customer Communication", desc: "Track SMS, email, and phone preferences per client. Stay in touch without extra tools." },
             ].map((f) => (
@@ -136,7 +136,7 @@ export default function LandingPage() {
           <p className="mt-1 text-sm text-slate-500">{SUBSCRIPTION_TRIAL_DAYS}-day free trial</p>
           <ul className="mt-6 space-y-2.5 text-left text-sm text-slate-700">
             {[
-              "Complete scheduling dashboard",
+              "Complete weekly schedule",
               "Recurring appointments",
               "Client and service management",
               "Projected revenue",
@@ -163,8 +163,8 @@ export default function LandingPage() {
       {/* CTA */}
       <section className="bg-[var(--navy)] text-white">
         <div className="max-w-6xl mx-auto px-6 py-16 text-center">
-          <h2 className="text-2xl font-bold">Ready to simplify your scheduling?</h2>
-          <p className="mt-2 text-sm text-slate-400">Start managing your clients and appointments in minutes.</p>
+          <h2 className="text-2xl font-bold">Ready to run your schedule without the chaos?</h2>
+          <p className="mt-2 text-sm text-slate-400">Set up recurring jobs, add your team, and see your week in one place.</p>
           <div className="mt-6 flex items-center justify-center gap-3">
             <Link
               href="/signup"
