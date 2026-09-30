@@ -34,40 +34,40 @@ export default function LandingPage() {
       </nav>
 
       {/* Hero */}
-      <section className="max-w-6xl mx-auto px-6 pt-20 pb-12 text-center">
-        <div className="inline-block rounded-full bg-blue-50 px-4 py-1.5 text-xs font-medium text-blue-700 mb-6">
+      <section className="max-w-6xl mx-auto px-6 pt-16 pb-8 text-center">
+        <div className="inline-block rounded-full bg-blue-50 px-4 py-1.5 text-xs font-medium text-blue-700 mb-5">
           Built for service businesses
         </div>
-        <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-slate-900 max-w-3xl mx-auto leading-tight">
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 max-w-2xl mx-auto leading-tight">
           Run your service schedule without the chaos
         </h1>
-        <p className="mt-5 text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed">
+        <p className="mt-4 text-base sm:text-lg text-slate-600 max-w-xl mx-auto leading-relaxed">
           Manage recurring appointments, employees, client details, worked hours, and customer communication from one simple schedule.
         </p>
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <Link
             href="/signup"
-            className="rounded-lg bg-[var(--navy)] px-6 py-3 text-sm font-medium text-white hover:bg-[var(--navy-light)] transition-colors shadow-sm"
+            className="rounded-lg bg-[var(--navy)] px-5 py-2.5 text-sm font-medium text-white hover:bg-[var(--navy-light)] transition-colors shadow-sm"
           >
             Start Free Trial
           </Link>
-          <TryDemoButton className="rounded-lg border border-slate-300 px-6 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+          <TryDemoButton className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
             Try Live Demo
           </TryDemoButton>
         </div>
-        <p className="mt-4 text-xs text-slate-500">
+        <p className="mt-3 text-xs text-slate-500">
           {SUBSCRIPTION_TRIAL_DAYS} days free, then {SUBSCRIPTION_PRICE_DISPLAY}/month. Cancel anytime.
         </p>
       </section>
 
       {/* Product screenshot */}
       <section className="max-w-6xl mx-auto px-6 pb-16">
-        <div className="rounded-2xl border border-slate-200 shadow-lg overflow-hidden">
+        <div className="rounded-2xl border border-slate-200 shadow-xl overflow-hidden">
           <Image
-            src="/screenshots/sft-schedule-calendar.png"
-            alt="Schedule FlowTrack weekly schedule view, showing a week of appointments across Monday through Friday"
-            width={1560}
-            height={660}
+            src="/screenshots/sft-dashboard-native.png"
+            alt="Schedule FlowTrack weekly dashboard, showing real appointments, client details, and dispatch status"
+            width={3200}
+            height={1610}
             className="w-full h-auto"
             priority
           />
