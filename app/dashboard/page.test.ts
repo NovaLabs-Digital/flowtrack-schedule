@@ -268,4 +268,16 @@ describe("app/dashboard/page.tsx -- Calendar Paid Indicator: bounded to the alre
     assert.ok(shellBlock);
     assert.ok(shellBlock![0].includes("paidAppointmentIds={paidAppointmentIds}"));
   });
+
+  // Real production rule (Holly Williams, paid Cash, no QuickBooks
+  // invoice): the calendar "$" must still appear whenever paid = true,
+  // regardless of whether an invoice_number was ever recorded. This query
+  // is the only source of paidAppointmentIds, so proving it filters on
+  // paid alone -- never on invoice_number -- is what makes that true.
+  test("the completed_job_billing query filters ONLY on paid = true -- never on invoice_number, so a paid-but-never-invoiced job (e.g. paid Cash) is still included", () => {
+    const idx = source.indexOf('.from("completed_job_billing")');
+    const block = source.slice(idx, idx + 300);
+    assert.match(block, /\.eq\("paid", true\)/);
+    assert.ok(!block.includes("invoice_number"), "must not filter or select on invoice_number at all");
+  });
 });

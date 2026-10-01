@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireCapability } from "@/lib/entitlementServer";
-import { fetchAssignments } from "@/lib/appointmentEmployees";
+import { fetchAssignments, fetchEmployeeHoursForAppointments } from "@/lib/appointmentEmployees";
 import { isCompletedForBilling, normalizeInvoiceNumber, validateBillingState, isValidPaymentMethod } from "@/lib/completedJobBilling";
 
 function json(data: any, status = 200) {
@@ -73,7 +73,13 @@ export async function PATCH(req: Request) {
     if (isTester && !appt.is_demo) return json({ error: "Appointment not found" }, 404);
 
     const assignments = await fetchAssignments(appointment_id, workspaceId);
-    if (!isCompletedForBilling(assignments)) {
+    // employeeHours (appointment_employee_hours): an owner-approved worked-
+    // time correction resolves an otherwise-missing/incomplete Job Tracking
+    // pair for billing purposes -- see isCompletedForBilling's and
+    // isAppointmentBillingEligible's doc comments. Never fabricates or
+    // rewrites assignments' own actual_started_at/actual_completed_at.
+    const employeeHours = await fetchEmployeeHoursForAppointments([appointment_id], workspaceId);
+    if (!isCompletedForBilling(appointment_id, assignments, employeeHours)) {
       return json({ error: "This appointment is not marked completed yet." }, 409);
     }
 

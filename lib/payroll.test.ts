@@ -18,6 +18,7 @@ import {
   scheduledMinutes,
   trackedMinutes,
   isOwnerReviewConfirmation,
+  isAppointmentBillingEligible,
 } from "./payroll.ts";
 import type { Appointment, EmployeeHours, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "./timezone.ts";
@@ -696,6 +697,80 @@ describe("owner override precedence: resolveWorkedMinutes (display) and computeP
     assert.equal(asg.actual_started_at, before.started);
     assert.equal(asg.actual_completed_at, before.completed);
     assert.equal(trackedMinutes(asg), ROXANA_TRACKED_MINUTES, "trackedMinutes still reports the original tracked duration after a correction exists");
+  });
+});
+
+// Real production gap (reported after launch): Holly Williams' Sep 23
+// appointment -- Roxana forgot her phone and never used Start Job/Complete
+// Job, so Job Tracking has no timestamps at all. The owner later entered
+// the worked time manually (3h00m, reason "forgot cell at home") via
+// AdjustWorkedTimeControl.tsx, exactly the owner-override workflow
+// manualEntry/roxanaScenario above already exercise for payroll. Before
+// this fix, lib/completedJobBilling.ts's isCompletedForBilling had no way
+// to see that override at all (it only ever received raw assignments, no
+// employeeHours) -- so a real completed, owner-reviewed job sat forever in
+// "Past jobs needing completion review" even though the owner had already
+// resolved it. isAppointmentBillingEligible is the fix: it reuses
+// assignmentHasWorkedHours' existing owner-override-first precedence
+// (same block above) rather than inventing a third interpretation of
+// worked time.
+describe("isAppointmentBillingEligible -- owner-approved worked-time override resolves missing Job Tracking for billing (Holly/Roxana real-world gap)", () => {
+  function trackedAssignment(overrides: Partial<AppointmentEmployeeAssignment> = {}): AppointmentEmployeeAssignment {
+    return assignment({
+      actual_started_at: new Date(Date.now() - 2 * HOUR_MS).toISOString(),
+      actual_completed_at: new Date(Date.now() - 1 * HOUR_MS).toISOString(),
+      ...overrides,
+    });
+  }
+  function untrackedAssignment(overrides: Partial<AppointmentEmployeeAssignment> = {}): AppointmentEmployeeAssignment {
+    return assignment({ actual_started_at: null, actual_completed_at: null, ...overrides });
+  }
+
+  test("1. tracked start+complete -> billing eligible", () => {
+    const { appt: a, assignment: asg } = roxanaScenario();
+    assert.equal(isAppointmentBillingEligible(a.id, [asg], []), true);
+  });
+
+  test("2. no tracking + owner-approved worked time -> billing eligible (the Holly scenario itself)", () => {
+    const holly = untrackedAssignment({ id: "ae-roxana", appointment_id: "holly-appt", employee_id: "roxana" });
+    const override = manualEntry({ appointment_id: "holly-appt", employee_id: "roxana", hours_worked: 3, note: "forgot cell at home" });
+    assert.equal(isAppointmentBillingEligible("holly-appt", [holly], [override]), true);
+  });
+
+  test("3. no tracking + no owner override -> NOT billing eligible (stays in completion review)", () => {
+    const holly = untrackedAssignment({ id: "ae-roxana", appointment_id: "holly-appt", employee_id: "roxana" });
+    assert.equal(isAppointmentBillingEligible("holly-appt", [holly], []), false);
+  });
+
+  test("4. multi-employee: every employee tracked -> billing eligible", () => {
+    const a1 = trackedAssignment({ id: "ae-1", appointment_id: "appt-multi", employee_id: "emp-1" });
+    const a2 = trackedAssignment({ id: "ae-2", appointment_id: "appt-multi", employee_id: "emp-2" });
+    assert.equal(isAppointmentBillingEligible("appt-multi", [a1, a2], []), true);
+  });
+
+  test("5. multi-employee: one tracked, one resolved only via owner override -> billing eligible", () => {
+    const tracked = trackedAssignment({ id: "ae-1", appointment_id: "appt-multi", employee_id: "emp-1" });
+    const untracked = untrackedAssignment({ id: "ae-2", appointment_id: "appt-multi", employee_id: "emp-2" });
+    const override = manualEntry({ appointment_id: "appt-multi", employee_id: "emp-2", hours_worked: 2 });
+    assert.equal(isAppointmentBillingEligible("appt-multi", [tracked, untracked], [override]), true);
+  });
+
+  test("6. multi-employee: one employee has NEITHER tracking NOR an override -> NOT billing eligible (the safety net holds)", () => {
+    const tracked = trackedAssignment({ id: "ae-1", appointment_id: "appt-multi", employee_id: "emp-1" });
+    const unresolved = untrackedAssignment({ id: "ae-2", appointment_id: "appt-multi", employee_id: "emp-2" });
+    assert.equal(isAppointmentBillingEligible("appt-multi", [tracked, unresolved], []), false);
+  });
+
+  test("7. the owner override is never read back onto, and never fabricates, actual_started_at/actual_completed_at", () => {
+    const holly = untrackedAssignment({ id: "ae-roxana", appointment_id: "holly-appt", employee_id: "roxana" });
+    const override = manualEntry({ appointment_id: "holly-appt", employee_id: "roxana", hours_worked: 3, note: "forgot cell at home" });
+    isAppointmentBillingEligible("holly-appt", [holly], [override]);
+    assert.equal(holly.actual_started_at, null, "must remain null -- Billing eligibility never pretends the employee clocked in");
+    assert.equal(holly.actual_completed_at, null, "must remain null -- Billing eligibility never pretends the employee clocked out");
+  });
+
+  test("zero assignments is never vacuously eligible", () => {
+    assert.equal(isAppointmentBillingEligible("appt-1", [], []), false);
   });
 });
 

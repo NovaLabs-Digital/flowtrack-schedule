@@ -108,6 +108,7 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
       company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [{ data: [COMPLETED_APPT, REVIEW_APPT] }],
       appointment_employees: [{ data: [ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
       completed_job_billing: [{ data: [] }],
       clients: [{ data: CLIENTS }],
     });
@@ -137,6 +138,7 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
       company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [{ data: [COMPLETED_APPT] }],
       appointment_employees: [{ data: [ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
       completed_job_billing: [{ data: [billingRow] }],
       clients: [{ data: CLIENTS }],
     });
@@ -159,6 +161,7 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
     assert.deepEqual(body.completed, []);
     assert.deepEqual(body.reviewNeeded, []);
     assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employees").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointment_employee_hours").length, 0);
     assert.equal(currentFake.calls.filter((c) => c.table === "completed_job_billing").length, 0);
     assert.equal(currentFake.calls.filter((c) => c.table === "clients").length, 0);
   });
@@ -173,6 +176,44 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
     await GET(req());
     const apptCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "is_demo");
     assert.deepEqual(apptCall?.args, ["is_demo", false]);
+  });
+
+  // Real production regression (Holly Williams, Sep 23): an assigned
+  // employee who never used Start Job/Complete Job (no tracking
+  // timestamps at all), whose worked time the owner corrected afterward
+  // via appointment_employee_hours. Must land in `completed`, using the
+  // appointment's existing price, and must NOT appear in `reviewNeeded`.
+  test("an appointment resolved only via an owner-approved worked-time override (no Job Tracking at all) appears in completed, not reviewNeeded", async () => {
+    const hollyAppt = {
+      id: "holly-appt", client_id: "client-holly", service_type: "Regular Cleaning",
+      scheduled_for: "2026-08-12T17:00:00.000Z", scheduled_end: "2026-08-12T20:00:00.000Z",
+      duration_minutes: 180, status: "scheduled", price_cents: 18000,
+    };
+    const untrackedAssignment = {
+      id: "ae-roxana", appointment_id: "holly-appt", employee_id: "roxana",
+      actual_started_at: null, actual_completed_at: null,
+      job_notes: null, created_at: "x", updated_at: "x",
+    };
+    const ownerOverride = {
+      id: "hrs-1", appointment_id: "holly-appt", employee_id: "roxana",
+      hours_worked: 3, note: "forgot cell at home", created_at: "x", updated_at: "x",
+    };
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [hollyAppt] }],
+      appointment_employees: [{ data: [untrackedAssignment] }],
+      appointment_employee_hours: [{ data: [ownerOverride] }],
+      completed_job_billing: [{ data: [] }],
+      clients: [{ data: [{ id: "client-holly", name: "Holly Williams", email: null, phone: null }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+
+    assert.deepEqual(body.completed.map((r: { appointmentId: string }) => r.appointmentId), ["holly-appt"]);
+    assert.equal(body.completed[0].clientName, "Holly Williams");
+    assert.equal(body.completed[0].priceCents, 18000);
+    assert.deepEqual(body.reviewNeeded, []);
   });
 
   test("a tester session scopes to the demo workspace and is_demo=true, with zero subscriptions-table queries", async () => {

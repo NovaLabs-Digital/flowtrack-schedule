@@ -131,6 +131,19 @@ describe("ScheduleGrid -- Calendar Paid Indicator", () => {
     assert.ok(card.textContent?.includes("Priya Chandrasekaran"));
   });
 
+  // Real production rule (Holly Williams, paid Cash, no QuickBooks
+  // invoice): ScheduleGrid never receives invoice_number/payment_method at
+  // all -- only the bare paidAppointmentIds id list (app/dashboard/
+  // page.tsx's own query is `.eq("paid", true)` with no invoice_number
+  // filter). The indicator is therefore structurally incapable of caring
+  // whether an invoice exists; this test just reaffirms that a paid-but-
+  // never-invoiced appointment still shows the "$" exactly like any other
+  // paid one.
+  test("a paid job that was never invoiced (e.g. paid Cash, no QuickBooks invoice) still shows the green \"$\" -- the indicator has no notion of invoice_number at all", () => {
+    renderGrid({ appointments: [appt({ price_cents: 12000 })], paidAppointmentIds: ["appt-1"] });
+    assert.ok(screen.getByTitle("Paid"));
+  });
+
   test("two appointments: only the one actually marked paid shows the indicator -- never both, never neither, by accident", () => {
     renderGrid({
       appointments: [

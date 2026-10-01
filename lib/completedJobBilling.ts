@@ -4,16 +4,35 @@
 // (app/api/billing/completed-jobs/route.ts) and UI component
 // (app/components/dashboard/BillingPanel.tsx) stay thin.
 //
-// This module does NOT invent a new "is this appointment completed"
-// concept. "Completed" is, and remains, exactly what
-// deriveAppointmentTrackingStatus (lib/payroll.ts) already computes from
-// appointment_employees -- the same definition the Dispatch panel's own
-// "Completed" count uses. isCompletedForBilling below is a thin, named
-// wrapper around that existing function so this module's own intent reads
-// clearly at call sites, not a second, divergent definition.
-import type { Appointment, Client, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
-import { deriveAppointmentTrackingStatus, isEligibleForWorkedHoursWarning, toDateInputValue, type TimestampPair } from "@/lib/payroll";
+// This module does NOT invent a third, independent interpretation of
+// worked time. isCompletedForBilling below delegates entirely to
+// lib/payroll.ts's isAppointmentBillingEligible, which reuses the exact
+// same owner-override-first precedence already established for payroll
+// (assignmentHasWorkedHours/resolveWorkedMinutes): an assigned employee
+// counts as resolved when EITHER their Job Tracking Start/Complete pair is
+// valid, OR the owner has saved an appointment_employee_hours correction
+// for them on this appointment -- entered precisely because tracking was
+// missing or wrong (see AdjustWorkedTimeControl.tsx). That correction never
+// fabricates or rewrites the employee's own actual_started_at/
+// actual_completed_at.
+//
+// This is a deliberately different, slightly more permissive rule than
+// deriveAppointmentTrackingStatus's own "completed" (which the Dispatch
+// panel's status pill uses and is entirely UNCHANGED by this module):
+// Dispatch asks "did Job Tracking itself finish," Billing asks "has the
+// owner already resolved this employee's work record, one way or another."
+// A real completed job -- Job-Tracking-complete OR owner-corrected -- must
+// never sit in "Past jobs needing completion review" just because an
+// employee forgot to use Start Job / Complete Job and the owner already
+// fixed it (see isAppointmentBillingEligible's own doc comment for the
+// full reasoning).
+import type { Appointment, Client, AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
+import { isAppointmentBillingEligible, isEligibleForWorkedHoursWarning, toDateInputValue } from "@/lib/payroll";
 import { toBusinessLocal } from "@/lib/timezone";
+
+// Only the assignment fields isAppointmentBillingEligible actually needs --
+// matches lib/payroll.ts's own narrowing convention.
+type BillingAssignment = Pick<AppointmentEmployeeAssignment, "employee_id" | "actual_started_at" | "actual_completed_at">;
 
 // Only the Appointment fields this module actually reads -- matches
 // lib/payroll.ts's own convention of narrowing to Pick<Appointment, ...>
@@ -95,30 +114,37 @@ export function validateBillingState(state: { paid: boolean; payment_method: str
 // "Completed" (billing-eligible) vs. "needs completion review"
 // ---------------------------------------------------------------------
 
-// True exactly when every assigned employee's Job Tracking is complete --
-// the same rule the Dispatch panel's "Completed" count already uses. A
-// zero-assignment appointment is never completed (see
-// deriveAppointmentTrackingStatus's own doc comment).
-export function isCompletedForBilling(assignments: TimestampPair[]): boolean {
-  return deriveAppointmentTrackingStatus(assignments) === "completed";
+// True when every assigned employee's work record is resolved -- see this
+// module's own header comment and isAppointmentBillingEligible's doc
+// comment (lib/payroll.ts) for the exact owner-override-first rule. A
+// zero-assignment appointment is never completed.
+export function isCompletedForBilling(
+  appointmentId: string,
+  assignments: BillingAssignment[],
+  employeeHours: EmployeeHours[]
+): boolean {
+  return isAppointmentBillingEligible(appointmentId, assignments, employeeHours);
 }
 
 // True for a past, non-cancelled appointment whose scheduled time has
 // already elapsed but that does NOT satisfy isCompletedForBilling above --
-// i.e. a job that may well have happened, but isn't tracked as complete
-// (missing employee assignment, or Job Tracking never finished). These are
-// surfaced to the owner as a secondary "needs review" list so a real
-// completed job is never silently invisible just because Job Tracking
-// wasn't used -- but they are NEVER counted in the Completed Jobs list or
-// any money total, and this function creates no new completion/status
-// concept: it is purely "past + not cancelled + not already completed."
+// i.e. a job that may well have happened, but has at least one assigned
+// employee whose work record is still unresolved (missing assignment
+// entirely, or neither a valid tracked duration nor an owner-approved
+// correction). These are surfaced to the owner as a secondary "needs
+// review" list so a real completed job is never silently invisible just
+// because Job Tracking wasn't used and no one has corrected it yet -- but
+// they are NEVER counted in the Completed Jobs list or any money total,
+// and this function creates no new completion/status concept: it is
+// purely "past + not cancelled + not already completed."
 export function needsCompletionReview(
-  appt: Pick<Appointment, "status" | "scheduled_for" | "scheduled_end" | "duration_minutes">,
-  assignments: TimestampPair[]
+  appt: Pick<Appointment, "id" | "status" | "scheduled_for" | "scheduled_end" | "duration_minutes">,
+  assignments: BillingAssignment[],
+  employeeHours: EmployeeHours[]
 ): boolean {
   if (appt.status === "cancelled") return false;
   if (!isEligibleForWorkedHoursWarning(appt)) return false;
-  return !isCompletedForBilling(assignments);
+  return !isCompletedForBilling(appt.id, assignments, employeeHours);
 }
 
 // ---------------------------------------------------------------------
@@ -180,6 +206,7 @@ export function buildCompletedJobRows({
   clients,
   assignmentsByAppointmentId,
   billingByAppointmentId,
+  employeeHours,
   rangeStart,
   rangeEnd,
   timezone,
@@ -188,6 +215,12 @@ export function buildCompletedJobRows({
   clients: Client[];
   assignmentsByAppointmentId: Map<string, AppointmentEmployeeAssignment[]>;
   billingByAppointmentId: Map<string, CompletedJobBilling>;
+  // Owner-approved worked-time corrections (appointment_employee_hours) --
+  // see this module's own header comment for why these can resolve an
+  // employee's otherwise-missing Job Tracking for billing purposes. The
+  // whole array, not pre-filtered per appointment, matching
+  // computePayrollRows' own convention (lib/payroll.ts).
+  employeeHours: EmployeeHours[];
   rangeStart: string;
   rangeEnd: string;
   timezone: string;
@@ -200,7 +233,7 @@ export function buildCompletedJobRows({
     if (!isInDateRange(appt, rangeStart, rangeEnd, timezone)) continue;
 
     const assignments = assignmentsByAppointmentId.get(appt.id) ?? [];
-    if (!isCompletedForBilling(assignments)) continue;
+    if (!isCompletedForBilling(appt.id, assignments, employeeHours)) continue;
 
     rows.push({
       appointmentId: appt.id,
@@ -225,6 +258,7 @@ export function buildReviewNeededRows({
   appointments,
   clients,
   assignmentsByAppointmentId,
+  employeeHours,
   rangeStart,
   rangeEnd,
   timezone,
@@ -232,6 +266,7 @@ export function buildReviewNeededRows({
   appointments: BillableAppointment[];
   clients: Client[];
   assignmentsByAppointmentId: Map<string, AppointmentEmployeeAssignment[]>;
+  employeeHours: EmployeeHours[];
   rangeStart: string;
   rangeEnd: string;
   timezone: string;
@@ -242,7 +277,7 @@ export function buildReviewNeededRows({
   for (const appt of appointments) {
     if (!isInDateRange(appt, rangeStart, rangeEnd, timezone)) continue;
     const assignments = assignmentsByAppointmentId.get(appt.id) ?? [];
-    if (!needsCompletionReview(appt, assignments)) continue;
+    if (!needsCompletionReview(appt, assignments, employeeHours)) continue;
 
     rows.push({
       appointmentId: appt.id,
@@ -279,10 +314,27 @@ function isPaid(row: CompletedJobRow): boolean {
   return row.billing?.paid === true;
 }
 
+// Real production rule (Holly Williams, paid Cash): for a cash job, the
+// owner does not always create a QuickBooks invoice at all -- a paid,
+// Cash, blank-invoice row is a legitimate FINAL state, not an error or an
+// incomplete record (validateBillingState already allows paid=true with
+// invoice_number=null; only payment_method is required, and that is
+// unchanged by this). Once paid by cash, the job is financially closed for
+// this workflow and must not keep showing up asking for an invoice number
+// that was never going to exist.
+function isCashPaidWithoutInvoice(row: CompletedJobRow): boolean {
+  return isPaid(row) && row.billing?.payment_method === "cash" && !hasInvoiceNumber(row);
+}
+
 export function applyBillingStatusFilter(rows: CompletedJobRow[], filter: BillingStatusFilter): CompletedJobRow[] {
   switch (filter) {
     case "missing_invoice":
-      return rows.filter((r) => !hasInvoiceNumber(r));
+      // "Missing Invoice #" means an invoice still needs to be created
+      // before the job is financially closed -- not merely "invoice_number
+      // is null." A paid-Cash job with no invoice is already closed (see
+      // isCashPaidWithoutInvoice above) and must be excluded here, even
+      // though its invoice_number is genuinely blank.
+      return rows.filter((r) => !hasInvoiceNumber(r) && !isCashPaidWithoutInvoice(r));
     case "invoiced_unpaid":
       return rows.filter((r) => hasInvoiceNumber(r) && !isPaid(r));
     case "paid":
@@ -317,6 +369,16 @@ export type BillingSummary = {
 // lib/incomeProjection.ts already uses -- a missing price contributes $0,
 // never a guessed fallback (matches that module's own documented
 // convention exactly).
+//
+// A paid-Cash job with no invoice number (isCashPaidWithoutInvoice above)
+// deliberately needs NO special-casing here: completedWorkCents already
+// counts every completed job's price unconditionally (Holly's $120
+// belongs there regardless of invoicing), and invoicedCents/unpaidCents
+// already only add a row that HAS an invoice_number -- a blank-invoice
+// cash row was never going to contribute to either of those two, exactly
+// as intended. Only applyBillingStatusFilter's "missing_invoice" case
+// needed an explicit carve-out, because that filter's whole job is asking
+// "does this one still need an invoice," which a closed cash job does not.
 export function computeBillingSummary(rows: CompletedJobRow[]): BillingSummary {
   let completedWorkCents = 0;
   let invoicedCents = 0;

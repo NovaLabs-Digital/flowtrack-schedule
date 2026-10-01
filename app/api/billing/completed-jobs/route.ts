@@ -7,7 +7,8 @@ import { requireCapability } from "@/lib/entitlementServer";
 import { fetchAllPages } from "@/lib/paginate";
 import { effectiveTimezone, zonedDateTimeToUTC } from "@/lib/timezone";
 import { buildCompletedJobRows, buildReviewNeededRows, type CompletedJobBilling, type BillableAppointment } from "@/lib/completedJobBilling";
-import type { AppointmentEmployeeAssignment, Client } from "@/app/components/dashboard/types";
+import { fetchEmployeeHoursForAppointments } from "@/lib/appointmentEmployees";
+import type { AppointmentEmployeeAssignment, Client, EmployeeHours } from "@/app/components/dashboard/types";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -100,9 +101,18 @@ export async function GET(req: Request) {
     let assignments: AppointmentEmployeeAssignment[] = [];
     let clients: Client[] = [];
     let billingRows: CompletedJobBilling[] = [];
+    let employeeHours: EmployeeHours[] = [];
 
     if (apptIds.length > 0) {
-      const [assignRes, billingRes] = await Promise.all([
+      // employeeHours (appointment_employee_hours): owner-approved
+      // worked-time corrections. These can resolve an employee's otherwise-
+      // missing Job Tracking for billing purposes -- see
+      // lib/completedJobBilling.ts's and lib/payroll.ts's
+      // isAppointmentBillingEligible doc comments. Fetched via the same
+      // shared helper app/api/appointments/employee-hours/route.ts and
+      // manage-recurrence already use, bounded by this route's own date
+      // range (apptIds here is never the full all-time appointment list).
+      const [assignRes, billingRes, hours] = await Promise.all([
         supabaseAdmin
           .from("appointment_employees")
           .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, job_notes, created_at, updated_at")
@@ -113,11 +123,13 @@ export async function GET(req: Request) {
           .select("id, workspace_id, appointment_id, invoice_number, paid, payment_method, created_at, updated_at")
           .eq("workspace_id", workspaceId)
           .in("appointment_id", apptIds),
+        fetchEmployeeHoursForAppointments(apptIds, workspaceId),
       ]);
       if (assignRes.error) throw assignRes.error;
       if (billingRes.error) throw billingRes.error;
       assignments = (assignRes.data ?? []) as AppointmentEmployeeAssignment[];
       billingRows = (billingRes.data ?? []) as CompletedJobBilling[];
+      employeeHours = hours;
 
       const clientIds = [...new Set(appointments.map((a) => a.client_id))];
       const clientsRes = await supabaseAdmin
@@ -143,6 +155,7 @@ export async function GET(req: Request) {
       clients,
       assignmentsByAppointmentId,
       billingByAppointmentId,
+      employeeHours,
       rangeStart,
       rangeEnd,
       timezone,
@@ -151,6 +164,7 @@ export async function GET(req: Request) {
       appointments,
       clients,
       assignmentsByAppointmentId,
+      employeeHours,
       rangeStart,
       rangeEnd,
       timezone,

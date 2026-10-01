@@ -83,6 +83,34 @@ export function assignmentHasWorkedHours(
   return !!findManualHoursEntry(appointmentId, employeeId, employeeHours);
 }
 
+// Billing eligibility -- distinct from deriveAppointmentTrackingStatus's own
+// "completed" (which the Dispatch panel's status pill uses, and which this
+// function leaves entirely unchanged): every assigned employee's work
+// record must be RESOLVED, reusing assignmentHasWorkedHours' exact
+// owner-override-first precedence above -- a valid tracked Start/Complete
+// pair, OR an owner-approved appointment_employee_hours correction entered
+// precisely because tracking was missing or wrong (AdjustWorkedTimeControl.tsx).
+// That correction never fabricates or rewrites the employee's own
+// actual_started_at/actual_completed_at (migrations/030) -- it only tells a
+// caller like lib/completedJobBilling.ts that the gap has already been
+// reviewed by the owner and should not keep blocking the job elsewhere (e.g.
+// from appearing in the Billing / Completed Jobs report).
+//
+// This is intentionally a different, slightly more permissive rule than
+// deriveAppointmentTrackingStatus's own "completed": that function asks "did
+// Job Tracking itself finish," this one asks "has every assigned employee's
+// work record been resolved, one way or another." Zero assignments is never
+// eligible -- there is nothing to resolve, and "every employee is resolved"
+// would be vacuously true for a job no one ever worked.
+export function isAppointmentBillingEligible(
+  appointmentId: string,
+  assignments: Pick<AppointmentEmployeeAssignment, "employee_id" | "actual_started_at" | "actual_completed_at">[],
+  employeeHours: EmployeeHours[]
+): boolean {
+  if (assignments.length === 0) return false;
+  return assignments.every((a) => assignmentHasWorkedHours(appointmentId, a.employee_id, a, employeeHours));
+}
+
 // The instant an appointment is actually over: its own scheduled_end when
 // present, otherwise scheduled_for + duration_minutes, otherwise just
 // scheduled_for (no duration information at all). Mirrors scheduledHours()

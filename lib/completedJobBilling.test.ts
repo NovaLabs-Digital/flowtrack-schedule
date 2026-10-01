@@ -13,7 +13,7 @@ import {
   isValidPaymentMethod,
   type CompletedJobBilling,
 } from "./completedJobBilling.ts";
-import type { Appointment, Client, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
+import type { Appointment, Client, AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 
 const HOUR_MS = 60 * 60 * 1000;
 const TZ = "America/New_York";
@@ -50,6 +50,19 @@ function client(overrides: Partial<Client> = {}): Client {
   return { id: "client-1", name: "Jane Doe", email: null, phone: null, ...overrides };
 }
 
+function hoursEntry(overrides: Partial<EmployeeHours> = {}): EmployeeHours {
+  return {
+    id: "hrs-1",
+    appointment_id: "appt-1",
+    employee_id: "emp-1",
+    hours_worked: 3,
+    note: "forgot cell at home",
+    created_at: "2026-09-23T00:00:00.000Z",
+    updated_at: "2026-09-23T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function billing(overrides: Partial<CompletedJobBilling> = {}): CompletedJobBilling {
   return {
     id: "bill-1",
@@ -65,42 +78,177 @@ function billing(overrides: Partial<CompletedJobBilling> = {}): CompletedJobBill
 }
 
 describe("isCompletedForBilling", () => {
-  test("true when the one assigned employee's Job Tracking is complete", () => {
-    assert.equal(isCompletedForBilling([assignment()]), true);
+  test("1. tracked start+complete -> billing completed", () => {
+    assert.equal(isCompletedForBilling("appt-1", [assignment()], []), true);
   });
   test("false with zero assignments (never vacuously completed)", () => {
-    assert.equal(isCompletedForBilling([]), false);
+    assert.equal(isCompletedForBilling("appt-1", [], []), false);
   });
-  test("false when started but not completed", () => {
-    assert.equal(isCompletedForBilling([assignment({ actual_completed_at: null })]), false);
+  test("false when started but not completed, and no owner override exists", () => {
+    assert.equal(isCompletedForBilling("appt-1", [assignment({ actual_completed_at: null })], []), false);
   });
-  test("false when one of two assigned employees hasn't finished", () => {
+  test("false when one of two assigned employees hasn't finished and has no override", () => {
     assert.equal(
-      isCompletedForBilling([assignment(), assignment({ id: "ae-2", employee_id: "emp-2", actual_completed_at: null })]),
+      isCompletedForBilling(
+        "appt-1",
+        [assignment(), assignment({ id: "ae-2", employee_id: "emp-2", actual_completed_at: null })],
+        []
+      ),
       false
     );
+  });
+
+  // Real production gap: an employee who forgot to use Start Job/Complete
+  // Job (no tracking timestamps at all), whose worked time the owner later
+  // corrected manually via appointment_employee_hours -- see this module's
+  // own header comment and lib/payroll.ts's isAppointmentBillingEligible
+  // for the full reasoning.
+  test("2. no tracking + owner-approved worked time -> billing completed (Holly/Roxana scenario)", () => {
+    const untracked = assignment({ actual_started_at: null, actual_completed_at: null });
+    assert.equal(isCompletedForBilling("appt-1", [untracked], [hoursEntry()]), true);
+  });
+
+  test("3. no tracking + no owner override -> NOT billing completed", () => {
+    const untracked = assignment({ actual_started_at: null, actual_completed_at: null });
+    assert.equal(isCompletedForBilling("appt-1", [untracked], []), false);
+  });
+
+  test("4. multi-employee: all tracked -> billing completed", () => {
+    const a1 = assignment({ id: "ae-1", employee_id: "emp-1" });
+    const a2 = assignment({ id: "ae-2", employee_id: "emp-2" });
+    assert.equal(isCompletedForBilling("appt-1", [a1, a2], []), true);
+  });
+
+  test("5. multi-employee: mix of tracked + owner override -> billing completed", () => {
+    const tracked = assignment({ id: "ae-1", employee_id: "emp-1" });
+    const untracked = assignment({ id: "ae-2", employee_id: "emp-2", actual_started_at: null, actual_completed_at: null });
+    const override = hoursEntry({ employee_id: "emp-2" });
+    assert.equal(isCompletedForBilling("appt-1", [tracked, untracked], [override]), true);
+  });
+
+  test("6. multi-employee: one unresolved employee (no tracking, no override) -> NOT billing completed", () => {
+    const tracked = assignment({ id: "ae-1", employee_id: "emp-1" });
+    const unresolved = assignment({ id: "ae-2", employee_id: "emp-2", actual_started_at: null, actual_completed_at: null });
+    assert.equal(isCompletedForBilling("appt-1", [tracked, unresolved], []), false);
+  });
+
+  test("7. the owner override never mutates/fabricates actual_started_at or actual_completed_at", () => {
+    const untracked = assignment({ actual_started_at: null, actual_completed_at: null });
+    isCompletedForBilling("appt-1", [untracked], [hoursEntry()]);
+    assert.equal(untracked.actual_started_at, null);
+    assert.equal(untracked.actual_completed_at, null);
   });
 });
 
 describe("needsCompletionReview", () => {
   test("false for a cancelled appointment, even if past and untracked", () => {
-    assert.equal(needsCompletionReview(appt({ status: "cancelled" }), []), false);
+    assert.equal(needsCompletionReview(appt({ status: "cancelled" }), [], []), false);
   });
   test("false for a future (not-yet-eligible) appointment", () => {
     const future = appt({
       scheduled_for: new Date(Date.now() + HOUR_MS).toISOString(),
       scheduled_end: new Date(Date.now() + 2 * HOUR_MS).toISOString(),
     });
-    assert.equal(needsCompletionReview(future, []), false);
+    assert.equal(needsCompletionReview(future, [], []), false);
   });
   test("true for a past, non-cancelled appointment with no assignments at all", () => {
-    assert.equal(needsCompletionReview(appt(), []), true);
+    assert.equal(needsCompletionReview(appt(), [], []), true);
   });
-  test("true for a past appointment where Job Tracking was started but never completed", () => {
-    assert.equal(needsCompletionReview(appt(), [assignment({ actual_completed_at: null })]), true);
+  test("3. true for a past appointment where Job Tracking was started but never completed, and no owner override exists", () => {
+    assert.equal(needsCompletionReview(appt(), [assignment({ actual_completed_at: null })], []), true);
   });
-  test("false once the appointment is actually completed", () => {
-    assert.equal(needsCompletionReview(appt(), [assignment()]), false);
+  test("false once the appointment is actually completed (Job Tracking)", () => {
+    assert.equal(needsCompletionReview(appt(), [assignment()], []), false);
+  });
+  test("2. false once the appointment is resolved via an owner-approved worked-time override, even with no tracking at all (Holly/Roxana scenario)", () => {
+    const untracked = assignment({ actual_started_at: null, actual_completed_at: null });
+    assert.equal(needsCompletionReview(appt(), [untracked], [hoursEntry()]), false);
+  });
+  test("6. multi-employee: one unresolved employee keeps the appointment in completion review, even though another is tracked", () => {
+    const tracked = assignment({ id: "ae-1", employee_id: "emp-1" });
+    const unresolved = assignment({ id: "ae-2", employee_id: "emp-2", actual_started_at: null, actual_completed_at: null });
+    assert.equal(needsCompletionReview(appt(), [tracked, unresolved], []), true);
+  });
+});
+
+// 8. Holly-style scenario, end to end: a real completed job whose one
+// assigned employee (Roxana) never used Job Tracking at all, and whose
+// worked time the owner corrected afterward (3h00m, "forgot cell at
+// home") -- exactly the real production gap this fix addresses. Must
+// appear in Billing / Completed Jobs, using the appointment's existing
+// price, and must NOT appear in "Past jobs needing completion review".
+describe("Holly Williams Sep 23 -- real-world regression (owner-approved override resolves missing tracking for Billing)", () => {
+  function hollyAppt(): Appointment {
+    return appt({
+      id: "holly-appt",
+      client_id: "client-holly",
+      service_type: "Regular Cleaning",
+      scheduled_for: "2026-09-23T17:00:00.000Z",
+      scheduled_end: "2026-09-23T20:00:00.000Z",
+      price_cents: 18000,
+    });
+  }
+  function hollyAssignment(): AppointmentEmployeeAssignment {
+    return assignment({
+      id: "ae-roxana",
+      appointment_id: "holly-appt",
+      employee_id: "roxana",
+      actual_started_at: null,
+      actual_completed_at: null,
+    });
+  }
+  function hollyOverride(): EmployeeHours {
+    return hoursEntry({ appointment_id: "holly-appt", employee_id: "roxana", hours_worked: 3, note: "forgot cell at home" });
+  }
+
+  test("appears in Billing / Completed Jobs, using the appointment's existing price", () => {
+    const rangeDate = "2026-09-23";
+    const rows = buildCompletedJobRows({
+      appointments: [hollyAppt()],
+      clients: [client({ id: "client-holly", name: "Holly Williams" })],
+      assignmentsByAppointmentId: new Map([["holly-appt", [hollyAssignment()]]]),
+      billingByAppointmentId: new Map(),
+      employeeHours: [hollyOverride()],
+      rangeStart: rangeDate,
+      rangeEnd: rangeDate,
+      timezone: TZ,
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].appointmentId, "holly-appt");
+    assert.equal(rows[0].clientName, "Holly Williams");
+    assert.equal(rows[0].priceCents, 18000);
+  });
+
+  test("does NOT appear in Past jobs needing completion review", () => {
+    const rangeDate = "2026-09-23";
+    const rows = buildReviewNeededRows({
+      appointments: [hollyAppt()],
+      clients: [client({ id: "client-holly", name: "Holly Williams" })],
+      assignmentsByAppointmentId: new Map([["holly-appt", [hollyAssignment()]]]),
+      employeeHours: [hollyOverride()],
+      rangeStart: rangeDate,
+      rangeEnd: rangeDate,
+      timezone: TZ,
+    });
+    assert.deepEqual(rows, []);
+  });
+
+  test("before the owner's override existed, the same appointment WOULD have been stuck in completion review (proves the fix actually changes the outcome)", () => {
+    const rangeDate = "2026-09-23";
+    const rows = buildReviewNeededRows({
+      appointments: [hollyAppt()],
+      clients: [client({ id: "client-holly", name: "Holly Williams" })],
+      assignmentsByAppointmentId: new Map([["holly-appt", [hollyAssignment()]]]),
+      employeeHours: [], // no override yet
+      rangeStart: rangeDate,
+      rangeEnd: rangeDate,
+      timezone: TZ,
+    });
+    assert.deepEqual(rows.map((r) => r.appointmentId), ["holly-appt"]);
+  });
+
+  test("can receive invoice #, paid, and payment method normally once in the Completed Jobs list (validateBillingState is unaffected by this fix)", () => {
+    assert.deepEqual(validateBillingState({ paid: true, payment_method: "zelle" }), { ok: true });
   });
 });
 
@@ -159,6 +307,16 @@ describe("validateBillingState", () => {
   test("an unrecognized payment_method is rejected regardless of paid", () => {
     assert.equal(validateBillingState({ paid: false, payment_method: "venmo" }).ok, false);
   });
+
+  // Real production rule (Holly Williams, paid Cash): for a cash job the
+  // owner does not always create a QuickBooks invoice -- paid=true with a
+  // blank invoice_number is a legitimate final state, never an error. This
+  // function doesn't even take invoice_number as an input, so there is
+  // nothing here to make it "required" by accident -- documented
+  // explicitly so a future change doesn't add that requirement.
+  test("paid=true with payment_method='cash' is valid on its own -- this function has no invoice_number input, so it can never require one", () => {
+    assert.deepEqual(validateBillingState({ paid: true, payment_method: "cash" }), { ok: true });
+  });
 });
 
 describe("buildCompletedJobRows", () => {
@@ -181,6 +339,7 @@ describe("buildCompletedJobRows", () => {
       clients: [client()],
       assignmentsByAppointmentId,
       billingByAppointmentId: new Map(),
+      employeeHours: [],
       rangeStart: today,
       rangeEnd: today,
       timezone: TZ,
@@ -197,6 +356,7 @@ describe("buildCompletedJobRows", () => {
       clients: [client()],
       assignmentsByAppointmentId: new Map([["appt-1", [assignment()]]]),
       billingByAppointmentId: new Map(),
+      employeeHours: [],
       rangeStart: rangeDate,
       rangeEnd: rangeDate,
       timezone: TZ,
@@ -212,6 +372,7 @@ describe("buildCompletedJobRows", () => {
       clients: [client()],
       assignmentsByAppointmentId: new Map([["appt-1", [assignment()]]]),
       billingByAppointmentId: new Map(),
+      employeeHours: [],
       rangeStart: rangeDate,
       rangeEnd: rangeDate,
       timezone: TZ,
@@ -227,6 +388,7 @@ describe("buildCompletedJobRows", () => {
       clients: [client({ id: "client-1", name: "Wren Castellan" })],
       assignmentsByAppointmentId: new Map([["appt-1", [assignment()]]]),
       billingByAppointmentId: new Map([["appt-1", billing({ invoice_number: "INV-1", paid: true, payment_method: "zelle" })]]),
+      employeeHours: [],
       rangeStart: rangeDate,
       rangeEnd: rangeDate,
       timezone: TZ,
@@ -243,6 +405,7 @@ describe("buildCompletedJobRows", () => {
       clients: [client()],
       assignmentsByAppointmentId: new Map([["appt-1", [assignment()]]]),
       billingByAppointmentId: new Map(),
+      employeeHours: [],
       rangeStart: rangeDate,
       rangeEnd: rangeDate,
       timezone: TZ,
@@ -265,6 +428,7 @@ describe("buildReviewNeededRows", () => {
       appointments: [needsReview, completed, cancelled, future],
       clients: [client()],
       assignmentsByAppointmentId,
+      employeeHours: [],
       rangeStart: rangeDate,
       rangeEnd: rangeDate,
       timezone: TZ,
@@ -278,19 +442,33 @@ describe("applyBillingStatusFilter", () => {
   const missingInvoice = { appointmentId: "a1", serviceDate: "2026-01-01", scheduledFor: "x", clientId: "c1", clientName: "A", serviceType: "s", priceCents: 100, billing: null };
   const invoicedUnpaid = { ...missingInvoice, appointmentId: "a2", billing: billing({ appointment_id: "a2", invoice_number: "INV-2", paid: false }) };
   const paid = { ...missingInvoice, appointmentId: "a3", billing: billing({ appointment_id: "a3", invoice_number: "INV-3", paid: true, payment_method: "cash" }) };
-  const rows = [missingInvoice, invoicedUnpaid, paid];
+  // Real production rule (Holly Williams): paid by Cash, no QuickBooks
+  // invoice was ever created -- a legitimate final state, not "missing."
+  const paidCashNoInvoice = { ...missingInvoice, appointmentId: "a4", billing: billing({ appointment_id: "a4", invoice_number: null, paid: true, payment_method: "cash" }) };
+  const rows = [missingInvoice, invoicedUnpaid, paid, paidCashNoInvoice];
 
   test('"all" returns everything, unfiltered', () => {
-    assert.equal(applyBillingStatusFilter(rows, "all").length, 3);
+    assert.equal(applyBillingStatusFilter(rows, "all").length, 4);
   });
-  test('"missing_invoice" -- no billing row, or billing row with no invoice_number', () => {
+  test('"missing_invoice" -- no billing row, or billing row with no invoice_number -- EXCLUDING a paid-Cash job that was never going to get one', () => {
     assert.deepEqual(applyBillingStatusFilter(rows, "missing_invoice").map((r) => r.appointmentId), ["a1"]);
   });
   test('"invoiced_unpaid" -- has an invoice number but paid is false', () => {
     assert.deepEqual(applyBillingStatusFilter(rows, "invoiced_unpaid").map((r) => r.appointmentId), ["a2"]);
   });
-  test('"paid" -- billing.paid is true', () => {
-    assert.deepEqual(applyBillingStatusFilter(rows, "paid").map((r) => r.appointmentId), ["a3"]);
+  test('"paid" -- billing.paid is true, including the paid-Cash/no-invoice job', () => {
+    assert.deepEqual(applyBillingStatusFilter(rows, "paid").map((r) => r.appointmentId), ["a3", "a4"]);
+  });
+
+  test("regression: an ordinary unpaid, no-invoice job (not cash-paid) still appears in Missing Invoice # as before", () => {
+    assert.ok(applyBillingStatusFilter(rows, "missing_invoice").some((r) => r.appointmentId === "a1"));
+  });
+
+  test("regression: a non-cash paid+invoiced job behaves exactly as before -- not affected by the cash carve-out", () => {
+    const zellePaid = { ...missingInvoice, appointmentId: "a5", billing: billing({ appointment_id: "a5", invoice_number: "INV-5", paid: true, payment_method: "zelle" }) };
+    const withZelle = [...rows, zellePaid];
+    assert.deepEqual(applyBillingStatusFilter(withZelle, "missing_invoice").map((r) => r.appointmentId), ["a1"]);
+    assert.deepEqual(applyBillingStatusFilter(withZelle, "paid").map((r) => r.appointmentId), ["a3", "a4", "a5"]);
   });
 });
 
@@ -316,7 +494,51 @@ describe("computeBillingSummary", () => {
     assert.equal(summary.unpaidCents, 7000); // only the invoiced-but-unpaid one
   });
 
+  // Real production rule (Holly Williams, $120 paid Cash, no invoice):
+  // Completed Work $ still includes her price; Invoiced $ and Unpaid $
+  // both correctly ignore her, since no invoice was ever created.
+  test("a paid-Cash job with no invoice number: counted in Completed Work $, excluded from both Invoiced $ and Unpaid $", () => {
+    const holly = { appointmentId: "holly-appt", serviceDate: "2026-09-23", scheduledFor: "x", clientId: "c", clientName: "Holly Williams", serviceType: "Regular Cleaning", priceCents: 12000, billing: billing({ appointment_id: "holly-appt", invoice_number: null, paid: true, payment_method: "cash" }) };
+    const summary = computeBillingSummary([holly]);
+    assert.equal(summary.completedJobs, 1);
+    assert.equal(summary.completedWorkCents, 12000, "Holly's $120 belongs in Completed Work $");
+    assert.equal(summary.invoicedCents, 0, "no invoice was ever created -- must not inflate Invoiced $");
+    assert.equal(summary.unpaidCents, 0, "she IS paid -- must not appear in Unpaid $ either");
+  });
+
   test("an empty list produces all-zero totals, not an error", () => {
     assert.deepEqual(computeBillingSummary([]), { completedJobs: 0, completedWorkCents: 0, invoicedCents: 0, unpaidCents: 0 });
+  });
+});
+
+// Real production rule, end to end: Holly Williams paid Cash with no
+// QuickBooks invoice is a valid, financially-closed final state -- never
+// an error, never flagged as incomplete, and the completed-row build
+// itself needs no special handling (buildCompletedJobRows already just
+// joins whatever billing row exists, however it's shaped).
+describe("Holly Williams -- paid Cash, no invoice (real production rule)", () => {
+  function hollyAppt(): Appointment {
+    return appt({ id: "holly-appt", client_id: "client-holly", scheduled_for: "2026-09-23T17:00:00.000Z", scheduled_end: "2026-09-23T20:00:00.000Z", price_cents: 12000 });
+  }
+  function hollyBillingRow(): CompletedJobBilling {
+    return billing({ appointment_id: "holly-appt", invoice_number: null, paid: true, payment_method: "cash" });
+  }
+
+  test("valid final state -- appears normally in Billing / Completed Jobs, no error", () => {
+    const rangeDate = "2026-09-23";
+    const rows = buildCompletedJobRows({
+      appointments: [hollyAppt()],
+      clients: [client({ id: "client-holly", name: "Holly Williams" })],
+      assignmentsByAppointmentId: new Map([["holly-appt", [assignment({ appointment_id: "holly-appt" })]]]),
+      billingByAppointmentId: new Map([["holly-appt", hollyBillingRow()]]),
+      employeeHours: [],
+      rangeStart: rangeDate,
+      rangeEnd: rangeDate,
+      timezone: TZ,
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].billing?.paid, true);
+    assert.equal(rows[0].billing?.invoice_number, null);
+    assert.equal(rows[0].billing?.payment_method, "cash");
   });
 });

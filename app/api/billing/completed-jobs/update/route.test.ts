@@ -52,6 +52,13 @@ const COMPLETE_ASSIGNMENT = {
   job_notes: null, created_at: "x", updated_at: "x",
 };
 const INCOMPLETE_ASSIGNMENT = { ...COMPLETE_ASSIGNMENT, actual_completed_at: null };
+// Real production regression (Holly Williams, Sep 23): no tracking
+// timestamps at all -- the employee never used Start Job/Complete Job.
+const UNTRACKED_ASSIGNMENT = { ...COMPLETE_ASSIGNMENT, actual_started_at: null, actual_completed_at: null };
+const OWNER_HOURS_OVERRIDE = {
+  id: "hrs-1", appointment_id: "appt-1", employee_id: "emp-1",
+  hours_worked: 3, note: "forgot cell at home", created_at: "x", updated_at: "x",
+};
 
 const SAVED_ROW = {
   id: "bill-1", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-1",
@@ -63,6 +70,11 @@ function completeAppointmentFixtures(extra: Record<string, FakeSupabaseFixture[]
     ...ACTIVE,
     appointments: [{ data: COMPLETED_APPT_ROW }],
     appointment_employees: [{ data: [COMPLETE_ASSIGNMENT] }],
+    // Overridable default: most tests here care only about the completion
+    // gate/validation/upsert behavior, not the owner-override-resolves-
+    // missing-tracking rule specifically (see the dedicated describe block
+    // below for that).
+    appointment_employee_hours: [{ data: [] }],
     ...extra,
   };
 }
@@ -124,7 +136,12 @@ describe("PATCH /api/billing/completed-jobs/update -- appointment lookup / compl
   });
 
   test("an appointment that is not yet completed (per isCompletedForBilling) is rejected with a clear 409", async () => {
-    resetFixtures({ ...ACTIVE, appointments: [{ data: COMPLETED_APPT_ROW }], appointment_employees: [{ data: [INCOMPLETE_ASSIGNMENT] }] });
+    resetFixtures({
+      ...ACTIVE,
+      appointments: [{ data: COMPLETED_APPT_ROW }],
+      appointment_employees: [{ data: [INCOMPLETE_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+    });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
     assert.equal(res.status, 409);
@@ -132,10 +149,48 @@ describe("PATCH /api/billing/completed-jobs/update -- appointment lookup / compl
   });
 
   test("zero assignments at all is also not completed -- 409, not a crash", async () => {
-    resetFixtures({ ...ACTIVE, appointments: [{ data: COMPLETED_APPT_ROW }], appointment_employees: [{ data: [] }] });
+    resetFixtures({
+      ...ACTIVE,
+      appointments: [{ data: COMPLETED_APPT_ROW }],
+      appointment_employees: [{ data: [] }],
+      appointment_employee_hours: [{ data: [] }],
+    });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
     assert.equal(res.status, 409);
+  });
+
+  // Real production regression (Holly Williams, Sep 23): no Job Tracking
+  // timestamps at all, and no owner override yet either -- must still be
+  // rejected exactly like INCOMPLETE_ASSIGNMENT above (the safety net
+  // holds until the owner actually resolves it).
+  test("no tracking AND no owner override yet -- still rejected with 409 (not resolved)", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      appointments: [{ data: COMPLETED_APPT_ROW }],
+      appointment_employees: [{ data: [UNTRACKED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
+    assert.equal(res.status, 409);
+  });
+
+  // Real production regression (Holly Williams, Sep 23): no Job Tracking
+  // timestamps at all, but the owner has already saved a worked-time
+  // correction for this employee on this appointment -- the completion
+  // gate must now pass, exactly as if Job Tracking itself had completed.
+  test("no tracking + an owner-approved worked-time override -- the completion gate now passes (Holly/Roxana scenario)", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      appointments: [{ data: COMPLETED_APPT_ROW }],
+      appointment_employees: [{ data: [UNTRACKED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [OWNER_HOURS_OVERRIDE] }],
+      completed_job_billing: [{ data: null }, { data: SAVED_ROW }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
+    assert.equal(res.status, 200);
   });
 });
 
