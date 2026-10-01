@@ -1053,7 +1053,7 @@ describe("Keep Time As Is -- owner review confirmation (same duration as tracked
     assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [asg], [keepAsIsEntry()]), false);
   });
 
-  test("peer-comparison logic remains unchanged: a peer's Keep Time As Is confirmation does NOT shrink the anomaly for other employees -- unlike Correct Time, the stored duration never changes", () => {
+  test("a peer's Keep Time As Is confirmation does NOT shrink THAT PEER'S stored duration for other employees' baselines -- but refined mode B now protects an on-schedule coworker from it anyway via the schedule fallback", () => {
     const start = new Date(Date.now() - 3 * HOUR_MS);
     const a = appt({
       id: "keep-peer-appt", scheduled_for: start.toISOString(),
@@ -1073,10 +1073,15 @@ describe("Keep Time As Is -- owner review confirmation (same duration as tracked
     };
     // Teresa's own flag clears once she's reviewed (Keep Time As Is)...
     assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresaWild, roxana], [teresaKeepAsIs]), false);
-    // ...but Roxana's baseline is still Teresa's confirmed-unchanged 15h --
-    // Roxana still needs review herself, exactly as before Teresa's
-    // confirmation, because Keep Time As Is never changes the stored number.
-    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresaWild, roxana], [teresaKeepAsIs]), true);
+    // ...and Roxana's baseline-for-the-PEER-check is still Teresa's
+    // confirmed-unchanged 15h (Keep Time As Is never changes the stored
+    // number -- that part is exactly as before). But Roxana's own duration
+    // (121min) is only 1 minute off the 120min schedule, so the refined
+    // mode B schedule fallback correctly clears HER too -- Roxana is never
+    // penalized for a peer's legitimately-confirmed outlier, the same
+    // Dave-Cloutier-style protection as the "owner override participates
+    // in the peer comparison" test above.
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresaWild, roxana], [teresaKeepAsIs]), false);
   });
 });
 
@@ -1127,7 +1132,7 @@ describe("needsWorkedTimeReview -- multi-employee peer comparison (Dave/Lisa exa
     assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), false);
   });
 
-  test("Lisa example: Teresa clocked in materially late while a coworker's duration shows the normal length -- Teresa IS flagged", () => {
+  test("Lisa example, refined: Teresa clocked in materially late while a coworker's duration exactly matches the 2h schedule -- only Teresa is flagged now, not her on-schedule coworker", () => {
     const start = new Date(Date.now() - 3 * HOUR_MS);
     const a = appt({
       id: "lisa-appt", scheduled_for: start.toISOString(),
@@ -1145,35 +1150,94 @@ describe("needsWorkedTimeReview -- multi-employee peer comparison (Dave/Lisa exa
     });
     assert.equal(resolveWorkedMinutes(a.id, "coworker", onTime, []), 120);
     assert.equal(resolveWorkedMinutes(a.id, "teresa", teresaLate, []), 85);
-    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [onTime, teresaLate], []), true, "35 minutes short of her coworker's duration");
-    // With exactly two employees and a genuine mutual gap this large (35min
-    // apart, >25% of either side), BOTH surface for review -- there is no
-    // third reference point to determine algorithmically which of the two
-    // is "the mistake," so the office manager sees both entries and decides
-    // (Teresa's own Job Notes / the specific gap size makes it obvious in
-    // practice). This is symmetric by design, the same way mode A already
-    // flags both an overage and an underrun against the schedule.
-    assert.equal(needsWorkedTimeReview(a, a.id, "coworker", [onTime, teresaLate], []), true, "a genuine 2-person mismatch this large surfaces both entries for review");
+    // The two are far enough apart (35min) that the old peer-only logic
+    // flagged BOTH of them. Refined: since they're far from EACH OTHER,
+    // the schedule (120min) now steps in as the tiebreaker -- Teresa (85,
+    // 35min off) is far from it, her coworker (120, exactly on it) is not.
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [onTime, teresaLate], []), true, "35 minutes short of both her coworker's duration AND the 2h schedule");
+    assert.equal(needsWorkedTimeReview(a, a.id, "coworker", [onTime, teresaLate], []), false, "exactly on schedule -- no longer dragged into review just because Teresa's own time is off");
   });
 
-  test("exactly 2 employees CAN also flag only one of them (not always symmetric) -- a modest-enough gap clears the percentage threshold from one side but not the other", () => {
+  test("exactly 2 employees CAN also flag only one of them (not always symmetric) -- refined: the asymmetry now comes from the schedule fallback, not raw peer-vs-peer math alone", () => {
     const start = new Date(Date.now() - 3 * HOUR_MS);
     const a = appt({
       id: "asym-appt", scheduled_for: start.toISOString(),
-      scheduled_end: new Date(start.getTime() + 132 * 60_000).toISOString(),
+      scheduled_end: new Date(start.getTime() + 100 * 60_000).toISOString(), // 100min scheduled
     });
     const shorter = assignment({
       id: "ae-asym-shorter", appointment_id: "asym-appt", employee_id: "shorter",
-      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 100 * 60_000).toISOString(),
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 80 * 60_000).toISOString(), // 80min -- 20min off schedule, well within threshold
     });
     const longer = assignment({
       id: "ae-asym-longer", appointment_id: "asym-appt", employee_id: "longer",
-      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 132 * 60_000).toISOString(),
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 160 * 60_000).toISOString(), // 160min -- 60min off schedule, well over threshold
     });
-    // diff=32min either way: 32 > 25%*100(=25) -> "longer" (baseline=100) is flagged.
-    // 32 is NOT > 25%*132(=33) -> "shorter" (baseline=132) is not.
-    assert.equal(needsWorkedTimeReview(a, a.id, "longer", [shorter, longer], []), true);
+    // 80 vs 160 (peer diff 80) is far from each other either direction, so
+    // both fall through to the schedule fallback: "shorter" (80, 20min off
+    // the 100min schedule) clears; "longer" (160, 60min off) does not.
     assert.equal(needsWorkedTimeReview(a, a.id, "shorter", [shorter, longer], []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, "longer", [shorter, longer], []), true);
+  });
+
+  test("both far from schedule but close to EACH OTHER -- neither flagged (the peer-aware check still wins over the schedule fallback)", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "close-peers-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 90 * 60_000).toISOString(), // 90min scheduled
+    });
+    const teresa = assignment({
+      id: "ae-cp-teresa", appointment_id: "close-peers-appt", employee_id: "teresa",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 150 * 60_000).toISOString(), // 150min
+    });
+    const roxana = assignment({
+      id: "ae-cp-roxana", appointment_id: "close-peers-appt", employee_id: "roxana",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 148 * 60_000).toISOString(), // 148min
+    });
+    // Both ~60min over the 90min schedule (comfortably over threshold against
+    // schedule), but only 2 minutes apart from each other -- the schedule
+    // estimate is probably just wrong for this job, so neither is flagged.
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], []), false);
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), false);
+  });
+
+  test("both far from schedule AND far from each other -- review remains possible for both (no trustworthy baseline either way)", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "no-baseline-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 90 * 60_000).toISOString(), // 90min scheduled
+    });
+    const teresa = assignment({
+      id: "ae-nb-teresa", appointment_id: "no-baseline-appt", employee_id: "teresa",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 200 * 60_000).toISOString(), // 200min
+    });
+    const roxana = assignment({
+      id: "ae-nb-roxana", appointment_id: "no-baseline-appt", employee_id: "roxana",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 10 * 60_000).toISOString(), // 10min
+    });
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], []), true);
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), true);
+  });
+
+  // Real production regression (Dave Cloutier, Sep 29): the exact
+  // numbers from the reported false positive.
+  test("Dave Cloutier regression: 90min scheduled, Teresa 96min (close to schedule), Roxana 6min (far) -- only Roxana is flagged", () => {
+    const start = new Date(Date.now() - 3 * HOUR_MS);
+    const a = appt({
+      id: "dave-cloutier-appt", scheduled_for: start.toISOString(),
+      scheduled_end: new Date(start.getTime() + 90 * 60_000).toISOString(),
+    });
+    const teresa = assignment({
+      id: "ae-dc-teresa", appointment_id: "dave-cloutier-appt", employee_id: "teresa",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 96 * 60_000).toISOString(),
+    });
+    const roxana = assignment({
+      id: "ae-dc-roxana", appointment_id: "dave-cloutier-appt", employee_id: "roxana",
+      actual_started_at: start.toISOString(), actual_completed_at: new Date(start.getTime() + 6 * 60_000).toISOString(),
+    });
+    assert.equal(resolveWorkedMinutes(a.id, "teresa", teresa, []), 96);
+    assert.equal(resolveWorkedMinutes(a.id, "roxana", roxana, []), 6);
+    assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], []), false, "6 minutes off the 90min schedule -- not flagged");
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), true, "84 minutes off the 90min schedule -- flagged");
   });
 
   test("3+ employees: only the one employee whose duration materially differs is flagged -- the others are not contaminated by the single outlier", () => {
@@ -1225,9 +1289,14 @@ describe("needsWorkedTimeReview -- multi-employee peer comparison (Dave/Lisa exa
       id: "eh-op", appointment_id: "override-peer-appt", employee_id: "teresa", hours_worked: 119 / 60,
       note: "corrected", created_at: "x", updated_at: "x",
     };
-    // Before the correction: Teresa's raw tracked value is a wild outlier against Roxana's.
+    // Before the correction: Teresa's raw tracked value (900min) is a wild
+    // outlier against Roxana's (121min) -- far from each other, so the
+    // schedule (120min) becomes the tiebreaker. Teresa is flagged (780min
+    // off schedule); Roxana is NOT (only 1min off schedule) -- the
+    // Dave-Cloutier-style refinement protects her from a peer's bad data
+    // even here, where the old peer-only logic would have flagged her too.
     assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], []), true);
-    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), true, "Roxana's baseline (Teresa's 15h) is also thrown off before the correction");
+    assert.equal(needsWorkedTimeReview(a, a.id, "roxana", [teresa, roxana], []), false, "Roxana's own duration is right on schedule, even though Teresa's raw tracked time is wildly wrong before the correction");
     // After the correction: Teresa's EFFECTIVE duration (the override, 119min) is what both
     // her own flag AND Roxana's baseline now use -- both clear.
     assert.equal(needsWorkedTimeReview(a, a.id, "teresa", [teresa, roxana], [teresaOverride]), false);

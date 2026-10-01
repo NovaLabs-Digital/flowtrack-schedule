@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { TriangleAlert } from "lucide-react";
 import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";
-import { needsWorkedHoursAttention, isHistoricalAppointment } from "@/lib/payroll";
+import { needsWorkedHoursAttention, appointmentNeedsWorkedTimeReview, isHistoricalAppointment } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
 import { BusinessHours, computeGridHourBounds } from "@/lib/businessHours";
@@ -561,14 +562,36 @@ export default function ScheduleGrid({
                     const apptEmployees = employeesFor(a.id);
                     const svcColor = serviceColors[a.service_type] ?? null;
 
+                    // Two distinct per-employee concerns share this one
+                    // card-level icon slot ("do not clutter the card" --
+                    // one triangle per appointment, never one per
+                    // employee, and never two icons stacked for two
+                    // different reasons): hours missing entirely
+                    // (needsWorkedHoursAttention) and hours present but
+                    // anomalous and not yet reviewed by the owner
+                    // (appointmentNeedsWorkedTimeReview, which reuses
+                    // Weekly Worked Hours/Employee Worked Hours's own
+                    // authoritative needsWorkedTimeReview -- never a
+                    // second, independent calculation). Resolving either
+                    // one (Start/Complete Job Tracking, or the owner's
+                    // Correct Time/Keep Time As Is) makes the triangle
+                    // disappear the next time this renders, since both
+                    // are pure, always-re-derived functions of the
+                    // current assignments/employeeHours -- nothing is
+                    // "dismissed" and re-shown independently of the data.
                     const needsHoursWarning = needsWorkedHoursAttention(a, assignmentsFor(a.id), employeeHours);
-                    const hoursWarningIcon = needsHoursWarning ? (
+                    const needsReviewWarning = appointmentNeedsWorkedTimeReview(a, a.id, assignmentsFor(a.id), employeeHours);
+                    const hoursWarningIcon = (needsHoursWarning || needsReviewWarning) ? (
                       <span
-                        title="Employee work hours require attention because Job Tracking was not completed."
+                        title={
+                          needsHoursWarning
+                            ? "Employee work hours require attention because Job Tracking was not completed."
+                            : "Worked time for this job needs owner review."
+                        }
                         onClick={(e) => e.stopPropagation()}
-                        className="text-amber-500 cursor-help"
+                        className="text-amber-500 cursor-help inline-flex"
                       >
-                        ⚠️
+                        <TriangleAlert aria-hidden="true" size={12} />
                       </span>
                     ) : null;
 

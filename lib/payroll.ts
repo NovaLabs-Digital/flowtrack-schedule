@@ -341,16 +341,24 @@ function median(values: number[]): number {
 //   A. Fewer than two (this is the only one, or every other assigned
 //      employee is still untracked) -- compare against the appointment's
 //      own scheduled duration, exactly as before.
-//   B. Exactly one other employee has a usable duration -- compare
-//      directly against THAT employee's duration (comparing against a
+//   B. Exactly one other employee has a usable duration -- first compare
+//      the two employees directly against EACH OTHER (comparing against a
 //      blend of the two, e.g. their average, would halve a real gap and
-//      miss it -- see the "Teresa clocked in late" example below). With
-//      only two employees, a large enough MUTUAL gap flags BOTH of them
-//      (there is no third reference point to say algorithmically which one
-//      is "the mistake" -- the office manager sees both entries and
-//      decides); a smaller, one-sided gap can flag only one, because the
-//      percentage test's own denominator (the OTHER employee's duration)
-//      differs depending on which of the two is being evaluated.
+//      miss it). If they're close to each other, neither is flagged, full
+//      stop -- even if both differ from the scheduled estimate, because a
+//      wrong estimate is not a worked-time problem (see the Dave example
+//      below; this is the reason the peer-aware logic exists at all). Only
+//      once the two are genuinely far from EACH OTHER does the appointment's
+//      own SCHEDULED duration step in as a third, stabilizing reference
+//      point: whichever of the two is close to the schedule is cleared,
+//      and whichever is far from the schedule is flagged -- so one
+//      employee's wildly wrong duration no longer drags a perfectly-normal
+//      coworker into "Needs Review" with them (the real production gap
+//      this refinement fixes -- see the Dave/Roxana/Teresa example below).
+//      If the appointment has no usable scheduled duration at all to serve
+//      as that third reference, this falls back to the original direct
+//      peer-vs-peer comparison (both flagged together), since there is
+//      nothing better to stabilize against.
 //   C. Two or more other employees have a usable duration (three or more
 //      total) -- compare against the MEDIAN of every employee's duration,
 //      including this one's own. A single outlier does not drag every
@@ -368,7 +376,7 @@ function median(values: number[]): number {
 // B/C, which isJobTrackingComplete already forbids in practice) has
 // nothing meaningful to compare against, so it is never flagged.
 //
-// Two real appointments this distinction exists for:
+// Three real appointments this distinction exists for:
 //   - Teresa 2h01m / Roxana 1h59m on a 1h30m-scheduled job: nearly
 //     identical to each other, so mode B/C must NOT flag either of them
 //     just because both differ from the scheduled estimate -- the job
@@ -378,6 +386,14 @@ function median(values: number[]): number {
 //     the normal length: mode B (or C, with more coworkers) must flag
 //     Teresa specifically, not the appointment as a whole and not her
 //     coworker(s).
+//   - Dave Cloutier, Sep 29, 1h30m scheduled: Teresa 1h36m (6 minutes over
+//     -- close to scheduled), Roxana 6 minutes (forgot to use Job
+//     Tracking properly -- wildly short). The two are nowhere near each
+//     other, so mode B's peer-vs-peer check alone used to flag BOTH of
+//     them. The scheduled-duration fallback above is exactly what fixes
+//     this: Teresa is close to the 90-minute schedule (not flagged),
+//     Roxana is far from it (flagged) -- the schedule is the third
+//     reference point the original comment above said didn't exist.
 //
 // "Needs Review" means an anomalous worked time that has NOT YET been
 // reviewed by the owner -- so once an appointment_employee_hours row exists
@@ -417,18 +433,56 @@ export function needsWorkedTimeReview(
     .filter((a) => assignmentHasWorkedHours(appointmentId, a.employee_id, a, employeeHours))
     .map((a) => resolveWorkedMinutes(appointmentId, a.employee_id, a, employeeHours));
 
-  let baseline: number;
-  if (peerMinutes.length === 0) {
-    baseline = scheduledMinutes(appt); // mode A
-  } else if (peerMinutes.length === 1) {
-    baseline = peerMinutes[0]; // mode B
-  } else {
-    baseline = median([myMinutes, ...peerMinutes]); // mode C
-  }
-  if (baseline <= 0) return false;
+  // Shared "is this difference large enough to flag" test -- the exact
+  // same REVIEW_MIN_DIFF_MINUTES/REVIEW_MIN_DIFF_FRACTION thresholds every
+  // mode already used, now named so mode B can apply it twice (peer, then
+  // schedule) without duplicating the comparison itself.
+  const isFar = (diff: number, baseline: number) =>
+    diff > REVIEW_MIN_DIFF_MINUTES && diff > baseline * REVIEW_MIN_DIFF_FRACTION;
 
-  const diff = Math.abs(myMinutes - baseline);
-  return diff > REVIEW_MIN_DIFF_MINUTES && diff > baseline * REVIEW_MIN_DIFF_FRACTION;
+  if (peerMinutes.length === 0) {
+    // mode A
+    const baseline = scheduledMinutes(appt);
+    if (baseline <= 0) return false;
+    return isFar(Math.abs(myMinutes - baseline), baseline);
+  }
+
+  if (peerMinutes.length === 1) {
+    // mode B, refined (Dave Cloutier regression -- see doc comment above).
+    const peer = peerMinutes[0];
+    const farFromPeer = isFar(Math.abs(myMinutes - peer), peer);
+    if (!farFromPeer) return false; // close enough to the other employee -- never flagged, even if both differ from the schedule
+    const scheduled = scheduledMinutes(appt);
+    if (scheduled <= 0) return true; // no scheduled reference to stabilize against -- fall back to the direct peer comparison, which already found this far
+    return isFar(Math.abs(myMinutes - scheduled), scheduled);
+  }
+
+  // mode C (3+ total) -- unchanged.
+  const baseline = median([myMinutes, ...peerMinutes]);
+  if (baseline <= 0) return false;
+  return isFar(Math.abs(myMinutes - baseline), baseline);
+}
+
+// True when at least one of this appointment's assigned employees has an
+// unresolved needsWorkedTimeReview condition -- the appointment-level
+// aggregation the Schedule grid's own card-level warning triangle uses
+// (ScheduleGrid.tsx), mirroring needsWorkedHoursAttention's identical
+// per-employee-predicate -> appointment-level-boolean role for the
+// separate "missing hours entirely" warning just above it. Deliberately
+// NOT a second/independent review calculation: this is the exact same
+// authoritative needsWorkedTimeReview already used by Weekly Worked
+// Hours/Employee Worked Hours, just reduced with .some() -- "one triangle
+// per appointment, not one per employee" is purely how the Schedule grid
+// chooses to DISPLAY this, never a different underlying predicate.
+export function appointmentNeedsWorkedTimeReview(
+  appt: Pick<Appointment, "scheduled_for" | "scheduled_end" | "duration_minutes">,
+  appointmentId: string,
+  apptAssignments: Pick<AppointmentEmployeeAssignment, "employee_id" | "actual_started_at" | "actual_completed_at">[],
+  employeeHours: EmployeeHours[]
+): boolean {
+  return apptAssignments.some((a) =>
+    needsWorkedTimeReview(appt, appointmentId, a.employee_id, apptAssignments, employeeHours)
+  );
 }
 
 // Formats a decimal hours value (e.g. a PayrollRow's hoursWorked) as "45m",

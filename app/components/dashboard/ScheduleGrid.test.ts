@@ -87,7 +87,7 @@ describe("drag-initiation boundary (the appointment card)", () => {
   });
 
   test("isHistoricalAppointment is imported from lib/payroll, never lib/timezone's bare isPastAppointment", () => {
-    assert.ok(source.includes('import { needsWorkedHoursAttention, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { needsWorkedHoursAttention, appointmentNeedsWorkedTimeReview, isHistoricalAppointment } from "@/lib/payroll";'));
     assert.ok(source.includes('import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";'));
     assert.ok(!source.includes("isPastAppointment"));
   });
@@ -374,5 +374,23 @@ describe("Day/Weekdays/Week visible hour range is derived from saved business ho
   test("timezone continues to drive both the date-string construction and the appointment-minute derivation -- never the browser/device's own ambient timezone", () => {
     assert.ok(source.includes("computeGridHourBounds(businessHours, dateStrs, timezone, apptMinuteRanges)"));
     assert.ok(source.includes("apptMinuteRange(a, timezone, durationFor)"));
+  });
+});
+
+describe("Worked-hours warning icon -- SFT visual-polish pass: no decorative emoji", () => {
+  test("uses the existing lucide-react icon system (TriangleAlert), not the ⚠️ emoji", () => {
+    assert.ok(source.includes('import { TriangleAlert } from "lucide-react";'));
+    assert.ok(!source.includes("⚠️"), "must not contain the forced-emoji warning sign");
+  });
+
+  test("the icon is decorative (aria-hidden) -- the span's own title attribute remains the accessible description", () => {
+    const idx = source.indexOf("<TriangleAlert");
+    assert.notEqual(idx, -1);
+    assert.match(source.slice(idx, idx + 40), /aria-hidden="true"/);
+    // The title is now a ternary (this same icon slot also covers the
+    // Needs Review condition -- see the "appointment-card warning
+    // triangle" describe block below) -- the missing-hours string is
+    // still present verbatim as one of its two branches.
+    assert.ok(source.includes('"Employee work hours require attention because Job Tracking was not completed."'));
   });
 });
