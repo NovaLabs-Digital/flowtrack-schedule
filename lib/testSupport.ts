@@ -96,6 +96,13 @@ export function createFakeSupabaseAdmin(
       not: (...args: unknown[]) => { record("not", args); return builder; },
       order: (...args: unknown[]) => { record("order", args); return builder; },
       limit: (...args: unknown[]) => { record("limit", args); return builder; },
+      // Added for lib/paginate.ts's fetchAllPages (first exercised by
+      // app/api/billing/completed-jobs/route.test.ts) -- same no-op-filter
+      // shape as every other chain method here: the fake doesn't actually
+      // paginate the queued fixture data, it only records the call and
+      // returns the builder, so a test queues the FULL page of rows it
+      // wants fetchAllPages to see on its one (short, < pageSize) page.
+      range: (...args: unknown[]) => { record("range", args); return builder; },
       is: (...args: unknown[]) => { record("is", args); return builder; },
       update: (...args: unknown[]) => { record("update", args); return builder; },
       insert: (...args: unknown[]) => { record("insert", args); return builder; },

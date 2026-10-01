@@ -236,6 +236,7 @@ export default function ScheduleGrid({
   canMutateOperationalData,
   timezone,
   businessHours,
+  paidAppointmentIds,
 }: {
   viewMode: ViewMode;
   clients: Client[];
@@ -248,6 +249,12 @@ export default function ScheduleGrid({
   // assigned" source for both the card's employee color/name and the
   // per-assignment missing-hours warning triangle.
   assignments: AppointmentEmployeeAssignment[];
+  // Calendar Paid Indicator: every appointment_id with a PAID
+  // completed_job_billing row for this business (app/dashboard/page.tsx) --
+  // the ONLY billing data this grid ever sees. "paid" here means the owner
+  // explicitly marked the job Paid in Billing / Completed Jobs -- it never
+  // means "has a price," "has an invoice number," or "invoiced but unpaid."
+  paidAppointmentIds: string[];
   selectedClientId: string | null;
   selectedAppointmentId: string | null;
   onSelectAppointment: (id: string) => void;
@@ -324,6 +331,13 @@ export default function ScheduleGrid({
     const list = assignmentsByApptId.get(a.appointment_id);
     if (list) list.push(a);
     else assignmentsByApptId.set(a.appointment_id, [a]);
+  }
+  // Calendar Paid Indicator -- a plain Set built from the raw id list prop,
+  // matching this component's existing style of deriving its own lookup
+  // structures from array props rather than receiving a pre-built one.
+  const paidApptIds = new Set(paidAppointmentIds);
+  function isPaid(apptId: string): boolean {
+    return paidApptIds.has(apptId);
   }
   function assignmentsFor(apptId: string): AppointmentEmployeeAssignment[] {
     return assignmentsByApptId.get(apptId) ?? [];
@@ -582,6 +596,26 @@ export default function ScheduleGrid({
                     // above and never reach this render at all.
                     const cardDragEnabled = dragMutationEnabled && !isHistoricalAppointment(a, assignmentsFor(a.id));
 
+                    // Calendar Paid Indicator: a small green "$" meaning
+                    // PAYMENT COMPLETED, and ONLY that -- never "has a
+                    // price," "invoice created," or "invoice sent, payment
+                    // due." Absolutely positioned at the card's own bottom-
+                    // right corner (the <button> below is itself a
+                    // positioned element, so it's a valid containing block
+                    // for this without needing an extra wrapper), rendered
+                    // as a sibling after the isShort/full-card content so
+                    // it never shifts or truncates existing text, the
+                    // recurring icon, the Needs Review warning triangle, or
+                    // employee names.
+                    const paidIndicator = isPaid(a.id) ? (
+                      <span
+                        title="Paid"
+                        className="absolute bottom-0.5 right-1 text-[10px] font-bold leading-none text-emerald-600"
+                      >
+                        $
+                      </span>
+                    ) : null;
+
                     return (
                       <button
                         key={a.id}
@@ -672,6 +706,7 @@ export default function ScheduleGrid({
                             )}
                           </div>
                         )}
+                        {paidIndicator}
                       </button>
                     );
                   });

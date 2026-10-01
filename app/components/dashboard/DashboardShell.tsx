@@ -45,6 +45,7 @@ export default function DashboardShell({
   employees,
   employeeHours,
   assignments,
+  paidAppointmentIds,
   isTester,
   entitlement,
   timezone,
@@ -61,6 +62,13 @@ export default function DashboardShell({
   // per-employee Job Tracking state (ScheduleGrid, DispatchPanel,
   // AppointmentModal, AppointmentDetailPanel, MobileDashboard).
   assignments: AppointmentEmployeeAssignment[];
+  // Calendar Paid Indicator: every appointment_id with a PAID
+  // completed_job_billing row in this workspace (see app/dashboard/
+  // page.tsx's own comment on this query) -- forwarded only to
+  // ScheduleGrid, which renders the small green "$" badge. Not the full
+  // Billing report; never touched by BillingPanel's own dedicated
+  // date-range API.
+  paidAppointmentIds: string[];
   isTester: boolean;
   // Phase 5.5D: consumed by OwnerBillingBanner (desktop below, and passed
   // through to MobileDashboard for the mobile layout) -- only its
@@ -441,6 +449,7 @@ export default function DashboardShell({
                     canMutateOperationalData={entitlement.canMutateOperationalData}
                     timezone={timezone}
                     businessHours={businessHours}
+                    paidAppointmentIds={paidAppointmentIds}
                   />
                 )}
               </div>
@@ -482,6 +491,7 @@ export default function DashboardShell({
               signingOut={signingOut}
               canMutateOperationalData={entitlement.canMutateOperationalData}
               isTrialing={entitlement.isTrialing}
+              timezone={timezone}
             />
           )}
         </div>

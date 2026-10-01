@@ -197,3 +197,75 @@ describe("app/dashboard/page.tsx -- business hours resolved server-side and pass
     assert.ok(shellBlock![0].includes("businessHours={businessHours}"));
   });
 });
+
+// Calendar Paid Indicator: the Schedule grid's "$" badge needs only
+// appointment_id -> paid true/false, never the full Billing report, never a
+// per-appointment lookup, and -- per the architecture correction below --
+// never every historical paid row in the business regardless of whether
+// ScheduleGrid can even render that appointment. These tests prove the
+// query shape at the source level (this file is server-component .tsx and
+// cannot be rendered by this repo's test runner, same established
+// limitation as every describe block above) -- the rendered-DOM behavior
+// of the badge itself is covered by ScheduleGrid.paidIndicator.test.ts
+// instead.
+describe("app/dashboard/page.tsx -- Calendar Paid Indicator: bounded to the already-loaded appointment population, not all-time history", () => {
+  test("queries completed_job_billing from exactly one call site in this file", () => {
+    const occurrences = [...source.matchAll(/\.from\("completed_job_billing"\)/g)];
+    assert.equal(occurrences.length, 1, "expected exactly one completed_job_billing query call site in this file");
+  });
+
+  test("the lookup id list is derived from the already-loaded `appointments` array, not an independent/unbounded source", () => {
+    const idx = source.indexOf("const apptIdsForBilling");
+    assert.notEqual(idx, -1, "expected an apptIdsForBilling list derived from the loaded appointments");
+    const line = source.slice(idx, idx + 150);
+    assert.match(line, /\(appointments \?\? \[\]\)\.map\(/);
+    // Must be declared AFTER the appointments query above it, never before.
+    const apptsQueryIdx = source.indexOf('.from("appointments")');
+    assert.ok(apptsQueryIdx !== -1 && apptsQueryIdx < idx, "apptIdsForBilling must be built from the appointments already fetched above it");
+  });
+
+  test("NOT scoped by a date range -- Day/Weekdays/Week navigation is a client-side-only state change against the full preloaded appointments array, so a date window would silently go stale without a page reload", () => {
+    const idx = source.indexOf('.from("completed_job_billing")');
+    const block = source.slice(Math.max(0, idx - 800), idx + 400);
+    assert.ok(!/\.gte\(|\.lte\(|\.lt\(|\.gt\(/.test(block), "the completed_job_billing lookup must not filter by scheduled_for or any other date bound");
+  });
+
+  test("batched via .in(\"appointment_id\", batch) with a bounded batch size, never one unbounded .in() call over every loaded id at once", () => {
+    const idx = source.indexOf('.from("completed_job_billing")');
+    const block = source.slice(idx, idx + 300);
+    assert.match(block, /\.in\("appointment_id", batch\)/);
+    assert.ok(source.includes("const BILLING_LOOKUP_BATCH_SIZE = 200;"), "expected a named, bounded batch size constant");
+    assert.ok(/for \(let i = 0; i < apptIdsForBilling\.length; i \+= BILLING_LOOKUP_BATCH_SIZE\)/.test(source));
+  });
+
+  test("selects ONLY appointment_id -- never invoice_number, payment_method, or any other billing field", () => {
+    const selectMatch = source.match(/\.from\("completed_job_billing"\)\s*\n\s*\.select\("([^"]*)"\)/);
+    assert.ok(selectMatch, "expected to find the completed_job_billing .select(...) call");
+    assert.equal(selectMatch![1].trim(), "appointment_id");
+  });
+
+  test("every batch is scoped by workspace_id AND filtered to paid = true -- never an unscoped or all-rows query", () => {
+    const idx = source.indexOf('.from("completed_job_billing")');
+    const block = source.slice(idx, idx + 300);
+    assert.match(block, /\.eq\("workspace_id", workspaceId\)/);
+    assert.match(block, /\.eq\("paid", true\)/);
+  });
+
+  test("a mid-loop batch error degrades to an empty list rather than keeping whichever batches already succeeded", () => {
+    const idx = source.indexOf("const collected: string[] = [];");
+    assert.notEqual(idx, -1);
+    const block = source.slice(idx, idx + 700);
+    assert.ok(block.includes("if (paidRes.error) throw paidRes.error;"));
+    assert.ok(block.includes("paidAppointmentIds = collected;"), "the atomic assignment must happen only after every batch succeeds");
+  });
+
+  test("a missing/erroring completed_job_billing table (or any thrown batch error) degrades to an empty list, not a hard failure -- same optional-table pattern as every other try/catch on this page", () => {
+    assert.ok(source.includes("let paidAppointmentIds: string[] = [];"));
+  });
+
+  test("paidAppointmentIds is passed to DashboardShell", () => {
+    const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
+    assert.ok(shellBlock);
+    assert.ok(shellBlock![0].includes("paidAppointmentIds={paidAppointmentIds}"));
+  });
+});

@@ -4,25 +4,37 @@ import { SettingsSection } from "@/app/components/dashboard/types";
 
 // Horizontal section tabs, replacing the old vertical dark sidebar — the
 // Settings page reads as "your company's control room" rather than a
-// software config panel. "Preferences"/"Notifications"/"Billing" aren't
+// software config panel. "Preferences"/"Notifications"/"Subscription" aren't
 // separate pages (nothing distinct exists to show yet): they jump back to
 // Company Info and scroll to the matching card there, since that's exactly
 // where that content already lives. Styled visibly lighter than the primary
 // tabs, with a divider ahead of them, so the two navigation levels (switch
 // section vs. scroll within a section) don't read as the same action.
+//
+// "Billing" is a REAL primary tab, not an anchor -- it renders the dedicated
+// Billing / Completed Jobs report (BillingPanel), a genuinely separate
+// section with its own date-range-scoped data, not a scroll target on
+// Company Info. The pre-existing anchor that scrolled to the Subscription &
+// Plan card used to be labeled "Billing" too (that card is this app's OWN
+// Nova Labs/Stripe subscription for ScheduleFlowTrack itself -- a completely
+// different meaning from "billing my customers for completed jobs"); it is
+// renamed to "Subscription" here, matching its card's own title, so the two
+// never collide in the same tab bar. The anchor target itself (<a id=
+// "subscription-card">) is unchanged.
 const TABS: { key: SettingsSection; label: string }[] = [
   { key: "company", label: "Company Info" },
   { key: "services", label: "Services" },
   { key: "staff", label: "Employees" },
   { key: "archived", label: "Archived Clients" },
   { key: "recurring", label: "Recurring Series" },
+  { key: "billing", label: "Billing" },
 ];
 
 const ANCHOR_TABS: { label: string; anchor: string }[] = [
   { label: "Automation", anchor: "automation-card" },
   { label: "Preferences", anchor: "company-preferences-card" },
   { label: "Notifications", anchor: "communication-preferences-card" },
-  { label: "Billing", anchor: "subscription-card" },
+  { label: "Subscription", anchor: "subscription-card" },
 ];
 
 export default function SettingsTabBar({

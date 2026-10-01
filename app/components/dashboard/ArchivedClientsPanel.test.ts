@@ -48,10 +48,13 @@ describe("prop wiring: full DashboardShell -> ... -> ArchivedClientsPanel chain"
   // trusted value uniformly to all five sections, never a second value.
   // Block 2B added RecurringSeriesPanel as a fifth section with its own real
   // mutation control (Activate) -- see RecurringSeriesPanel.test.ts for its
-  // own wiring/governance proof.
-  test("SettingsPanel forwards the same canMutateOperationalData value to every section that owns a real mutation control (Company, Services, Staff, Archived, Recurring)", () => {
+  // own wiring/governance proof. Billing / Completed Jobs (Settings ->
+  // Billing) added BillingPanel as a sixth section with its own real
+  // mutation controls (invoice number/paid/payment method) -- see
+  // BillingPanel.test.ts for its own wiring/governance proof.
+  test("SettingsPanel forwards the same canMutateOperationalData value to every section that owns a real mutation control (Company, Services, Staff, Archived, Recurring, Billing)", () => {
     const matches = settingsPanelSource.match(/canMutateOperationalData=\{canMutateOperationalData\}/g) ?? [];
-    assert.equal(matches.length, 5, "expected CompanyInfoPanel, ServicesPanel, StaffPanel, ArchivedClientsPanel, and RecurringSeriesPanel each wired once");
+    assert.equal(matches.length, 6, "expected CompanyInfoPanel, ServicesPanel, StaffPanel, ArchivedClientsPanel, RecurringSeriesPanel, and BillingPanel each wired once");
   });
 
   test("DashboardSettingsArea passes canMutateOperationalData straight through to SettingsPanel", () => {

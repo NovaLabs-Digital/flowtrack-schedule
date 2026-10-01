@@ -207,6 +207,58 @@ export default async function DashboardPage() {
     // appointment_employees table may not exist yet
   }
 
+  // Calendar Paid Indicator: the Schedule grid needs to know, for each
+  // appointment it can render, only whether a PAID completed_job_billing
+  // row exists for it -- never the full Billing report, never every
+  // historical paid row in the business regardless of relevance.
+  // Deliberately NOT the Billing panel's own dedicated date-range API
+  // (that stays loaded only when Settings -> Billing opens, per the
+  // approved architecture) and NOT a per-appointment lookup (would be N+1).
+  //
+  // Scoped to the appointment ids ALREADY loaded just above, not a date
+  // range -- Day/Weekdays/Week navigation (Prev/Next/Today, `weekOffset`)
+  // is a pure client-side state change against this one already-fetched
+  // `appointments` array with no further round trip, so "the appointments
+  // ScheduleGrid can actually render" is exactly this id set, not whatever
+  // window happens to be on screen at page-load. A date-range bound here
+  // would silently stop showing "$" the moment the owner clicked back past
+  // that window without reloading the page -- a real correctness
+  // regression a size optimization must not cause.
+  //
+  // Batched rather than one .in() call with every id: PostgREST's query-
+  // string .in() filter fails outright ("Bad Request") once the id list
+  // gets large enough -- the exact limit the employeeHours query above was
+  // changed to avoid. completed_job_billing.appointment_id is UNIQUE
+  // (migrations/032), so a single batch can return at most its own batch
+  // size of rows -- comfortably under PostgREST's default page cap, so no
+  // further per-batch pagination is needed. This still grows with the
+  // appointment population already being paginated above, never with the
+  // workspace's full all-time paid-job history independent of it.
+  let paidAppointmentIds: string[] = [];
+  try {
+    const apptIdsForBilling = (appointments ?? []).map((a: { id: string }) => a.id);
+    const BILLING_LOOKUP_BATCH_SIZE = 200;
+    const collected: string[] = [];
+    for (let i = 0; i < apptIdsForBilling.length; i += BILLING_LOOKUP_BATCH_SIZE) {
+      const batch = apptIdsForBilling.slice(i, i + BILLING_LOOKUP_BATCH_SIZE);
+      const paidRes = await supabaseAdmin
+        .from("completed_job_billing")
+        .select("appointment_id")
+        .eq("workspace_id", workspaceId)
+        .eq("paid", true)
+        .in("appointment_id", batch);
+      if (paidRes.error) throw paidRes.error;
+      for (const row of (paidRes.data ?? []) as { appointment_id: string }[]) collected.push(row.appointment_id);
+    }
+    paidAppointmentIds = collected;
+  } catch {
+    // completed_job_billing table may not exist yet (migrations/032 not
+    // yet applied), or a batch failed partway through -- degrades to
+    // "nothing is marked paid" rather than keeping whichever batches
+    // happened to succeed first, same optional-table, fail-to-safe-default
+    // pattern as every other try/catch block on this page.
+  }
+
   // Phase 5C: the workspace's own trusted timezone, resolved server-side
   // from the authenticated session's workspace_id (never client-supplied)
   // and passed down as an explicit prop -- the scheduling UI must never
@@ -262,6 +314,7 @@ export default async function DashboardPage() {
       employees={employees ?? []}
       employeeHours={employeeHours}
       assignments={assignments}
+      paidAppointmentIds={paidAppointmentIds}
       isTester={isTester}
       entitlement={entitlement}
       timezone={timezone}

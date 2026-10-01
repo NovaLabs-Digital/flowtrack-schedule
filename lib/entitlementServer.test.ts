@@ -554,6 +554,13 @@ describe("only the approved routes reference the capability gates -- every other
     // mutation route uses).
     path.join("app", "api", "recurring-series", "route.ts"),
     path.join("app", "api", "recurring-series", "activate", "route.ts"),
+    // Billing / Completed Jobs (V1) -- the read (canViewExistingData, same
+    // read-gate precedent as clients/archived and recurring-series above)
+    // and its one mutation, saving invoice_number/paid/payment_method
+    // (canMutateOperationalData, same gate every other appointment-adjacent
+    // mutation route uses).
+    path.join("app", "api", "billing", "completed-jobs", "route.ts"),
+    path.join("app", "api", "billing", "completed-jobs", "update", "route.ts"),
   ];
 
   // Server-trusted-workspace gate: no session exists at this call site at

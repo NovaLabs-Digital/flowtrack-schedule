@@ -21,6 +21,12 @@ type Props = {
   // Phase 5.6D: passed straight through to SettingsPanel, which forwards it
   // only to CompanyInfoPanel's Subscription & Plan card.
   isTrialing: boolean;
+  // Billing / Completed Jobs (Settings -> Billing): passed straight through
+  // to SettingsPanel, which forwards it only to BillingPanel -- the
+  // workspace's own trusted timezone, resolved server-side (same value
+  // DashboardShell already threads to every other scheduling/display
+  // consumer), never re-derived from the browser's ambient timezone.
+  timezone: string;
 };
 
 // Owner always gets the real, unrestricted Settings sidebar/panel — untouched
@@ -39,6 +45,7 @@ export default function DashboardSettingsArea({
   signingOut,
   canMutateOperationalData,
   isTrialing,
+  timezone,
 }: Props) {
   const { active, currentStep, restart } = useDemoExperienceContext();
 
@@ -47,7 +54,7 @@ export default function DashboardSettingsArea({
       <div className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
         <div className="flex-1 min-h-0 overflow-auto pt-8">
-          <SettingsPanel section={settingsSection} canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} />
+          <SettingsPanel section={settingsSection} canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} timezone={timezone} />
         </div>
       </div>
     );

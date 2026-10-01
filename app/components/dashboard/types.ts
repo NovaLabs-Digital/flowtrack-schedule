@@ -128,4 +128,11 @@ export type MobileTab = "schedule" | "clients" | "settings" | "map";
 // ScheduleMonthGrid.tsx (rendering) and DashboardShell.tsx (navigation).
 export type ViewMode = "day" | "weekdays" | "week" | "month";
 export type CenterMode = "schedule" | "settings";
-export type SettingsSection = "company" | "services" | "staff" | "archived" | "recurring";
+// "billing": the Billing / Completed Jobs report (app/components/dashboard/
+// BillingPanel.tsx), reached via Settings -> Billing rather than its own
+// top-level nav item -- it is a settings SECTION like "company"/"services",
+// not a second centerMode. (An earlier version of this feature placed it as
+// its own LeftBar button/centerMode; moved into Settings per the approved
+// UI correction, with no change to BillingPanel itself or to the underlying
+// business logic/schema.)
+export type SettingsSection = "company" | "services" | "staff" | "archived" | "recurring" | "billing";
