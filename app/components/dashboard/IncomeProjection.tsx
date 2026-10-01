@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { Appointment, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { computeIncomeProjection, formatProjectedIncome } from "@/lib/incomeProjection";
 
@@ -68,9 +69,9 @@ export default function IncomeProjection({
           aria-label={hidden ? "Show projected revenue" : "Hide projected revenue"}
           aria-pressed={hidden}
           title={hidden ? "Show projected revenue" : "Hide projected revenue"}
-          className="text-sm leading-none text-emerald-700 hover:text-emerald-900 transition-colors"
+          className="text-emerald-700 hover:text-emerald-900 transition-colors"
         >
-          {hidden ? "\u{1F648}" : "\u{1F441}️"}
+          {hidden ? <EyeOff aria-hidden="true" size={16} /> : <Eye aria-hidden="true" size={16} />}
         </button>
       </div>
 

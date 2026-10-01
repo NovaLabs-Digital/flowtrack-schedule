@@ -29,7 +29,16 @@
 // A real currency "$", plain arrows (←, →, ↻), and ordinary punctuation are
 // never flagged at all -- they are outside the Extended_Pictographic set
 // this scan targets, not merely allowlisted.
-import { test } from "node:test";
+//
+// A real escape: IncomeProjection.tsx's hide/show toggle wrote its emoji as
+// JS Unicode ESCAPE SEQUENCES ("\u{1F648}" the see-no-evil monkey,
+// "\u{1F441}️" the eye) rather than literal embedded characters --
+// which the ORIGINAL version of this scan missed entirely, since those
+// escapes are just ASCII text ("\", "u", "{", digits) in the source file
+// until JS evaluates the string at runtime. Every line is now decoded
+// first (both \u{H+} and \uHHHH forms) before the pictographic scan runs,
+// so an escaped emoji is caught exactly like a literal one.
+import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -41,6 +50,36 @@ const SCAN_EXTS = new Set([".tsx", ".ts"]);
 const VS16 = "️";
 const PICTOGRAPHIC_RE = /\p{Extended_Pictographic}️?/gu;
 const ALLOWED_BARE_CODEPOINTS = new Set([0x21a9, 0x2714, 0x2718, 0x26a0]);
+
+// Decodes JS Unicode escape sequences ("\u{1F648}" and "\uD83D"-style
+// 4-hex-digit escapes, including adjacent surrogate-pair escapes like
+// "🙈") into the real characters they represent at runtime, so
+// a decorative emoji written as an escape in source is scanned exactly
+// like one embedded as a literal character. A malformed/unmatched escape
+// is left as-is rather than thrown on -- this is a best-effort decode for
+// an audit, not a JS parser.
+function decodeUnicodeEscapes(line: string): string {
+  return line
+    .replace(/\\u\{([0-9A-Fa-f]{1,6})\}/g, (m, hex) => {
+      try {
+        return String.fromCodePoint(parseInt(hex, 16));
+      } catch {
+        return m;
+      }
+    })
+    .replace(/\\u([0-9A-Fa-f]{4})(\\u[0-9A-Fa-f]{4})?/g, (m, hex1, hex2) => {
+      try {
+        const code1 = parseInt(hex1, 16);
+        if (hex2) {
+          const code2 = parseInt(hex2.slice(2), 16);
+          return String.fromCharCode(code1, code2);
+        }
+        return String.fromCharCode(code1);
+      } catch {
+        return m;
+      }
+    });
+}
 
 type Violation = { file: string; line: number; char: string; context: string };
 
@@ -59,7 +98,8 @@ function scan(): Violation[] {
       const content = fs.readFileSync(full, "utf8");
       const lines = content.split("\n");
       lines.forEach((line, i) => {
-        for (const match of line.matchAll(PICTOGRAPHIC_RE)) {
+        const decoded = decodeUnicodeEscapes(line);
+        for (const match of decoded.matchAll(PICTOGRAPHIC_RE)) {
           const text = match[0];
           const hasVS16 = text.endsWith(VS16);
           const base = hasVS16 ? text.slice(0, -1) : text;
@@ -99,4 +139,27 @@ test("the allowlist itself stays exactly the four approved typographic/status sy
     [0x2714, 0x2718, 0x21a9, 0x26a0].sort((a, b) => a - b)
   );
   assert.ok(!ALLOWED_BARE_CODEPOINTS.has(0x2699), "the settings gear (U+2699) must never be re-added to the allowlist");
+});
+
+// Regression: IncomeProjection.tsx's hide/show toggle wrote its emoji as
+// JS Unicode escape sequences ("\u{1F648}" the see-no-evil monkey emoji,
+// "\u{1F441}️" the eye) rather than literal embedded characters,
+// which the scan missed entirely until decodeUnicodeEscapes was added.
+// These tests pin the decoder against the exact real source text that
+// slipped through, so this specific blind spot can never silently reopen.
+describe("decodeUnicodeEscapes -- catches emoji written as \\u{...} escapes, not just literal characters", () => {
+  test("decodes the exact escaped monkey emoji that slipped past the original literal-character-only scan", () => {
+    const decoded = decodeUnicodeEscapes('{hidden ? "\\u{1F648}" : "\\u{1F441}\\uFE0F"}');
+    assert.ok([...decoded.matchAll(PICTOGRAPHIC_RE)].length >= 2, "both the monkey and the eye must be detected once decoded");
+  });
+
+  test("a line with no escapes at all decodes to itself (no false positives introduced)", () => {
+    assert.equal(decodeUnicodeEscapes('const x = "plain text, no escapes";'), 'const x = "plain text, no escapes";');
+  });
+
+  test("a scan of the decoded (not raw) text is what the real scan() now uses -- the raw escape text itself (backslash-u-digits) is never pictographic on its own", () => {
+    const raw = '"\\u{1F648}"';
+    assert.equal([...raw.matchAll(PICTOGRAPHIC_RE)].length, 0, "the undecoded escape text has no pictographic characters");
+    assert.ok([...decodeUnicodeEscapes(raw).matchAll(PICTOGRAPHIC_RE)].length > 0, "decoding it reveals the real emoji");
+  });
 });
