@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { CalendarDays } from "lucide-react";
 import { Client, Appointment, Service, Employee, AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
@@ -274,7 +275,7 @@ export default function MobileDashboard({
                 <div className="flex-1 min-h-0 overflow-auto px-4 pb-4 space-y-2">
                   {dayAppts.length === 0 ? (
                     <div className="text-center py-16">
-                      <div className="text-3xl text-slate-300 mb-3">📅</div>
+                      <CalendarDays aria-hidden="true" size={32} className="text-slate-300 mb-3 inline-block" />
                       <div className="text-sm text-slate-500">No appointments {isToday ? "today" : "on this day"}</div>
                     </div>
                   ) : (

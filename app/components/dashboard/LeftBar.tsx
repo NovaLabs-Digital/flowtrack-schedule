@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { Settings as SettingsIcon } from "lucide-react";
 import { Client, ViewMode, CenterMode } from "@/app/components/dashboard/types";
 import { SUPPORT_MAILTO_URL } from "@/lib/support";
 
@@ -191,7 +192,7 @@ export default function LeftBar({
               : "text-slate-400 hover:text-white hover:bg-slate-800",
           ].join(" ")}
         >
-          <span className="text-base leading-none">⚙</span>
+          <SettingsIcon aria-hidden="true" size={16} />
           <span>Settings</span>
         </button>
         <button

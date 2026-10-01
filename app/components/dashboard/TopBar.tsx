@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { CalendarDays } from "lucide-react";
 import { ViewMode } from "@/app/components/dashboard/types";
 
 // Phase 5.5E-E1C: this control's own restricted notice, distinct from every
@@ -160,7 +161,7 @@ export default function TopBar({
             onClick={onGoToday}
             className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
           >
-            <span className="text-base leading-none">📅</span>
+            <CalendarDays aria-hidden="true" size={16} />
             Today
           </button>
           <button

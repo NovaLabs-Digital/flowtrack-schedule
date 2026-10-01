@@ -37,7 +37,7 @@ export function confirmationTemplates(
       subject: `Appointment Confirmed — ${service} (${when})`,
       body: `Hi ${name},
 
-✅ Appointment Confirmed
+Appointment Confirmed
 
 Service: ${service}
 Date: ${date}
@@ -49,7 +49,7 @@ ${cancelUrl}
 Thank you,
 ${companyName}`,
     },
-    sms: `${companyName}: ✅ Appointment Confirmed
+    sms: `${companyName}: Appointment Confirmed
 
 Service: ${service}
 Date: ${date}

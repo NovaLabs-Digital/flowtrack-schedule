@@ -98,6 +98,61 @@ describe("BillingPanel -- initial load", () => {
   });
 });
 
+describe("BillingPanel -- DD/MM/YY display formatting (display only -- storage/queries stay ISO)", () => {
+  test("Service Date column renders DD/MM/YY, not the raw YYYY-MM-DD", async () => {
+    responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("12/08/26");
+    assert.equal(screen.queryByText("2026-08-12"), null, "the raw ISO string must never be the visible text");
+  });
+
+  test("Past jobs needing completion review dates also render DD/MM/YY", async () => {
+    responses = [json(200, { completed: [], reviewNeeded: [REVIEW_ROW] })];
+    renderPanel();
+    await screen.findByText("14/08/26");
+    assert.equal(screen.queryByText("2026-08-14"), null);
+  });
+
+  test("the From/To date controls show DD/MM/YY while the underlying fetch still uses plain ISO YYYY-MM-DD query params", async () => {
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    // The real query param, exactly as sent to the server -- never DD/MM/YY.
+    assert.match(calls[0].url, /\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/);
+    // The native <input type="date"> elements still carry the real ISO
+    // value underneath (calendar selection/accessibility/range math are
+    // completely untouched) -- only their visible text is a DD/MM/YY
+    // decorative overlay, asserted separately below.
+    const dateInputs = document.querySelectorAll('input[type="date"]');
+    assert.equal(dateInputs.length, 2);
+    for (const input of dateInputs) {
+      assert.match((input as HTMLInputElement).value, /^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+
+  test("changing the visible From date still drives the real ISO value and triggers a correctly-shaped refetch", async () => {
+    responses = [
+      json(200, { completed: [], reviewNeeded: [] }),
+      json(200, { completed: [], reviewNeeded: [] }),
+    ];
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    const fromInput = document.querySelectorAll('input[type="date"]')[0] as HTMLInputElement;
+    fireEvent.change(fromInput, { target: { value: "2026-08-01" } });
+    await waitFor(() => assert.equal(calls.length, 2));
+    assert.match(calls[1].url, /start=2026-08-01/);
+    await screen.findByText("01/08/26");
+  });
+
+  test("a date on a year/month boundary (2026-01-01) renders exactly 01/01/26 -- proves the formatter never shifts by a day the way re-parsing through `new Date()` could in a negative-UTC-offset test environment", async () => {
+    const boundaryRow = { ...ROW_DONE, appointmentId: "appt-boundary", serviceDate: "2026-01-01" };
+    responses = [json(200, { completed: [boundaryRow], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("01/01/26");
+    assert.equal(screen.queryByText("31/12/25"), null, "must never shift to the previous day");
+  });
+});
+
 describe("BillingPanel -- status filter (client-side, no extra fetch)", () => {
   test('selecting "Paid" shows only paid rows, without issuing a new GET', async () => {
     responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];

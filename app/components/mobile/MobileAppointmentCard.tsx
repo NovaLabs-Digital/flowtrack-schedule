@@ -1,5 +1,6 @@
 "use client";
 
+import { Phone, MapPin } from "lucide-react";
 import { Appointment, Client, Employee } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
 
@@ -81,7 +82,7 @@ export default function MobileAppointmentCard({ appointment, client, employees, 
             className="w-10 h-10 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg"
             aria-label="Call client"
           >
-            📞
+            <Phone aria-hidden="true" size={18} />
           </a>
         ) : hasAddress ? (
           <a
@@ -92,7 +93,7 @@ export default function MobileAppointmentCard({ appointment, client, employees, 
             className="w-10 h-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-lg"
             aria-label="Navigate to address"
           >
-            📍
+            <MapPin aria-hidden="true" size={18} />
           </a>
         ) : null}
       </div>

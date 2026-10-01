@@ -1,5 +1,6 @@
 "use client";
 
+import { CalendarRange } from "lucide-react";
 import { Appointment, Client, Employee, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import { toBusinessLocal, nowInBusinessTz } from "@/lib/timezone";
 import MobileAppointmentCard from "@/app/components/mobile/MobileAppointmentCard";
@@ -114,7 +115,7 @@ export default function MobileSchedule({
       <div className="flex-1 min-h-0 overflow-auto px-4 py-3 space-y-4">
         {groups.length === 0 ? (
           <div className="text-center py-16">
-            <div className="text-3xl text-slate-300 mb-3">🗓️</div>
+            <CalendarRange aria-hidden="true" size={32} className="text-slate-300 mb-3 inline-block" />
             <div className="text-sm text-slate-500">No upcoming appointments</div>
           </div>
         ) : (

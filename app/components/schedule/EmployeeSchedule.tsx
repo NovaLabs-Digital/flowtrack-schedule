@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { CalendarDays, MapPin, Phone } from "lucide-react";
 import { formatHoursAsDuration } from "@/lib/payroll";
 import type { EmployeeEntitlementView } from "@/lib/entitlementView";
 import EmployeeJobActionButton from "@/app/components/schedule/EmployeeJobActionButton";
@@ -423,7 +424,7 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
       <div className="flex-1 overflow-auto px-4 py-4 space-y-3">
         {dayAppts.length === 0 ? (
           <div className="text-center py-16">
-            <div className="text-3xl text-slate-200 mb-3">📅</div>
+            <CalendarDays aria-hidden="true" size={32} className="text-slate-200 mb-3 inline-block" />
             <div className="text-sm text-slate-500">No appointments {sameDay(currentDay, today) ? "today" : "on this day"}</div>
             <div className="text-xs text-slate-400 mt-1">Use the arrows to check other days</div>
           </div>
@@ -582,7 +583,7 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                         rel="noopener noreferrer"
                         className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white active:bg-slate-700 transition-colors"
                       >
-                        <span className="text-base leading-none">📍</span>
+                        <MapPin aria-hidden="true" size={16} />
                         Navigate
                       </a>
                     )}
@@ -591,7 +592,7 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                         href={`tel:${officePhone}`}
                         className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 active:bg-slate-100 transition-colors"
                       >
-                        <span className="text-base leading-none">📞</span>
+                        <Phone aria-hidden="true" size={16} />
                         Call Office
                       </a>
                     )}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { CalendarDays, Clock, User, MapPin, Phone, MessageCircle } from "lucide-react";
 import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
 import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
@@ -165,22 +166,22 @@ export default function MobileAppointmentDetail({
           <div className="text-xs font-medium text-slate-500">{statusLabel}</div>
           <div className="pt-1 space-y-1.5 text-sm text-slate-600">
             <div className="flex items-center gap-2">
-              <span>📅</span>
+              <CalendarDays aria-hidden="true" size={16} />
               <span>{start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</span>
             </div>
             <div className="flex items-center gap-2">
-              <span>🕐</span>
+              <Clock aria-hidden="true" size={16} />
               <span>{formatTime(start)} – {formatTime(end)} ({durationLabel(durationMinutes)})</span>
             </div>
             {employees.length > 0 && (
               <div className="flex items-center gap-2">
-                <span>👤</span>
+                <User aria-hidden="true" size={16} />
                 <span>{employees.map((e) => e.name).join(", ")}</span>
               </div>
             )}
             {client?.address && (
               <div className="flex items-center gap-2">
-                <span>📍</span>
+                <MapPin aria-hidden="true" size={16} />
                 <span>{client.address}</span>
               </div>
             )}
@@ -206,8 +207,8 @@ export default function MobileAppointmentDetail({
               )}
               {client.phone && (
                 <div className="flex items-center gap-2 shrink-0">
-                  <a href={`tel:${client.phone}`} className="w-9 h-9 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center" aria-label="Call client">📞</a>
-                  <a href={`sms:${client.phone}`} className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center" aria-label="Text client">💬</a>
+                  <a href={`tel:${client.phone}`} className="w-9 h-9 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center" aria-label="Call client"><Phone aria-hidden="true" size={16} /></a>
+                  <a href={`sms:${client.phone}`} className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center" aria-label="Text client"><MessageCircle aria-hidden="true" size={16} /></a>
                 </div>
               )}
             </div>

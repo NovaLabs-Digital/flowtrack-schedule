@@ -445,3 +445,20 @@ describe("Unify Owner Worked-Time Correction UX: the old 'Hours Worked' manual-e
     assert.match(block, /Employee did not complete Job Tracking\./);
   });
 });
+
+describe("Navigate/Call icons -- SFT visual-polish pass: no decorative emoji", () => {
+  test("uses the existing lucide-react icon system (MapPin, Phone), not the 📍/📞 emoji characters", () => {
+    assert.ok(source.includes('import { MapPin, Phone } from "lucide-react";'));
+    assert.ok(!source.includes("📍"));
+    assert.ok(!source.includes("📞"));
+  });
+
+  test("both icons are decorative (aria-hidden) -- the visible \"Navigate\"/\"Call\" text is already the link's accessible name", () => {
+    const navIdx = source.indexOf("<MapPin");
+    const callIdx = source.indexOf("<Phone");
+    assert.notEqual(navIdx, -1);
+    assert.notEqual(callIdx, -1);
+    assert.match(source.slice(navIdx, navIdx + 40), /aria-hidden="true"/);
+    assert.match(source.slice(callIdx, callIdx + 40), /aria-hidden="true"/);
+  });
+});

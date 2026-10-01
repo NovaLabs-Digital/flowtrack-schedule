@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { MapPin, Phone } from "lucide-react";
 import { Appointment, Client, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
 import IncomeProjection from "@/app/components/dashboard/IncomeProjection";
@@ -239,7 +240,7 @@ export default function DispatchPanel({
                     rel="noopener noreferrer"
                     className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 transition-colors"
                   >
-                    <span className="text-sm leading-none">📍</span>
+                    <MapPin aria-hidden="true" size={14} />
                     Navigate
                   </a>
                 )}
@@ -248,7 +249,7 @@ export default function DispatchPanel({
                     href={`tel:${client.phone}`}
                     className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
                   >
-                    <span className="text-sm leading-none">📞</span>
+                    <Phone aria-hidden="true" size={14} />
                     Call
                   </a>
                 )}

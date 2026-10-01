@@ -36,6 +36,23 @@ function toDateInputValue(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// DISPLAY FORMATTING ONLY -- this never touches storage, API query
+// parameters, date-range math, or timezone resolution; it only changes
+// what the owner SEES. Input is always the existing canonical
+// "YYYY-MM-DD" workspace-local calendar-date string (the same value
+// already used for fetch query params, <input type="date"> values, and
+// isInDateRange's own range math) -- never re-parsed through `new Date()`
+// (which would reinterpret it in the browser's own local timezone and
+// risks shifting the displayed day). Plain substring rearrangement only,
+// so it can never disagree with the date that was actually fetched/saved.
+// "YY" is the last two digits of the year (26 for 2026), per the approved
+// DD/MM/YY spec -- never a 4-digit year.
+function formatDDMMYY(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-");
+  if (!y || !m || !d) return isoDate; // defensive: never throw on an unexpected shape
+  return `${d}/${m}/${y.slice(-2)}`;
+}
+
 type FetchState = { completed: CompletedJobRow[]; reviewNeeded: ReviewNeededRow[] } | null;
 
 export default function BillingPanel({
@@ -161,19 +178,9 @@ export default function BillingPanel({
           Last Week
         </button>
         <span className="text-slate-400">|</span>
-        <input
-          type="date"
-          value={rangeStart}
-          onChange={(e) => setRangeStart(e.target.value)}
-          className="rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
+        <DateField value={rangeStart} onChange={setRangeStart} label="Billing report start date" />
         <span className="text-slate-400">&#8594;</span>
-        <input
-          type="date"
-          value={rangeEnd}
-          onChange={(e) => setRangeEnd(e.target.value)}
-          className="rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
+        <DateField value={rangeEnd} onChange={setRangeEnd} label="Billing report end date" />
 
         <div className="ml-auto">
           <select
@@ -250,7 +257,7 @@ export default function BillingPanel({
               <ul className="space-y-1">
                 {data!.reviewNeeded.map((r) => (
                   <li key={r.appointmentId} className="text-[11px] text-amber-800 flex gap-2">
-                    <span className="font-medium">{r.serviceDate}</span>
+                    <span className="font-medium">{formatDDMMYY(r.serviceDate)}</span>
                     <span>{r.clientName}</span>
                     <span className="text-amber-600">&middot;</span>
                     <span>{r.serviceType}</span>
@@ -262,6 +269,41 @@ export default function BillingPanel({
         </>
       )}
     </div>
+  );
+}
+
+// A DD/MM/YY-displaying date picker that still IS a native
+// <input type="date"> underneath -- calendar popup, keyboard entry, and
+// screen-reader date-field semantics are all the real browser
+// implementation, never reimplemented here. Native date inputs render
+// their VISIBLE text in whatever format the browser/OS locale dictates
+// (there is no cross-browser way to make the input's own text read
+// "DD/MM/YY" -- see this file's own investigation note), so the real
+// input is kept but visually invisible (opacity-0, stacked on top via the
+// relative/absolute pairing below) while a decorative span underneath
+// shows the DD/MM/YY text the owner actually sees. Clicking anywhere in
+// the box hits the real (invisible) input on top, which opens the native
+// picker exactly as before -- nothing about selection, keyboard access,
+// or the underlying "YYYY-MM-DD" value changes. aria-hidden on the
+// decorative span prevents a screen reader from announcing the date
+// twice (once for the real input, once for the visible text).
+function DateField({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
+  return (
+    <span className="relative inline-flex">
+      <input
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={label}
+        className="absolute inset-0 z-10 w-full h-full opacity-0 cursor-pointer"
+      />
+      <span
+        aria-hidden="true"
+        className="pointer-events-none rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 whitespace-nowrap"
+      >
+        {formatDDMMYY(value)}
+      </span>
+    </span>
   );
 }
 
@@ -313,7 +355,7 @@ function BillingRow({
 
   return (
     <tr className="border-b border-slate-100 last:border-b-0 align-top">
-      <td className="px-3 py-2 whitespace-nowrap text-slate-700">{row.serviceDate}</td>
+      <td className="px-3 py-2 whitespace-nowrap text-slate-700">{formatDDMMYY(row.serviceDate)}</td>
       <td className="px-3 py-2 text-slate-900 font-medium">{row.clientName}</td>
       <td className="px-3 py-2 text-slate-700">{row.serviceType}</td>
       <td className="px-3 py-2 text-right text-slate-900">{formatCents(row.priceCents)}</td>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Users } from "lucide-react";
 import { Client } from "@/app/components/dashboard/types";
 
 type Props = {
@@ -43,7 +44,7 @@ export default function MobileClientsList({ clients, onSelectClient }: Props) {
       <div className="flex-1 min-h-0 overflow-auto px-4 py-3 space-y-2">
         {filtered.length === 0 ? (
           <div className="text-center py-16">
-            <div className="text-3xl text-slate-300 mb-3">👥</div>
+            <Users aria-hidden="true" size={32} className="text-slate-300 mb-3 inline-block" />
             <div className="text-sm text-slate-500">{q ? "No matching clients" : "No clients yet"}</div>
           </div>
         ) : (

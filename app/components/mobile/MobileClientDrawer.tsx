@@ -1,5 +1,6 @@
 "use client";
 
+import { Phone, MessageCircle, MapPin, Mail } from "lucide-react";
 import { Client, Appointment } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
 
@@ -93,25 +94,25 @@ export default function MobileClientDrawer({ client, appointments, onClose, time
           <div className="grid grid-cols-4 gap-2">
             {client.phone && (
               <a href={`tel:${client.phone}`} className="flex flex-col items-center gap-1 py-2 rounded-xl bg-slate-50">
-                <span className="w-9 h-9 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-base">📞</span>
+                <span className="w-9 h-9 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-base"><Phone aria-hidden="true" size={16} /></span>
                 <span className="text-[11px] text-slate-600">Call</span>
               </a>
             )}
             {client.phone && (
               <a href={`sms:${client.phone}`} className="flex flex-col items-center gap-1 py-2 rounded-xl bg-slate-50">
-                <span className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-base">💬</span>
+                <span className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-base"><MessageCircle aria-hidden="true" size={16} /></span>
                 <span className="text-[11px] text-slate-600">Text</span>
               </a>
             )}
             {mapsUrl && (
               <a href={mapsUrl} target="_blank" rel="noopener noreferrer" className="flex flex-col items-center gap-1 py-2 rounded-xl bg-slate-50">
-                <span className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-base">📍</span>
+                <span className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-base"><MapPin aria-hidden="true" size={16} /></span>
                 <span className="text-[11px] text-slate-600">Navigate</span>
               </a>
             )}
             {client.email && (
               <a href={`mailto:${client.email}`} className="flex flex-col items-center gap-1 py-2 rounded-xl bg-slate-50">
-                <span className="w-9 h-9 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center text-base">✉️</span>
+                <span className="w-9 h-9 rounded-full bg-purple-50 text-purple-600 flex items-center justify-center text-base"><Mail aria-hidden="true" size={16} /></span>
                 <span className="text-[11px] text-slate-600">Email</span>
               </a>
             )}

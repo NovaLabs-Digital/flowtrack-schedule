@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { Service } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
@@ -389,7 +390,7 @@ export default function ServicesPanel({
                     ariaDescribedBy={RESTRICTED_NOTICE_ID}
                     className="rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1 text-xs text-rose-700 hover:bg-rose-100 disabled:opacity-50 transition-colors flex items-center gap-1"
                   >
-                    <span className="text-[10px]">🗑</span> Delete
+                    <Trash2 aria-hidden="true" size={12} /> Delete
                   </CapabilityGatedButton>
                 )}
               </div>

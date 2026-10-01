@@ -1,13 +1,14 @@
 "use client";
 
+import { CalendarDays, CalendarRange, Users, Settings as SettingsIcon, type LucideIcon } from "lucide-react";
 import { SUPPORT_MAILTO_URL } from "@/lib/support";
 
 export type MobileTabKey = "today" | "schedule" | "clients" | "settings";
 
-const TABS: { key: MobileTabKey; label: string; icon: string }[] = [
-  { key: "today", label: "Today", icon: "📅" },
-  { key: "schedule", label: "Schedule", icon: "🗓️" },
-  { key: "clients", label: "Clients", icon: "👥" },
+const TABS: { key: MobileTabKey; label: string; icon: LucideIcon }[] = [
+  { key: "today", label: "Today", icon: CalendarDays },
+  { key: "schedule", label: "Schedule", icon: CalendarRange },
+  { key: "clients", label: "Clients", icon: Users },
 ];
 
 // Screen 4 of the approved mockup — persistent bottom navigation, always
@@ -25,7 +26,7 @@ export default function MobileBottomNav({
   return (
     <nav className="shrink-0 bg-white border-t border-slate-200 safe-area-bottom">
       <div className="grid grid-cols-5 h-16">
-        {TABS.map(({ key, label, icon }) => (
+        {TABS.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             type="button"
@@ -35,7 +36,7 @@ export default function MobileBottomNav({
               active === key ? "text-blue-600 font-medium" : "text-slate-400",
             ].join(" ")}
           >
-            <span className="text-xl leading-none">{icon}</span>
+            <Icon aria-hidden="true" size={22} />
             {label}
           </button>
         ))}
@@ -54,7 +55,7 @@ export default function MobileBottomNav({
             active === "settings" ? "text-blue-600 font-medium" : "text-slate-400",
           ].join(" ")}
         >
-          <span className="text-xl leading-none">⚙</span>
+          <SettingsIcon aria-hidden="true" size={22} />
           Settings
         </button>
       </div>
