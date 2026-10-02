@@ -553,7 +553,7 @@ describe("trial_not_started -- a genuinely pristine, never-checked-out workspace
     assert.equal(result.reason, "malformed_missing_status");
   });
 
-  test("a Stripe customer or subscription id already attached -> stays malformed, not treated as pristine", () => {
+  test("hasStripeIdentity true (a real subscription id on the raw row, per Phase 5.7D-R13-HF1 -- see lib/entitlementServer.ts) -> stays malformed, not treated as pristine", () => {
     const result = resolveEntitlement(pristineStripeRecord({ hasStripeIdentity: true }), NOW);
     assertLocked(result);
     assert.equal(result.state, "malformed");

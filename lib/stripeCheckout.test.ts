@@ -26,12 +26,36 @@ interface CreateCall {
   opts: { idempotencyKey: string };
 }
 
+interface FakeSession {
+  id: string;
+  url: string | null;
+  metadata?: Record<string, string>;
+  allow_promotion_codes?: boolean;
+}
+
+// A session shaped exactly like what buildSessionParams(..., trialEligible,
+// PRICE_ID) would produce -- the baseline for "an existing open session IS
+// compatible and should be reused as-is."
+function compatibleExistingSession(overrides: Partial<FakeSession> & { trialEligible: boolean }): FakeSession {
+  const { trialEligible, ...rest } = overrides;
+  return {
+    id: "cs_existing",
+    url: "https://checkout.stripe.com/c/pay/cs_existing",
+    allow_promotion_codes: true,
+    metadata: { workspace_id: WORKSPACE_ID, trial_eligible: String(trialEligible), price_id: PRICE_ID },
+    ...rest,
+  };
+}
+
 function fakeStripeClient(overrides: {
-  listResult?: { data: Array<{ id: string; url: string | null; metadata?: Record<string, string> }> };
+  listResult?: { data: FakeSession[] };
   createImpl?: (params: Stripe.Checkout.SessionCreateParams, opts: { idempotencyKey: string }) => Promise<{ id: string; url: string | null }>;
+  expireImpl?: (id: string) => Promise<unknown>;
 } = {}) {
   const createCalls: CreateCall[] = [];
+  const expireCalls: string[] = [];
   const defaultCreate = async () => ({ id: "cs_test_new", url: "https://checkout.stripe.com/c/pay/cs_test_new" });
+  const defaultExpire = async (id: string) => ({ id, status: "expired" });
   const client = {
     checkout: {
       sessions: {
@@ -41,10 +65,15 @@ function fakeStripeClient(overrides: {
           const impl = overrides.createImpl ?? defaultCreate;
           return impl(params, opts);
         },
+        expire: async (id: string) => {
+          expireCalls.push(id);
+          const impl = overrides.expireImpl ?? defaultExpire;
+          return impl(id);
+        },
       },
     },
   } as unknown as Stripe;
-  return { client, createCalls };
+  return { client, createCalls, expireCalls };
 }
 
 describe("one trial per workspace -- resolved server-side, never from client input", () => {
@@ -85,6 +114,14 @@ describe("one trial per workspace -- resolved server-side, never from client inp
     assert.equal("discounts" in callsA[0].params, false);
   });
 
+  test("top-level metadata carries workspace_id plus a trial/price fingerprint used later to judge whether an open session is still reusable", async () => {
+    const { client, createCalls } = fakeStripeClient();
+    await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, true);
+    assert.equal(createCalls[0].params.metadata?.workspace_id, WORKSPACE_ID);
+    assert.equal(createCalls[0].params.metadata?.trial_eligible, "true");
+    assert.equal(createCalls[0].params.metadata?.price_id, PRICE_ID);
+  });
+
   test("the idempotency key is identical regardless of trial eligibility -- eligibility does not create a second concurrency path", async () => {
     const { client: clientA, createCalls: callsA } = fakeStripeClient();
     const { client: clientB, createCalls: callsB } = fakeStripeClient();
@@ -95,22 +132,76 @@ describe("one trial per workspace -- resolved server-side, never from client inp
   });
 });
 
-describe("an already-open Checkout Session is reused, never recreated with different trial params", () => {
-  test("an open session for this workspace is returned directly -- create() is never called, trialEligible is irrelevant", async () => {
-    const { client, createCalls } = fakeStripeClient({
-      listResult: { data: [{ id: "cs_existing", url: "https://checkout.stripe.com/c/pay/cs_existing", metadata: { workspace_id: WORKSPACE_ID } }] },
+describe("an already-open Checkout Session is reused only when it's actually compatible with the current request (Phase 5.7D-R13-HF2)", () => {
+  test("a compatible open session (allow_promotion_codes true, matching trial/price fingerprint) is returned directly -- create() and expire() are never called", async () => {
+    const { client, createCalls, expireCalls } = fakeStripeClient({
+      listResult: { data: [compatibleExistingSession({ trialEligible: true })] },
     });
     const url = await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, true);
     assert.equal(url, "https://checkout.stripe.com/c/pay/cs_existing");
     assert.equal(createCalls.length, 0);
+    assert.equal(expireCalls.length, 0);
   });
 
   test("an open session belonging to a DIFFERENT workspace is ignored -- a new session is still created for this one", async () => {
-    const { client, createCalls } = fakeStripeClient({
-      listResult: { data: [{ id: "cs_other", url: "https://checkout.stripe.com/c/pay/cs_other", metadata: { workspace_id: "some-other-workspace" } }] },
+    const { client, createCalls, expireCalls } = fakeStripeClient({
+      listResult: { data: [{ id: "cs_other", url: "https://checkout.stripe.com/c/pay/cs_other", allow_promotion_codes: true, metadata: { workspace_id: "some-other-workspace" } }] },
     });
     await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, true);
     assert.equal(createCalls.length, 1);
+    assert.equal(expireCalls.length, 0, "a different workspace's session is never ours to expire");
+  });
+
+  test("an open session created before allow_promotion_codes existed (field false/missing) is expired, then a fresh compatible session is created", async () => {
+    const { client, createCalls, expireCalls } = fakeStripeClient({
+      listResult: { data: [compatibleExistingSession({ trialEligible: true, allow_promotion_codes: false })] },
+    });
+    const url = await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, true);
+    assert.deepEqual(expireCalls, ["cs_existing"]);
+    assert.equal(createCalls.length, 1);
+    assert.equal(createCalls[0].params.allow_promotion_codes, true);
+    assert.equal(url, "https://checkout.stripe.com/c/pay/cs_test_new");
+  });
+
+  test("an open session for a different trial-eligibility decision is expired, then replaced -- never silently reused with the wrong trial", async () => {
+    // Session was created while trialEligible was true; the workspace is
+    // asking again but is no longer eligible (e.g. consumed elsewhere).
+    const { client, createCalls, expireCalls } = fakeStripeClient({
+      listResult: { data: [compatibleExistingSession({ trialEligible: true })] },
+    });
+    await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, false);
+    assert.deepEqual(expireCalls, ["cs_existing"]);
+    assert.equal(createCalls.length, 1);
+    assert.equal("trial_period_days" in (createCalls[0].params.subscription_data ?? {}), false);
+  });
+
+  test("an open session for a different price id is expired, then replaced", async () => {
+    const { client, createCalls, expireCalls } = fakeStripeClient({
+      listResult: { data: [compatibleExistingSession({ trialEligible: true, metadata: { workspace_id: WORKSPACE_ID, trial_eligible: "true", price_id: "price_old" } })] },
+    });
+    await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, true);
+    assert.deepEqual(expireCalls, ["cs_existing"]);
+    assert.equal(createCalls.length, 1);
+  });
+
+  test("the replacement create() after expiring an incompatible session uses a key derived from the stale session's own id, not the plain workspace key", async () => {
+    const { client, createCalls } = fakeStripeClient({
+      listResult: { data: [compatibleExistingSession({ trialEligible: true, allow_promotion_codes: false })] },
+    });
+    await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, true);
+    assert.equal(createCalls[0].opts.idempotencyKey, `checkout-${SUBSCRIPTION_ROW_ID}-refresh-cs_existing`);
+  });
+
+  test("if expiring the incompatible session itself fails (already expired/completed), a fresh session is still created rather than erroring", async () => {
+    const { client, createCalls } = fakeStripeClient({
+      listResult: { data: [compatibleExistingSession({ trialEligible: true, allow_promotion_codes: false })] },
+      expireImpl: async () => {
+        throw new Error("Session already expired");
+      },
+    });
+    const url = await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, client, PRICE_ID, true);
+    assert.equal(createCalls.length, 1);
+    assert.equal(url, "https://checkout.stripe.com/c/pay/cs_test_new");
   });
 });
 

@@ -132,6 +132,21 @@ function isStripeIdempotencyError(e: unknown): boolean {
 // to 0 or any other value), so Stripe charges the first invoice
 // immediately on Checkout completion, exactly like a subscription that
 // never had a trial at all.
+// Phase 5.7D-R13-HF2: Stripe never echoes subscription_data (trial config)
+// back onto a Checkout Session object -- it's input-only, invisible on
+// list()/retrieve() for a still-open session. So an existing open session
+// cannot be checked for "does its trial configuration match what we'd
+// create today" by reading Stripe's own fields the way allow_promotion_codes
+// can be. These two values are stamped into the session's own top-level
+// metadata instead (distinct from subscription_data.metadata, which stays
+// exactly { workspace_id } -- that one lands on the real Subscription
+// object and was never asked to change) purely so a later reuse check has
+// something authoritative to compare against. Values are strings because
+// all Stripe metadata values are strings.
+function sessionConfigMetadata(trialEligible: boolean, priceId: string): Record<string, string> {
+  return { trial_eligible: String(trialEligible), price_id: priceId };
+}
+
 function buildSessionParams(
   workspaceId: string,
   customerId: string,
@@ -147,7 +162,7 @@ function buildSessionParams(
       ...(trialEligible ? { trial_period_days: 30 } : {}),
       metadata: { workspace_id: workspaceId },
     },
-    metadata: { workspace_id: workspaceId },
+    metadata: { workspace_id: workspaceId, ...sessionConfigMetadata(trialEligible, priceId) },
     payment_method_collection: "always",
     // Lets the customer type a promotion code on the Checkout page itself
     // (e.g. a live Stripe coupon/promotion code). This only reveals the
@@ -161,50 +176,31 @@ function buildSessionParams(
   };
 }
 
-// Resolves (or creates) the one Checkout Session this workspace should be
-// sent to right now — never two.
-//
-// 1. Authoritative pre-check: ask Stripe directly whether an open session
-//    already exists for this customer. This is what makes "resume an
-//    in-progress checkout" and "a session recently expired" both safe:
-//    Stripe itself decides open vs. expired (session.url is only ever
-//    non-null while a session is active — see Stripe's docs on that field),
-//    so there is no separate expiry bookkeeping on our side to get wrong.
-// 2. If none is open, create one with a deterministic idempotency key
-//    scoped to this workspace's subscription row id — the row is the
-//    durable, 1:1-with-workspace identity of "the current pending
-//    subscription attempt" (workspace_id is UNIQUE on subscriptions, so
-//    there is exactly one row, and its id never changes for the life of
-//    that workspace). Two requests racing to this exact point get back the
-//    SAME session from Stripe's own idempotency cache, not two — and a
-//    genuinely simultaneous collision surfaces as Stripe's own
-//    StripeIdempotencyError, turned into a 409 by the caller.
-// 3. Session.url is only ever null for an inactive session (Stripe's own
-//    invariant). A null url here is only possible if Stripe served a
-//    cached idempotent response for a session created earlier that has
-//    since expired (a retry hours later, still inside Stripe's 24h
-//    idempotency window, that didn't need step 1's list to catch it because
-//    that check and this create aren't atomic with each other). Detected
-//    and recovered with one retry using a fresh, nonce-suffixed key — never
-//    silently handed back a dead link.
-export async function resolveOrCreateCheckoutSession(
-  workspaceId: string,
-  subscriptionRowId: string,
-  customerId: string,
+// True only if reusing `existing` would produce the exact same customer-
+// facing Checkout experience buildSessionParams would create right now:
+// promotion codes enabled, and the same trial/price decision. Anything
+// else (most commonly: a session created before allow_promotion_codes
+// existed, or before a trial-eligibility/price change) is NOT safe to hand
+// back -- Checkout Sessions are immutable once created, so an incompatible
+// one can only be replaced, never patched.
+function isSessionCompatible(session: Stripe.Checkout.Session, trialEligible: boolean, priceId: string): boolean {
+  const expected = sessionConfigMetadata(trialEligible, priceId);
+  return (
+    session.allow_promotion_codes === true &&
+    session.metadata?.trial_eligible === expected.trial_eligible &&
+    session.metadata?.price_id === expected.price_id
+  );
+}
+
+// Shared by both creation paths below (fresh create, and create-after-
+// expiring-an-incompatible-session) so the "stale idempotent replay" retry
+// logic (see resolveOrCreateCheckoutSession's own header comment, point 3)
+// only has to exist once.
+async function createSessionWithRetry(
   client: Stripe,
-  priceId: string,
-  trialEligible: boolean
+  params: Stripe.Checkout.SessionCreateParams,
+  idempotencyKey: string
 ): Promise<string> {
-  const openSessions = await client.checkout.sessions.list({ customer: customerId, status: "open", limit: 5 });
-  const existing = openSessions.data.find((s) => s.metadata?.workspace_id === workspaceId && s.url);
-  if (existing?.url) {
-    return existing.url;
-  }
-
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const params = buildSessionParams(workspaceId, customerId, priceId, appUrl, trialEligible);
-  const idempotencyKey = `checkout-${subscriptionRowId}`;
-
   let session: Stripe.Checkout.Session;
   try {
     session = await client.checkout.sessions.create(params, { idempotencyKey });
@@ -220,15 +216,79 @@ export async function resolveOrCreateCheckoutSession(
   }
 
   console.log("STRIPE_CHECKOUT_STALE_IDEMPOTENT_SESSION_RETRIED");
-  // Deterministic, not random: two callers racing through the block above
-  // both received the SAME cached expired session from Stripe's idempotency
-  // replay (they used the same base idempotencyKey), so `session.id` here
-  // is identical for both of them. Deriving the retry key from it means
-  // both retries land on the same key too, and Stripe's own idempotency
-  // guarantee converges them onto one replacement session — a random nonce
-  // would instead let both callers create their own separate replacement.
   const retryKey = `${idempotencyKey}-after-${session.id}`;
   const retrySession = await client.checkout.sessions.create(params, { idempotencyKey: retryKey });
   if (!retrySession.url) throw new Error("STRIPE_CHECKOUT_SESSION_NO_URL");
   return retrySession.url;
+}
+
+// Resolves (or creates) the one Checkout Session this workspace should be
+// sent to right now — never two.
+//
+// 1. Authoritative pre-check: ask Stripe directly whether an open session
+//    already exists for this customer. This is what makes "resume an
+//    in-progress checkout" and "a session recently expired" both safe:
+//    Stripe itself decides open vs. expired (session.url is only ever
+//    non-null while a session is active — see Stripe's docs on that field),
+//    so there is no separate expiry bookkeeping on our side to get wrong.
+// 1a. Phase 5.7D-R13-HF2: an open session for this workspace is reused only
+//    if it's actually compatible with what we'd create right now (same
+//    allow_promotion_codes/trial/price decision -- see isSessionCompatible).
+//    An incompatible one (most commonly: created before
+//    allow_promotion_codes existed) is best-effort expired, then replaced --
+//    never silently handed back as-is, and never left open as a second
+//    dangling session either.
+// 2. If none is open (or the open one was just expired as incompatible),
+//    create one with a deterministic idempotency key scoped to this
+//    workspace's subscription row id — the row is the durable,
+//    1:1-with-workspace identity of "the current pending subscription
+//    attempt" (workspace_id is UNIQUE on subscriptions, so there is exactly
+//    one row, and its id never changes for the life of that workspace).
+//    Two requests racing to this exact point get back the SAME session from
+//    Stripe's own idempotency cache, not two — and a genuinely simultaneous
+//    collision surfaces as Stripe's own StripeIdempotencyError, turned into
+//    a 409 by the caller. The incompatible-replacement path uses a key
+//    derived from the stale session's own id instead (deterministic, so
+//    concurrent requests racing through THIS path still converge on one
+//    replacement, not two) -- it cannot reuse the plain workspace-scoped
+//    key, since that key is still bound to the stale session inside
+//    Stripe's own 24h idempotency cache and would just hand it back again.
+// 3. Session.url is only ever null for an inactive session (Stripe's own
+//    invariant). A null url here is only possible if Stripe served a
+//    cached idempotent response for a session created earlier that has
+//    since expired (a retry hours later, still inside Stripe's 24h
+//    idempotency window, that didn't need step 1's list to catch it because
+//    that check and this create aren't atomic with each other). Detected
+//    and recovered with one retry using a fresh, nonce-suffixed key — never
+//    silently handed back a dead link. See createSessionWithRetry.
+export async function resolveOrCreateCheckoutSession(
+  workspaceId: string,
+  subscriptionRowId: string,
+  customerId: string,
+  client: Stripe,
+  priceId: string,
+  trialEligible: boolean
+): Promise<string> {
+  const openSessions = await client.checkout.sessions.list({ customer: customerId, status: "open", limit: 5 });
+  const existing = openSessions.data.find((s) => s.metadata?.workspace_id === workspaceId && s.url);
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const params = buildSessionParams(workspaceId, customerId, priceId, appUrl, trialEligible);
+  const idempotencyKey = `checkout-${subscriptionRowId}`;
+
+  if (existing?.url) {
+    if (isSessionCompatible(existing, trialEligible, priceId)) {
+      return existing.url;
+    }
+    try {
+      await client.checkout.sessions.expire(existing.id);
+    } catch {
+      // Already expired/completed on its own between list() and here --
+      // nothing to clean up either way; a fresh create() below is correct
+      // regardless of which of those happened.
+    }
+    return createSessionWithRetry(client, params, `${idempotencyKey}-refresh-${existing.id}`);
+  }
+
+  return createSessionWithRetry(client, params, idempotencyKey);
 }

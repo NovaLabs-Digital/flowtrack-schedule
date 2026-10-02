@@ -107,6 +107,22 @@
 // still falls back to "malformed" exactly as before, unchanged and
 // equally fail-closed.
 //
+// Phase 5.7D-R13-HF1: the SAME wrong screen recurred for a different
+// reason -- "no Stripe identity attached" was originally defined as "no
+// stripe_customer_id AND no stripe_subscription_id" (lib/entitlementServer.ts),
+// but a Stripe customer is created and persisted the instant "Start Free
+// Trial" is clicked (lib/stripeCheckout.ts's resolveStripeCustomerId) --
+// before a Checkout Session even exists, let alone completes. A workspace
+// that clicked the button once and then abandoned Checkout therefore had a
+// customer id but no subscription, no status, no trial, and no access
+// history -- indistinguishable from "genuinely pristine" by every field
+// except hasStripeIdentity, which was wrongly true. "hasStripeIdentity" is
+// now sourced from stripe_subscription_id ALONE (see
+// lib/entitlementServer.ts's toRecord) -- a real subscription id is only
+// ever written atomically together with a non-null stripe_status (see
+// lib/stripeWebhook.ts), so there is no reachable state where narrowing to
+// it could mask a genuine prior subscription.
+//
 // This new state grants NO operational access and NO viewing of existing
 // data (there is none) -- only canManageBilling, the minimum needed to
 // reach Stripe Checkout. It is not itself a trial-eligibility DECISION;
@@ -263,12 +279,15 @@ export interface SubscriptionRecord {
   // "malformed" exactly as before. This module still makes no trial
   // ELIGIBILITY decision of its own -- see the module header comment.
   trialConsumedAt: Date | null;
-  // Phase 5.7D-R11: true if either stripe_customer_id or
-  // stripe_subscription_id is present on the row. The raw IDs themselves
-  // are never passed into this pure resolver (they never leave the
-  // server at all -- see lib/entitlementServer.ts) -- only this derived
-  // boolean, which is all resolveEntitlement needs to help confirm a row
-  // is genuinely untouched.
+  // Phase 5.7D-R11, narrowed in Phase 5.7D-R13-HF1: true if
+  // stripe_subscription_id is present on the row -- deliberately NOT
+  // stripe_customer_id, which is created and persisted the instant
+  // Checkout is merely started (see lib/stripeCheckout.ts's
+  // resolveStripeCustomerId) and so proves nothing about whether a real
+  // subscription was ever established. The raw id itself is never passed
+  // into this pure resolver (it never leaves the server at all -- see
+  // lib/entitlementServer.ts) -- only this derived boolean, which is all
+  // resolveEntitlement needs to help confirm a row is genuinely untouched.
   hasStripeIdentity: boolean;
 }
 
@@ -610,11 +629,17 @@ export function resolveEntitlement(subscription: SubscriptionRecord | null, now:
       //      first-time customer who hasn't started Checkout yet, and
       //      must be offered the trial invitation, not "reactivate."
       //
-      //   2. Every other reason a status could be missing (a webhook
-      //      race immediately after Checkout-session creation but before
-      //      checkout.session.completed arrives, a row that once had
-      //      real Stripe activity now in an unexpected state, etc.) --
-      //      still fails closed to "malformed" exactly as before.
+      //   2. Every other reason a status could be missing -- most notably
+      //      a row that already consumed a trial or carries prior
+      //      cancellation/access-ended/period-end history now in an
+      //      unexpected null-status state -- still fails closed to
+      //      "malformed" exactly as before. (A bare Stripe customer id
+      //      with nothing else set -- whether from an in-flight Checkout
+      //      a webhook hasn't caught up to yet, or an abandoned attempt
+      //      that will never complete -- is NOT one of these: see
+      //      hasStripeIdentity's own comment for why neither case can be
+      //      reliably told apart from "genuinely pristine" by this data,
+      //      and why always preferring the trial invitation here is safe.)
       //
       // The distinguishing evidence required is deliberately narrow and
       // conservative: ALL of trialConsumedAt/hasStripeIdentity/

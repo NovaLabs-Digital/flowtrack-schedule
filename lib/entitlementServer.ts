@@ -21,9 +21,10 @@ export { SERVICE_UNAVAILABLE_BODY, serviceUnavailableDenial };
 
 // Raw shape of a subscriptions row as Postgres/PostgREST returns it
 // (migration 015). Deliberately narrower than the full table — this route
-// never reads the raw stripe_customer_id/stripe_subscription_id VALUES
-// into an EntitlementResult; see toRecord below, which reduces them to a
-// single derived boolean before they ever reach the pure resolver.
+// never reads the raw stripe_subscription_id VALUE into an EntitlementResult
+// (stripe_customer_id isn't even selected, see Phase 5.7D-R13-HF1 below);
+// see toRecord, which reduces it to a single derived boolean before it ever
+// reaches the pure resolver.
 interface SubscriptionRow {
   billing_mode: "internal" | "stripe";
   stripe_status: string | null;
@@ -41,7 +42,6 @@ interface SubscriptionRow {
   // itself remains lib/stripeCheckout.ts's own independent, server-side
   // decision (see that file and app/api/stripe/checkout/route.ts).
   trial_consumed_at: string | null;
-  stripe_customer_id: string | null;
   stripe_subscription_id: string | null;
 }
 
@@ -56,7 +56,25 @@ function toRecord(row: SubscriptionRow): SubscriptionRecord {
     canceledAt: row.canceled_at ? new Date(row.canceled_at) : null,
     accessEndedAt: row.access_ended_at ? new Date(row.access_ended_at) : null,
     trialConsumedAt: row.trial_consumed_at ? new Date(row.trial_consumed_at) : null,
-    hasStripeIdentity: !!(row.stripe_customer_id || row.stripe_subscription_id),
+    // Phase 5.7D-R13-HF1: deliberately stripe_subscription_id ONLY, not
+    // stripe_customer_id. resolveStripeCustomerId (lib/stripeCheckout.ts)
+    // creates and persists the customer id the instant "Start Free Trial"
+    // is clicked -- before a Checkout Session even exists, let alone
+    // completes -- so a bare customer id proves nothing beyond "checkout
+    // was attempted once." A real subscription id is written by the
+    // webhook handler (lib/stripeWebhook.ts, buildSubscriptionPatchFrom-
+    // StripeSubscription) in the SAME atomic patch as stripe_status, and a
+    // Stripe subscription is never created with a null status -- so there
+    // is no reachable state where stripe_subscription_id is set while
+    // stripe_status is still null. Using the narrower field therefore
+    // cannot reopen the in-flight-webhook-race case this flag exists to
+    // protect (that race only ever has a customer id, never a subscription
+    // id, at the instant it's observed) -- it only stops an abandoned,
+    // never-completed checkout attempt from permanently locking a
+    // workspace that never had real access to lose. See lib/entitlement.ts
+    // and lib/entitlement.test.ts for the full reasoning and regression
+    // coverage.
+    hasStripeIdentity: !!row.stripe_subscription_id,
   };
 }
 
@@ -78,7 +96,7 @@ export async function fetchEntitlementForWorkspace(workspaceId: string): Promise
   const { data, error } = await supabaseAdmin
     .from("subscriptions")
     .select(
-      "billing_mode, stripe_status, trial_end, current_period_end, grace_until, cancel_at_period_end, canceled_at, access_ended_at, trial_consumed_at, stripe_customer_id, stripe_subscription_id"
+      "billing_mode, stripe_status, trial_end, current_period_end, grace_until, cancel_at_period_end, canceled_at, access_ended_at, trial_consumed_at, stripe_subscription_id"
     )
     .eq("workspace_id", workspaceId)
     .maybeSingle();
