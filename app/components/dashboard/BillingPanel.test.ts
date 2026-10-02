@@ -153,6 +153,103 @@ describe("BillingPanel -- DD/MM/YY display formatting (display only -- storage/q
   });
 });
 
+describe("BillingPanel -- client-name search (client-side, scoped to the selected date range)", () => {
+  test("the search input renders with the expected placeholder and no submit button", async () => {
+    responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    assert.ok(screen.getByPlaceholderText("Search client name"));
+    assert.equal(screen.queryByRole("button", { name: /search/i }), null);
+  });
+
+  test("typing a partial, case-insensitive client name filters the table live, without a new fetch", async () => {
+    responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    const callsBefore = calls.length;
+
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "sim" } });
+    assert.equal(screen.queryByText("Petra Lindqvist"), null, '"sim" should not match "Petra Lindqvist"');
+    assert.ok(screen.getByText("Simon Aldercott"), 'matches "Simon Aldercott"');
+
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "PETRA" } });
+    assert.ok(screen.getByText("Petra Lindqvist"), "case-insensitive match");
+    assert.equal(screen.queryByText("Simon Aldercott"), null);
+
+    assert.equal(calls.length, callsBefore, "client-name search must not trigger another network request");
+  });
+
+  test('a substring in the middle of a name matches ("tam" matches both "Tammy Owens" and "Tami Factor")', async () => {
+    const tammy = { ...ROW_DONE, appointmentId: "appt-tammy", clientName: "Tammy Owens" };
+    const tami = { ...ROW_PAID, appointmentId: "appt-tami", clientName: "Tami Factor" };
+    responses = [json(200, { completed: [tammy, tami], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Tammy Owens");
+
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "tam" } });
+    assert.ok(screen.getByText("Tammy Owens"));
+    assert.ok(screen.getByText("Tami Factor"));
+  });
+
+  test("summary cards recalculate from the search-filtered rows, not the full in-range set", async () => {
+    responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    const statValue = (label: string) => screen.getByText(label).parentElement!.querySelector("div.font-semibold")!.textContent;
+
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "Simon" } });
+    assert.equal(statValue("Completed Jobs"), "1");
+    assert.equal(statValue("Completed Work $"), "$80.00", "only Simon's $80, not Petra's $120 too");
+    assert.equal(statValue("Invoiced $"), "$80.00");
+  });
+
+  test("the review-needed rows also filter by the same client-name search", async () => {
+    const reviewOther = { ...REVIEW_ROW, appointmentId: "appt-review-2", clientName: "Holly Williams" };
+    responses = [json(200, { completed: [], reviewNeeded: [REVIEW_ROW, reviewOther] })];
+    renderPanel();
+    await screen.findByText("Past jobs needing completion review");
+    assert.ok(screen.getByText("Wren Castellan"));
+    assert.ok(screen.getByText("Holly Williams"));
+
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "holly" } });
+    assert.equal(screen.queryByText("Wren Castellan"), null);
+    assert.ok(screen.getByText("Holly Williams"));
+  });
+
+  test("the review-needed section hides entirely rather than showing an empty state when the search matches none of its rows", async () => {
+    responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [REVIEW_ROW] })];
+    renderPanel();
+    await screen.findByText("Past jobs needing completion review");
+
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "zzz-no-match" } });
+    assert.equal(screen.queryByText("Past jobs needing completion review"), null);
+  });
+
+  test("clearing the search restores all rows in the selected range", async () => {
+    responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    const input = screen.getByPlaceholderText("Search client name");
+
+    fireEvent.change(input, { target: { value: "Simon" } });
+    assert.equal(screen.queryByText("Petra Lindqvist"), null);
+
+    fireEvent.change(input, { target: { value: "" } });
+    assert.ok(screen.getByText("Petra Lindqvist"));
+    assert.ok(screen.getByText("Simon Aldercott"));
+  });
+
+  test("no match shows the client-specific empty state, not the generic range/filter message", async () => {
+    responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "zzz-no-match" } });
+    await screen.findByText("No completed jobs found for this client in the selected date range.");
+    assert.equal(screen.queryByText("No completed jobs match this range/filter."), null);
+  });
+});
+
 describe("BillingPanel -- status filter (client-side, no extra fetch)", () => {
   test('selecting "Paid" shows only paid rows, without issuing a new GET', async () => {
     responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];

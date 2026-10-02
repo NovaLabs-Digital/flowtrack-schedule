@@ -11,6 +11,7 @@ import {
   applyBillingStatusFilter,
   computeBillingSummary,
   isValidPaymentMethod,
+  matchesClientSearch,
   type CompletedJobBilling,
 } from "./completedJobBilling.ts";
 import type { Appointment, Client, AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
@@ -469,6 +470,31 @@ describe("applyBillingStatusFilter", () => {
     const withZelle = [...rows, zellePaid];
     assert.deepEqual(applyBillingStatusFilter(withZelle, "missing_invoice").map((r) => r.appointmentId), ["a1"]);
     assert.deepEqual(applyBillingStatusFilter(withZelle, "paid").map((r) => r.appointmentId), ["a3", "a4", "a5"]);
+  });
+});
+
+describe("matchesClientSearch", () => {
+  test("a blank or whitespace-only query matches every name", () => {
+    assert.equal(matchesClientSearch("Holly Williams", ""), true);
+    assert.equal(matchesClientSearch("Holly Williams", "   "), true);
+  });
+
+  test("partial, case-insensitive substring match -- \"hol\" matches \"Holly Williams\"", () => {
+    assert.equal(matchesClientSearch("Holly Williams", "hol"), true);
+    assert.equal(matchesClientSearch("Holly Williams", "HOL"), true);
+  });
+
+  test('"tam" matches both "Tammy Owens" and "Tami Factor"', () => {
+    assert.equal(matchesClientSearch("Tammy Owens", "tam"), true);
+    assert.equal(matchesClientSearch("Tami Factor", "tam"), true);
+  });
+
+  test("a non-matching query returns false", () => {
+    assert.equal(matchesClientSearch("Holly Williams", "zzz"), false);
+  });
+
+  test("leading/trailing whitespace in the query is trimmed before matching", () => {
+    assert.equal(matchesClientSearch("Holly Williams", "  hol  "), true);
   });
 });
 

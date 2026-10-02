@@ -8,6 +8,7 @@ import {
   BILLING_STATUS_FILTERS,
   applyBillingStatusFilter,
   computeBillingSummary,
+  matchesClientSearch,
   type BillingStatusFilter,
   type CompletedJobRow,
   type ReviewNeededRow,
@@ -68,6 +69,7 @@ export default function BillingPanel({
   const [rangeStart, setRangeStart] = useState(() => toDateInputValue(mondayOfWeek(0, timezone)));
   const [rangeEnd, setRangeEnd] = useState(() => toDateInputValue(addDays(mondayOfWeek(0, timezone), 6)));
   const [statusFilter, setStatusFilter] = useState<BillingStatusFilter>("all");
+  const [clientSearch, setClientSearch] = useState("");
   const [data, setData] = useState<FetchState>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -100,13 +102,27 @@ export default function BillingPanel({
     };
   }, [rangeStart, rangeEnd]);
 
-  const filteredRows = useMemo(
-    () => applyBillingStatusFilter(data?.completed ?? [], statusFilter),
-    [data, statusFilter]
+  // Client-name search narrows the in-range completed list BEFORE the
+  // status filter and summary totals are computed from it, so the table,
+  // the summary cards, and the review-needed list all stay consistent with
+  // whatever the owner typed -- see matchesClientSearch's own doc comment
+  // for why this is scoped to the selected date range, not all history.
+  const searchedCompleted = useMemo(
+    () => (data?.completed ?? []).filter((r) => matchesClientSearch(r.clientName, clientSearch)),
+    [data, clientSearch]
   );
-  // Totals always reflect the FULL in-range completed list, never the
-  // status-filtered subset -- see computeBillingSummary's own doc comment.
-  const summary = useMemo(() => computeBillingSummary(data?.completed ?? []), [data]);
+  const searchedReviewNeeded = useMemo(
+    () => (data?.reviewNeeded ?? []).filter((r) => matchesClientSearch(r.clientName, clientSearch)),
+    [data, clientSearch]
+  );
+  const filteredRows = useMemo(
+    () => applyBillingStatusFilter(searchedCompleted, statusFilter),
+    [searchedCompleted, statusFilter]
+  );
+  // Totals always reflect the FULL in-range (and now in-search) completed
+  // list, never the status-filtered subset -- see computeBillingSummary's
+  // own doc comment.
+  const summary = useMemo(() => computeBillingSummary(searchedCompleted), [searchedCompleted]);
 
   function selectThisWeek() {
     const monday = mondayOfWeek(0, timezone);
@@ -195,6 +211,20 @@ export default function BillingPanel({
         </div>
       </div>
 
+      {/* Client-name search -- scoped to the date range selected above, see
+          matchesClientSearch's own doc comment. Live-filters as the owner
+          types; no submit button. */}
+      <div className="mb-3">
+        <input
+          type="text"
+          value={clientSearch}
+          onChange={(e) => setClientSearch(e.target.value)}
+          placeholder="Search client name"
+          aria-label="Search client name"
+          className="w-full max-w-xs rounded-lg border border-slate-300 px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+
       {/* Summary */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
         <SummaryStat label="Completed Jobs" value={String(summary.completedJobs)} />
@@ -228,7 +258,9 @@ export default function BillingPanel({
                 {filteredRows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-3 py-6 text-center text-slate-400">
-                      No completed jobs match this range/filter.
+                      {clientSearch.trim()
+                        ? "No completed jobs found for this client in the selected date range."
+                        : "No completed jobs match this range/filter."}
                     </td>
                   </tr>
                 ) : (
@@ -247,7 +279,7 @@ export default function BillingPanel({
             </table>
           </div>
 
-          {(data?.reviewNeeded?.length ?? 0) > 0 && (
+          {searchedReviewNeeded.length > 0 && (
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
               <div className="text-xs font-semibold text-amber-800">Past jobs needing completion review</div>
               <p className="text-[11px] text-amber-700 mt-0.5 mb-2">
@@ -255,7 +287,7 @@ export default function BillingPanel({
                 are not included in Completed Jobs or any total above until that&rsquo;s resolved.
               </p>
               <ul className="space-y-1">
-                {data!.reviewNeeded.map((r) => (
+                {searchedReviewNeeded.map((r) => (
                   <li key={r.appointmentId} className="text-[11px] text-amber-800 flex gap-2">
                     <span className="font-medium">{formatDDMMYY(r.serviceDate)}</span>
                     <span>{r.clientName}</span>

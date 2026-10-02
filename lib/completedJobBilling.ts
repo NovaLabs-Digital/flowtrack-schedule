@@ -326,6 +326,20 @@ function isCashPaidWithoutInvoice(row: CompletedJobRow): boolean {
   return isPaid(row) && row.billing?.payment_method === "cash" && !hasInvoiceNumber(row);
 }
 
+// Client-name search (client-side, applied over the already date-range-
+// scoped rows the API returned -- see BillingPanel.tsx). Case-insensitive,
+// partial substring match ("hol" matches "Holly Williams", "tam" matches
+// both "Tammy Owens" and "Tami Factor"). A blank/whitespace-only query
+// matches every row, so the unfiltered case needs no special-casing by
+// callers. Deliberately NOT an all-history search -- it never looks beyond
+// the rows already loaded for the selected date range; widening the range
+// is the owner's existing way to search further back.
+export function matchesClientSearch(clientName: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return clientName.toLowerCase().includes(q);
+}
+
 export function applyBillingStatusFilter(rows: CompletedJobRow[], filter: BillingStatusFilter): CompletedJobRow[] {
   switch (filter) {
     case "missing_invoice":
