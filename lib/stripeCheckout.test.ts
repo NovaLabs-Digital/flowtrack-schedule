@@ -75,6 +75,16 @@ describe("one trial per workspace -- resolved server-side, never from client inp
     assert.equal(createCalls[0].params.subscription_data?.metadata?.workspace_id, WORKSPACE_ID);
   });
 
+  test("allow_promotion_codes is true regardless of trial eligibility -- the customer can type a code, none is ever preset", async () => {
+    const { client: clientA, createCalls: callsA } = fakeStripeClient();
+    const { client: clientB, createCalls: callsB } = fakeStripeClient();
+    await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, clientA, PRICE_ID, true);
+    await resolveOrCreateCheckoutSession(WORKSPACE_ID, SUBSCRIPTION_ROW_ID, CUSTOMER_ID, clientB, PRICE_ID, false);
+    assert.equal(callsA[0].params.allow_promotion_codes, true);
+    assert.equal(callsB[0].params.allow_promotion_codes, true);
+    assert.equal("discounts" in callsA[0].params, false);
+  });
+
   test("the idempotency key is identical regardless of trial eligibility -- eligibility does not create a second concurrency path", async () => {
     const { client: clientA, createCalls: callsA } = fakeStripeClient();
     const { client: clientB, createCalls: callsB } = fakeStripeClient();

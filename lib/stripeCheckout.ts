@@ -149,6 +149,13 @@ function buildSessionParams(
     },
     metadata: { workspace_id: workspaceId },
     payment_method_collection: "always",
+    // Lets the customer type a promotion code on the Checkout page itself
+    // (e.g. a live Stripe coupon/promotion code). This only reveals the
+    // field -- it does not select, validate, or apply any code on our
+    // behalf, and no code is ever set here. Discounting is entirely up to
+    // what the customer enters and what Stripe's own promotion-code rules
+    // allow.
+    allow_promotion_codes: true,
     success_url: `${appUrl}/dashboard?settings=subscription&checkout=success`,
     cancel_url: `${appUrl}/dashboard?settings=subscription&checkout=cancelled`,
   };
