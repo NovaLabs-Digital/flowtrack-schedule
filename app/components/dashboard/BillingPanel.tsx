@@ -313,12 +313,28 @@ export default function BillingPanel({
 // "DD/MM/YY" -- see this file's own investigation note), so the real
 // input is kept but visually invisible (opacity-0, stacked on top via the
 // relative/absolute pairing below) while a decorative span underneath
-// shows the DD/MM/YY text the owner actually sees. Clicking anywhere in
-// the box hits the real (invisible) input on top, which opens the native
-// picker exactly as before -- nothing about selection, keyboard access,
-// or the underlying "YYYY-MM-DD" value changes. aria-hidden on the
-// decorative span prevents a screen reader from announcing the date
-// twice (once for the real input, once for the visible text).
+// shows the DD/MM/YY text the owner actually sees. The decorative span is
+// pointer-events-none AND (being a non-positioned flex item under a
+// position:absolute, z-10 sibling) already painted BELOW the real input in
+// stacking order, so it was never actually the thing swallowing clicks.
+//
+// Real root cause of "clicking directly on the digits doesn't open the
+// picker, but clicking beside them does": a native <input type="date">
+// only OPENS the calendar dropdown when the click lands on the browser's
+// own built-in calendar-icon affordance (::-webkit-calendar-picker-indicator)
+// -- by default a small ~20px hotspot pinned to the input's right edge.
+// Clicking anywhere else inside the input (e.g. over a date segment) just
+// moves keyboard focus/selection into that segment; it never opens the
+// dropdown. Because the real input is invisible (opacity-0), the owner has
+// no way to see where that small native hotspot actually is, and it
+// usually does NOT line up with where the decorative DD/MM/YY text sits.
+// The fix expands that same pseudo-element to cover the ENTIRE input
+// (inset-0/w-full/h-full) so every point inside the box -- including
+// directly over the visible digits -- is the native "open calendar"
+// hotspot, not just a sliver of it. This is Chromium/WebKit-specific
+// (Firefox has no equivalent pseudo-element to target); Firefox's own
+// native date-input affordance already spans more of the box by default,
+// so this is a progressive enhancement, not a regression there.
 function DateField({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) {
   return (
     <span className="relative inline-flex">
@@ -327,7 +343,7 @@ function DateField({ value, onChange, label }: { value: string; onChange: (v: st
         value={value}
         onChange={(e) => onChange(e.target.value)}
         aria-label={label}
-        className="absolute inset-0 z-10 w-full h-full opacity-0 cursor-pointer"
+        className="absolute inset-0 z-10 w-full h-full opacity-0 cursor-pointer [&::-webkit-calendar-picker-indicator]:absolute [&::-webkit-calendar-picker-indicator]:inset-0 [&::-webkit-calendar-picker-indicator]:m-0 [&::-webkit-calendar-picker-indicator]:h-full [&::-webkit-calendar-picker-indicator]:w-full [&::-webkit-calendar-picker-indicator]:cursor-pointer"
       />
       <span
         aria-hidden="true"

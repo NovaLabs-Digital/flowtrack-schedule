@@ -153,6 +153,45 @@ describe("BillingPanel -- DD/MM/YY display formatting (display only -- storage/q
   });
 });
 
+describe("BillingPanel -- From/To date fields are clickable across their whole visible area (bug: clicking directly on the DD/MM/YY digits did not open the native picker)", () => {
+  test("the decorative DD/MM/YY overlay stays aria-hidden and pointer-events-none, so it never becomes the thing intercepting clicks", async () => {
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    const decoratives = screen.getAllByText(/^\d{2}\/\d{2}\/\d{2}$/);
+    assert.equal(decoratives.length, 2, "both the From and To decorative spans");
+    for (const decorative of decoratives) {
+      assert.equal(decorative.getAttribute("aria-hidden"), "true");
+      assert.ok(decorative.className.includes("pointer-events-none"));
+    }
+  });
+
+  test("the real native date input is expanded to cover its own calendar-picker-indicator across its full area, so every point inside the box -- not just a corner -- opens the native picker", async () => {
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    const dateInputs = document.querySelectorAll('input[type="date"]');
+    assert.equal(dateInputs.length, 2);
+    for (const input of dateInputs) {
+      const cls = (input as HTMLInputElement).className;
+      assert.ok(cls.includes("[&::-webkit-calendar-picker-indicator]:absolute"));
+      assert.ok(cls.includes("[&::-webkit-calendar-picker-indicator]:inset-0"));
+      assert.ok(cls.includes("[&::-webkit-calendar-picker-indicator]:h-full"));
+      assert.ok(cls.includes("[&::-webkit-calendar-picker-indicator]:w-full"));
+    }
+  });
+
+  test("the real input still carries the correct ISO value underneath (fix is click-target only, not a value/parsing change)", async () => {
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    const dateInputs = document.querySelectorAll('input[type="date"]');
+    for (const input of dateInputs) {
+      assert.match((input as HTMLInputElement).value, /^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+});
+
 describe("BillingPanel -- client-name search (client-side, scoped to the selected date range)", () => {
   test("the search input renders with the expected placeholder and no submit button", async () => {
     responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];
