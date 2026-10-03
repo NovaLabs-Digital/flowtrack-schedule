@@ -390,6 +390,125 @@ describe("BillingPanel -- inline editing", () => {
   });
 });
 
+// Real production bug: Beth Holcomb, three completed jobs sharing invoice
+// 13422. The database (migration 033's upsert_completed_job_billing) was
+// already correctly synchronizing paid/payment_method across all three
+// rows, but this panel applied a PATCH response to only the row that
+// triggered it, leaving the other two -- and the Unpaid $ summary derived
+// from all of them -- visibly stale until a full page reload. Fixed via
+// applyGroupedBillingUpdate (lib/completedJobBilling.ts), applied to local
+// state with NO second fetch -- every GET-call-count assertion below is
+// there specifically to prove that.
+describe("BillingPanel -- grouped-invoice sync (fix for stale sibling rows after a Paid/payment-method edit)", () => {
+  const BETH_1 = {
+    appointmentId: "appt-beth-1", serviceDate: "2026-06-24", scheduledFor: "2026-06-24T13:00:00.000Z",
+    clientId: "client-beth", clientName: "Beth Holcomb", serviceType: "Regular Cleaning", priceCents: 10000,
+    billing: { id: "b-beth-1", workspace_id: "w1", appointment_id: "appt-beth-1", client_id: "client-beth", invoice_number: "13422", paid: false, payment_method: null, created_at: "x", updated_at: "x" },
+  };
+  const BETH_2 = { ...BETH_1, appointmentId: "appt-beth-2", billing: { ...BETH_1.billing, id: "b-beth-2", appointment_id: "appt-beth-2" } };
+  const BETH_3 = { ...BETH_1, appointmentId: "appt-beth-3", billing: { ...BETH_1.billing, id: "b-beth-3", appointment_id: "appt-beth-3" } };
+  // Same client as Beth, a DIFFERENT invoice number -- must never be synced.
+  const BETH_UNRELATED_INVOICE = {
+    ...BETH_1, appointmentId: "appt-beth-unrelated",
+    billing: { ...BETH_1.billing, id: "b-beth-unrelated", appointment_id: "appt-beth-unrelated", invoice_number: "99999" },
+  };
+  // A DIFFERENT client whose invoice number happens to be the identical
+  // text "13422" -- must never be synced, even though the text matches.
+  const OTHER_CLIENT_SAME_INVOICE_NUMBER = {
+    appointmentId: "appt-nancy", serviceDate: "2026-06-25", scheduledFor: "2026-06-25T13:00:00.000Z",
+    clientId: "client-nancy", clientName: "Nancy Oduya", serviceType: "Lawn Mowing", priceCents: 10000,
+    billing: { id: "b-nancy", workspace_id: "w1", appointment_id: "appt-nancy", client_id: "client-nancy", invoice_number: "13422", paid: false, payment_method: null, created_at: "x", updated_at: "x" },
+  };
+
+  test("marking one grouped-invoice row Paid (with a payment method) immediately updates every sibling row's checkbox AND payment-method select, recalculates Unpaid $, and never issues a second fetch", async () => {
+    responses = [
+      json(200, { completed: [BETH_1, BETH_2, BETH_3, BETH_UNRELATED_INVOICE, OTHER_CLIENT_SAME_INVOICE_NUMBER], reviewNeeded: [] }),
+      // PATCH 1: set payment_method on appt-beth-1 (paid still false) --
+      // the database syncs payment_method onto the whole group regardless
+      // of paid, exactly like the real upsert_completed_job_billing already
+      // does (proven in test-db/completed_job_billing.test.ts).
+      json(200, { ok: true, billing: { ...BETH_1.billing, payment_method: "zelle" } }),
+      // PATCH 2: check Paid on appt-beth-1 -- server merges onto the
+      // payment_method the previous save already set.
+      json(200, { ok: true, billing: { ...BETH_1.billing, paid: true, payment_method: "zelle" } }),
+    ];
+    renderPanel();
+    await screen.findAllByText("Beth Holcomb");
+
+    const u = userEvent.setup();
+    const selects = screen.getAllByRole("combobox"); // [0] = status filter, [1..5] = one per row, in fetch order
+    const checkboxes = screen.getAllByRole("checkbox");
+    assert.equal(selects.length, 6);
+    assert.equal(checkboxes.length, 5);
+
+    await u.selectOptions(selects[1], "zelle"); // appt-beth-1's payment method
+    await waitFor(() => assert.equal(calls.length, 2));
+
+    // Payment method synced onto both OTHER Beth rows sharing invoice
+    // 13422, even though paid hasn't changed yet.
+    assert.equal((selects[1] as HTMLSelectElement).value, "zelle");
+    assert.equal((selects[2] as HTMLSelectElement).value, "zelle");
+    assert.equal((selects[3] as HTMLSelectElement).value, "zelle");
+    // Unrelated invoice (same client) and the other client's identical
+    // invoice-number text must be untouched.
+    assert.equal((selects[4] as HTMLSelectElement).value, "");
+    assert.equal((selects[5] as HTMLSelectElement).value, "");
+    for (const cb of checkboxes) assert.equal((cb as HTMLInputElement).checked, false, "paid must not change from a payment_method-only edit");
+
+    await u.click(checkboxes[0]); // check Paid on appt-beth-1
+    await waitFor(() => assert.equal(calls.length, 3));
+
+    assert.equal((checkboxes[0] as HTMLInputElement).checked, true);
+    assert.equal((checkboxes[1] as HTMLInputElement).checked, true, "sibling appt-beth-2 must show paid immediately");
+    assert.equal((checkboxes[2] as HTMLInputElement).checked, true, "sibling appt-beth-3 must show paid immediately");
+    assert.equal((checkboxes[3] as HTMLInputElement).checked, false, "the unrelated-invoice row must stay unpaid");
+    assert.equal((checkboxes[4] as HTMLInputElement).checked, false, "the other client's row must stay unpaid");
+
+    // 5 rows x $100 = $500 invoiced; the 3-row Beth group ($300) is now
+    // paid, leaving the unrelated-invoice row and the other client's row
+    // ($100 each) still unpaid.
+    const statValue = (label: string) => screen.getByText(label).parentElement!.querySelector("div.font-semibold")!.textContent;
+    assert.equal(statValue("Invoiced $"), "$500.00");
+    assert.equal(statValue("Unpaid $"), "$200.00");
+
+    assert.equal(calls.filter((c) => c.method === "GET").length, 1, "the sync must come from the PATCH response, never a second GET");
+  });
+
+  test("setting the group back to unpaid immediately updates every sibling row, and Unpaid $ rises again -- the reverse direction", async () => {
+    const beth1Paid = { ...BETH_1, billing: { ...BETH_1.billing, paid: true, payment_method: "zelle" } };
+    const beth2Paid = { ...BETH_2, billing: { ...BETH_2.billing, paid: true, payment_method: "zelle" } };
+    const beth3Paid = { ...BETH_3, billing: { ...BETH_3.billing, paid: true, payment_method: "zelle" } };
+
+    responses = [
+      json(200, { completed: [beth1Paid, beth2Paid, beth3Paid, BETH_UNRELATED_INVOICE, OTHER_CLIENT_SAME_INVOICE_NUMBER], reviewNeeded: [] }),
+      // Uncheck Paid on the MIDDLE row -- payment_method is not resent, so
+      // the server keeps the existing "zelle" (matches the real route's
+      // merge behavior), and the sync carries that same unpaid+zelle state
+      // onto every sibling, exactly as already proven against real Postgres.
+      json(200, { ok: true, billing: { ...beth2Paid.billing, paid: false, payment_method: "zelle" } }),
+    ];
+    renderPanel();
+    await screen.findAllByText("Beth Holcomb");
+
+    const checkboxes = screen.getAllByRole("checkbox");
+    assert.equal(checkboxes.length, 5);
+    for (const cb of checkboxes.slice(0, 3)) assert.equal((cb as HTMLInputElement).checked, true, "fixture precondition: all three Beth rows start paid");
+
+    const u = userEvent.setup();
+    await u.click(checkboxes[1]); // uncheck appt-beth-2
+    await waitFor(() => assert.equal(calls.length, 2));
+
+    assert.equal((checkboxes[0] as HTMLInputElement).checked, false, "appt-beth-1 must flip to unpaid too");
+    assert.equal((checkboxes[1] as HTMLInputElement).checked, false);
+    assert.equal((checkboxes[2] as HTMLInputElement).checked, false, "appt-beth-3 must flip to unpaid too");
+
+    const statValue = (label: string) => screen.getByText(label).parentElement!.querySelector("div.font-semibold")!.textContent;
+    assert.equal(statValue("Unpaid $"), "$500.00", "all 5 rows are now unpaid again: the Beth group plus the two isolated rows");
+
+    assert.equal(calls.filter((c) => c.method === "GET").length, 1, "the sync must come from the PATCH response, never a second GET");
+  });
+});
+
 describe("BillingPanel -- read-only mode", () => {
   test("canMutateOperationalData=false disables invoice input, paid checkbox, and payment method select", async () => {
     responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [] })];

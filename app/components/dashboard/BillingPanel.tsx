@@ -7,6 +7,7 @@ import {
   PAYMENT_METHODS,
   BILLING_STATUS_FILTERS,
   applyBillingStatusFilter,
+  applyGroupedBillingUpdate,
   computeBillingSummary,
   matchesClientSearch,
   type BillingStatusFilter,
@@ -151,11 +152,19 @@ export default function BillingPanel({
         setRowErrors((prev) => ({ ...prev, [appointmentId]: body?.error || `Save failed (${res.status})` }));
         return;
       }
+      // Migration 033's upsert_completed_job_billing may have just
+      // synchronized paid/payment_method onto every OTHER row sharing this
+      // invoice group, but the PATCH response only carries the one row it
+      // wrote -- applyGroupedBillingUpdate mirrors that same sync onto this
+      // panel's own already-loaded rows so every visible sibling (and the
+      // summary cards derived from them, via the existing useMemo below)
+      // updates immediately, with no refetch. See its own doc comment
+      // (lib/completedJobBilling.ts) for the production bug this fixes.
       setData((prev) => {
         if (!prev) return prev;
         return {
           ...prev,
-          completed: prev.completed.map((r) => (r.appointmentId === appointmentId ? { ...r, billing: body.billing } : r)),
+          completed: applyGroupedBillingUpdate(prev.completed, body.billing),
         };
       });
     } catch {

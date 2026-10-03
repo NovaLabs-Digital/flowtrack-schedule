@@ -9,10 +9,12 @@ import {
   buildCompletedJobRows,
   buildReviewNeededRows,
   applyBillingStatusFilter,
+  applyGroupedBillingUpdate,
   computeBillingSummary,
   isValidPaymentMethod,
   matchesClientSearch,
   type CompletedJobBilling,
+  type CompletedJobRow,
 } from "./completedJobBilling.ts";
 import type { Appointment, Client, AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 
@@ -588,5 +590,118 @@ describe("Holly Williams -- paid Cash, no invoice (real production rule)", () =>
     assert.equal(rows[0].billing?.paid, true);
     assert.equal(rows[0].billing?.invoice_number, null);
     assert.equal(rows[0].billing?.payment_method, "cash");
+  });
+});
+
+// Real production bug: Beth Holcomb, three completed jobs sharing invoice
+// 13422. The database (migration 033's upsert_completed_job_billing) was
+// already correctly synchronizing paid/payment_method across all three rows
+// -- confirmed by the real-Postgres suite in test-db/completed_job_billing.test.ts
+// -- but BillingPanel applied the PATCH response to only the one row that
+// triggered it, leaving the other two (and the Unpaid $ summary) visibly
+// stale until a full page reload. applyGroupedBillingUpdate is the fix: see
+// its own doc comment (lib/completedJobBilling.ts) for why this syncs
+// client-side instead of triggering a second fetch.
+describe("applyGroupedBillingUpdate", () => {
+  function row(overrides: Partial<CompletedJobRow> = {}): CompletedJobRow {
+    return {
+      appointmentId: "appt-1",
+      serviceDate: "2026-06-24",
+      scheduledFor: "2026-06-24T13:00:00.000Z",
+      clientId: "client-beth",
+      clientName: "Beth Holcomb",
+      serviceType: "Regular Cleaning",
+      priceCents: 10000,
+      billing: billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422" }),
+      ...overrides,
+    };
+  }
+
+  test("the edited row itself is replaced with the full server-returned billing object, not just merged", () => {
+    const rows = [row()];
+    const updated = billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "zelle" });
+    const result = applyGroupedBillingUpdate(rows, updated);
+    assert.deepEqual(result[0].billing, updated);
+  });
+
+  test("marking one grouped-invoice row Paid (with a payment method) synchronizes paid + payment_method onto every sibling row sharing the same client_id + invoice_number", () => {
+    const rows = [
+      row({ appointmentId: "appt-1", billing: billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: false, payment_method: null }) }),
+      row({ appointmentId: "appt-2", billing: billing({ appointment_id: "appt-2", client_id: "client-beth", invoice_number: "13422", paid: false, payment_method: null }) }),
+      row({ appointmentId: "appt-3", billing: billing({ appointment_id: "appt-3", client_id: "client-beth", invoice_number: "13422", paid: false, payment_method: null }) }),
+    ];
+    const updated = billing({ appointment_id: "appt-2", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "zelle" });
+
+    const result = applyGroupedBillingUpdate(rows, updated);
+
+    for (const r of result) {
+      assert.equal(r.billing?.paid, true, `${r.appointmentId} must be marked paid`);
+      assert.equal(r.billing?.payment_method, "zelle", `${r.appointmentId} must carry the group's payment method`);
+    }
+  });
+
+  test("setting the group back to unpaid synchronizes unpaid across every sibling row", () => {
+    const rows = [
+      row({ appointmentId: "appt-1", billing: billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) }),
+      row({ appointmentId: "appt-2", billing: billing({ appointment_id: "appt-2", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) }),
+    ];
+    const updated = billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: false, payment_method: "zelle" });
+
+    const result = applyGroupedBillingUpdate(rows, updated);
+
+    for (const r of result) {
+      assert.equal(r.billing?.paid, false, `${r.appointmentId} must be marked unpaid`);
+    }
+  });
+
+  test("a sibling row's own id/created_at/updated_at are preserved -- only paid and payment_method are synced onto it", () => {
+    const siblingBilling = billing({ id: "bill-sibling", appointment_id: "appt-2", client_id: "client-beth", invoice_number: "13422", created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" });
+    const rows = [row({ appointmentId: "appt-2", billing: siblingBilling })];
+    const updated = billing({ id: "bill-1", appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "check" });
+
+    const result = applyGroupedBillingUpdate(rows, updated);
+
+    assert.equal(result[0].billing?.id, "bill-sibling", "the sibling's own row identity must not be overwritten with the edited row's");
+    assert.equal(result[0].billing?.created_at, "2026-01-01T00:00:00.000Z");
+    assert.equal(result[0].billing?.paid, true);
+    assert.equal(result[0].billing?.payment_method, "check");
+  });
+
+  test("a DIFFERENT (unrelated) invoice number for the SAME client is never touched", () => {
+    const rows = [row({ appointmentId: "appt-unrelated", clientId: "client-beth", billing: billing({ appointment_id: "appt-unrelated", client_id: "client-beth", invoice_number: "99999", paid: false, payment_method: null }) })];
+    const updated = billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "zelle" });
+
+    const result = applyGroupedBillingUpdate(rows, updated);
+
+    assert.equal(result[0].billing?.paid, false, "an unrelated invoice number for the same client must be untouched");
+    assert.equal(result[0].billing?.payment_method, null);
+  });
+
+  test("the same invoice number belonging to a DIFFERENT client is never touched, even though the text matches exactly", () => {
+    const rows = [row({ appointmentId: "appt-other-client", clientId: "client-nancy", clientName: "Nancy Oduya", billing: billing({ appointment_id: "appt-other-client", client_id: "client-nancy", invoice_number: "13422", paid: false, payment_method: null }) })];
+    const updated = billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "zelle" });
+
+    const result = applyGroupedBillingUpdate(rows, updated);
+
+    assert.equal(result[0].billing?.paid, false, "a different client's row must never be synced, even with the identical invoice_number text");
+    assert.equal(result[0].billing?.payment_method, null);
+  });
+
+  test("a Cash/no-invoice update (invoice_number null) never syncs onto any other row", () => {
+    const rows = [row({ appointmentId: "appt-invoiced", billing: billing({ appointment_id: "appt-invoiced", client_id: "client-beth", invoice_number: "13422", paid: false, payment_method: null }) })];
+    const updated = billing({ appointment_id: "appt-cash", client_id: "client-beth", invoice_number: null, paid: true, payment_method: "cash" });
+
+    const result = applyGroupedBillingUpdate(rows, updated);
+
+    assert.equal(result[0].billing?.paid, false, "a cash/no-invoice save must never leak onto an invoiced sibling");
+  });
+
+  test("a row with no billing yet (billing: null) is left completely untouched by a sibling sync it doesn't belong to", () => {
+    const rows = [row({ appointmentId: "appt-no-billing", billing: null })];
+    const updated = billing({ appointment_id: "appt-1", client_id: "client-beth", invoice_number: "13422", paid: true, payment_method: "zelle" });
+
+    const result = applyGroupedBillingUpdate(rows, updated);
+
+    assert.equal(result[0].billing, null);
   });
 });

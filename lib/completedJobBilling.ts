@@ -259,6 +259,52 @@ export function buildCompletedJobRows({
   return rows;
 }
 
+// Applies a just-saved billing row to the full list of already-loaded
+// Billing / Completed Jobs rows, syncing it onto every OTHER row that
+// shares the same invoice group -- mirrors, client-side, exactly what
+// upsert_completed_job_billing (migration 033) already does atomically in
+// the database: a PATCH only ever returns the ONE row it wrote
+// (RETURNING * INTO v_row), even though the function's own sibling-sync
+// UPDATE may have just changed paid/payment_method on every other row
+// sharing (workspace_id, client_id, invoice_number). Real production bug
+// (Beth Holcomb, three jobs on invoice 13422): the database was already
+// correctly synchronized, but BillingPanel applied the PATCH response to
+// only the one row that triggered it, leaving the other two rows -- and
+// the Unpaid $ summary derived from all of them -- visibly stale until a
+// full page reload. This function (not a refetch) is the fix: given the
+// list of rows the panel already has loaded, it updates the edited row
+// with the full server response, AND syncs paid/payment_method onto every
+// sibling whose clientId and invoice_number match -- so no second network
+// round trip is needed, and nothing depends on the currently-selected date
+// range still including every sibling's own appointment.
+//
+// Scoped identically to the database function: clientId must match
+// EXACTLY (never a different client, even one that happens to share the
+// same invoice_number text -- see migration 033's own header for why that
+// is a real, intentional scenario to guard against, not a hypothetical
+// one) and a null invoice_number never triggers any sibling sync (a
+// cash/no-invoice save only ever updates its own row). Workspace isolation
+// needs no explicit check here: every row already loaded into this list
+// came from one GET request already scoped server-side to the caller's own
+// workspace, so a cross-workspace sibling can never even be present in
+// `rows` to begin with.
+export function applyGroupedBillingUpdate(rows: CompletedJobRow[], updated: CompletedJobBilling): CompletedJobRow[] {
+  return rows.map((row) => {
+    if (row.appointmentId === updated.appointment_id) {
+      return { ...row, billing: updated };
+    }
+    if (
+      updated.invoice_number !== null &&
+      row.clientId === updated.client_id &&
+      row.billing !== null &&
+      row.billing.invoice_number === updated.invoice_number
+    ) {
+      return { ...row, billing: { ...row.billing, paid: updated.paid, payment_method: updated.payment_method } };
+    }
+    return row;
+  });
+}
+
 // Builds the secondary "Past jobs needing completion review" list for the
 // same date range -- see needsCompletionReview's own doc comment for
 // exactly what qualifies and why these rows are kept separate.
