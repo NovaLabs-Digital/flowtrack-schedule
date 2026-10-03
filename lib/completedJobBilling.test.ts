@@ -536,6 +536,27 @@ describe("computeBillingSummary", () => {
   test("an empty list produces all-zero totals, not an error", () => {
     assert.deepEqual(computeBillingSummary([]), { completedJobs: 0, completedWorkCents: 0, invoicedCents: 0, unpaidCents: 0 });
   });
+
+  // Migration 033 (Beth Holcomb, three jobs under one invoice, marked Paid
+  // as a group via upsert_completed_job_billing -- see
+  // app/api/billing/completed-jobs/update/route.ts and
+  // test-db/completed_job_billing.test.ts for where the actual sync is
+  // proven). This function itself knows nothing about "invoice groups" --
+  // it only sums per-row paid/invoice_number exactly as before. This test
+  // proves that once the underlying rows are ACTUALLY synced (which is the
+  // whole point of migration 033), the existing summary math produces the
+  // correct result on its own, with no group-aware logic needed here: none
+  // of a paid grouped invoice's rows leak into Unpaid $.
+  test("once a shared-invoice group's rows are synced consistently (paid), none of them appear in Unpaid $ -- Invoiced $ reflects the whole group", () => {
+    const job1 = { appointmentId: "beth-1", serviceDate: "2026-06-24", scheduledFor: "x", clientId: "beth", clientName: "Beth Holcomb", serviceType: "Regular Cleaning", priceCents: 12000, billing: billing({ appointment_id: "beth-1", client_id: "beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) };
+    const job2 = { ...job1, appointmentId: "beth-2", serviceDate: "2026-07-08", priceCents: 12000, billing: billing({ appointment_id: "beth-2", client_id: "beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) };
+    const job3 = { ...job1, appointmentId: "beth-3", serviceDate: "2026-07-22", priceCents: 12000, billing: billing({ appointment_id: "beth-3", client_id: "beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) };
+
+    const summary = computeBillingSummary([job1, job2, job3]);
+    assert.equal(summary.completedWorkCents, 36000);
+    assert.equal(summary.invoicedCents, 36000, "the whole group is invoiced");
+    assert.equal(summary.unpaidCents, 0, "every row in the paid group must be excluded from Unpaid $, not just some of them");
+  });
 });
 
 // Real production rule, end to end: Holly Williams paid Cash with no

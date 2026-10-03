@@ -98,64 +98,82 @@ export async function PATCH(req: Request) {
       payment_method: hasField("payment_method") ? (body.payment_method ?? null) : (existing?.payment_method ?? null),
     };
 
-    const validation = validateBillingState(merged);
-    if (!validation.ok) return json({ error: validation.error }, 400);
-
     // Migration 033: an invoice number MAY repeat across multiple completed
     // jobs for the SAME client (a recurring client's visits are routinely
-    // combined onto one QuickBooks invoice) but must never be silently
-    // reused across DIFFERENT clients in the same workspace. The database
-    // no longer enforces a blanket per-workspace uniqueness on
-    // invoice_number (see migration 033) -- this IS the enforcement, run
-    // only when this request is actually changing invoice_number to a new
-    // non-null value, not on every unrelated paid/payment_method edit.
-    // completed_job_billing has exactly one write path in this application
-    // (this route), so this check is the complete enforcement surface, not
-    // a best-effort fallback in front of a stricter database rule.
+    // combined onto one QuickBooks invoice), but (a) must never be silently
+    // reused across DIFFERENT clients in the same workspace, and (b)
+    // payment status belongs to the INVOICE, not to any one job inside it
+    // -- marking one job in a shared-invoice group Paid must mark every
+    // other job under that same (workspace_id, client_id, invoice_number),
+    // and the reverse when marked back to unpaid. Otherwise Unpaid $ and
+    // reconciliation could show one part of a single QuickBooks invoice as
+    // paid and another part as not.
+    //
+    // Real UI usage edits invoice_number and paid/payment_method in
+    // SEPARATE requests (type an invoice number, tab away; later, tick
+    // Paid) -- so a job can be given an ALREADY-paid invoice's number
+    // without touching Paid in that same request. Left alone, that job
+    // would sit at the group's old per-row default (paid=false) right next
+    // to its now-paid siblings, which is exactly the inconsistent state
+    // this feature exists to prevent. So: when invoice_number is changing
+    // to a new non-null value and this request does NOT also explicitly
+    // set paid/payment_method, the job instead adopts whatever paid/
+    // payment_method its new invoice-mates already agree on.
     const normalizedIncomingInvoiceNumber = hasField("invoice_number") ? normalizeInvoiceNumber(body.invoice_number) : null;
     const invoiceNumberChanged = hasField("invoice_number") && normalizedIncomingInvoiceNumber !== (existing?.invoice_number ?? null);
-    if (invoiceNumberChanged && merged.invoice_number !== null) {
-      const conflictRes = await supabaseAdmin
+    if (invoiceNumberChanged && merged.invoice_number !== null && !hasField("paid") && !hasField("payment_method")) {
+      const siblingRes = await supabaseAdmin
         .from("completed_job_billing")
-        .select("client_id")
+        .select("paid, payment_method")
         .eq("workspace_id", workspaceId)
+        .eq("client_id", appt.client_id)
         .eq("invoice_number", merged.invoice_number)
         .neq("appointment_id", appointment_id)
-        .neq("client_id", appt.client_id)
         .limit(1)
         .maybeSingle();
-      if (conflictRes.error) throw conflictRes.error;
-      if (conflictRes.data) {
-        return json({ error: "That invoice number is already used by a different client in this workspace." }, 409);
+      if (siblingRes.error) throw siblingRes.error;
+      if (siblingRes.data) {
+        merged.paid = siblingRes.data.paid as boolean;
+        merged.payment_method = siblingRes.data.payment_method as string | null;
       }
     }
 
-    const { data, error } = await supabaseAdmin
-      .from("completed_job_billing")
-      .upsert(
-        {
-          workspace_id: workspaceId,
-          appointment_id,
-          client_id: appt.client_id,
-          invoice_number: merged.invoice_number,
-          paid: merged.paid,
-          payment_method: merged.payment_method,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "appointment_id" }
-      )
-      .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
-      .single();
+    // Validated against the FINAL merged state -- after the inherit-from-
+    // group step above, not before -- since "paid requires a payment
+    // method" is a property of what will actually be written, including
+    // any inherited values. Inherited values always come from an already-
+    // valid sibling row, so this can never newly fail here in practice,
+    // but checking the true final state is the correct contract regardless.
+    const validation = validateBillingState(merged);
+    if (!validation.ok) return json({ error: validation.error }, 400);
+
+    // The sole write path for this table (migration 033's
+    // upsert_completed_job_billing): in one transaction, it rejects a
+    // cross-client invoice-number conflict, upserts this row, and -- when
+    // invoice_number is non-null -- synchronizes paid/payment_method onto
+    // every other row sharing the exact same (workspace_id, client_id,
+    // invoice_number). A direct two-step upsert-then-sync from here would
+    // risk leaving the group half-updated if the second step failed; doing
+    // both inside the function keeps it atomic.
+    const { data, error } = await supabaseAdmin.rpc("upsert_completed_job_billing", {
+      p_workspace_id: workspaceId,
+      p_appointment_id: appointment_id,
+      p_client_id: appt.client_id,
+      p_invoice_number: merged.invoice_number,
+      p_paid: merged.paid,
+      p_payment_method: merged.payment_method,
+    });
 
     if (error) {
-      // 23505 = unique_violation. No DB-level uniqueness on invoice_number
-      // remains as of migration 033 (see the cross-client check above,
-      // which is the real enforcement) -- this branch is kept purely as a
-      // defensive backstop for an unexpected constraint violation (e.g. the
-      // untouched appointment_id UNIQUE), translated into a clear message
-      // rather than a raw database error, never left to surface the actual
-      // SQL/constraint name to the owner.
-      if ((error as { code?: string }).code === "23505") {
+      const code = (error as { code?: string }).code;
+      const message = (error as { message?: string }).message || "";
+      if (code === "23505" && message.includes("completed_job_billing_invoice_number_different_client")) {
+        return json({ error: "That invoice number is already used by a different client in this workspace." }, 409);
+      }
+      // Any other 23505 = unique_violation (e.g. the untouched
+      // appointment_id UNIQUE, in a genuine race) -- defensive backstop,
+      // translated into a clear message rather than a raw database error.
+      if (code === "23505") {
         return json({ error: "That invoice number is already used by another job in this workspace." }, 409);
       }
       throw error;
