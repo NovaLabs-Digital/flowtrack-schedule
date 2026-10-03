@@ -129,9 +129,25 @@ describe("migration 033 (PHASE 1) -- upsert_completed_job_billing is the one wri
     assert.ok(!upperCodeSql.includes("SECURITY DEFINER"));
   });
 
-  test("execution is revoked from authenticated and granted only to service_role, matching every other write-capable function in this schema", () => {
-    assert.ok(sql.includes("REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM authenticated;"));
-    assert.ok(sql.includes("GRANT EXECUTE ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) TO service_role;"));
+  test("execution is explicitly revoked from PUBLIC, anon, AND authenticated, and granted only to service_role -- matching every other write-capable function in this schema (provision_owner_workspace, apply_recurrence_change, record_job_action, save_employee_hours, etc.)", () => {
+    // PostgreSQL grants EXECUTE on a new function to PUBLIC by default; a
+    // REVOKE naming only `authenticated` does NOT remove that -- every role
+    // is implicitly a member of PUBLIC. This was found as a real permission
+    // leak during production verification of this exact migration (PUBLIC,
+    // anon, postgres, and service_role all showed EXECUTE before the fix).
+    assert.ok(sql.includes("REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM PUBLIC;"), "must explicitly revoke the default PUBLIC grant");
+    assert.ok(sql.includes("REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM anon;"), "must explicitly revoke anon");
+    assert.ok(sql.includes("REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM authenticated;"), "must explicitly revoke authenticated");
+    assert.ok(sql.includes("GRANT EXECUTE ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) TO service_role;"), "must grant EXECUTE only to service_role");
+
+    // Order matters for readability/intent (matches migrations 017/029/030/031's
+    // own convention): PUBLIC, then anon, then authenticated, then the GRANT.
+    const publicIdx = codeSql.indexOf("FROM PUBLIC");
+    const anonIdx = codeSql.indexOf("FROM anon");
+    const authenticatedIdx = codeSql.indexOf("FROM authenticated");
+    const grantIdx = codeSql.indexOf("GRANT EXECUTE ON FUNCTION upsert_completed_job_billing");
+    assert.ok(publicIdx >= 0 && anonIdx >= 0 && authenticatedIdx >= 0 && grantIdx >= 0);
+    assert.ok(publicIdx < anonIdx && anonIdx < authenticatedIdx && authenticatedIdx < grantIdx);
   });
 
   test("rejects a different client reusing the same invoice number in the same workspace with a distinguishable, catchable error -- BEFORE writing anything", () => {

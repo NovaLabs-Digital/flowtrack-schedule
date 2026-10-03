@@ -280,6 +280,18 @@ BEGIN
 END;
 $$;
 
+-- PostgreSQL grants EXECUTE on every newly created function to PUBLIC by
+-- default -- a REVOKE naming only `authenticated` (an earlier version of
+-- this file) does NOT remove that default PUBLIC grant, and since every
+-- role is implicitly a member of PUBLIC, anon/authenticated would still be
+-- able to call this function through it. Found during production
+-- verification of this exact migration and corrected here to match every
+-- other write-capable function in this schema (provision_owner_workspace,
+-- apply_recurrence_change, record_job_action, save_employee_hours, etc.),
+-- all of which explicitly revoke PUBLIC, anon, AND authenticated before
+-- granting only to service_role.
+REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM anon;
 REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM authenticated;
 GRANT EXECUTE ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) TO service_role;
 
