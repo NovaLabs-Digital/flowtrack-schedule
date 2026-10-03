@@ -120,7 +120,7 @@ export async function GET(req: Request) {
           .in("appointment_id", apptIds),
         supabaseAdmin
           .from("completed_job_billing")
-          .select("id, workspace_id, appointment_id, invoice_number, paid, payment_method, created_at, updated_at")
+          .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
           .eq("workspace_id", workspaceId)
           .in("appointment_id", apptIds),
         fetchEmployeeHoursForAppointments(apptIds, workspaceId),

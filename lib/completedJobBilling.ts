@@ -60,10 +60,18 @@ export function isValidPaymentMethod(value: unknown): value is PaymentMethod {
 }
 
 // The completed_job_billing table row, as the API returns it.
+//
+// client_id (migration 033): denormalized from the owning appointment at
+// write time, so the API's own invoice-number/client-conflict check (see
+// app/api/billing/completed-jobs/update/route.ts) never needs a join. Not
+// DB-enforced NOT NULL (see migration 033's own comment for why), but
+// always populated by the one write path this table has -- every row this
+// application itself ever creates or has backfilled carries a real value.
 export type CompletedJobBilling = {
   id: string;
   workspace_id: string;
   appointment_id: string;
+  client_id: string;
   invoice_number: string | null;
   paid: boolean;
   payment_method: PaymentMethod | null;

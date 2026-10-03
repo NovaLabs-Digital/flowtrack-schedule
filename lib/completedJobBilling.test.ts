@@ -69,6 +69,7 @@ function billing(overrides: Partial<CompletedJobBilling> = {}): CompletedJobBill
     id: "bill-1",
     workspace_id: "ws-1",
     appointment_id: "appt-1",
+    client_id: "client-1",
     invoice_number: null,
     paid: false,
     payment_method: null,

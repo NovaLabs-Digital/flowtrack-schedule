@@ -45,7 +45,7 @@ const OWNER_SESSION = { role: "owner", workspaceId: REAL_WORKSPACE_ID, authUserI
 const MEMBERSHIP = { workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }] };
 const ACTIVE = { ...MEMBERSHIP, subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }] };
 
-const COMPLETED_APPT_ROW = { id: "appt-1", workspace_id: REAL_WORKSPACE_ID, is_demo: false, status: "scheduled" };
+const COMPLETED_APPT_ROW = { id: "appt-1", workspace_id: REAL_WORKSPACE_ID, is_demo: false, status: "scheduled", client_id: "client-beth" };
 const COMPLETE_ASSIGNMENT = {
   id: "ae-1", appointment_id: "appt-1", employee_id: "emp-1",
   actual_started_at: "2026-08-12T13:00:00.000Z", actual_completed_at: "2026-08-12T14:00:00.000Z",
@@ -61,9 +61,13 @@ const OWNER_HOURS_OVERRIDE = {
 };
 
 const SAVED_ROW = {
-  id: "bill-1", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-1",
+  id: "bill-1", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-1", client_id: "client-beth",
   invoice_number: "INV-1", paid: false, payment_method: null, created_at: "x", updated_at: "x",
 };
+// No conflicting row for the cross-client invoice-number check (migration
+// 033) -- the default "nothing else uses this invoice number for a
+// different client" result.
+const NO_INVOICE_CONFLICT = { data: null };
 
 function completeAppointmentFixtures(extra: Record<string, FakeSupabaseFixture[]> = {}) {
   return {
@@ -186,7 +190,7 @@ describe("PATCH /api/billing/completed-jobs/update -- appointment lookup / compl
       appointments: [{ data: COMPLETED_APPT_ROW }],
       appointment_employees: [{ data: [UNTRACKED_ASSIGNMENT] }],
       appointment_employee_hours: [{ data: [OWNER_HOURS_OVERRIDE] }],
-      completed_job_billing: [{ data: null }, { data: SAVED_ROW }],
+      completed_job_billing: [{ data: null }, NO_INVOICE_CONFLICT, { data: SAVED_ROW }],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
@@ -253,36 +257,31 @@ describe("PATCH /api/billing/completed-jobs/update -- paid requires payment_meth
 
 describe("PATCH /api/billing/completed-jobs/update -- invoice number normalization + persistence", () => {
   test("invoice_number is trimmed before being written", async () => {
-    resetFixtures(completeAppointmentFixtures({ completed_job_billing: [{ data: null }, { data: SAVED_ROW }] }));
+    resetFixtures(completeAppointmentFixtures({ completed_job_billing: [{ data: null }, NO_INVOICE_CONFLICT, { data: SAVED_ROW }] }));
     sessionToReturn = OWNER_SESSION;
     await PATCH(req({ appointment_id: "appt-1", invoice_number: "  INV-1  " }));
     const upsertCall = currentFake.calls.find((c) => c.table === "completed_job_billing" && c.method === "upsert");
     assert.equal((upsertCall!.args[0] as any).invoice_number, "INV-1");
+    assert.equal((upsertCall!.args[0] as any).client_id, "client-beth", "client_id is always derived from the appointment, never client-supplied");
   });
 
-  test("a blank invoice_number normalizes to null, not an empty string", async () => {
+  test("a blank invoice_number normalizes to null, not an empty string -- no conflict check runs for a null value", async () => {
     resetFixtures(completeAppointmentFixtures({ completed_job_billing: [{ data: null }, { data: { ...SAVED_ROW, invoice_number: null } }] }));
     sessionToReturn = OWNER_SESSION;
     await PATCH(req({ appointment_id: "appt-1", invoice_number: "   " }));
     const upsertCall = currentFake.calls.find((c) => c.table === "completed_job_billing" && c.method === "upsert");
     assert.equal((upsertCall!.args[0] as any).invoice_number, null);
+    // Exactly one completed_job_billing SELECT (the existing-row read) --
+    // confirms the conflict-check query is skipped entirely for a null
+    // value. Counted via maybeSingle() specifically (not a raw table-name
+    // filter) because every chained .eq()/.neq()/etc. call on the fake
+    // query builder records its own entry -- maybeSingle() is the one
+    // terminal call both the existing-row read and the conflict check
+    // share (the upsert itself terminates in .single(), not .maybeSingle()).
+    assert.equal(currentFake.calls.filter((c) => c.table === "completed_job_billing" && c.method === "maybeSingle").length, 1);
   });
 
-  test("a duplicate invoice number within the workspace (unique_violation, 23505) is translated into a clear, owner-friendly 409", async () => {
-    resetFixtures(
-      completeAppointmentFixtures({
-        completed_job_billing: [{ data: null }, { error: { code: "23505", message: 'duplicate key value violates unique constraint "idx_completed_job_billing_workspace_invoice_number"' } }],
-      })
-    );
-    sessionToReturn = OWNER_SESSION;
-    const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-DUPLICATE" }));
-    assert.equal(res.status, 409);
-    const body = await res.json();
-    assert.equal(body.error, "That invoice number is already used by another job in this workspace.");
-    assert.doesNotMatch(body.error, /constraint|sql|23505/i);
-  });
-
-  test("updating only paid (invoice_number absent from the request) keeps the existing invoice_number unchanged", async () => {
+  test("updating only paid (invoice_number absent from the request) keeps the existing invoice_number unchanged and never runs the conflict check", async () => {
     resetFixtures(
       completeAppointmentFixtures({
         completed_job_billing: [{ data: { ...SAVED_ROW, invoice_number: "INV-KEEP-ME" } }, { data: SAVED_ROW }],
@@ -292,12 +291,78 @@ describe("PATCH /api/billing/completed-jobs/update -- invoice number normalizati
     await PATCH(req({ appointment_id: "appt-1", paid: false }));
     const upsertCall = currentFake.calls.find((c) => c.table === "completed_job_billing" && c.method === "upsert");
     assert.equal((upsertCall!.args[0] as any).invoice_number, "INV-KEEP-ME");
+    // See the comment on the equivalent assertion above -- maybeSingle()
+    // count, not raw call count, is what distinguishes "conflict check ran"
+    // from "it didn't."
+    assert.equal(currentFake.calls.filter((c) => c.table === "completed_job_billing" && c.method === "maybeSingle").length, 1);
+  });
+});
+
+// Migration 033 / the business rule under test in this file: an invoice
+// number MAY repeat for the SAME client, but must never be silently reused
+// across DIFFERENT clients in the same workspace. See
+// app/api/billing/completed-jobs/update/route.ts's own comment for why this
+// is enforced here (application layer) rather than by a database
+// constraint.
+describe("PATCH /api/billing/completed-jobs/update -- same invoice number, cross-client validation (migration 033)", () => {
+  test("same invoice number, SAME client (Beth Holcomb, two completed jobs, one QuickBooks invoice) -- succeeds", async () => {
+    resetFixtures(
+      completeAppointmentFixtures({
+        appointments: [{ data: { ...COMPLETED_APPT_ROW, client_id: "client-beth" } }],
+        completed_job_billing: [
+          { data: null }, // no existing row for appt-1 yet
+          { data: null }, // conflict check: no OTHER client uses this invoice number
+          { data: { ...SAVED_ROW, client_id: "client-beth" } },
+        ],
+      })
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "13422" }));
+    assert.equal(res.status, 200);
+    const upsertCall = currentFake.calls.find((c) => c.table === "completed_job_billing" && c.method === "upsert");
+    assert.equal((upsertCall!.args[0] as any).client_id, "client-beth");
+  });
+
+  test("same invoice number, DIFFERENT client -- rejected with a clear 409, never written", async () => {
+    resetFixtures(
+      completeAppointmentFixtures({
+        appointments: [{ data: { ...COMPLETED_APPT_ROW, client_id: "client-walter" } }],
+        completed_job_billing: [
+          { data: null }, // no existing row for appt-1 yet
+          { data: { client_id: "client-beth" } }, // a DIFFERENT client already uses invoice 13422
+        ],
+      })
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "13422" }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.error, "That invoice number is already used by a different client in this workspace.");
+    assert.equal(currentFake.calls.some((c) => c.table === "completed_job_billing" && c.method === "upsert"), false, "must never reach the upsert");
+  });
+
+  test("an unexpected 23505 from the upsert itself (defensive backstop, not the primary path) is still translated into a clear, owner-friendly message", async () => {
+    resetFixtures(
+      completeAppointmentFixtures({
+        completed_job_billing: [
+          { data: null },
+          NO_INVOICE_CONFLICT,
+          { error: { code: "23505", message: 'duplicate key value violates unique constraint "completed_job_billing_appointment_id_key"' } },
+        ],
+      })
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.error, "That invoice number is already used by another job in this workspace.");
+    assert.doesNotMatch(body.error, /constraint|sql|23505/i);
   });
 });
 
 describe("PATCH /api/billing/completed-jobs/update -- upsert shape", () => {
   test("upserts with onConflict: appointment_id, and includes the session's own workspace_id (never a client-supplied one)", async () => {
-    resetFixtures(completeAppointmentFixtures({ completed_job_billing: [{ data: null }, { data: SAVED_ROW }] }));
+    resetFixtures(completeAppointmentFixtures({ completed_job_billing: [{ data: null }, NO_INVOICE_CONFLICT, { data: SAVED_ROW }] }));
     sessionToReturn = OWNER_SESSION;
     await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1", workspace_id: "attacker-ws" }));
     const upsertCall = currentFake.calls.find((c) => c.table === "completed_job_billing" && c.method === "upsert");
@@ -306,7 +371,7 @@ describe("PATCH /api/billing/completed-jobs/update -- upsert shape", () => {
   });
 
   test("a successful save returns { ok: true, billing: <row> }", async () => {
-    resetFixtures(completeAppointmentFixtures({ completed_job_billing: [{ data: null }, { data: SAVED_ROW }] }));
+    resetFixtures(completeAppointmentFixtures({ completed_job_billing: [{ data: null }, NO_INVOICE_CONFLICT, { data: SAVED_ROW }] }));
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
     assert.equal(res.status, 200);

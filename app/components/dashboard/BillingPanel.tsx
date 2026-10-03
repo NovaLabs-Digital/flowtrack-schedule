@@ -46,12 +46,14 @@ function toDateInputValue(d: Date): string {
 // (which would reinterpret it in the browser's own local timezone and
 // risks shifting the displayed day). Plain substring rearrangement only,
 // so it can never disagree with the date that was actually fetched/saved.
-// "YY" is the last two digits of the year (26 for 2026), per the approved
-// DD/MM/YY spec -- never a 4-digit year.
-function formatDDMMYY(isoDate: string): string {
+// "YY" is the last two digits of the year (26 for 2026), never a 4-digit
+// year. MM/DD/YY (not DD/MM/YY -- a prior pass used DD/MM/YY, but that read
+// as confusing against QuickBooks, which Alberto compares side-by-side with
+// Billing and which always displays US-style MM/DD/YY).
+function formatMMDDYY(isoDate: string): string {
   const [y, m, d] = isoDate.split("-");
   if (!y || !m || !d) return isoDate; // defensive: never throw on an unexpected shape
-  return `${d}/${m}/${y.slice(-2)}`;
+  return `${m}/${d}/${y.slice(-2)}`;
 }
 
 type FetchState = { completed: CompletedJobRow[]; reviewNeeded: ReviewNeededRow[] } | null;
@@ -289,7 +291,7 @@ export default function BillingPanel({
               <ul className="space-y-1">
                 {searchedReviewNeeded.map((r) => (
                   <li key={r.appointmentId} className="text-[11px] text-amber-800 flex gap-2">
-                    <span className="font-medium">{formatDDMMYY(r.serviceDate)}</span>
+                    <span className="font-medium">{formatMMDDYY(r.serviceDate)}</span>
                     <span>{r.clientName}</span>
                     <span className="text-amber-600">&middot;</span>
                     <span>{r.serviceType}</span>
@@ -304,16 +306,16 @@ export default function BillingPanel({
   );
 }
 
-// A DD/MM/YY-displaying date picker that still IS a native
+// A MM/DD/YY-displaying date picker that still IS a native
 // <input type="date"> underneath -- calendar popup, keyboard entry, and
 // screen-reader date-field semantics are all the real browser
 // implementation, never reimplemented here. Native date inputs render
 // their VISIBLE text in whatever format the browser/OS locale dictates
 // (there is no cross-browser way to make the input's own text read
-// "DD/MM/YY" -- see this file's own investigation note), so the real
+// "MM/DD/YY" -- see this file's own investigation note), so the real
 // input is kept but visually invisible (opacity-0, stacked on top via the
 // relative/absolute pairing below) while a decorative span underneath
-// shows the DD/MM/YY text the owner actually sees. The decorative span is
+// shows the MM/DD/YY text the owner actually sees. The decorative span is
 // pointer-events-none AND (being a non-positioned flex item under a
 // position:absolute, z-10 sibling) already painted BELOW the real input in
 // stacking order, so it was never actually the thing swallowing clicks.
@@ -327,7 +329,7 @@ export default function BillingPanel({
 // moves keyboard focus/selection into that segment; it never opens the
 // dropdown. Because the real input is invisible (opacity-0), the owner has
 // no way to see where that small native hotspot actually is, and it
-// usually does NOT line up with where the decorative DD/MM/YY text sits.
+// usually does NOT line up with where the decorative MM/DD/YY text sits.
 // The fix expands that same pseudo-element to cover the ENTIRE input
 // (inset-0/w-full/h-full) so every point inside the box -- including
 // directly over the visible digits -- is the native "open calendar"
@@ -349,7 +351,7 @@ function DateField({ value, onChange, label }: { value: string; onChange: (v: st
         aria-hidden="true"
         className="pointer-events-none rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 whitespace-nowrap"
       >
-        {formatDDMMYY(value)}
+        {formatMMDDYY(value)}
       </span>
     </span>
   );
@@ -403,7 +405,7 @@ function BillingRow({
 
   return (
     <tr className="border-b border-slate-100 last:border-b-0 align-top">
-      <td className="px-3 py-2 whitespace-nowrap text-slate-700">{formatDDMMYY(row.serviceDate)}</td>
+      <td className="px-3 py-2 whitespace-nowrap text-slate-700">{formatMMDDYY(row.serviceDate)}</td>
       <td className="px-3 py-2 text-slate-900 font-medium">{row.clientName}</td>
       <td className="px-3 py-2 text-slate-700">{row.serviceType}</td>
       <td className="px-3 py-2 text-right text-slate-900">{formatCents(row.priceCents)}</td>

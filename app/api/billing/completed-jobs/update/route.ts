@@ -63,12 +63,12 @@ export async function PATCH(req: Request) {
     // but the server never trusts that without re-checking.
     const apptRes = await supabaseAdmin
       .from("appointments")
-      .select("id, workspace_id, is_demo, status")
+      .select("id, workspace_id, is_demo, status, client_id")
       .eq("id", appointment_id)
       .eq("workspace_id", workspaceId)
       .maybeSingle();
     if (apptRes.error) throw apptRes.error;
-    const appt = apptRes.data as { id: string; workspace_id: string; is_demo: boolean; status: string } | null;
+    const appt = apptRes.data as { id: string; workspace_id: string; is_demo: boolean; status: string; client_id: string } | null;
     if (!appt) return json({ error: "Appointment not found" }, 404);
     if (isTester && !appt.is_demo) return json({ error: "Appointment not found" }, 404);
 
@@ -101,12 +101,42 @@ export async function PATCH(req: Request) {
     const validation = validateBillingState(merged);
     if (!validation.ok) return json({ error: validation.error }, 400);
 
+    // Migration 033: an invoice number MAY repeat across multiple completed
+    // jobs for the SAME client (a recurring client's visits are routinely
+    // combined onto one QuickBooks invoice) but must never be silently
+    // reused across DIFFERENT clients in the same workspace. The database
+    // no longer enforces a blanket per-workspace uniqueness on
+    // invoice_number (see migration 033) -- this IS the enforcement, run
+    // only when this request is actually changing invoice_number to a new
+    // non-null value, not on every unrelated paid/payment_method edit.
+    // completed_job_billing has exactly one write path in this application
+    // (this route), so this check is the complete enforcement surface, not
+    // a best-effort fallback in front of a stricter database rule.
+    const normalizedIncomingInvoiceNumber = hasField("invoice_number") ? normalizeInvoiceNumber(body.invoice_number) : null;
+    const invoiceNumberChanged = hasField("invoice_number") && normalizedIncomingInvoiceNumber !== (existing?.invoice_number ?? null);
+    if (invoiceNumberChanged && merged.invoice_number !== null) {
+      const conflictRes = await supabaseAdmin
+        .from("completed_job_billing")
+        .select("client_id")
+        .eq("workspace_id", workspaceId)
+        .eq("invoice_number", merged.invoice_number)
+        .neq("appointment_id", appointment_id)
+        .neq("client_id", appt.client_id)
+        .limit(1)
+        .maybeSingle();
+      if (conflictRes.error) throw conflictRes.error;
+      if (conflictRes.data) {
+        return json({ error: "That invoice number is already used by a different client in this workspace." }, 409);
+      }
+    }
+
     const { data, error } = await supabaseAdmin
       .from("completed_job_billing")
       .upsert(
         {
           workspace_id: workspaceId,
           appointment_id,
+          client_id: appt.client_id,
           invoice_number: merged.invoice_number,
           paid: merged.paid,
           payment_method: merged.payment_method,
@@ -114,13 +144,17 @@ export async function PATCH(req: Request) {
         },
         { onConflict: "appointment_id" }
       )
-      .select("id, workspace_id, appointment_id, invoice_number, paid, payment_method, created_at, updated_at")
+      .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
       .single();
 
     if (error) {
-      // 23505 = unique_violation -- the per-workspace invoice-number index
-      // (migrations/032). Translated into a clear, owner-friendly message
-      // rather than a raw database error, per the approved plan.
+      // 23505 = unique_violation. No DB-level uniqueness on invoice_number
+      // remains as of migration 033 (see the cross-client check above,
+      // which is the real enforcement) -- this branch is kept purely as a
+      // defensive backstop for an unexpected constraint violation (e.g. the
+      // untouched appointment_id UNIQUE), translated into a clear message
+      // rather than a raw database error, never left to surface the actual
+      // SQL/constraint name to the owner.
       if ((error as { code?: string }).code === "23505") {
         return json({ error: "That invoice number is already used by another job in this workspace." }, 409);
       }

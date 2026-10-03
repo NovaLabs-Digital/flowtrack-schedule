@@ -98,30 +98,32 @@ describe("BillingPanel -- initial load", () => {
   });
 });
 
-describe("BillingPanel -- DD/MM/YY display formatting (display only -- storage/queries stay ISO)", () => {
-  test("Service Date column renders DD/MM/YY, not the raw YYYY-MM-DD", async () => {
+describe("BillingPanel -- MM/DD/YY display formatting (display only -- storage/queries stay ISO)", () => {
+  test("Service Date column renders MM/DD/YY, not the raw YYYY-MM-DD", async () => {
     responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [] })];
     renderPanel();
-    await screen.findByText("12/08/26");
+    await screen.findByText("08/12/26");
     assert.equal(screen.queryByText("2026-08-12"), null, "the raw ISO string must never be the visible text");
+    assert.equal(screen.queryByText("12/08/26"), null, "must not render the prior DD/MM/YY order");
   });
 
-  test("Past jobs needing completion review dates also render DD/MM/YY", async () => {
+  test("Past jobs needing completion review dates also render MM/DD/YY", async () => {
     responses = [json(200, { completed: [], reviewNeeded: [REVIEW_ROW] })];
     renderPanel();
-    await screen.findByText("14/08/26");
+    await screen.findByText("08/14/26");
     assert.equal(screen.queryByText("2026-08-14"), null);
+    assert.equal(screen.queryByText("14/08/26"), null, "must not render the prior DD/MM/YY order");
   });
 
-  test("the From/To date controls show DD/MM/YY while the underlying fetch still uses plain ISO YYYY-MM-DD query params", async () => {
+  test("the From/To date controls show MM/DD/YY while the underlying fetch still uses plain ISO YYYY-MM-DD query params", async () => {
     responses = [json(200, { completed: [], reviewNeeded: [] })];
     renderPanel();
     await waitFor(() => assert.equal(calls.length, 1));
-    // The real query param, exactly as sent to the server -- never DD/MM/YY.
+    // The real query param, exactly as sent to the server -- never MM/DD/YY.
     assert.match(calls[0].url, /\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/);
     // The native <input type="date"> elements still carry the real ISO
     // value underneath (calendar selection/accessibility/range math are
-    // completely untouched) -- only their visible text is a DD/MM/YY
+    // completely untouched) -- only their visible text is a MM/DD/YY
     // decorative overlay, asserted separately below.
     const dateInputs = document.querySelectorAll('input[type="date"]');
     assert.equal(dateInputs.length, 2);
@@ -141,7 +143,7 @@ describe("BillingPanel -- DD/MM/YY display formatting (display only -- storage/q
     fireEvent.change(fromInput, { target: { value: "2026-08-01" } });
     await waitFor(() => assert.equal(calls.length, 2));
     assert.match(calls[1].url, /start=2026-08-01/);
-    await screen.findByText("01/08/26");
+    await screen.findByText("08/01/26");
   });
 
   test("a date on a year/month boundary (2026-01-01) renders exactly 01/01/26 -- proves the formatter never shifts by a day the way re-parsing through `new Date()` could in a negative-UTC-offset test environment", async () => {
@@ -153,8 +155,8 @@ describe("BillingPanel -- DD/MM/YY display formatting (display only -- storage/q
   });
 });
 
-describe("BillingPanel -- From/To date fields are clickable across their whole visible area (bug: clicking directly on the DD/MM/YY digits did not open the native picker)", () => {
-  test("the decorative DD/MM/YY overlay stays aria-hidden and pointer-events-none, so it never becomes the thing intercepting clicks", async () => {
+describe("BillingPanel -- From/To date fields are clickable across their whole visible area (bug: clicking directly on the MM/DD/YY digits did not open the native picker)", () => {
+  test("the decorative MM/DD/YY overlay stays aria-hidden and pointer-events-none, so it never becomes the thing intercepting clicks", async () => {
     responses = [json(200, { completed: [], reviewNeeded: [] })];
     renderPanel();
     await waitFor(() => assert.equal(calls.length, 1));
