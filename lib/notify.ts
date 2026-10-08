@@ -158,6 +158,14 @@ export type MessageSentRow = {
   to_value: string;
   body: string;
   provider_id: string;
+  // Optional snapshot of the appointment's scheduled_for AT THE MOMENT this
+  // row is written (migrations/037) -- lets a dedup check match on the
+  // exact occurrence a message was sent for, instead of just the
+  // appointment id. Every existing caller (create/update/cancel/delete/
+  // notifyAppointmentChange) omits it, which resolves to a NULL column --
+  // zero behavior change for them. Only app/api/cron/reminders/route.ts
+  // passes it.
+  scheduled_for?: string | null;
 };
 
 // Writes the audit-trail row for a notification attempt (success or failed).
@@ -205,7 +213,15 @@ export async function sendSms(to: string, body: string, workspaceId: string) {
 // keeps working exactly as before. Re-sanitized here regardless of whether
 // the caller already did, so this function can never emit an unsafe "From"
 // header no matter what a future caller passes in.
-export async function sendEmail(to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string) {
+// idempotencyKey: optional, forwarded to Resend as its own Idempotency-Key
+// header -- a retried call with the SAME key returns the original send's
+// result instead of actually sending a second email, closing the
+// crash-between-provider-call-and-our-own-write gap that the SFT reminder
+// claim protocol (app/api/cron/reminders/route.ts) cannot otherwise close
+// from this side. Every other existing caller omits it (undefined), which
+// Resend treats exactly like no header at all -- zero behavior change for
+// create/update/cancel/delete/notifyAppointmentChange.
+export async function sendEmail(to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string, idempotencyKey?: string) {
   if (disabled) {
     console.log("[DISABLE_MESSAGES] Email skipped — to:", to, "| subject:", subject, "| body:", text);
     return "disabled";
@@ -215,12 +231,15 @@ export async function sendEmail(to: string, subject: string, text: string, works
     return "notifications-off";
   }
   const fromName = fromDisplayName ? sanitizeCompanyName(fromDisplayName) : (process.env.RESEND_FROM_NAME || "FlowTrack Schedule");
-  const { data, error } = await getResend().emails.send({
-    from: `${fromName} <${process.env.RESEND_FROM_EMAIL}>`,
-    to,
-    subject,
-    text,
-  });
+  const { data, error } = await getResend().emails.send(
+    {
+      from: `${fromName} <${process.env.RESEND_FROM_EMAIL}>`,
+      to,
+      subject,
+      text,
+    },
+    idempotencyKey ? { idempotencyKey } : undefined
+  );
   // Resend's SDK returns { data, error } instead of throwing on API-level
   // rejections — throw here so the existing try/catch + describeProviderError
   // handling in the route files (unchanged) still catches this the same way

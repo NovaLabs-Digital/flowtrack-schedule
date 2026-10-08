@@ -94,6 +94,13 @@ export function createFakeSupabaseAdmin(
       // chain method here: the fake doesn't actually filter the queued
       // fixture data, it only records the call and returns the builder.
       not: (...args: unknown[]) => { record("not", args); return builder; },
+      // SFT reminder claim protocol (app/api/cron/reminders/route.ts's
+      // atomic claim UPDATE) -- same no-op-filter shape as every other
+      // chain method here: the fake doesn't evaluate the PostgREST OR
+      // filter expression, it only records the call and returns the
+      // builder; a test asserts on the raw filter string via `calls`
+      // directly where that matters.
+      or: (...args: unknown[]) => { record("or", args); return builder; },
       order: (...args: unknown[]) => { record("order", args); return builder; },
       limit: (...args: unknown[]) => { record("limit", args); return builder; },
       // Added for lib/paginate.ts's fetchAllPages (first exercised by
@@ -196,6 +203,7 @@ export interface FakeNotifyEmailCall {
   text: string;
   workspaceId: string;
   fromDisplayName?: string;
+  idempotencyKey?: string;
 }
 export interface FakeNotifySmsCall {
   to: string;
@@ -259,8 +267,8 @@ export function createFakeNotify(supabaseAdminRef: { from: (table: string) => Re
     sanitizeCompanyName: fakeSanitizeCompanyName,
     getCompanyName: async (_workspaceId: string) => companyName,
     getCompanyIdentity: async (_workspaceId: string) => ({ companyName, bookingEnabled, timezone }),
-    sendEmail: async (to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string) => {
-      emailCalls.push({ to, subject, text, workspaceId, fromDisplayName });
+    sendEmail: async (to: string, subject: string, text: string, workspaceId: string, fromDisplayName?: string, idempotencyKey?: string) => {
+      emailCalls.push({ to, subject, text, workspaceId, fromDisplayName, idempotencyKey });
       return sendEmailImpl(to, subject, text, workspaceId, fromDisplayName);
     },
     sendSms: async (to: string, body: string, workspaceId: string) => {

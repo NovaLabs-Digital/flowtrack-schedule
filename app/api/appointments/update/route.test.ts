@@ -614,11 +614,13 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     assert.equal(updates.length, 3, "cutoff + 2 siblings");
 
     // Cutoff (selected) occurrence itself moved to the new Wednesday date.
-    assert.deepEqual(updates[0].args[0], { scheduled_for: NEW_SELECTED_START, scheduled_end: NEW_SELECTED_END });
+    // reminder_24h_sent_at is reset to NULL alongside it -- see the SFT
+    // reminder reliability fix describe block below for dedicated coverage.
+    assert.deepEqual(updates[0].args[0], { scheduled_for: NEW_SELECTED_START, scheduled_end: NEW_SELECTED_END, reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
 
-    // Both future siblings shifted by the identical -1 day delta.
-    assert.deepEqual(updates[1].args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END });
-    assert.deepEqual(updates[2].args[0], { scheduled_for: SIB2_NEW_START, scheduled_end: SIB2_NEW_END });
+    // Both future siblings shifted by the identical -1 day delta, same reset.
+    assert.deepEqual(updates[1].args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END, reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
+    assert.deepEqual(updates[2].args[0], { scheduled_for: SIB2_NEW_START, scheduled_end: SIB2_NEW_END, reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
 
     // Four-week spacing between the two shifted siblings is preserved exactly.
     const spacingMs = new Date(SIB2_NEW_START).getTime() - new Date(SIB1_NEW_START).getTime();
@@ -676,7 +678,7 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     assert.equal(res.status, 200);
     const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
     assert.equal(updates.length, 1);
-    assert.deepEqual(updates[0].args[0], { scheduled_for: NEW_SELECTED_START });
+    assert.deepEqual(updates[0].args[0], { scheduled_for: NEW_SELECTED_START, reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
   });
 
   test("6. future occurrences from another recurring series are unaffected -- the siblings query is scoped to this exact series_id", async () => {
@@ -838,7 +840,7 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
       scheduled_for: NEW_SELECTED_START, scheduled_end: NEW_SELECTED_END, // AppointmentModal always sends both
     }));
     const sibUpdate = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update")[1];
-    assert.deepEqual(sibUpdate.args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END });
+    assert.deepEqual(sibUpdate.args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END, reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
   });
 
   test("11b. drag-and-drop payload shape (scheduled_end omitted when the source appointment has none) still shifts sibling start, and shifts a sibling's own end by the same delta", async () => {
@@ -859,7 +861,7 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     }));
     const sibUpdate = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update")[1];
     // startDeltaMs (-1 day) is used as the end-delta fallback too, preserving this sibling's own duration.
-    assert.deepEqual(sibUpdate.args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END });
+    assert.deepEqual(sibUpdate.args[0], { scheduled_for: SIB1_NEW_START, scheduled_end: SIB1_NEW_END, reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
   });
 
   test("generalizes beyond weekly/every-4-weeks: a daily-spaced series shifts every sibling by the same delta and keeps 1-day spacing intact", async () => {
@@ -885,10 +887,103 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
       appointment_id: "appt-1", mode: "future", scheduled_for: "2026-08-06T10:00:00.000Z", // +1 hour, no date change
     }));
     const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
-    assert.deepEqual(updates[1].args[0], { scheduled_for: "2026-08-07T10:00:00.000Z" });
-    assert.deepEqual(updates[2].args[0], { scheduled_for: "2026-08-08T10:00:00.000Z" });
+    assert.deepEqual(updates[1].args[0], { scheduled_for: "2026-08-07T10:00:00.000Z", reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
+    assert.deepEqual(updates[2].args[0], { scheduled_for: "2026-08-08T10:00:00.000Z", reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
     const spacingMs = new Date("2026-08-08T10:00:00.000Z").getTime() - new Date("2026-08-07T10:00:00.000Z").getTime();
     assert.equal(spacingMs, 24 * 60 * 60 * 1000);
+  });
+});
+
+// SFT reminder reliability fix: reminder_24h_sent_at (the cron's own dedup
+// flag, app/api/cron/reminders/route.ts) is written in exactly one place --
+// after a successful send -- and nowhere else clears it. Before this fix, an
+// appointment that had ever been reminded once would never be reminded
+// again after being rescheduled to any later scheduled_for, silently,
+// forever (the real production incident this traces back to).
+describe("SFT reminder reliability fix: rescheduling clears reminder_24h_sent_at so the new time is reminder-eligible again", () => {
+  test("mode: single -- a previously-reminded appointment moved to a new time has its reminder flag reset to NULL", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ scheduled_for: "2026-08-03T14:00:00.000Z" }) }, // fetch existing -- already reminded for its old time
+        { error: null }, // update source
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-10T14:00:00.000Z" }));
+    assert.equal(res.status, 200);
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.deepEqual(update!.args[0], { scheduled_for: "2026-08-10T14:00:00.000Z", reminder_24h_sent_at: null, reminder_24h_claimed_at: null, reminder_24h_claim_token: null });
+  });
+
+  test("mode: future -- every future sibling whose scheduled_for actually changes also has its reminder flag reset", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: "2026-08-06T14:00:00.000Z" }) },
+        { error: null }, // update source
+        {
+          data: [
+            { id: "sib-1", scheduled_for: "2026-09-03T14:00:00.000Z", scheduled_end: null },
+            { id: "sib-2", scheduled_for: "2026-10-01T14:00:00.000Z", scheduled_end: null },
+          ],
+        },
+        { error: null },
+        { error: null },
+      ],
+      recurring_series: [{ data: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: "2026-08-05T14:00:00.000Z" })); // -1 day
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    assert.equal(updates.length, 3, "origin + 2 siblings");
+    for (const u of updates) {
+      assert.equal((u.args[0] as { reminder_24h_sent_at?: unknown }).reminder_24h_sent_at, null, JSON.stringify(u.args[0]));
+    }
+  });
+
+  test("resubmitting the exact same scheduled_for (no real change) leaves reminder_24h_sent_at untouched", async () => {
+    const SAME = "2026-08-03T14:00:00.000Z";
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ scheduled_for: SAME }) },
+        { error: null },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    // Same instant, different string formatting (explicit milliseconds) --
+    // proves the comparison is by real timestamp value, not raw string
+    // equality, so a round-trip through the client never spuriously resets
+    // the flag.
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-03T14:00:00Z" }));
+    assert.equal(res.status, 200);
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.equal("reminder_24h_sent_at" in (update!.args[0] as object), false);
+  });
+
+  test("a 'This & Future' edit that changes only price (no time shift) leaves every sibling's reminder flag untouched", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { error: null }, // hasColumn("price_cents")
+        { error: null }, // update source
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
+        { error: null },
+      ],
+      recurring_series: [{ data: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    await PATCH(req({ appointment_id: "appt-1", mode: "future", price_cents: 9000 }));
+    const updates = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update");
+    for (const u of updates) {
+      assert.equal("reminder_24h_sent_at" in (u.args[0] as object), false, JSON.stringify(u.args[0]));
+    }
   });
 });
 

@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { DateTime } from "luxon";
 import type pg from "pg";
 import {
-  startTestDb, makeWorkspace, makeAppointment, snapshotWorkspace, waitUntilBlocked, backendPid, track,
+  startTestDb, makeWorkspace, makeAppointment, snapshotWorkspace, waitUntilBlocked, backendPid, track, MIGRATIONS,
   type TestDb, type Fixture,
 } from "./harness.ts";
 import { buildRecurrenceChangeRequest, normalizeExpectedSnapshot, type RecurrenceChangeRequest } from "../lib/recurrenceChange.ts";
@@ -22,7 +22,22 @@ let c: pg.Client; // main connection (always superuser)
 let obs: pg.Client; // dedicated observer for lock-wait barriers
 
 before(async () => {
-  db = await startTestDb();
+  // migrations/035 (SFT reminder reliability fix) and migrations/036
+  // (reminder claim protocol) layered on top of the default MIGRATIONS
+  // list -- each only CREATE OR REPLACEs apply_recurrence_change
+  // (migrations/029), so every existing test in this file exercises the
+  // fully patched function exactly as production would run it. migrations/037
+  // (messages_sent occurrence snapshot) touches a different table entirely
+  // (apply_recurrence_change never writes messages_sent) -- included here
+  // purely so this file's schema matches the full current migration set.
+  db = await startTestDb({
+    migrations: [
+      ...MIGRATIONS,
+      "035_reset_reminder_on_recurrence_change.sql",
+      "036_reminder_claim_protocol.sql",
+      "037_messages_sent_occurrence_snapshot.sql",
+    ],
+  });
   c = await db.connect();
   obs = await db.connect();
 });
@@ -255,6 +270,81 @@ describe("apply_recurrence_change: one-time -> recurring", () => {
     const anchor = await getAppt(apptId);
     assert.equal(iso(anchor.scheduled_for), iso(newStart));
     assert.equal(anchor.notes, "new note");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrations/035: reminder_24h_sent_at reset on an anchor reschedule
+// ---------------------------------------------------------------------------
+
+describe("migrations/035: apply_recurrence_change resets reminder_24h_sent_at on the anchor it reschedules", () => {
+  test("an anchor that was already reminded for its OLD time has the flag cleared after being moved to a new time", async () => {
+    const fx = await makeWorkspace(c);
+    const apptId = await makeAppointment(c, fx, { scheduledFor: futureNineAm(40) });
+    await c.query("UPDATE appointments SET reminder_24h_sent_at = now() - interval '2 days' WHERE id = $1", [apptId]);
+    const appt = await getAppt(apptId);
+    assert.ok(appt.reminder_24h_sent_at, "precondition: already reminded");
+
+    const newStart = futureNineAm(60);
+    const res = await apply(c, fx, apptId, randomUUID(), requestFor(appt, [], { start: newStart, freq: "weekly", weeks: 4 }), expectedFrom(appt, []));
+    assert.equal(res.outcome, "applied", JSON.stringify(res));
+
+    const anchor = await getAppt(apptId);
+    assert.equal(anchor.reminder_24h_sent_at, null, "moving the anchor must re-arm its own reminder eligibility");
+  });
+
+  test("newly generated replacement occurrences start reminder-eligible (NULL) -- no default, no change needed for INSERTed rows", async () => {
+    const fx = await makeWorkspace(c);
+    const { res } = await convert(fx);
+    assert.equal(res.outcome, "applied", JSON.stringify(res));
+    const rows = await seriesRows(fx.workspaceId, res.new_series_id);
+    assert.ok(rows.length > 1, "the series actually generated more than just the anchor");
+    assert.ok(rows.every((r) => r.reminder_24h_sent_at === null), JSON.stringify(rows.map((r) => r.reminder_24h_sent_at)));
+  });
+
+  test("converting one-time -> recurring also clears a pre-existing reminder flag on the (soon to be anchor) appointment", async () => {
+    const fx = await makeWorkspace(c);
+    const apptId = await makeAppointment(c, fx, { scheduledFor: futureNineAm(40), priceCents: 9000 });
+    await c.query("UPDATE appointments SET reminder_24h_sent_at = now() - interval '1 day' WHERE id = $1", [apptId]);
+    const appt = await getAppt(apptId);
+    const res = await apply(c, fx, apptId, randomUUID(), requestFor(appt, [], { freq: "weekly", weeks: 4 }), expectedFrom(appt, []));
+    assert.equal(res.outcome, "applied", JSON.stringify(res));
+    const anchor = await getAppt(apptId);
+    assert.equal(anchor.reminder_24h_sent_at, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrations/036: reminder claim columns invalidated on an anchor reschedule
+// ---------------------------------------------------------------------------
+
+describe("migrations/036: apply_recurrence_change invalidates in-flight/stale reminder claims on the anchor it reschedules", () => {
+  test("a claim (claimed_at + claim_token) held for the OLD time is cleared after Manage Recurrence moves the anchor", async () => {
+    const fx = await makeWorkspace(c);
+    const apptId = await makeAppointment(c, fx, { scheduledFor: futureNineAm(40) });
+    const staleToken = randomUUID();
+    await c.query(
+      "UPDATE appointments SET reminder_24h_claimed_at = now() - interval '1 minute', reminder_24h_claim_token = $2 WHERE id = $1",
+      [apptId, staleToken]
+    );
+    const appt = await getAppt(apptId);
+    assert.ok(appt.reminder_24h_claimed_at && appt.reminder_24h_claim_token, "precondition: an active claim exists");
+
+    const newStart = futureNineAm(60);
+    const res = await apply(c, fx, apptId, randomUUID(), requestFor(appt, [], { start: newStart, freq: "weekly", weeks: 4 }), expectedFrom(appt, []));
+    assert.equal(res.outcome, "applied", JSON.stringify(res));
+
+    const anchor = await getAppt(apptId);
+    assert.equal(anchor.reminder_24h_claimed_at, null, "the stale claim's lease must not survive a reschedule");
+    assert.equal(anchor.reminder_24h_claim_token, null, "the stale claim's token must not survive a reschedule");
+  });
+
+  test("newly generated replacement occurrences start with no claim at all -- no default, no change needed for INSERTed rows", async () => {
+    const fx = await makeWorkspace(c);
+    const { res } = await convert(fx);
+    assert.equal(res.outcome, "applied", JSON.stringify(res));
+    const rows = await seriesRows(fx.workspaceId, res.new_series_id);
+    assert.ok(rows.every((r) => r.reminder_24h_claimed_at === null && r.reminder_24h_claim_token === null));
   });
 });
 

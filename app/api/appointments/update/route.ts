@@ -266,8 +266,29 @@ export async function PATCH(req: Request) {
     const apptUpdate: Record<string, any> = {};
     if (body.service_type !== undefined)
       apptUpdate.service_type = body.service_type.trim();
-    if (body.scheduled_for !== undefined)
+    if (body.scheduled_for !== undefined) {
       apptUpdate.scheduled_for = body.scheduled_for.trim();
+      // SFT reminder reliability fix: reminder_24h_sent_at is the cron's own
+      // dedup flag (app/api/cron/reminders/route.ts) and is never cleared
+      // anywhere else -- once an appointment has been reminded, moving it to
+      // a new scheduled_for must re-arm eligibility for the NEW time, or it
+      // silently never gets reminded again. Only reset when the resolved
+      // instant actually differs from the locked row's own value (compared
+      // as real timestamps, not strings, since the same instant can arrive
+      // formatted differently) -- an edit that happens to resubmit the exact
+      // same scheduled_for leaves the flag untouched.
+      if (new Date(apptUpdate.scheduled_for).getTime() !== new Date(existingData.scheduled_for).getTime()) {
+        apptUpdate.reminder_24h_sent_at = null;
+        // SFT reminder claim protocol: any in-flight or stale claim held
+        // for the OLD time must also be invalidated -- otherwise a claim
+        // token minted before this edit could still (harmlessly, but
+        // needlessly) govern eligibility for the NEW time until its lease
+        // expires. See app/api/cron/reminders/route.ts's claim/finalize
+        // protocol and migrations/036.
+        apptUpdate.reminder_24h_claimed_at = null;
+        apptUpdate.reminder_24h_claim_token = null;
+      }
+    }
     if (body.status !== undefined) apptUpdate.status = body.status.trim();
     if (body.notes !== undefined) apptUpdate.notes = body.notes.trim() || null;
     if (body.scheduled_end !== undefined && await hasColumn("scheduled_end"))
@@ -377,6 +398,13 @@ export async function PATCH(req: Request) {
 
         if (startDeltaMs !== 0) {
           sibUpdate.scheduled_for = new Date(new Date(sib.scheduled_for).getTime() + startDeltaMs).toISOString();
+          // Same reminder-reliability fix as the origin appointment above --
+          // startDeltaMs !== 0 already means this sibling's scheduled_for is
+          // actually changing, so no further value comparison is needed here.
+          sibUpdate.reminder_24h_sent_at = null;
+          // Same claim-invalidation as the origin appointment above.
+          sibUpdate.reminder_24h_claimed_at = null;
+          sibUpdate.reminder_24h_claim_token = null;
         }
         if (endDeltaMs !== 0 && sib.scheduled_end) {
           sibUpdate.scheduled_end = new Date(new Date(sib.scheduled_end).getTime() + endDeltaMs).toISOString();

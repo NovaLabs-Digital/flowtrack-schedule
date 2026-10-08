@@ -57,7 +57,28 @@ CREATE TABLE appointments (
   notes        TEXT,
   status       TEXT NOT NULL DEFAULT 'scheduled',
   cancel_token TEXT NOT NULL,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- Reminder-cron dedup flag (app/api/cron/reminders/route.ts), added outside
+  -- migrations/ like workspace_id above -- migrations/035 is the first
+  -- TRACKED file to read/write it (apply_recurrence_change resetting it on
+  -- an anchor reschedule), so it belongs here now.
+  reminder_24h_sent_at TIMESTAMPTZ
+);
+
+-- Notification audit trail (lib/notify.ts's recordMessageSent), added
+-- outside migrations/ like reminder_24h_sent_at above -- migrations/036 is
+-- the first TRACKED file to reference it (indexing it for the reminder
+-- claim protocol's per-channel idempotency check), so the minimal shape it
+-- assumes belongs here now. Real production also has to_value/body/
+-- created_at columns this harness has no need to declare, since no tracked
+-- migration or function reads them.
+CREATE TABLE messages_sent (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  appointment_id UUID REFERENCES appointments(id),
+  channel        TEXT NOT NULL,
+  kind           TEXT NOT NULL,
+  provider_id    TEXT,
+  workspace_id   UUID NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT
 );
 
 -- 010 creates this IF NOT EXISTS (without workspace_id); production has the
