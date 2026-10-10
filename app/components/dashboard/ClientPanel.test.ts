@@ -353,9 +353,19 @@ describe("Past/Future Services rows are clickable and open the exact appointment
     assert.ok(!source.slice(serviceRowIdx, commRowIdx).includes("canMutateOperationalData"));
   });
 
-  test("\"View all\" is unaffected by this change -- still the same pre-existing action link, not newly broken", () => {
-    assert.ok(source.includes('action={pastAppts.length > 4 ? "View all" : undefined}'));
+  test("Future Services' \"View all\" is unaffected by this change -- still the same pre-existing action link, not newly broken", () => {
     assert.ok(source.includes('action={futureAppts.length > 4 ? "View all" : undefined}'));
+  });
+
+  // SFT cancellation-history fix: Past Services' own static "View all"
+  // label (which had no onClick at all -- a dead link) is replaced by a
+  // real All/Cancelled filter toggle, so the owner can actually reach a
+  // cancelled appointment beyond the default 6-row slice, not just see an
+  // inert label promising more.
+  test("Past Services' SectionHeader action is gone, replaced by a real All/Cancelled filter toggle", () => {
+    assert.ok(!source.includes('action={pastAppts.length > 4 ? "View all" : undefined}'));
+    assert.ok(source.includes('onClick={() => setHistoryFilter("all")}'));
+    assert.ok(source.includes('onClick={() => setHistoryFilter("cancelled")}'));
   });
 });
 

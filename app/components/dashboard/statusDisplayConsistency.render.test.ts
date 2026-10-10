@@ -16,7 +16,7 @@
 // disagreement. This file renders all four with that exact appointment and
 // asserts every one shows "Scheduled", then re-renders all four with
 // status flipped to "cancelled" and asserts every one shows "Cancelled".
-import { test, describe, afterEach } from "node:test";
+import { test, describe, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { register } from "node:module";
 
@@ -36,22 +36,38 @@ const { default: MobileAppointmentDetail } = await import("../mobile/MobileAppoi
 const TZ = "America/New_York";
 const APPT_ID = "11111111-1111-4111-8111-111111111111";
 const CLIENT_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-const HOUR_MS = 60 * 60 * 1000;
 
-// Tami's own appointment, expressed relative to Date.now() (like every other
-// time-sensitive fixture in this repo -- lib/incomeProjection.test.ts,
-// lib/payroll.test.ts -- so this test never goes stale): started 3 hours
-// ago, ended 1.5 hours ago (isPastAppointment's own elapsed check), still
-// "today" from ScheduleGrid's own real-"now"-relative day view, and 90
-// minutes long -- over ScheduleGrid's 60-minute "isShort" condensed-card
-// threshold, so its full card (including the status text) renders.
+// Frozen clock (same technique as app/api/appointments/delete/route.test.ts
+// and lib/payroll.test.ts's own fixed NOW constants) -- deliberately NOT a
+// Date.now()-relative offset. A naive "now minus a few hours" fixture is
+// only safe from crossing a calendar-day boundary as long as the real
+// wall-clock, converted to the business's OWN timezone (ScheduleGrid's "day"
+// view is anchored to nowInBusinessTz, not raw UTC), isn't itself within a
+// few hours of its own local midnight -- which it periodically is,
+// regardless of what hour UTC happens to read. This is the EXACT bug class
+// found live while investigating this fix: lib/completedJobBilling.test.ts
+// and ScheduleGrid.reviewIndicator.test.ts both use that same
+// Date.now()-relative pattern and both failed, reproducibly, when this
+// suite happened to run shortly after business-local (America/New_York)
+// midnight. Freezing "now" to a fixed, safely-mid-afternoon, non-DST-edge
+// instant removes that ambiguity entirely -- this file is written to never
+// join that bug class.
+mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-03T18:00:00.000Z").getTime() }); // Mon, 2:00 PM ET
+
+// Tami's own appointment: started 3 hours before the frozen "now" (11:00 AM
+// ET), ended 1.5 hours before it (12:30 PM ET) -- elapsed per
+// isPastAppointment's own check, same calendar day as the frozen "now" from
+// ScheduleGrid's own nowInBusinessTz-anchored day view, and 90 minutes long
+// -- over ScheduleGrid's 60-minute "isShort" condensed-card threshold, so
+// its full card (including the status text) renders.
 function tamiAppt(overrides: Partial<{ status: "scheduled" | "cancelled" }> = {}) {
+  const now = Date.now();
   return {
     id: APPT_ID,
     client_id: CLIENT_ID,
     service_type: "Regular Cleaning",
-    scheduled_for: new Date(Date.now() - 3 * HOUR_MS).toISOString(),
-    scheduled_end: new Date(Date.now() - 1.5 * HOUR_MS).toISOString(),
+    scheduled_for: new Date(now - 3 * 60 * 60 * 1000).toISOString(),
+    scheduled_end: new Date(now - 1.5 * 60 * 60 * 1000).toISOString(),
     status: overrides.status ?? "scheduled",
     notes: null,
     duration_minutes: 90,

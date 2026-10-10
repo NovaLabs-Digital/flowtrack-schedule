@@ -34,6 +34,18 @@ function formatTime(d: Date) {
   return m === 0 ? `${h12}:00 ${ampm}` : `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+// cancellation_reported_date is a plain DATE (no time, no timezone) --
+// deliberately parsed via the 3-argument Date constructor (which builds a
+// LOCAL calendar date from the given year/month/day components) rather
+// than `new Date("YYYY-MM-DD")` (which parses as UTC midnight and would
+// then display a day off in any timezone behind UTC, e.g. all of the US).
+// There is no "business timezone" to convert through here -- the date was
+// entered and means exactly the calendar day it says, nothing else.
+function formatReportedDate(dateOnly: string): string {
+  const [y, m, d] = dateOnly.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 type Props = {
   appointment: Appointment;
   client: Client | null;
@@ -257,6 +269,42 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
           </div>
         </div>
       </div>
+
+      {/* Cancellation Details (SFT cancellation-history fix): read-only,
+          migrations/038's three fields. The owner needs to retrieve WHY and
+          WHEN a cancellation happened months later -- previously nothing
+          but the bare "Cancelled" label was shown. Every field is rendered
+          only if actually present -- an older cancelled record (from before
+          this migration, or a live cancellation that never collected a
+          reason/reported date) shows "Not recorded" rather than a blank or
+          a guessed value. cancelled_at is a real instant -> formatted in
+          the business's own timezone (toBusinessLocal), exactly
+          like every other instant this panel already displays;
+          cancellation_reported_date is a plain calendar date with no time
+          or zone of its own -> formatted via formatReportedDate, never
+          routed through toBusinessLocal. */}
+      {appointment.status === "cancelled" && (
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 space-y-1 text-xs">
+          <div className="text-xs font-medium text-slate-600">Cancellation Details</div>
+          <div className="text-slate-700">
+            Client reported: <span className="font-medium text-slate-900">
+              {appointment.cancellation_reported_date ? formatReportedDate(appointment.cancellation_reported_date) : "Not recorded"}
+            </span>
+          </div>
+          <div className="text-slate-700">
+            Reason: <span className="font-medium text-slate-900 whitespace-pre-wrap">
+              {appointment.cancellation_reason || "No reason recorded"}
+            </span>
+          </div>
+          <div className="text-slate-700">
+            Recorded: <span className="font-medium text-slate-900">
+              {appointment.cancelled_at
+                ? toBusinessLocal(appointment.cancelled_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+                : "Not recorded"}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Worked Hours / Employee Job Notes -- reuses the exact same
           underlying data (appointment_employees + appointment_employee_hours)

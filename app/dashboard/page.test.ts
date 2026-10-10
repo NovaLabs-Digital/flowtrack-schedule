@@ -100,6 +100,30 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
     assert.ok(!fallbackMatch![1].includes("price_cents"));
     assert.ok(!fallbackMatch![1].includes("duration_minutes"));
   });
+
+  // SFT cancellation-history fix: without these three columns in the
+  // primary select, cancelled_at/cancellation_reported_date/
+  // cancellation_reason were written by app/api/appointments/delete/
+  // route.ts but never reached the dashboard at all -- the owner's
+  // AppointmentDetailPanel/MobileAppointmentDetail/ClientPanel history all
+  // read from this SAME query's result (see DashboardShell.tsx), so the
+  // real case (reopening Tami's cancelled appointment showed no
+  // cancellation reason/date) traced back to exactly this file, the same
+  // class of bug as price_cents/team_color/repeat_months above.
+  test("apptFields' primary value includes cancelled_at, cancellation_reported_date, and cancellation_reason (migrations/038)", () => {
+    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    for (const col of ["cancelled_at", "cancellation_reported_date", "cancellation_reason"]) {
+      assert.ok(fieldsMatch![1].includes(col), `apptFields is missing ${col}: "${fieldsMatch![1]}"`);
+    }
+  });
+
+  test("the minimal fallback field list also excludes the three new cancellation columns, same precedent as every other post-launch column", () => {
+    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
+    assert.ok(fallbackMatch);
+    for (const col of ["cancelled_at", "cancellation_reported_date", "cancellation_reason"]) {
+      assert.ok(!fallbackMatch![1].includes(col));
+    }
+  });
 });
 
 // Phase 5.7D-R18: this file's own established defect pattern (see the two

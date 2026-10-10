@@ -33,6 +33,17 @@ function durationLabel(mins: number) {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
+// Mirrors desktop's AppointmentDetailPanel.tsx exactly -- see its own
+// comment for why a plain DATE string is never routed through
+// toBusinessLocal (there is no time-of-day or timezone to convert; the
+// 3-argument Date constructor builds a local calendar date directly from
+// the given year/month/day, avoiding the UTC-midnight-then-reinterpreted
+// off-by-one-day bug a bare `new Date("YYYY-MM-DD")` would risk).
+function formatReportedDate(dateOnly: string): string {
+  const [y, m, d] = dateOnly.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 type Props = {
   appointment: Appointment;
   client: Client | null;
@@ -282,6 +293,33 @@ export default function MobileAppointmentDetail({
           <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-1">
             <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Notes</div>
             <div className="text-sm text-slate-700 whitespace-pre-wrap">{appointment.notes}</div>
+          </div>
+        )}
+
+        {/* Cancellation Details (SFT cancellation-history fix) -- mirrors
+            desktop's AppointmentDetailPanel.tsx exactly, including the
+            "Not recorded" fallback for an older record or a field that was
+            never collected. */}
+        {appointment.status === "cancelled" && (
+          <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-1 text-sm">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cancellation Details</div>
+            <div className="text-slate-700">
+              Client reported: <span className="font-medium text-slate-900">
+                {appointment.cancellation_reported_date ? formatReportedDate(appointment.cancellation_reported_date) : "Not recorded"}
+              </span>
+            </div>
+            <div className="text-slate-700">
+              Reason: <span className="font-medium text-slate-900 whitespace-pre-wrap">
+                {appointment.cancellation_reason || "No reason recorded"}
+              </span>
+            </div>
+            <div className="text-slate-700">
+              Recorded: <span className="font-medium text-slate-900">
+                {appointment.cancelled_at
+                  ? toBusinessLocal(appointment.cancelled_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+                  : "Not recorded"}
+              </span>
+            </div>
           </div>
         )}
 

@@ -138,6 +138,20 @@ export default function ClientPanel({
   // is submitted until the owner explicitly saves.
   onEditAppointment: (appointmentId: string) => void;
 }) {
+  // SFT cancellation-history fix: lets the owner find a cancelled
+  // appointment specifically, rather than scrolling the (capped-at-6) Past
+  // Services list hoping it's recent enough to be in that slice. Defaults
+  // to "all" (existing behavior, unchanged) every time this component
+  // mounts; switching clients while this is set to "cancelled" leaves it
+  // set (same staleness class as this file's own pre-existing `editing`/
+  // `form` state, not a new concern this fix introduces).
+  const [historyFilter, setHistoryFilter] = useState<"all" | "cancelled">("all");
+  // SFT cancellation-history fix (follow-up): the "All" view's default
+  // 6-row slice now has a REAL "View all"/"Show less" toggle -- the
+  // previous SectionHeader action looked identical but had no onClick at
+  // all. The Cancelled filter is deliberately never capped by this (or any
+  // other) limit -- see historyAppts below.
+  const [showAllPast, setShowAllPast] = useState(false);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<EditForm>(initForm(client ?? {} as Client));
   const [saving, setSaving] = useState(false);
@@ -207,6 +221,21 @@ export default function ClientPanel({
     .sort((a, b) => new Date(b.scheduled_for).getTime() - new Date(a.scheduled_for).getTime());
   const futureAppts = clientAppts.filter((a) => a.status !== "cancelled" && new Date(a.scheduled_for) >= now)
     .sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime());
+  // SFT cancellation-history fix: every cancelled appointment for this
+  // client, past OR future-dated (a cancelled appointment whose original
+  // date hasn't arrived yet would otherwise appear in NEITHER pastAppts
+  // nor futureAppts above -- futureAppts explicitly excludes cancelled,
+  // and pastAppts only matches scheduled_for < now). Unlike pastAppts
+  // (sliced to 6 for the default view), this is deliberately uncapped --
+  // the entire point of this filter is finding the one cancelled
+  // appointment months later, regardless of how many other appointments
+  // (or which calendar week the schedule grid currently shows) exist in
+  // between. `appointments` is the same full, unbounded-by-date array the
+  // whole dashboard already loads (see app/dashboard/page.tsx), so this is
+  // never limited by the schedule grid's own current view.
+  const cancelledAppts = clientAppts.filter((a) => a.status === "cancelled")
+    .sort((a, b) => new Date(b.scheduled_for).getTime() - new Date(a.scheduled_for).getTime());
+  const historyAppts = historyFilter === "cancelled" ? cancelledAppts : (showAllPast ? pastAppts : pastAppts.slice(0, 6));
 
   const isArchived = !!client?.archived_at;
   const inputCls = "w-full rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500";
@@ -327,14 +356,57 @@ export default function ClientPanel({
           </div>
 
           <div className="p-4 flex flex-col">
-            <SectionHeader action={pastAppts.length > 4 ? "View all" : undefined}>Past Services</SectionHeader>
-            {pastAppts.length > 0 ? (
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                {historyFilter === "cancelled" ? "Cancelled Appointments" : "Past Services"}
+              </div>
+              {/* SFT cancellation-history fix: a simple two-way filter,
+                  reusing this same Past Services column rather than adding
+                  a new section -- "Reuse existing history UI if available." */}
+              <div className="flex items-center gap-1 text-[11px]" role="group" aria-label="Filter appointment history">
+                <button
+                  type="button"
+                  onClick={() => setHistoryFilter("all")}
+                  aria-pressed={historyFilter === "all"}
+                  className={["rounded-full px-2 py-0.5 font-medium transition-colors", historyFilter === "all" ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100"].join(" ")}
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHistoryFilter("cancelled")}
+                  aria-pressed={historyFilter === "cancelled"}
+                  className={["rounded-full px-2 py-0.5 font-medium transition-colors", historyFilter === "cancelled" ? "bg-rose-600 text-white" : "text-rose-600 hover:bg-rose-50"].join(" ")}
+                >
+                  Cancelled
+                </button>
+              </div>
+            </div>
+            {historyAppts.length > 0 ? (
               <div className="overflow-auto flex-1 min-h-0">
-                {pastAppts.slice(0, 6).map((a) => (
+                {historyAppts.map((a) => (
                   <ServiceRow key={a.id} date={fmtDate(a.scheduled_for, timezone)} service={a.service_type} status={a.status === "cancelled" ? "Cancelled" : "Completed"} onClick={() => onEditAppointment(a.id)} />
                 ))}
               </div>
-            ) : <EmptyCol icon="&#128340;" line1="No past services" line2="Service history will appear here." />}
+            ) : historyFilter === "cancelled" ? (
+              <EmptyCol icon="&#128683;" line1="No cancelled appointments" line2="Cancelled services will appear here." />
+            ) : (
+              <EmptyCol icon="&#128340;" line1="No past services" line2="Service history will appear here." />
+            )}
+            {/* "View all"/"Show less" -- only meaningful for the "All" view,
+                which is the only one still capped by default. The
+                Cancelled filter (historyAppts = cancelledAppts, uncapped
+                above) never shows this control -- there is nothing more to
+                reveal. */}
+            {historyFilter === "all" && pastAppts.length > 6 && (
+              <button
+                type="button"
+                onClick={() => setShowAllPast((v) => !v)}
+                className="mt-2 shrink-0 text-[11px] font-medium text-blue-600 hover:text-blue-700 text-left"
+              >
+                {showAllPast ? "Show less" : `View all (${pastAppts.length})`}
+              </button>
+            )}
           </div>
 
           <div className="p-4 flex flex-col">

@@ -65,6 +65,18 @@ export type Appointment = {
   // Never read directly; always go through lib/teamColor.ts's
   // resolveTeamAccentColor.
   team_color?: string | null;
+  // SFT past-appointment-cancellation fix (migrations/038): nullable
+  // audit/correction fields, set only on cancellation. cancelled_at is the
+  // real timestamp the cancellation was actually recorded in the system;
+  // cancellation_reported_date is the (optionally owner-entered) date the
+  // client reported it, distinct from cancelled_at; cancellation_reason is
+  // free text, required by application logic only when correcting an
+  // already-Completed appointment. All three are null for every
+  // appointment never cancelled, and for an OLDER cancelled record from
+  // before this migration existed -- never backfilled or guessed.
+  cancelled_at?: string | null;
+  cancellation_reported_date?: string | null;
+  cancellation_reason?: string | null;
 };
 
 export type Service = {
