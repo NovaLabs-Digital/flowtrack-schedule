@@ -561,6 +561,12 @@ describe("only the approved routes reference the capability gates -- every other
     // mutation route uses).
     path.join("app", "api", "billing", "completed-jobs", "route.ts"),
     path.join("app", "api", "billing", "completed-jobs", "update", "route.ts"),
+    // Message History -- read-only (canViewExistingData, same read-gate
+    // precedent as clients/archived, recurring-series, and billing/
+    // completed-jobs above), appointment-scoped and client-scoped
+    // respectively.
+    path.join("app", "api", "appointments", "messages", "route.ts"),
+    path.join("app", "api", "clients", "messages", "route.ts"),
   ];
 
   // Server-trusted-workspace gate: no session exists at this call site at

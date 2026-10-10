@@ -470,14 +470,14 @@ export async function POST(req: Request) {
               await recordMessageSent({
                 appointment_id: firstId,
                 channel: "email", kind: "confirmation", workspace_id: workspaceId,
-                to_value: cEmail, body: t.email.body, provider_id: providerId,
+                to_value: cEmail, body: t.email.body, subject: t.email.subject, provider_id: providerId,
               });
             } catch (err) {
               console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
               await recordMessageSent({
                 appointment_id: firstId,
                 channel: "email", kind: "confirmation", workspace_id: workspaceId,
-                to_value: cEmail, body: t.email.body, provider_id: "failed",
+                to_value: cEmail, body: t.email.body, subject: t.email.subject, provider_id: "failed",
               });
             }
           }

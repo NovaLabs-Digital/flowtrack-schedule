@@ -566,13 +566,13 @@ export async function PATCH(req: Request) {
               const providerId = await sendEmail(email, t.email.subject, t.email.body, workspaceId, companyName);
               await recordMessageSent({
                 appointment_id, channel: "email", kind: "update", workspace_id: workspaceId,
-                to_value: email, body: t.email.body, provider_id: providerId,
+                to_value: email, body: t.email.body, subject: t.email.subject, provider_id: providerId,
               });
             } catch (err) {
               console.error("NOTIFY_EMAIL_ERROR", describeProviderError(err));
               await recordMessageSent({
                 appointment_id, channel: "email", kind: "update", workspace_id: workspaceId,
-                to_value: email, body: t.email.body, provider_id: "failed",
+                to_value: email, body: t.email.body, subject: t.email.subject, provider_id: "failed",
               });
             }
           }

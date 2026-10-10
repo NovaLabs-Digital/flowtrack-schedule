@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Client, Appointment } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { ClientMessageHistory } from "@/app/components/dashboard/MessageHistory";
 
 // Phase 5.5E-E1E: this panel's own restricted notice, distinct from every
 // other component's -- shown once in the always-rendered header, referenced
@@ -429,13 +430,29 @@ export default function ClientPanel({
             )}
           </div>
 
-          <div className="p-4 flex flex-col">
+          <div className="p-4 flex flex-col min-h-0">
             <SectionHeader>Communication</SectionHeader>
             <div>
               <CommRow icon="&#128172;" label="SMS" value={client?.auto_sms ? "✓ Auto" : client?.phone ? "Available" : "—"} />
               <CommRow icon="&#9993;" label="Email" value={client?.auto_email ? "✓ Auto" : client?.email ? "Available" : "—"} />
               <CommRow icon="&#9742;" label="Phone" value={client?.phone ?? "—"} />
               <CommRow icon="&#9733;" label="Preferred" value={client?.preferred_contact_method ? client.preferred_contact_method.charAt(0).toUpperCase() + client.preferred_contact_method.slice(1) : "—"} />
+            </div>
+            {/* Message History -- deliberately a separate, visually distinct
+                subsection (its own header + divider) from the automation
+                settings above: those answer "what WILL happen" (Auto Email/
+                SMS toggles), this answers "what actually happened" for this
+                client, across every one of their appointments regardless of
+                which calendar week is currently shown. */}
+            <div className="mt-4 pt-3 border-t border-slate-100 flex-1 min-h-0 flex flex-col">
+              <SectionHeader>Message History</SectionHeader>
+              <div className="overflow-auto flex-1 min-h-0">
+                {client ? (
+                  <ClientMessageHistory clientId={client.id} timezone={timezone} />
+                ) : (
+                  <div className="text-xs text-slate-400">Select a client to view message history.</div>
+                )}
+              </div>
             </div>
           </div>
         </div>

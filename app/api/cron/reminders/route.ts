@@ -309,6 +309,7 @@ export async function GET(req: Request) {
             workspace_id: a.workspace_id,
             to_value: email,
             body: t.email.body,
+            subject: t.email.subject,
             provider_id: providerId,
             scheduled_for: fresh.scheduled_for,
           });
@@ -322,6 +323,7 @@ export async function GET(req: Request) {
             workspace_id: a.workspace_id,
             to_value: email,
             body: t.email.body,
+            subject: t.email.subject,
             provider_id: "failed",
             scheduled_for: fresh.scheduled_for,
           });

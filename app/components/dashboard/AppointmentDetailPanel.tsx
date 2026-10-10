@@ -7,6 +7,7 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 import { toBusinessLocal } from "@/lib/timezone";
 import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, displayAppointmentStatus, isAppointmentPastDue, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
+import { AppointmentMessageHistory } from "@/app/components/dashboard/MessageHistory";
 
 // Phase 5.5E-E1B: this panel's own restricted notice, distinct from
 // AppointmentModal's (appointment-modal-restricted-notice) -- both
@@ -305,6 +306,18 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
           </div>
         </div>
       )}
+
+      {/* Message History -- read-only, scoped to this exact appointment.
+          Distinct card from Cancellation Details above and Worked Hours
+          below: this answers "what was actually sent for this appointment,"
+          never "what will automation do" (that's Communication, shown on
+          ClientPanel, not here). See app/components/dashboard/
+          MessageHistory.tsx for the fetch/status/pagination logic shared
+          with ClientPanel's client-scoped history. */}
+      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="text-xs font-medium text-slate-600 mb-1.5">Message History</div>
+        <AppointmentMessageHistory appointmentId={appointment.id} timezone={timezone} />
+      </div>
 
       {/* Worked Hours / Employee Job Notes -- reuses the exact same
           underlying data (appointment_employees + appointment_employee_hours)

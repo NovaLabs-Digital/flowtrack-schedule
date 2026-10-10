@@ -166,6 +166,16 @@ export type MessageSentRow = {
   // zero behavior change for them. Only app/api/cron/reminders/route.ts
   // passes it.
   scheduled_for?: string | null;
+  // Message History (migrations/040): the exact email subject line AT THE
+  // MOMENT this row is written -- mirrors `body`'s existing content-
+  // snapshot role, which captures the rendered body but never the subject.
+  // Every email call site now passes the same `t.email.subject` it already
+  // passes to sendEmail, so a stored row's subject always matches what was
+  // actually attempted, success or failure. Omitted entirely for sms rows
+  // (no subject concept) and never backfilled for rows written before this
+  // column existed -- those keep subject = NULL, read by the UI as "not
+  // captured," never guessed from the current template.
+  subject?: string | null;
 };
 
 // Writes the audit-trail row for a notification attempt (success or failed).

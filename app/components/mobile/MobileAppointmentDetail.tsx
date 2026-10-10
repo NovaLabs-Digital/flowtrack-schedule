@@ -7,6 +7,7 @@ import { toBusinessLocal } from "@/lib/timezone";
 import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, displayAppointmentStatus, isAppointmentPastDue, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { AppointmentMessageHistory } from "@/app/components/dashboard/MessageHistory";
 
 // Phase 5.5E-E1D: this control's own restricted notice, distinct from every
 // other component's (appointment-modal-restricted-notice,
@@ -322,6 +323,17 @@ export default function MobileAppointmentDetail({
             </div>
           </div>
         )}
+
+        {/* Message History -- read-only, scoped to this exact appointment.
+            Distinct card from Cancellation Details above and Communication
+            below: this answers "what was actually sent for this
+            appointment," never "what will automation do" (Communication's
+            Auto Email/SMS toggles). Mirrors desktop's AppointmentDetailPanel
+            exactly. */}
+        <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Message History</div>
+          <AppointmentMessageHistory appointmentId={appointment.id} timezone={timezone} />
+        </div>
 
         {/* Worked Hours / Employee Job Notes -- reuses the exact same
             underlying data (appointment_employees + appointment_employee_hours)

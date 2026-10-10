@@ -103,6 +103,7 @@ export async function POST(req: Request) {
           workspace_id: workspaceId,
           to_value: email,
           body: t.email.body,
+          subject: t.email.subject,
           provider_id: providerId,
         });
       } catch (err) {
@@ -114,6 +115,7 @@ export async function POST(req: Request) {
           workspace_id: workspaceId,
           to_value: email,
           body: t.email.body,
+          subject: t.email.subject,
           provider_id: "failed",
         });
       }
