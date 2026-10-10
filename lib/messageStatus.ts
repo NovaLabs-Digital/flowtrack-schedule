@@ -26,21 +26,39 @@ export type MessageStatus = {
   label: string;
 };
 
-// Strings that could appear in this column only as the artifact of some
-// future bug coercing a non-string into one (`String(undefined)`,
-// `String(null)`, a mis-handled object/array, `String(NaN)`) -- never as a
-// genuine value either provider actually returns, and never written by any
-// code path in this app today. Checked case-insensitively. Being non-empty
-// is NOT, by itself, enough to count as acceptance evidence -- a value in
-// this set must still fall through to "unknown" rather than being presumed
-// "sent" merely because it has characters in it.
-const NOT_ACCEPTANCE_EVIDENCE = new Set(["null", "undefined", "nan", "[object object]"]);
+// Resend email id -- lib/notify.ts's sendEmail returns `data?.id`, which
+// Resend documents as a UUID (e.g. "4ef9a417-02e9-4d39-ad75-9611e0fcc33c").
+// Same pattern already used by lib/claimToken.test.ts and
+// lib/recurrenceChange.ts's own UUID_RE for this exact shape, for
+// consistency with the rest of this codebase.
+const RESEND_EMAIL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Twilio Message SID -- lib/notify.ts's sendSms returns `msg.sid`, a 34-
+// character value: a literal "SM" prefix followed by 32 hex characters.
+const TWILIO_MESSAGE_SID_RE = /^SM[0-9a-f]{32}$/i;
+
+// sendEmail's own degraded-success fallback (lib/notify.ts: `data?.id ||
+// "resend"`) -- written only on the SAME success path as a real Resend id,
+// when Resend's response happened not to include one. Still genuine
+// acceptance evidence, not a guess.
+const EMAIL_FALLBACK_ID = "resend";
+
+// Validates provider_id against the SHAPE the channel's own provider
+// actually produces -- not just "is it non-empty." A Twilio SID is never
+// valid evidence for an email row, and vice versa: each channel only ever
+// calls one provider, so an id from the other one, or one matching neither
+// provider's real format, is never genuine acceptance evidence, however
+// non-empty it looks.
+function looksLikeAcceptedProviderId(trimmed: string, channel: "email" | "sms"): boolean {
+  if (channel === "sms") return TWILIO_MESSAGE_SID_RE.test(trimmed);
+  return trimmed === EMAIL_FALLBACK_ID || RESEND_EMAIL_ID_RE.test(trimmed);
+}
 
 // The three sentinel strings every send call site in lib/notify.ts writes
 // instead of a real provider id -- "failed" (the provider call threw),
 // "disabled" (the DISABLE_MESSAGES kill switch), "notifications-off" (the
 // owner's own Settings -> Automation toggle was off at send time).
-export function classifyMessageStatus(providerId: string | null | undefined): MessageStatus {
+export function classifyMessageStatus(providerId: string | null | undefined, channel: "email" | "sms"): MessageStatus {
   if (providerId === "failed") {
     return { code: "failed", label: "Failed" };
   }
@@ -51,18 +69,16 @@ export function classifyMessageStatus(providerId: string | null | undefined): Me
     return { code: "skipped_notifications_off", label: "Skipped — client notifications were off" };
   }
   const trimmed = typeof providerId === "string" ? providerId.trim() : "";
-  // A real provider id/SID: the only evidence this app can ever have of
-  // acceptance. Never shown as plain "Sent" -- the qualifier is load-bearing,
-  // not decorative. This function never tries to validate the POSITIVE shape
-  // of a real id (providers don't publish one), but it does reject the small,
-  // known set of bug-artifact strings above -- non-empty alone is
-  // insufficient.
-  if (trimmed.length > 0 && !NOT_ACCEPTANCE_EVIDENCE.has(trimmed.toLowerCase())) {
+  // The only evidence this app can ever have of acceptance: a value that
+  // actually matches the shape THIS channel's own provider returns on
+  // success. Non-empty alone is never sufficient -- an arbitrary string, a
+  // value from the wrong channel's provider, or a legacy/malformed row that
+  // doesn't match either known shape all fall through to "unknown" below,
+  // never presumed "sent." Never shown as plain "Sent" either way -- the
+  // "delivery unconfirmed" qualifier is load-bearing, not decorative.
+  if (trimmed.length > 0 && looksLikeAcceptedProviderId(trimmed, channel)) {
     return { code: "sent", label: "Sent — delivery unconfirmed" };
   }
-  // null, undefined, an empty/whitespace-only string, or one of the
-  // bug-artifact strings above: never guessed into "sent" or "failed" --
-  // shown plainly as unknown.
   return { code: "unknown", label: "Unknown" };
 }
 

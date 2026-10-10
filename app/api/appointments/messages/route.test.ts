@@ -37,11 +37,15 @@ function req(url: string) {
 const TESTER_SESSION = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
 const ACTIVE_SUB = { data: subscriptionRow({ stripe_status: "active" }) };
 const APPT_ID = "11111111-1111-4111-8111-111111111111";
+// A correctly-shaped Resend id (UUID) -- matches lib/messageStatus.ts's real
+// format validation, so these fixtures classify as "sent" the same way a
+// real email row would.
+const REAL_RESEND_ID = "4ef9a417-02e9-4d39-ad75-9611e0fcc33c";
 
 function row(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "m1", channel: "email", kind: "confirmation", to_value: "client@example.com",
-    body: "Your appointment is confirmed.", subject: "Appointment Confirmed", provider_id: "re_abc123",
+    body: "Your appointment is confirmed.", subject: "Appointment Confirmed", provider_id: REAL_RESEND_ID,
     created_at: "2026-01-02T10:00:00Z", scheduled_for: null,
     ...overrides,
   };
@@ -182,6 +186,31 @@ describe("GET /api/appointments/messages -- status accuracy and content preserva
     assert.deepEqual(data.messages[1].status, { code: "unknown", label: "Unknown" });
     assert.notEqual(data.messages[0].status.code, "sent");
     assert.notEqual(data.messages[1].status.code, "sent");
+  });
+
+  test("an arbitrary string like 'unexpected-value' remains Unknown, while a correctly-shaped provider id for that exact channel still classifies as Sent", async () => {
+    sessionToReturn = TESTER_SESSION;
+    resetFixtures({
+      subscriptions: [ACTIVE_SUB],
+      appointments: [{ data: { id: APPT_ID } }],
+      messages_sent: [{ data: [row({ id: "m1", provider_id: "unexpected-value" }), row({ id: "m2", provider_id: REAL_RESEND_ID })] }],
+    });
+    const res = await GET(req(`http://localhost/api/appointments/messages?appointment_id=${APPT_ID}`));
+    const data = await res.json();
+    assert.deepEqual(data.messages[0].status, { code: "unknown", label: "Unknown" });
+    assert.deepEqual(data.messages[1].status, { code: "sent", label: "Sent — delivery unconfirmed" });
+  });
+
+  test("a Twilio SID stored on an email-channel row is Unknown, not Sent -- channel context is enforced through the real route", async () => {
+    sessionToReturn = TESTER_SESSION;
+    resetFixtures({
+      subscriptions: [ACTIVE_SUB],
+      appointments: [{ data: { id: APPT_ID } }],
+      messages_sent: [{ data: [row({ channel: "email", provider_id: "SMa1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4" })] }],
+    });
+    const res = await GET(req(`http://localhost/api/appointments/messages?appointment_id=${APPT_ID}`));
+    const data = await res.json();
+    assert.deepEqual(data.messages[0].status, { code: "unknown", label: "Unknown" });
   });
 
   test("zero rows returns an empty list, not an error", async () => {

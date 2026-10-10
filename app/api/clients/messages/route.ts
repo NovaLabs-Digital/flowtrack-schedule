@@ -93,7 +93,7 @@ export async function GET(req: Request) {
         toValue: m.to_value,
         body: m.body,
         subject: m.subject ?? null,
-        status: classifyMessageStatus(m.provider_id),
+        status: classifyMessageStatus(m.provider_id, m.channel),
         createdAt: m.created_at,
         scheduledFor: m.scheduled_for ?? null,
       })),

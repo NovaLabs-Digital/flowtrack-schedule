@@ -31,11 +31,15 @@ function req(url: string) {
 const TESTER_SESSION = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
 const ACTIVE_SUB = { data: subscriptionRow({ stripe_status: "active" }) };
 const CLIENT_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+// A correctly-shaped Resend id (UUID) -- matches lib/messageStatus.ts's real
+// format validation, so these fixtures classify as "sent" the same way a
+// real email row would.
+const REAL_RESEND_ID = "4ef9a417-02e9-4d39-ad75-9611e0fcc33c";
 
 function row(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "m1", appointment_id: "appt-a", channel: "email", kind: "update", to_value: "client@example.com",
-    body: "Your appointment changed.", subject: "Appointment Updated", provider_id: "re_abc123",
+    body: "Your appointment changed.", subject: "Appointment Updated", provider_id: REAL_RESEND_ID,
     created_at: "2026-01-02T10:00:00Z", scheduled_for: null,
     ...overrides,
   };
@@ -132,6 +136,19 @@ describe("GET /api/clients/messages -- aggregation and content", () => {
     const data = await res.json();
     assert.equal(data.messages.length, 2);
     assert.deepEqual(data.messages.map((m: any) => m.appointmentId), ["appt-a", "appt-b"]);
+  });
+
+  test("an arbitrary string like 'unexpected-value' remains Unknown across the client-scoped route too, never Sent merely for being non-empty", async () => {
+    sessionToReturn = TESTER_SESSION;
+    resetFixtures({
+      subscriptions: [ACTIVE_SUB],
+      clients: [{ data: { id: CLIENT_ID } }],
+      appointments: [{ data: [{ id: "appt-a" }] }],
+      messages_sent: [{ data: [row({ id: "m1", provider_id: "unexpected-value" })] }],
+    });
+    const res = await GET(req(`http://localhost/api/clients/messages?client_id=${CLIENT_ID}`));
+    const data = await res.json();
+    assert.deepEqual(data.messages[0].status, { code: "unknown", label: "Unknown" });
   });
 
   test("bounded pagination: hasMore true when more rows exist than the page size", async () => {
