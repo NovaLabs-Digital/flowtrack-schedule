@@ -87,7 +87,7 @@ describe("drag-initiation boundary (the appointment card)", () => {
   });
 
   test("isHistoricalAppointment is imported from lib/payroll, never lib/timezone's bare isPastAppointment", () => {
-    assert.ok(source.includes('import { needsWorkedHoursAttention, appointmentNeedsWorkedTimeReview, isHistoricalAppointment } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { needsWorkedHoursAttention, appointmentNeedsWorkedTimeReview, isHistoricalAppointment, displayAppointmentStatus } from "@/lib/payroll";'));
     assert.ok(source.includes('import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";'));
     assert.ok(!source.includes("isPastAppointment"));
   });
@@ -392,5 +392,17 @@ describe("Worked-hours warning icon -- SFT visual-polish pass: no decorative emo
     // triangle" describe block below) -- the missing-hours string is
     // still present verbatim as one of its two branches.
     assert.ok(source.includes('"Employee work hours require attention because Job Tracking was not completed."'));
+  });
+});
+
+describe("SFT status-display-consistency fix: the calendar card's status text uses the one shared displayAppointmentStatus rule", () => {
+  test("the card label is displayAppointmentStatus(a, assignmentsFor(a.id)) -- never a locally re-derived switch on the raw status column, and never isHistoricalAppointment (which would wrongly conflate elapsed time with Completed)", () => {
+    assert.ok(source.includes("{displayAppointmentStatus(a, assignmentsFor(a.id))}"));
+    assert.ok(!source.includes("function statusLabel("), "the old locally re-derived statusLabel function must be gone entirely, not just unused");
+  });
+
+  test("statusPill (border/background styling) is untouched and still keyed on the raw status column -- this fix only changes the TEXT label, never the card's color coding", () => {
+    assert.ok(source.includes('function statusPill(status: Appointment["status"]) {'));
+    assert.ok(source.includes("useServiceColor ? `service-tint text-slate-900${darkTextCls}` : statusPill(a.status),"));
   });
 });

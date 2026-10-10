@@ -217,8 +217,8 @@ describe("notice block", () => {
     assert.ok(source.includes(`const RESTRICTED_WORDING = "${APPROVED_WORDING}";`));
   });
 
-  test("notice only renders when restricted (negated condition, not the positive form) -- and never for a historical appointment, which never shows the Cancel control it explains", () => {
-    assert.match(source, /\{!canMutateOperationalData && !isHistorical && \(/);
+  test("notice only renders when restricted (negated condition, not the positive form), and never once already cancelled -- the SFT past-appointment-cancellation fix added a second gated control (Record Cancellation) for a historical-but-not-cancelled appointment, so this notice now also covers that case", () => {
+    assert.match(source, /\{!canMutateOperationalData && appointment\.status !== "cancelled" && \(/);
   });
 
   test("notice id's declared value is unique to this component", () => {
@@ -236,9 +236,9 @@ describe("notice block", () => {
     assert.equal(matches.length, 1);
   });
 
-  test("both governed controls (Edit and Cancel Appointment) reference that single notice via ariaDescribedBy -- exactly two references to one notice, never a second notice", () => {
+  test("every governed control (Edit, Cancel Appointment, Record Cancellation, Confirm Cancellation) references that single notice via ariaDescribedBy -- exactly four references to the one shared notice, never a second notice", () => {
     const describedByMatches = source.match(/ariaDescribedBy=\{RESTRICTED_NOTICE_ID\}/g) ?? [];
-    assert.equal(describedByMatches.length, 2, "expected exactly 2 ariaDescribedBy references (Edit + Cancel) to the 1 shared notice");
+    assert.equal(describedByMatches.length, 4, "expected exactly 4 ariaDescribedBy references (Edit + Cancel + Record Cancellation + Confirm Cancellation) to the 1 shared notice");
   });
 });
 
@@ -358,7 +358,7 @@ describe("Phase 5C: workspace-timezone-aware date/time display", () => {
 describe("historical-record protection (founder decision): mobile's sole edit entry point matches desktop's AppointmentDetailPanel", () => {
   test("isHistorical is derived from the canonical isHistoricalAppointment(appointment, assignments) predicate, never a locally re-derived date/completion check, and never lib/timezone's bare isPastAppointment", () => {
     assert.ok(source.includes("const isHistorical = isHistoricalAppointment(appointment, assignments);"));
-    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";'));
+    assert.ok(source.includes('import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, displayAppointmentStatus, isAppointmentPastDue, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";'));
     assert.ok(!source.includes("isPastAppointment"));
   });
 
@@ -386,9 +386,14 @@ describe("historical-record protection (founder decision): mobile's sole edit en
     assert.match(block, /\{isReviewConfirmation \? "Reviewed by owner/);
   });
 
-  test("statusLabel is Cancelled/Completed/Scheduled, derived from appointment.status and isHistorical, not fabricated", () => {
-    assert.ok(source.includes('const statusLabel = appointment.status === "cancelled" ? "Cancelled" : isHistorical ? "Completed" : "Scheduled";'));
+  test("statusLabel is Cancelled/Completed/Scheduled/In Progress, derived from the ONE shared displayAppointmentStatus rule (SFT status-display-consistency fix) -- never a locally re-derived ternary, and never conflating elapsed time with Completed", () => {
+    assert.ok(source.includes("const statusLabel = displayAppointmentStatus(appointment, assignments);"));
     assert.ok(source.includes("{statusLabel}"));
+  });
+
+  test("pastDue is derived from the separate isAppointmentPastDue signal, shown alongside (never folded into) statusLabel", () => {
+    assert.ok(source.includes("const pastDue = isAppointmentPastDue(appointment, assignments);"));
+    assert.ok(source.includes("{pastDue &&"));
   });
 
   test("Props declares assignments and employeeHours, and MobileDashboard passes assignmentsFor(selectedAppt.id)/employeeHours straight through", () => {
@@ -430,5 +435,42 @@ describe("historical-record protection (founder decision): mobile's sole edit en
   test("the REQUIRED regression case (completed early, scheduled_end still in the future) is proven by real execution in lib/payroll.test.ts's isHistoricalAppointment suite -- the exact same function this component calls, with the exact same `assignments` prop wired straight through with no re-fetch/re-filter", () => {
     const propsIdx = source.indexOf("assignments: AppointmentEmployeeAssignment[];");
     assert.notEqual(propsIdx, -1, "assignments must be a plain required prop, not computed inside this component");
+  });
+});
+
+describe("SFT past-appointment-cancellation fix: Record Cancellation control for a historical (past/completed) appointment", () => {
+  test("the control is wrapped in {isHistorical && appointment.status !== \"cancelled\" && (...)} -- shown only for a historical, not-yet-cancelled appointment, never once already cancelled", () => {
+    const idx = source.indexOf("onClick={() => setShowRecordCancellation(true)}");
+    assert.notEqual(idx, -1);
+    const before = source.slice(Math.max(0, idx - 800), idx);
+    assert.match(before, /\{isHistorical && appointment\.status !== "cancelled" && \(/);
+  });
+
+  test("wasCompleted is derived from the shared statusLabel ('Completed') -- same canonical displayAppointmentStatus rule as desktop's AppointmentDetailPanel", () => {
+    assert.ok(source.includes('const wasCompleted = statusLabel === "Completed";'));
+  });
+
+  test("handleRecordCancellation refuses to submit when wasCompleted and no reason was entered -- client-side mirror of the server's CANCELLATION_REASON_REQUIRED rule", () => {
+    const fnStart = source.indexOf("async function handleRecordCancellation()");
+    const fnEnd = source.indexOf("\n  async function handleCancel()", fnStart);
+    const body = source.slice(fnStart, fnEnd);
+    assert.ok(body.includes("if (wasCompleted && !cancellationReason.trim())"));
+    assert.ok(body.includes("return;"));
+  });
+
+  test("the request always sends mode: \"single\" and reuses the exact same /api/appointments/delete endpoint -- never mode: \"future\", never a new backend route", () => {
+    const fnStart = source.indexOf("async function handleRecordCancellation()");
+    const fnEnd = source.indexOf("\n  async function handleCancel()", fnStart);
+    const body = source.slice(fnStart, fnEnd);
+    assert.ok(body.includes('fetch("/api/appointments/delete"'));
+    assert.ok(body.includes('mode: "single",'));
+    assert.ok(!body.includes('mode: "future"'));
+  });
+
+  test("the control is CapabilityGatedButton-protected, same as every other mutating control in this screen", () => {
+    const idx = source.indexOf("onClick={() => setShowRecordCancellation(true)}");
+    const before = source.slice(Math.max(0, idx - 300), idx);
+    assert.match(before, /<CapabilityGatedButton/);
+    assert.match(before, /allowed=\{canMutateOperationalData\}/);
   });
 });

@@ -12,6 +12,7 @@ import {
   isJobTrackingComplete,
   getMissingHoursEmployeeIds,
   deriveAppointmentTrackingStatus,
+  displayAppointmentStatus,
   resolveWorkedMinutes,
   formatMinutesAsDuration,
   toDateInputValue,
@@ -175,7 +176,13 @@ export default function DispatchPanel({
   const selectedApptEmployees = selectedApptAssignments
     .map((a) => employeeById[a.employee_id])
     .filter((e): e is Employee => !!e);
-  const selectedApptStatus = selectedAppt ? deriveAppointmentTrackingStatus(selectedApptAssignments) : "scheduled";
+  // SFT status-display-consistency fix: displayAppointmentStatus is the one
+  // shared rule now used by ScheduleGrid/DispatchPanel/AppointmentDetailPanel/
+  // MobileAppointmentDetail alike -- cancelled status wins outright,
+  // otherwise the label comes purely from actual Job Tracking (never
+  // elapsed time). This panel's own rule already matched that shape before
+  // this fix; it's reused here now instead of re-derived inline.
+  const selectedApptDisplayStatus = selectedAppt ? displayAppointmentStatus(selectedAppt, selectedApptAssignments) : "Scheduled";
   const missingHoursEmployeeIds = selectedAppt ? getMissingHoursEmployeeIds(selectedAppt, selectedApptAssignments, employeeHours) : [];
 
   return (
@@ -216,12 +223,7 @@ export default function DispatchPanel({
               />
               <InfoRow label="Service" value={selectedAppt.service_type} />
               <InfoRow label="Date & Time" value={formatDateTime(selectedAppt.scheduled_for, timezone)} />
-              <InfoRow label="Status" value={
-                selectedAppt.status === "cancelled" ? "Cancelled"
-                : selectedApptStatus === "completed" ? "Completed"
-                : selectedApptStatus === "in_progress" ? "In Progress"
-                : "Scheduled"
-              } />
+              <InfoRow label="Status" value={selectedApptDisplayStatus} />
               {selectedAppt.notes && (
                 <div className="mt-2 pt-2 border-t border-slate-100">
                   <div className="text-xs text-slate-400 mb-1">Notes</div>

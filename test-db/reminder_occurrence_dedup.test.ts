@@ -30,6 +30,8 @@ before(async () => {
       "035_reset_reminder_on_recurrence_change.sql",
       "036_reminder_claim_protocol.sql",
       "037_messages_sent_occurrence_snapshot.sql",
+      "038_add_cancellation_correction_fields.sql",
+      "039_preserve_cancelled_occurrence_exclusion.sql",
     ],
   });
   c = await db.connect();

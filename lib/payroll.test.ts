@@ -12,6 +12,8 @@ import {
   getMissingHoursEmployeeIds,
   deriveAppointmentTrackingStatus,
   isHistoricalAppointment,
+  displayAppointmentStatus,
+  isAppointmentPastDue,
   toDateInputValue,
   resolveWorkedMinutes,
   needsWorkedTimeReview,
@@ -315,6 +317,95 @@ describe("isHistoricalAppointment -- the canonical historical-record predicate (
   test("a genuinely future, not-yet-started appointment is NOT historical", () => {
     const a = appt({ status: "scheduled", scheduled_for: "2026-08-10T13:00:00.000Z", scheduled_end: "2026-08-10T14:00:00.000Z" });
     assert.equal(isHistoricalAppointment(a, [], NOW), false);
+  });
+});
+
+describe("displayAppointmentStatus / isAppointmentPastDue -- the SFT status-display-consistency fix: a single shared rule for every dashboard surface (ScheduleGrid, DispatchPanel, AppointmentDetailPanel, MobileAppointmentDetail)", () => {
+  const NOW = new Date("2026-08-03T14:00:00.000Z"); // 10:00 AM America/New_York
+
+  // The exact required regression case: Tami Factor's appointment before
+  // any correction -- stored status "scheduled", scheduled_end already
+  // elapsed (10:00 AM "now" is well after an 11 AM-1 PM job from two days
+  // earlier), and NO Job Tracking ever recorded (the client cancelled
+  // before/without anyone starting it). Before this fix,
+  // isHistoricalAppointment-based labels (desktop/mobile) showed
+  // "Completed" here purely from elapsed time, while ScheduleGrid/
+  // DispatchPanel (never time-aware) correctly showed "Scheduled" -- a
+  // real, demonstrated three-way disagreement for the SAME appointment.
+  test("Tami's pre-cancellation state: scheduled status, scheduled_end elapsed, zero Job Tracking -> displayAppointmentStatus is 'Scheduled' (never 'Completed'), and isAppointmentPastDue is true", () => {
+    const tami = appt({
+      status: "scheduled",
+      scheduled_for: "2026-08-01T15:00:00.000Z", // Aug 1, 11 AM ET
+      scheduled_end: "2026-08-01T17:00:00.000Z", // Aug 1, 1 PM ET -- two days before NOW
+    });
+    assert.equal(displayAppointmentStatus(tami, []), "Scheduled", "passing scheduled_end alone must never produce 'Completed'");
+    assert.equal(isAppointmentPastDue(tami, [], NOW), true, "the separate past-due signal correctly flags it");
+    // isHistoricalAppointment is UNCHANGED by this fix -- it still
+    // correctly flags this as historical for GATING purposes (the owner
+    // can no longer edit/normally-cancel it, only record a correction) --
+    // proving the two predicates now serve genuinely separate purposes.
+    assert.equal(isHistoricalAppointment(tami, [], NOW), true);
+  });
+
+  test("after the correction (status flips to 'cancelled'): displayAppointmentStatus is 'Cancelled', and isAppointmentPastDue is false (a cancelled appointment is never also 'past due')", () => {
+    const tamiCorrected = appt({
+      status: "cancelled",
+      scheduled_for: "2026-08-01T15:00:00.000Z",
+      scheduled_end: "2026-08-01T17:00:00.000Z",
+    });
+    assert.equal(displayAppointmentStatus(tamiCorrected, []), "Cancelled");
+    assert.equal(isAppointmentPastDue(tamiCorrected, [], NOW), false);
+  });
+
+  test("real recorded work (every assigned employee's Job Tracking complete) -> 'Completed', regardless of whether scheduled_end has elapsed yet", () => {
+    const a = appt({
+      status: "scheduled",
+      scheduled_for: "2026-08-03T13:30:00.000Z", // 9:30 AM
+      scheduled_end: "2026-08-03T15:00:00.000Z", // 11:00 AM -- still an hour after NOW
+    });
+    const assignments = [
+      assignment({ employee_id: "teresa", actual_started_at: "2026-08-03T13:35:00.000Z", actual_completed_at: "2026-08-03T13:55:00.000Z" }),
+    ];
+    assert.equal(displayAppointmentStatus(a, assignments), "Completed");
+    assert.equal(isAppointmentPastDue(a, assignments, NOW), false, "genuinely completed work is never ALSO flagged past due");
+  });
+
+  test("started but not every assignment complete -> 'In Progress', never 'Completed' and never 'Scheduled'", () => {
+    const a = appt({ status: "scheduled", scheduled_for: "2026-08-03T13:30:00.000Z", scheduled_end: "2026-08-03T15:00:00.000Z" });
+    const assignments = [
+      assignment({ employee_id: "teresa", actual_started_at: "2026-08-03T13:35:00.000Z", actual_completed_at: "2026-08-03T13:55:00.000Z" }),
+      assignment({ employee_id: "roxana", actual_started_at: null, actual_completed_at: null }),
+    ];
+    assert.equal(displayAppointmentStatus(a, assignments), "In Progress");
+  });
+
+  test("cancelled wins outright over any tracking state -- even a fully completed job shows 'Cancelled' once the owner corrects it", () => {
+    const a = appt({ status: "cancelled", scheduled_for: "2026-08-03T13:30:00.000Z", scheduled_end: "2026-08-03T15:00:00.000Z" });
+    const assignments = [
+      assignment({ employee_id: "teresa", actual_started_at: "2026-08-03T13:35:00.000Z", actual_completed_at: "2026-08-03T13:55:00.000Z" }),
+    ];
+    assert.equal(displayAppointmentStatus(a, assignments), "Cancelled");
+    assert.equal(isAppointmentPastDue(a, assignments, NOW), false);
+  });
+
+  test("a genuinely future, not-yet-started appointment is 'Scheduled' and never past due", () => {
+    const a = appt({ status: "scheduled", scheduled_for: "2026-08-10T13:00:00.000Z", scheduled_end: "2026-08-10T14:00:00.000Z" });
+    assert.equal(displayAppointmentStatus(a, []), "Scheduled");
+    assert.equal(isAppointmentPastDue(a, [], NOW), false);
+  });
+
+  // The explicit cross-surface agreement check this fix requires: all four
+  // dashboard surfaces now call the exact same displayAppointmentStatus/
+  // isAppointmentPastDue functions (proven by source inspection in
+  // ScheduleGrid.test.ts, DispatchPanel.test.ts, AppointmentDetailPanel.test.ts,
+  // and MobileAppointmentDetail.test.ts) -- so agreement on the underlying
+  // VALUE, proven here once against real execution, transitively proves
+  // agreement across all four call sites.
+  test("every one of the four dashboard surfaces' status wiring resolves to the IDENTICAL value for Tami's pre- and post-cancellation state (cross-surface consistency, proven once here; wiring proven by source inspection in each surface's own test file)", () => {
+    const before = appt({ status: "scheduled", scheduled_for: "2026-08-01T15:00:00.000Z", scheduled_end: "2026-08-01T17:00:00.000Z" });
+    const after = appt({ status: "cancelled", scheduled_for: "2026-08-01T15:00:00.000Z", scheduled_end: "2026-08-01T17:00:00.000Z" });
+    assert.equal(displayAppointmentStatus(before, []), "Scheduled");
+    assert.equal(displayAppointmentStatus(after, []), "Cancelled");
   });
 });
 

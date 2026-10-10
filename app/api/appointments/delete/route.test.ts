@@ -578,7 +578,7 @@ describe("Phase 5.5E-C: the notification gate is source-correctly placed and sco
     // text position of the gate itself (that placement, within the function
     // body, before the client read/provider calls, is checked separately
     // below).
-    const updateCalls = [...routeSource.matchAll(/\.update\(\{ status: "cancelled" \}\)/g)].map((m) => m.index!);
+    const updateCalls = [...routeSource.matchAll(/\.update\(\{ status: "cancelled", \.\.\.cancellationFields \}\)/g)].map((m) => m.index!);
     const invokeCalls = [...routeSource.matchAll(/await notifyCancellation\(\);/g)].map((m) => m.index!);
     assert.equal(updateCalls.length, 2, "single-mode and future-mode each have their own cancellation UPDATE");
     assert.equal(invokeCalls.length, 2, "single-mode and future-mode each invoke notifyCancellation() once");
@@ -847,8 +847,52 @@ describe("Block 2B safety correction: Delete This & Future is fail-closed around
   });
 });
 
-describe("historical-record protection -- past/completed/cancelled appointments can never be cancelled through this route (founder decision)", () => {
-  test("mode: single against a past (scheduled_end already elapsed) appointment is rejected 409, zero writes, zero notification", async () => {
+describe("historical-record protection -- EDITING a past/completed/cancelled appointment is still blocked; RECORDING ITS CANCELLATION is now explicitly allowed (SFT past-appointment-cancellation fix, real case: Tami Factor)", () => {
+  // The real case this fix addresses: a client called to cancel, but the
+  // owner only got to record it after the appointment's scheduled end had
+  // already elapsed, and no employee ever tracked any work on it (the
+  // common case -- the client cancelled, nobody ever showed up). This must
+  // now succeed, not be rejected.
+  test("mode: single against a past (scheduled_end already elapsed), never-worked appointment now SUCCEEDS -- the real Tami Factor case", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.ok(update, "the appointment was actually updated");
+    const payload = update!.args[0] as Record<string, unknown>;
+    assert.equal(payload.status, "cancelled");
+    assert.ok(typeof payload.cancelled_at === "string" && payload.cancelled_at.length > 0, "cancelled_at is stamped");
+    assert.equal(payload.cancellation_reason, undefined, "no reason was supplied and none was required -- nothing to override");
+  });
+
+  test("a reason, if supplied, is persisted even when not required (the owner may still want to note why)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({
+      appointment_id: "appt-1", mode: "single",
+      cancellation_reason: "Client called Oct 8 to cancel.",
+      cancellation_reported_date: "2026-07-01",
+    }));
+    assert.equal(res.status, 200);
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    const payload = update!.args[0] as Record<string, unknown>;
+    assert.equal(payload.cancellation_reason, "Client called Oct 8 to cancel.");
+    assert.equal(payload.cancellation_reported_date, "2026-07-01");
+  });
+
+  test("an invalid cancellation_reported_date is rejected 400 before any write", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
@@ -856,16 +900,12 @@ describe("historical-record protection -- past/completed/cancelled appointments 
       appointment_employees: [{ data: [] }],
     });
     sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
-    assert.equal(res.status, 409);
-    const body = await res.json();
-    assert.equal(body.code, "APPOINTMENT_IS_HISTORICAL");
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", cancellation_reported_date: "not-a-date" }));
+    assert.equal(res.status, 400);
     assert.equal(writeCalls(currentFake.calls).length, 0);
-    assert.equal(currentNotify.emailCalls.length, 0);
-    assert.equal(currentNotify.smsCalls.length, 0);
   });
 
-  test("mode: single against an already-cancelled appointment is rejected 409, even though scheduled_for is in the future", async () => {
+  test("mode: single against an already-cancelled appointment is now an idempotent no-op success, not an error", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
@@ -874,8 +914,8 @@ describe("historical-record protection -- past/completed/cancelled appointments 
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
-    assert.equal(res.status, 409);
-    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, already: true, cancelled: 0 });
     assert.equal(writeCalls(currentFake.calls).length, 0);
   });
 
@@ -883,10 +923,9 @@ describe("historical-record protection -- past/completed/cancelled appointments 
   // clock (2026-08-01T00:00:00.000Z, set near the top of this file),
   // scheduled 9:30-11:00 (a 10:00-ish "now" mid-appointment, 11:00 scheduled
   // end still an hour past "now"), but every assigned employee's Job
-  // Tracking is already complete -- isHistoricalAppointment must reject
-  // this BEFORE scheduled_end would otherwise have made it historical by
-  // time alone.
-  test("REQUIRED CASE: completed mid-appointment with a scheduled end still an hour in the future is rejected 409 before any side effect, even though scheduled_end has not elapsed", async () => {
+  // Tracking is already complete -- this is the explicit "Completed ->
+  // Cancelled correction" case, which requires a reason.
+  test("REQUIRED CASE: correcting an already-Completed appointment (every employee's Job Tracking done) to Cancelled WITHOUT a reason is rejected 400, zero writes", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
@@ -907,11 +946,87 @@ describe("historical-record protection -- past/completed/cancelled appointments 
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", mode: "single", notify_channel: "both" }));
-    assert.equal(res.status, 409);
-    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "CANCELLATION_REASON_REQUIRED");
     assert.equal(writeCalls(currentFake.calls).length, 0);
     assert.equal(currentNotify.emailCalls.length, 0);
     assert.equal(currentNotify.smsCalls.length, 0);
+  });
+
+  test("REQUIRED CASE: the same completed appointment, WITH a reason, is correctly corrected to Cancelled -- worked-time/job-notes rows are never touched (no write to appointment_employees)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{
+        data: existingAppt({
+          scheduled_for: "2026-08-01T09:30:00.000Z",
+          scheduled_end: "2026-08-01T15:00:00.000Z",
+        }),
+      }, { error: null }],
+      appointment_employees: [{
+        data: [{
+          id: "ae-1", appointment_id: "appt-1", employee_id: "teresa",
+          actual_started_at: "2026-08-01T09:35:00.000Z",
+          actual_completed_at: "2026-08-01T09:55:00.000Z",
+          created_at: "x", updated_at: "x",
+        }],
+      }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({
+      appointment_id: "appt-1", mode: "single",
+      cancellation_reason: "Client disputed the completed job after the fact; owner is correcting the record.",
+    }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    const payload = update!.args[0] as Record<string, unknown>;
+    assert.equal(payload.status, "cancelled");
+    assert.ok(typeof payload.cancellation_reason === "string" && payload.cancellation_reason.length > 0);
+    assert.equal(
+      writeCalls(currentFake.calls).filter((c) => c.table === "appointment_employees" || c.table === "appointment_employee_hours" || c.table === "completed_job_billing").length,
+      0,
+      "recorded worked time, job notes, and any existing billing row are never touched by a cancellation correction"
+    );
+  });
+
+  test("a historical appointment anchoring mode: future is rejected 409 -- a historical correction can never also cancel future occurrences", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1", scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "HISTORICAL_CANCEL_SINGLE_ONLY");
+    // Zero calls at all beyond the initial appointment fetch and the
+    // assignments read -- proves no future sibling, series row, or
+    // registry call was ever read or touched.
+    assert.deepEqual(
+      currentFake.calls.filter((c) => c.table !== "appointments" && c.table !== "subscriptions" && c.table !== "workspace_memberships" && c.table !== "appointment_employees"),
+      []
+    );
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("a recurring appointment's historical single-occurrence correction never touches any sibling row -- future occurrences are preserved untouched", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1", scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
+    // The single-row update is scoped by id -- never a bulk/series query.
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    const idFilter = currentFake.calls.find((c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "id");
+    assert.ok(update && idFilter && idFilter.args[1] === "appt-1");
   });
 
   test("one employee finished but a second assigned employee has not -- NOT historical, cancellation still succeeds (never assume one employee finishing completes the whole appointment)", async () => {
@@ -932,28 +1047,6 @@ describe("historical-record protection -- past/completed/cancelled appointments 
     assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
   });
 
-  test("mode: future anchored to a past occurrence is rejected 409 before any sibling read/quarantine/mutation is attempted", async () => {
-    resetFixtures({
-      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
-      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: existingAppt({ series_id: "series-1", scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
-      appointment_employees: [{ data: [] }],
-    });
-    sessionToReturn = OWNER_SESSION;
-    const res = await POST(req({ appointment_id: "appt-1", mode: "future" }));
-    assert.equal(res.status, 409);
-    assert.equal((await res.json()).code, "APPOINTMENT_IS_HISTORICAL");
-    // Zero calls at all beyond the initial appointment fetch and the
-    // assignments read isHistoricalAppointment itself needs -- proves no
-    // future sibling was ever read or touched by a request anchored to a
-    // historical occurrence.
-    assert.deepEqual(
-      currentFake.calls.filter((c) => c.table !== "appointments" && c.table !== "subscriptions" && c.table !== "workspace_memberships" && c.table !== "appointment_employees"),
-      []
-    );
-    assert.equal(writeCalls(currentFake.calls).length, 0);
-  });
-
   test("a still-in-progress appointment (started, scheduled_end not yet reached, not yet completed) remains fully operational -- normal single cancellation still succeeds", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
@@ -965,5 +1058,120 @@ describe("historical-record protection -- past/completed/cancelled appointments 
     const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, cancelled: 1 });
+  });
+});
+
+describe("the new cancellation fields are tenant-scoped and input-validated (SFT verification request)", () => {
+  test("tenant scoping: the SELECT that resolves the target appointment is scoped by the session's own true workspaceId -- never a request-supplied one, even when the body spoofs a different workspace_id alongside cancellation_reason", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({
+      appointment_id: "appt-1", mode: "single",
+      workspace_id: DEMO_WORKSPACE_ID, // spoof attempt -- must have zero effect
+      cancellation_reason: "attempting a cross-tenant write",
+    }));
+    assert.equal(res.status, 200);
+    const select = currentFake.calls.find((c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "workspace_id");
+    assert.ok(select, "the appointment read/write was scoped by workspace_id");
+    assert.equal(select!.args[1], REAL_WORKSPACE_ID, "the session's own true workspaceId was used, never the spoofed body value");
+  });
+
+  test("tenant scoping: an appointment_id that belongs to a DIFFERENT workspace is simply not found (the workspace-scoped SELECT returns no row) -- 404, zero writes, even with cancellation_reason/cancellation_reported_date supplied", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      // The workspace-scoped lookup (.eq("workspace_id", REAL_WORKSPACE_ID))
+      // finds nothing -- exactly what happens for an appointment_id that
+      // actually belongs to a different tenant.
+      appointments: [{ data: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({
+      appointment_id: "someone-elses-appointment", mode: "single",
+      cancellation_reason: "should never be written anywhere",
+      cancellation_reported_date: "2026-07-01",
+    }));
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: "Appointment not found" });
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("input validation: cancellation_reason is capped at 2000 characters, trimmed, and a non-string value is silently treated as empty (never crashes, never injects a non-string into the update payload)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const longReason = "x".repeat(5000);
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", cancellation_reason: `  ${longReason}  ` }));
+    assert.equal(res.status, 200);
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    const payload = update!.args[0] as Record<string, unknown>;
+    assert.equal((payload.cancellation_reason as string).length, 2000, "capped at 2000 characters");
+    assert.ok(!(payload.cancellation_reason as string).startsWith(" "), "leading/trailing whitespace trimmed before the cap is applied");
+  });
+
+  test("input validation: a non-string cancellation_reason (e.g. a number or object) never reaches the update payload", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", cancellation_reason: { malicious: "payload" } }));
+    assert.equal(res.status, 200);
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    const payload = update!.args[0] as Record<string, unknown>;
+    assert.equal(payload.cancellation_reason, undefined);
+  });
+
+  test("input validation: cancellation_reported_date rejects a calendar-invalid date (e.g. Feb 30), not merely a malformed string -- 400, zero writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", cancellation_reported_date: "2026-02-30" }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid cancellation reported date." });
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("input validation: cancellation_reported_date rejects an out-of-range month/day (e.g. month 13), not just non-numeric garbage -- 400, zero writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", cancellation_reported_date: "2026-13-10" }));
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid cancellation reported date." });
+    assert.equal(writeCalls(currentFake.calls).length, 0);
+  });
+
+  test("input validation: a valid calendar date (including a leap-day Feb 29 in a leap year) is accepted and persisted exactly as given", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ scheduled_for: "2026-07-01T14:00:00.000Z", scheduled_end: "2026-07-01T15:00:00.000Z" }) }, { error: null }],
+      appointment_employees: [{ data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single", cancellation_reported_date: "2024-02-29" }));
+    assert.equal(res.status, 200);
+    const update = currentFake.calls.find((c) => c.table === "appointments" && c.method === "update");
+    assert.equal((update!.args[0] as Record<string, unknown>).cancellation_reported_date, "2024-02-29");
   });
 });

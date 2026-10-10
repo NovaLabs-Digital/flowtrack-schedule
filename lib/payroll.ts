@@ -225,6 +225,62 @@ export function isHistoricalAppointment(
   return isPastAppointment(appt, now);
 }
 
+// ============================================================================
+// Shared display status (SFT status-display-consistency fix)
+//
+// isHistoricalAppointment above answers "can this still be freely edited/
+// cancelled" -- a gating question, correctly inclusive of "scheduled_end has
+// elapsed" even with zero recorded work, so the app never leaves a past
+// appointment editable forever. It must NOT be reused to decide what label
+// a human sees, though: before this fix, AppointmentDetailPanel/
+// MobileAppointmentDetail used it for exactly that, which meant an
+// appointment nobody ever worked on -- the client cancelled, no one showed
+// up, scheduled_end simply elapsed -- displayed as "Completed", while
+// ScheduleGrid (raw status only) and DispatchPanel (Job-Tracking-only, never
+// time-aware) both correctly kept showing "Scheduled" for the exact same
+// appointment. The real case this was first noticed from: an appointment
+// stuck in that limbo (never cancelled, never worked) for days.
+//
+// displayAppointmentStatus is the one shared rule now used by all four
+// surfaces (ScheduleGrid, DispatchPanel, AppointmentDetailPanel,
+// MobileAppointmentDetail): cancelled status wins outright; otherwise the
+// label is derived PURELY from deriveAppointmentTrackingStatus (real
+// recorded work), never from elapsed time. "Completed" means someone
+// actually did the work, not merely "the clock ran out."
+export type AppointmentDisplayStatus = "Scheduled" | "In Progress" | "Completed" | "Cancelled";
+
+export function displayAppointmentStatus(
+  appt: Pick<Appointment, "status">,
+  assignments: TimestampPair[]
+): AppointmentDisplayStatus {
+  if (appt.status === "cancelled") return "Cancelled";
+  switch (deriveAppointmentTrackingStatus(assignments)) {
+    case "completed":
+      return "Completed";
+    case "in_progress":
+      return "In Progress";
+    default:
+      return "Scheduled";
+  }
+}
+
+// The separate "optional Past due indicator" the fix calls for: true when
+// scheduled_end has elapsed but the appointment was never actually
+// completed or cancelled. Deliberately independent of
+// displayAppointmentStatus -- an appointment can be "Scheduled" (per the
+// rule above, since no work was ever recorded) AND past due at the same
+// time; the two are shown as separate pieces of information, never
+// conflated into a single misleading "Completed" label.
+export function isAppointmentPastDue(
+  appt: AppointmentPastInput,
+  assignments: TimestampPair[],
+  now: Date = new Date()
+): boolean {
+  if (appt.status === "cancelled") return false;
+  if (deriveAppointmentTrackingStatus(assignments) === "completed") return false;
+  return isPastAppointment(appt, now);
+}
+
 // The employee_ids of assigned employees who are missing worked hours for
 // this appointment -- empty for a cancelled or not-yet-eligible
 // appointment, or one with zero assignments (nothing to check). Lets a UI

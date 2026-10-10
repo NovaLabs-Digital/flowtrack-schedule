@@ -4,7 +4,7 @@ import { useState } from "react";
 import { CalendarDays, Clock, User, MapPin, Phone, MessageCircle } from "lucide-react";
 import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
-import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
+import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, displayAppointmentStatus, isAppointmentPastDue, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 
@@ -79,6 +79,15 @@ export default function MobileAppointmentDetail({
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
 
+  // SFT past-appointment-cancellation fix: mirrors desktop's
+  // AppointmentDetailPanel.tsx exactly -- same state shape, same reset
+  // convention when the form is closed.
+  const [showRecordCancellation, setShowRecordCancellation] = useState(false);
+  const [recordingCancellation, setRecordingCancellation] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState("");
+  const [cancellationReportedDate, setCancellationReportedDate] = useState("");
+  const [cancellationError, setCancellationError] = useState("");
+
   const start = toBusinessLocal(appointment.scheduled_for, timezone);
   const end = new Date(start.getTime() + durationMinutes * 60_000);
 
@@ -90,7 +99,56 @@ export default function MobileAppointmentDetail({
   // use (lib/payroll.ts) -- this is mobile's own reflection of the same
   // rule, not a second, independently invented one.
   const isHistorical = isHistoricalAppointment(appointment, assignments);
-  const statusLabel = appointment.status === "cancelled" ? "Cancelled" : isHistorical ? "Completed" : "Scheduled";
+
+  // SFT status-display-consistency fix: statusLabel now comes from the one
+  // shared rule (lib/payroll.ts) also used by desktop's
+  // AppointmentDetailPanel/ScheduleGrid/DispatchPanel -- "Completed" means
+  // real recorded Job Tracking work, never merely "scheduled_end has
+  // elapsed." isHistorical above is UNCHANGED and still correctly governs
+  // whether Edit/the normal Cancel control render. pastDue is the separate
+  // "elapsed but nothing was ever recorded or cancelled" signal.
+  const statusLabel = displayAppointmentStatus(appointment, assignments);
+  const pastDue = isAppointmentPastDue(appointment, assignments);
+
+  // SFT past-appointment-cancellation fix: whether every assigned
+  // employee's Job Tracking is actually complete -- the server's own rule
+  // (app/api/appointments/delete/route.ts) for when a cancellation
+  // correction REQUIRES a reason. Mirrors desktop's AppointmentDetailPanel.
+  const wasCompleted = statusLabel === "Completed";
+
+  async function handleRecordCancellation() {
+    if (!canMutateOperationalData) return;
+    if (wasCompleted && !cancellationReason.trim()) {
+      setCancellationError("A reason is required to correct a completed appointment to cancelled.");
+      return;
+    }
+    if (!confirm("Record this appointment as cancelled? This cannot be undone here.")) return;
+    setRecordingCancellation(true);
+    setCancellationError("");
+    try {
+      const res = await fetch("/api/appointments/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          appointment_id: appointment.id,
+          mode: "single",
+          notify_channel: "none",
+          cancellation_reason: cancellationReason.trim() || undefined,
+          cancellation_reported_date: cancellationReportedDate || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setCancellationError(data?.error || "Could not record the cancellation."); return; }
+      setShowRecordCancellation(false);
+      setCancellationReason("");
+      setCancellationReportedDate("");
+      onCancelled();
+    } catch {
+      setCancellationError("Network error. Please try again.");
+    } finally {
+      setRecordingCancellation(false);
+    }
+  }
 
   async function handleCancel() {
     // Defense-in-depth: the server route this reaches already enforces this
@@ -163,7 +221,10 @@ export default function MobileAppointmentDetail({
         <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
           <div className="text-base font-semibold text-slate-900">{appointment.service_type}</div>
           <div className="text-sm text-slate-700">{client?.name ?? "Client"}</div>
-          <div className="text-xs font-medium text-slate-500">{statusLabel}</div>
+          <div className="text-xs font-medium text-slate-500">
+            {statusLabel}
+            {pastDue && <span className="ml-1.5 text-amber-700">(Past due)</span>}
+          </div>
           <div className="pt-1 space-y-1.5 text-sm text-slate-600">
             <div className="flex items-center gap-2">
               <CalendarDays aria-hidden="true" size={16} />
@@ -333,7 +394,12 @@ export default function MobileAppointmentDetail({
           <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
         )}
 
-        {!canMutateOperationalData && !isHistorical && (
+        {/* Shown whenever a gated action below would otherwise render for a
+            restricted owner -- the normal Cancel control (!isHistorical) or
+            the historical-correction Record Cancellation control
+            (isHistorical && not already cancelled). Neither renders once
+            already cancelled, so nothing is ever gated then either. */}
+        {!canMutateOperationalData && appointment.status !== "cancelled" && (
           <div id={RESTRICTED_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             {RESTRICTED_WORDING}
           </div>
@@ -358,6 +424,79 @@ export default function MobileAppointmentDetail({
           >
             {cancelling ? "Cancelling..." : "Cancel Appointment"}
           </CapabilityGatedButton>
+        )}
+
+        {/* SFT past-appointment-cancellation fix: mirrors desktop's
+            AppointmentDetailPanel.tsx exactly -- an authorized owner/admin
+            can still record a cancellation here even once the appointment
+            is historical. Only mode "single" is ever sent (future
+            occurrences are always preserved), and a reason is required when
+            wasCompleted (every assigned employee's Job Tracking done). */}
+        {isHistorical && appointment.status !== "cancelled" && (
+          !showRecordCancellation ? (
+            <CapabilityGatedButton
+              type="button"
+              allowed={canMutateOperationalData}
+              onClick={() => setShowRecordCancellation(true)}
+              ariaDescribedBy={RESTRICTED_NOTICE_ID}
+              className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 active:bg-rose-100 transition-colors"
+            >
+              Record Cancellation
+            </CapabilityGatedButton>
+          ) : (
+            <div className="rounded-xl border border-rose-200 bg-rose-50/50 p-3 space-y-2">
+              <div className="text-xs font-medium text-rose-800">
+                {wasCompleted
+                  ? "This appointment is marked Completed. Correcting it to Cancelled requires a reason."
+                  : "Record this past appointment as cancelled. Only this occurrence is affected -- future appointments are never touched."}
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                  Date the client reported the cancellation (optional)
+                </label>
+                <input
+                  type="date"
+                  value={cancellationReportedDate}
+                  onChange={(e) => setCancellationReportedDate(e.target.value)}
+                  className="w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-slate-600 mb-1">
+                  Reason{wasCompleted ? " (required)" : " (optional)"}
+                </label>
+                <textarea
+                  value={cancellationReason}
+                  onChange={(e) => setCancellationReason(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  placeholder={wasCompleted ? "Why is a completed job being corrected to cancelled?" : "Optional note"}
+                />
+              </div>
+              {cancellationError && (
+                <div className="text-xs text-rose-700">{cancellationError}</div>
+              )}
+              <div className="flex gap-2">
+                <CapabilityGatedButton
+                  type="button"
+                  allowed={canMutateOperationalData}
+                  onClick={handleRecordCancellation}
+                  disabled={recordingCancellation}
+                  ariaDescribedBy={RESTRICTED_NOTICE_ID}
+                  className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-50"
+                >
+                  {recordingCancellation ? "Recording..." : "Confirm Cancellation"}
+                </CapabilityGatedButton>
+                <button
+                  type="button"
+                  onClick={() => { setShowRecordCancellation(false); setCancellationError(""); setCancellationReason(""); setCancellationReportedDate(""); }}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-white"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )
         )}
       </div>
     </div>

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { TriangleAlert } from "lucide-react";
 import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";
-import { needsWorkedHoursAttention, appointmentNeedsWorkedTimeReview, isHistoricalAppointment } from "@/lib/payroll";
+import { needsWorkedHoursAttention, appointmentNeedsWorkedTimeReview, isHistoricalAppointment, displayAppointmentStatus } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { resolveTeamAccentColor } from "@/lib/teamColor";
 import { BusinessHours, computeGridHourBounds } from "@/lib/businessHours";
@@ -69,17 +69,6 @@ function parseHex(hex: string): { r: number; g: number; b: number } {
     g: parseInt(full.slice(2, 4), 16) || 0,
     b: parseInt(full.slice(4, 6), 16) || 0,
   };
-}
-
-function statusLabel(status: Appointment["status"]) {
-  switch (status) {
-    case "scheduled":
-      return "Scheduled";
-    case "cancelled":
-      return "Cancelled";
-    default:
-      return status;
-  }
 }
 
 function formatTime(d: Date) {
@@ -700,7 +689,7 @@ export default function ScheduleGrid({
                                 {a.frequency_type && a.frequency_type !== "one_time" && (
                                   <span className="text-blue-500" title={freqLabel(a)}>&#8635;</span>
                                 )}
-                                {statusLabel(a.status)}
+                                {displayAppointmentStatus(a, assignmentsFor(a.id))}
                               </div>
                             </div>
                             <div className={`text-[11px] text-slate-600 mt-0.5${darkClientCls}`}>{clientName(a.client_id)}</div>

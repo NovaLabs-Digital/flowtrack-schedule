@@ -462,3 +462,14 @@ describe("Navigate/Call icons -- SFT visual-polish pass: no decorative emoji", (
     assert.match(source.slice(callIdx, callIdx + 40), /aria-hidden="true"/);
   });
 });
+
+describe("SFT status-display-consistency fix: the Appointment Details Status row uses the one shared displayAppointmentStatus rule", () => {
+  test("selectedApptDisplayStatus comes from displayAppointmentStatus(selectedAppt, selectedApptAssignments) -- never a locally re-derived ternary on status/selectedApptStatus", () => {
+    assert.ok(source.includes("const selectedApptDisplayStatus = selectedAppt ? displayAppointmentStatus(selectedAppt, selectedApptAssignments) : \"Scheduled\";"));
+    assert.ok(source.includes('<InfoRow label="Status" value={selectedApptDisplayStatus} />'));
+  });
+
+  test("the Dispatch summary tallies (scheduled/in_progress/completed counts) remain Job-Tracking-only (deriveAppointmentTrackingStatus), unaffected by this fix -- todayAppts already excludes cancelled appointments, so there is no conflation to fix there", () => {
+    assert.ok(source.includes("const todayStatuses = todayAppts.map((a) => deriveAppointmentTrackingStatus(assignmentsByApptId.get(a.id) ?? []));"));
+  });
+});

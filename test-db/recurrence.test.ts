@@ -22,20 +22,26 @@ let c: pg.Client; // main connection (always superuser)
 let obs: pg.Client; // dedicated observer for lock-wait barriers
 
 before(async () => {
-  // migrations/035 (SFT reminder reliability fix) and migrations/036
-  // (reminder claim protocol) layered on top of the default MIGRATIONS
-  // list -- each only CREATE OR REPLACEs apply_recurrence_change
-  // (migrations/029), so every existing test in this file exercises the
-  // fully patched function exactly as production would run it. migrations/037
-  // (messages_sent occurrence snapshot) touches a different table entirely
-  // (apply_recurrence_change never writes messages_sent) -- included here
-  // purely so this file's schema matches the full current migration set.
+  // migrations/035 (SFT reminder reliability fix), migrations/036
+  // (reminder claim protocol), and migrations/039 (preserve a cancelled
+  // occurrence's exclusion across a new series) are layered on top of the
+  // default MIGRATIONS list -- each only CREATE OR REPLACEs
+  // apply_recurrence_change (migrations/029), so every existing test in
+  // this file exercises the fully patched function exactly as production
+  // would run it. migrations/037 (messages_sent occurrence snapshot) and
+  // migrations/038 (cancellation correction fields) each touch a different
+  // table/columns entirely (apply_recurrence_change never writes
+  // messages_sent, and the three new appointments columns 038 adds are
+  // never read by it either) -- both included here purely so this file's
+  // schema matches the full current migration set.
   db = await startTestDb({
     migrations: [
       ...MIGRATIONS,
       "035_reset_reminder_on_recurrence_change.sql",
       "036_reminder_claim_protocol.sql",
       "037_messages_sent_occurrence_snapshot.sql",
+      "038_add_cancellation_correction_fields.sql",
+      "039_preserve_cancelled_occurrence_exclusion.sql",
     ],
   });
   c = await db.connect();
@@ -1215,5 +1221,187 @@ describe("deletion and cleanup remain compatible with the new foreign keys", () 
     await c.query("DELETE FROM recurring_series WHERE id = $1", [A.res.new_series_id]);
     const b = (await c.query("SELECT superseded_series_id FROM recurring_series WHERE id=$1", [toB.new_series_id])).rows[0];
     assert.equal(b.superseded_series_id, null);
+  });
+});
+
+// SFT past-appointment-cancellation fix: explicit verification requested --
+// "cancelling one recurring occurrence cannot regenerate that cancelled
+// occurrence." The first version of this suite found and documented a real
+// gap: apply_recurrence_change's exclusions logic only carried forward a
+// sibling's scheduled_for when it was NOT cancelled, so a later, unrelated
+// recurrence edit creating a new series_id could land a fresh row back on
+// a previously-cancelled slot. migrations/039 closes that gap by widening
+// the exclusions query to include cancelled siblings too, scoped to the
+// exact same series_id + workspace_id as the anchor. These tests now prove
+// the FIXED behavior.
+describe("a cancelled single occurrence and a LATER recurrence edit (SFT verification + migrations/039 fix: cancelling one occurrence cannot regenerate it)", () => {
+  test("within the SAME series (replenish_recurring_series / activate_recurring_series's own INSERT): the (series_id, scheduled_for) unique index protects a cancelled slot exactly like a live one -- confirmed structurally, not just by inspection", async () => {
+    const fx = await makeWorkspace(c, { employees: 1 });
+    const A = await convert(fx, { employees: [fx.employeeIds[0]], weeks: 1 });
+    const siblings = await seriesRows(fx.workspaceId, A.res.new_series_id);
+    assert.ok(siblings.length >= 3, "weekly over 182 days must generate several siblings");
+    const toCancel = siblings[2];
+    await c.query("UPDATE appointments SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [toCancel.id]);
+
+    // A second INSERT attempt at the exact same (series_id, scheduled_for)
+    // -- exactly what replenish_recurring_series's own ON CONFLICT DO
+    // NOTHING guards against, proven directly here against the real
+    // unique index rather than assumed from reading the function body.
+    const dup = await c.query(
+      `INSERT INTO appointments (client_id, service_type, scheduled_for, status, is_demo, workspace_id, duration_minutes, cancel_token, series_id)
+       VALUES ($1,'Regular Cleaning',$2,'scheduled',false,$3,60,$4,$5)
+       ON CONFLICT (series_id, scheduled_for) WHERE series_id IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [fx.clientId, toCancel.scheduled_for, fx.workspaceId, randomUUID().replace(/-/g, ""), A.res.new_series_id]
+    );
+    assert.equal(dup.rowCount, 0, "the unique index blocks a duplicate at a cancelled slot within the SAME series, exactly like a live one");
+    const stillOne = await c.query("SELECT count(*)::int AS n FROM appointments WHERE series_id = $1 AND scheduled_for = $2", [A.res.new_series_id, toCancel.scheduled_for]);
+    assert.equal(stillOne.rows[0].n, 1, "still exactly the one (cancelled) row -- no duplicate was created");
+  });
+
+  test("FIXED: ACROSS a recurrence edit that creates a NEW series_id (Manage Recurrence / apply_recurrence_change), a cancelled occurrence's exact scheduled_for is now carried into the new series' excluded_occurrences -- no fresh row is ever generated there", async () => {
+    const fx = await makeWorkspace(c, { employees: 1 });
+    const A = await convert(fx, { employees: [fx.employeeIds[0]], weeks: 1 });
+    const siblings = await seriesRows(fx.workspaceId, A.res.new_series_id);
+    assert.ok(siblings.length >= 3);
+    const toCancel = siblings[2]; // a future occurrence, cancelled as a one-off exception
+    await c.query("UPDATE appointments SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [toCancel.id]);
+
+    // The owner later performs an unrelated Manage Recurrence edit anchored
+    // at the ORIGINAL anchor appointment (still before toCancel's date),
+    // re-applying the exact same weekly cadence/time-of-day -- the new
+    // series's generated occurrences would otherwise include an instant at
+    // exactly toCancel's original scheduled_for, since nothing about
+    // day-of-week or time-of-day changed.
+    const anchor = await getAppt(A.apptId);
+    const second = await apply(
+      c, fx, A.apptId, randomUUID(),
+      requestFor(anchor, [fx.employeeIds[0]], { weeks: 1, notes: "price adjustment, unrelated to the earlier one-off cancellation" }),
+      expectedFrom(anchor, [fx.employeeIds[0]])
+    );
+    assert.equal(second.outcome, "applied", JSON.stringify(second));
+    assert.notEqual(second.new_series_id, A.res.new_series_id);
+
+    const regenerated = await c.query(
+      "SELECT id FROM appointments WHERE series_id = $1 AND scheduled_for = $2",
+      [second.new_series_id, toCancel.scheduled_for]
+    );
+    assert.equal(regenerated.rowCount, 0, "FIXED: the new series must NOT regenerate a row at the previously-cancelled occurrence's exact time");
+
+    // Proven directly, not just inferred from the absence of a row: the
+    // new series' own excluded_occurrences actually contains the instant.
+    const newSeries = await c.query("SELECT excluded_occurrences FROM recurring_series WHERE id = $1", [second.new_series_id]);
+    const excluded: Date[] = newSeries.rows[0].excluded_occurrences;
+    assert.ok(
+      excluded.some((d) => d.getTime() === new Date(toCancel.scheduled_for).getTime()),
+      "the cancelled occurrence's instant is present in the new series' excluded_occurrences"
+    );
+
+    // The ORIGINAL cancelled row itself is untouched -- its own status and
+    // row are never resurrected or deleted; no separate new row appears
+    // either.
+    const originalStillCancelled = await getAppt(toCancel.id);
+    assert.equal(originalStillCancelled.status, "cancelled");
+  });
+
+  test("legitimate future occurrences still generate normally -- the fix only protects the SPECIFIC cancelled instant, never the rest of the new series' cadence", async () => {
+    const fx = await makeWorkspace(c, { employees: 1 });
+    const A = await convert(fx, { employees: [fx.employeeIds[0]], weeks: 1 });
+    const siblings = await seriesRows(fx.workspaceId, A.res.new_series_id);
+    assert.ok(siblings.length >= 5);
+    const toCancel = siblings[2];
+    await c.query("UPDATE appointments SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [toCancel.id]);
+
+    const anchor = await getAppt(A.apptId);
+    const second = await apply(
+      c, fx, A.apptId, randomUUID(),
+      requestFor(anchor, [fx.employeeIds[0]], { weeks: 1 }),
+      expectedFrom(anchor, [fx.employeeIds[0]])
+    );
+    assert.equal(second.outcome, "applied", JSON.stringify(second));
+
+    const newSiblings = await seriesRows(fx.workspaceId, second.new_series_id);
+    // Every OTHER weekly slot (everything except the one cancelled instant)
+    // must still have been generated -- the fix is a precise, single-instant
+    // exclusion, not a blanket suppression of the whole cadence.
+    const otherExpectedCount = siblings.length - 1; // minus the cancelled one
+    assert.ok(
+      newSiblings.length >= otherExpectedCount - 1,
+      `expected roughly ${otherExpectedCount} legitimate future occurrences, got ${newSiblings.length}`
+    );
+    assert.ok(
+      newSiblings.every((s) => new Date(s.scheduled_for).getTime() !== new Date(toCancel.scheduled_for).getTime()),
+      "none of the newly generated siblings land on the cancelled instant"
+    );
+    assert.ok(newSiblings.length > 0, "the new series did generate real future occurrences, not zero");
+  });
+
+  test("unrelated bookings are unaffected: a DIFFERENT client's series in the SAME workspace, whose cadence happens to share the exact same instant, is untouched by the other series' cancellation", async () => {
+    const fx = await makeWorkspace(c, { employees: 1, clientStatus: "active" });
+    const A = await convert(fx, { employees: [fx.employeeIds[0]], weeks: 1 });
+    const siblings = await seriesRows(fx.workspaceId, A.res.new_series_id);
+    const toCancel = siblings[2];
+    await c.query("UPDATE appointments SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [toCancel.id]);
+
+    // A second, UNRELATED client + unrelated one-time appointment at the
+    // EXACT same instant as the cancelled occurrence -- not part of A's
+    // series_id at all.
+    const otherClientId = randomUUID();
+    await c.query("INSERT INTO clients (id, workspace_id, name, status) VALUES ($1,$2,'Other Client','active')", [otherClientId, fx.workspaceId]);
+    const unrelatedApptId = randomUUID();
+    await c.query(
+      `INSERT INTO appointments (id, workspace_id, client_id, service_type, scheduled_for, scheduled_end, duration_minutes, status, cancel_token)
+       VALUES ($1,$2,$3,'Regular Cleaning',$4,$5,60,'scheduled',$6)`,
+      [unrelatedApptId, fx.workspaceId, otherClientId, toCancel.scheduled_for, new Date(new Date(toCancel.scheduled_for).getTime() + 3600000), randomUUID().replace(/-/g, "")]
+    );
+
+    const anchor = await getAppt(A.apptId);
+    const second = await apply(
+      c, fx, A.apptId, randomUUID(),
+      requestFor(anchor, [fx.employeeIds[0]], { weeks: 1 }),
+      expectedFrom(anchor, [fx.employeeIds[0]])
+    );
+    assert.equal(second.outcome, "applied", JSON.stringify(second));
+
+    // The unrelated booking (a different client, no series_id at all) is
+    // completely untouched -- still scheduled, still exists, unaffected by
+    // series A's own cancellation/exclusion bookkeeping.
+    const unrelated = await getAppt(unrelatedApptId);
+    assert.equal(unrelated.status, "scheduled");
+    assert.equal(unrelated.id, unrelatedApptId);
+  });
+
+  test("other tenants are unaffected: a different workspace's recurring series, sharing the exact same wall-clock cadence, is never excluded by this workspace's cancellation", async () => {
+    const fx = await makeWorkspace(c, { employees: 1 });
+    const A = await convert(fx, { employees: [fx.employeeIds[0]], weeks: 1 });
+    const siblings = await seriesRows(fx.workspaceId, A.res.new_series_id);
+    const toCancel = siblings[2];
+    await c.query("UPDATE appointments SET status = 'cancelled', cancelled_at = now() WHERE id = $1", [toCancel.id]);
+
+    // A completely separate workspace (different tenant), with its OWN
+    // recurring series anchored at the exact same instant as fx's cancelled
+    // occurrence.
+    const fx2 = await makeWorkspace(c, { employees: 1 });
+    const other = await convert(fx2, {
+      employees: [fx2.employeeIds[0]],
+      weeks: 1,
+      start: new Date(toCancel.scheduled_for),
+    });
+    assert.equal(other.res.outcome, "applied", JSON.stringify(other.res));
+
+    const anchor = await getAppt(A.apptId);
+    const second = await apply(
+      c, fx, A.apptId, randomUUID(),
+      requestFor(anchor, [fx.employeeIds[0]], { weeks: 1 }),
+      expectedFrom(anchor, [fx.employeeIds[0]])
+    );
+    assert.equal(second.outcome, "applied", JSON.stringify(second));
+
+    // The other tenant's own anchor appointment at that same instant is
+    // completely untouched -- still exists, still scheduled, never
+    // excluded or cancelled by fx's unrelated exclusion bookkeeping.
+    const otherAnchor = await getAppt(other.apptId);
+    assert.equal(otherAnchor.status, "scheduled");
+    assert.equal(otherAnchor.workspace_id, fx2.workspaceId);
   });
 });

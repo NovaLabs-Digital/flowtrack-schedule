@@ -7,11 +7,34 @@ import { cancelTemplates } from "@/lib/templates";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { quarantineIfObservedActive, finalizeSeriesStopped, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
-import { isHistoricalAppointment } from "@/lib/payroll";
+import { isHistoricalAppointment, deriveAppointmentTrackingStatus } from "@/lib/payroll";
 import { fetchAssignments } from "@/lib/appointmentEmployees";
+
+const CANCELLATION_REASON_MAX_LENGTH = 2000;
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
+}
+
+// Strict "YYYY-MM-DD" validation for cancellation_reported_date: a plain
+// regex alone (the convention this codebase otherwise uses for date-range
+// query strings, e.g. app/api/billing/completed-jobs/route.ts) only checks
+// shape, not calendar validity -- it would accept "2026-13-45" and pass it
+// straight through to a real Postgres DATE column, turning a client input
+// mistake into a 500 instead of a clean 400. The round-trip through Date's
+// own UTC getters rejects any out-of-range month/day (including Feb 30/31,
+// which Date silently rolls into March rather than rejecting).
+function isValidDateInput(value: string): boolean {
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  const [, y, mo, d] = m;
+  const parsed = new Date(`${y}-${mo}-${d}T00:00:00.000Z`);
+  return (
+    !isNaN(parsed.getTime()) &&
+    parsed.getUTCFullYear() === Number(y) &&
+    parsed.getUTCMonth() + 1 === Number(mo) &&
+    parsed.getUTCDate() === Number(d)
+  );
 }
 
 async function hasColumn(col: string): Promise<boolean> {
@@ -69,22 +92,84 @@ export async function POST(req: Request) {
       return json({ error: "Appointment not found" }, 404);
     }
 
-    // Historical-record protection (founder decision): a past, completed, or
-    // already-cancelled appointment can never be cancelled/deleted through
-    // this route, in either mode -- "single" targets this exact row;
-    // "future" is anchored to it (its own scheduled_for is the lower bound
-    // of the `gte` sibling query below), so rejecting a historical anchor
-    // here also guarantees no future sibling is ever touched by a request
-    // anchored to a historical occurrence. isHistoricalAppointment
-    // (lib/payroll.ts) is the single canonical predicate -- it treats the
-    // appointment as historical the moment EVERY assigned employee's Job
-    // Tracking is complete, even if scheduled_end hasn't elapsed yet, not
-    // just cancelled/past-by-time. Checked before any mutation, quarantine
-    // call, or notification.
+    // Historical-record protection: a past, completed, or already-cancelled
+    // appointment can never be EDITED/RESCHEDULED through this app (see
+    // app/api/appointments/update/route.ts, which still rejects every
+    // historical appointment unconditionally) -- but recording its
+    // cancellation is a different, narrower action this route now
+    // explicitly allows for an authorized owner/admin (every caller of this
+    // route already passed the role + canMutateOperationalData checks
+    // above), per the real case of a client-reported cancellation the owner
+    // could not get to record until after the scheduled time had passed.
+    // isHistoricalAppointment (lib/payroll.ts) is the single canonical
+    // predicate -- it treats the appointment as historical the moment EVERY
+    // assigned employee's Job Tracking is complete, even if scheduled_end
+    // hasn't elapsed yet, not just cancelled/past-by-time.
     const historicalAssignments = await fetchAssignments(appointment_id, workspaceId);
-    if (isHistoricalAppointment(appt, historicalAssignments)) {
-      return json({ error: "This appointment is a past record and can no longer be changed.", code: "APPOINTMENT_IS_HISTORICAL" }, 409);
+    const historical = isHistoricalAppointment(appt, historicalAssignments);
+
+    // Correction fields: accepted from any caller, but only ever meaningful
+    // (and only ever required) for a historical correction below. A live,
+    // not-yet-historical cancellation may still pass a reason/reported date
+    // if it has one -- harmless, just persisted alongside the normal
+    // cancellation.
+    const cancellationReasonInput =
+      typeof body.cancellation_reason === "string" ? body.cancellation_reason.trim().slice(0, CANCELLATION_REASON_MAX_LENGTH) : "";
+    const cancellationReportedDateInput =
+      typeof body.cancellation_reported_date === "string" ? body.cancellation_reported_date.trim() : "";
+    if (cancellationReportedDateInput && !isValidDateInput(cancellationReportedDateInput)) {
+      return json({ error: "Invalid cancellation reported date." }, 400);
     }
+
+    if (historical) {
+      // Idempotent: re-submitting a cancellation for an already-cancelled
+      // record is a no-op success, never an error -- matches the public
+      // token-based cancel route's own "already" convention
+      // (app/api/appointments/cancel/route.ts).
+      if (appt.status === "cancelled") {
+        return json({ ok: true, already: true, cancelled: 0 });
+      }
+      // "This and future" is a live-series-management operation (quarantine,
+      // sibling discovery, series finalization) that a backfilled historical
+      // correction has no business performing -- a historical correction
+      // always targets exactly the one past occurrence it's anchored to,
+      // and every future occurrence is left completely untouched.
+      if (mode !== "single") {
+        return json(
+          { error: "A past appointment can only be corrected one occurrence at a time. Future occurrences are unaffected.", code: "HISTORICAL_CANCEL_SINGLE_ONLY" },
+          409
+        );
+      }
+      // If this appointment is already Completed (every assigned employee's
+      // Job Tracking done), overriding that completed record to Cancelled
+      // is a correction, not a plain cancellation -- it requires an explicit
+      // reason so the audit trail explains why a completed job was retro-
+      // actively marked cancelled. A merely past-but-never-worked
+      // appointment (the common real case: the client cancelled and no one
+      // ever showed up) has nothing to override, so no reason is required.
+      const trackingStatus = deriveAppointmentTrackingStatus(historicalAssignments);
+      if (trackingStatus === "completed" && !cancellationReasonInput) {
+        return json(
+          { error: "A reason is required to correct a completed appointment to cancelled.", code: "CANCELLATION_REASON_REQUIRED" },
+          400
+        );
+      }
+    }
+
+    // Additive audit fields (migrations/038), set directly -- same
+    // convention as the other recently-added appointments columns in this
+    // codebase (reminder_24h_sent_at/claimed_at/claim_token), never
+    // hasColumn-guarded like the older scheduled_end/duration_minutes/
+    // price_cents/series_id fields this route already reads elsewhere.
+    // cancelled_at is set on every cancellation (live or historical), never
+    // only the historical-correction path, so "when was this actually
+    // recorded" is consistently available regardless of which path
+    // produced it.
+    const cancellationFields: Record<string, unknown> = {
+      cancelled_at: new Date().toISOString(),
+    };
+    if (cancellationReasonInput) cancellationFields.cancellation_reason = cancellationReasonInput;
+    if (cancellationReportedDateInput) cancellationFields.cancellation_reported_date = cancellationReportedDateInput;
 
     async function notifyCancellation() {
       if (notify_channel === "none" || appt.is_demo) return;
@@ -148,7 +233,7 @@ export async function POST(req: Request) {
     if (mode === "single") {
       const { error } = await supabaseAdmin
         .from("appointments")
-        .update({ status: "cancelled" })
+        .update({ status: "cancelled", ...cancellationFields })
         .eq("id", appointment_id)
         .eq("workspace_id", workspaceId);
       if (error) throw error;
@@ -224,7 +309,7 @@ export async function POST(req: Request) {
     if (ids.length > 0) {
       const { error } = await supabaseAdmin
         .from("appointments")
-        .update({ status: "cancelled" })
+        .update({ status: "cancelled", ...cancellationFields })
         .in("id", ids)
         .eq("workspace_id", workspaceId);
       if (error) throw error;

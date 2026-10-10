@@ -84,6 +84,39 @@ describe("computeIncomeProjection -- cancelled excluded, completed included", ()
     assert.equal(result.estimatedWorkHours, 0);
   });
 
+  // SFT past-appointment-cancellation fix regression: before that fix, an
+  // owner could not record a cancellation for a past appointment at all
+  // (app/api/appointments/delete/route.ts rejected it outright), so such an
+  // appointment stayed stuck at status "scheduled" indefinitely -- and
+  // would have continued contributing phantom income/hours to this
+  // projection for as long as it remained in range. Once the correction is
+  // recorded (proven at the route level in delete/route.test.ts), its
+  // status becomes "cancelled", and this same pre-existing exclusion rule
+  // (unchanged by that fix) correctly drops it to zero.
+  test("a previously-stuck past appointment, once corrected to cancelled by the owner, contributes zero projected income and zero hours -- the real Tami Factor case", () => {
+    const result = computeIncomeProjection({
+      appointments: [appt({ id: "tami-1", status: "cancelled", price_cents: 12000 })],
+      assignments: [assignment({ appointment_id: "tami-1", employee_id: "roxana" })],
+      rangeStart: RANGE_START,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
+    });
+    assert.equal(result.estimatedIncomeCents, 0);
+    assert.equal(result.estimatedWorkHours, 0);
+  });
+
+  test("correcting ONE occurrence of a recurring client's appointments to cancelled never affects a sibling appointment's own contribution -- each appointment's status is evaluated independently", () => {
+    const result = computeIncomeProjection({
+      appointments: [
+        appt({ id: "corrected", status: "cancelled", price_cents: 12000 }),
+        appt({ id: "future-sibling", status: "scheduled", price_cents: 12000, scheduled_for: new Date(Date.now() + 2 * HOUR_MS).toISOString() }),
+      ],
+      assignments: [assignment({ appointment_id: "future-sibling", employee_id: "roxana" })],
+      rangeStart: RANGE_START,
+      rangeEnd: RANGE_END, timezone: "America/New_York",
+    });
+    assert.equal(result.estimatedIncomeCents, 12000, "only the still-scheduled sibling contributes -- the corrected one is excluded, the sibling is untouched");
+  });
+
   test("an appointment whose job tracking is already fully completed (both timestamps set) is still counted -- this projection represents the scheduled plan, not what's left to do", () => {
     const result = computeIncomeProjection({
       appointments: [
