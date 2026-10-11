@@ -13,8 +13,8 @@ describe("classifyMessageStatus", () => {
     assert.deepEqual(classifyMessageStatus(REAL_RESEND_ID, "email"), { code: "sent", label: "Sent — delivery unconfirmed" });
   });
 
-  test("sendEmail's own degraded-success fallback ('resend', written when Resend's response had no id) is still 'sent'", () => {
-    assert.deepEqual(classifyMessageStatus("resend", "email"), { code: "sent", label: "Sent — delivery unconfirmed" });
+  test("the literal 'resend' is Unknown, NEVER Sent -- a stored row can't prove whether it came from sendEmail's genuine no-id success fallback or from the (now-fixed) ambiguous-response branch that used to write the same literal", () => {
+    assert.deepEqual(classifyMessageStatus("resend", "email"), { code: "unknown", label: "Unknown" });
   });
 
   test("a correctly-shaped Twilio Message SID on an sms row is 'sent'", () => {

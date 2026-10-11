@@ -265,15 +265,23 @@ export async function sendEmail(to: string, subject: string, text: string, works
   // treated as acceptance. Returning this literal sentinel (rather than
   // throwing, which recordMessageSent's caller would record as "failed" --
   // an equally false claim, since no error was actually reported either)
-  // matches neither the UUID shape nor the "resend" fallback that
-  // lib/messageStatus.ts's classifyMessageStatus recognizes as acceptance
-  // evidence, so it is shown as Unknown, never Sent or Failed.
+  // matches neither the UUID shape nor "resend" -- lib/messageStatus.ts's
+  // classifyMessageStatus shows this as Unknown, never Sent or Failed.
   if (!data) {
     return "ambiguous-no-data-no-error";
   }
   // `data` is confirmed present (a genuine success response) -- `data.id`
   // may still be absent in some response shapes, hence the "resend"
-  // fallback, which IS real acceptance evidence (the call succeeded; we
-  // just don't have the provider's own id to show).
+  // fallback, which IS real acceptance evidence AT THE MOMENT this call
+  // completes. lib/messageStatus.ts's classifyMessageStatus nonetheless
+  // classifies the literal "resend" as Unknown, not Sent -- a stored
+  // provider_id carries no record of which branch produced it, and before
+  // this function's own ambiguous-response fix above, that same literal
+  // string could ALSO have been written for a result that was never
+  // confirmed accepted. The classifier has no way to tell a pre-fix
+  // "resend" apart from a post-fix one, so it treats every occurrence the
+  // same, deliberately erring toward Unknown rather than ever risking a
+  // false "Sent." This function's own behavior here is unchanged -- only
+  // how the stored value is later displayed.
   return data.id || "resend";
 }

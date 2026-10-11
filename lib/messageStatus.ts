@@ -37,11 +37,21 @@ const RESEND_EMAIL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 // character value: a literal "SM" prefix followed by 32 hex characters.
 const TWILIO_MESSAGE_SID_RE = /^SM[0-9a-f]{32}$/i;
 
-// sendEmail's own degraded-success fallback (lib/notify.ts: `data?.id ||
-// "resend"`) -- written only on the SAME success path as a real Resend id,
-// when Resend's response happened not to include one. Still genuine
-// acceptance evidence, not a guess.
-const EMAIL_FALLBACK_ID = "resend";
+// The literal "resend" is DELIBERATELY NOT treated as acceptance evidence,
+// even though lib/notify.ts's sendEmail still writes it on a genuine
+// confirmed-success response that happens to lack a `data.id`. Before this
+// app's own fix to sendEmail's ambiguous-response handling (data: null AND
+// error: null), that exact same literal string could ALSO have been written
+// for a result that was never actually confirmed as accepted -- and a stored
+// provider_id value carries no record of which branch produced it. This
+// classifier has no row-age or row-version input (see the module header),
+// so it cannot tell a pre-fix "resend" apart from a post-fix one; rather
+// than risk relabeling an unconfirmed historical send as "Sent" without
+// supporting evidence, EVERY "resend" value -- old or new -- is classified
+// as Unknown. The cost (a genuine future no-id success also shows as
+// Unknown) is accepted deliberately: it is strictly safer than the
+// alternative of ever showing a false "Sent."
+const DELIBERATELY_UNTRUSTED_EMAIL_VALUES = new Set(["resend"]);
 
 // Validates provider_id against the SHAPE the channel's own provider
 // actually produces -- not just "is it non-empty." A Twilio SID is never
@@ -51,7 +61,8 @@ const EMAIL_FALLBACK_ID = "resend";
 // non-empty it looks.
 function looksLikeAcceptedProviderId(trimmed: string, channel: "email" | "sms"): boolean {
   if (channel === "sms") return TWILIO_MESSAGE_SID_RE.test(trimmed);
-  return trimmed === EMAIL_FALLBACK_ID || RESEND_EMAIL_ID_RE.test(trimmed);
+  if (DELIBERATELY_UNTRUSTED_EMAIL_VALUES.has(trimmed)) return false;
+  return RESEND_EMAIL_ID_RE.test(trimmed);
 }
 
 // The three sentinel strings every send call site in lib/notify.ts writes

@@ -63,11 +63,17 @@ describe("sendEmail -- the 'resend' fallback is written ONLY on confirmed succes
     assert.equal(result, "4ef9a417-02e9-4d39-ad75-9611e0fcc33c");
   });
 
-  test("confirmed success (error: null) with a data object that has no .id still falls back to 'resend' -- this IS genuine acceptance evidence", async () => {
+  test("confirmed success (error: null) with a data object that has no .id still falls back to 'resend' at write time -- but REGRESSION: that same literal is displayed as Unknown, not Sent, because a stored row can't prove it came from this branch rather than the old ambiguous one", async () => {
     resetCompanySettings();
     sendImpl = async () => ({ data: {}, error: null });
     const result = await sendEmail("client@example.com", "Subject", "Body", "ws-1");
-    assert.equal(result, "resend");
+    assert.equal(result, "resend", "sendEmail's own write-side behavior here is unchanged");
+    const { classifyMessageStatus } = await import("./messageStatus.ts");
+    assert.deepEqual(
+      classifyMessageStatus(result, "email"),
+      { code: "unknown", label: "Unknown" },
+      "classifyMessageStatus must never show 'resend' as Sent, even though sendEmail wrote it on a genuinely confirmed success"
+    );
   });
 
   test("an error response (error truthy) THROWS -- it never reaches, and never returns, the 'resend' fallback", async () => {
