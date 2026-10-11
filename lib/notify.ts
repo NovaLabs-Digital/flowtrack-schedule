@@ -257,5 +257,23 @@ export async function sendEmail(to: string, subject: string, text: string, works
   if (error) {
     throw Object.assign(new Error(error.message), error);
   }
-  return data?.id || "resend";
+  // Resend's own documented contract is that exactly one of data/error is
+  // populated on a resolved call -- error is already ruled out above, so
+  // `data` should always be present here. If it somehow isn't (a violation
+  // of that contract -- malformed/empty response, SDK edge case), this is
+  // neither a confirmed success nor a confirmed failure: it must not be
+  // treated as acceptance. Returning this literal sentinel (rather than
+  // throwing, which recordMessageSent's caller would record as "failed" --
+  // an equally false claim, since no error was actually reported either)
+  // matches neither the UUID shape nor the "resend" fallback that
+  // lib/messageStatus.ts's classifyMessageStatus recognizes as acceptance
+  // evidence, so it is shown as Unknown, never Sent or Failed.
+  if (!data) {
+    return "ambiguous-no-data-no-error";
+  }
+  // `data` is confirmed present (a genuine success response) -- `data.id`
+  // may still be absent in some response shapes, hence the "resend"
+  // fallback, which IS real acceptance evidence (the call succeeded; we
+  // just don't have the provider's own id to show).
+  return data.id || "resend";
 }

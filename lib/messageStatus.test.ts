@@ -95,6 +95,22 @@ describe("classifyMessageStatus", () => {
     assert.deepEqual(classifyMessageStatus("4ef9a417-02e9-4d39-ad75-9611e0fccXYZ", "email"), { code: "unknown", label: "Unknown" });
   });
 
+  test("this classifier has no special-case for row age: a value written by the pre-existing send paths long before this Message History feature existed is classified by the exact same rules as a brand-new row", () => {
+    // classifyMessageStatus takes only (providerId, channel) -- it has no
+    // "when was this row written" input at all, so it is structurally
+    // incapable of grandfathering an old row into a more permissive result.
+    // A genuinely correctly-shaped legacy id (sendEmail/sendSms have always
+    // produced this exact shape -- this feature changed classification and
+    // display, never what gets written) still classifies as Sent...
+    assert.deepEqual(classifyMessageStatus(REAL_RESEND_ID, "email"), { code: "sent", label: "Sent — delivery unconfirmed" });
+    // ...while an unfamiliar legacy value (e.g. from a since-removed
+    // provider, a manual data correction, or any value that simply doesn't
+    // match either known provider's real shape) is Unknown, exactly like
+    // any other unrecognized value -- never presumed Sent just because it
+    // predates this UI.
+    assert.deepEqual(classifyMessageStatus("legacy-system-ref-00482", "email"), { code: "unknown", label: "Unknown" });
+  });
+
   test("never returns a Queued, Delivered, or Read status for any input -- this app has no evidence for any of them", () => {
     const codes: string[] = [];
     for (const input of [REAL_RESEND_ID, "failed", "disabled", "notifications-off", null, undefined, "", "   ", "unexpected-value"]) {
