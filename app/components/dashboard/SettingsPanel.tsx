@@ -13,6 +13,8 @@ export default function SettingsPanel({
   canMutateOperationalData,
   isTrialing,
   timezone,
+  workspaceId,
+  userId,
 }: {
   section: SettingsSection;
   // Phase 5.5E-E1E forwarded this only to ArchivedClientsPanel. Phase
@@ -29,12 +31,18 @@ export default function SettingsPanel({
   // workspace's own trusted timezone (see DashboardSettingsArea's own
   // comment on this same prop).
   timezone: string;
+  // Billing / Completed Jobs sort-order preference: forwarded only to
+  // BillingPanel, for scoping its localStorage key per (user, workspace)
+  // -- same values DashboardShell already threads to
+  // useDashboardLayoutPrefs. Never sent to any server route.
+  workspaceId: string;
+  userId: string;
 }) {
   if (section === "company") return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} />;
   if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "staff") return <StaffPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "archived") return <ArchivedClientsPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "recurring") return <RecurringSeriesPanel canMutateOperationalData={canMutateOperationalData} />;
-  if (section === "billing") return <BillingPanel timezone={timezone} canMutateOperationalData={canMutateOperationalData} />;
+  if (section === "billing") return <BillingPanel timezone={timezone} canMutateOperationalData={canMutateOperationalData} workspaceId={workspaceId} userId={userId} />;
   return null;
 }

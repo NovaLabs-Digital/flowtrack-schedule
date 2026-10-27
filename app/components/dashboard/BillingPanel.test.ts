@@ -33,7 +33,7 @@ beforeEach(() => {
     return next();
   }) as typeof fetch;
 });
-afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
+afterEach(() => { cleanup(); globalThis.fetch = originalFetch; window.localStorage.clear(); });
 
 const ROW_DONE = {
   appointmentId: "appt-done", serviceDate: "2026-08-12", scheduledFor: "2026-08-12T13:00:00.000Z",
@@ -50,8 +50,18 @@ const REVIEW_ROW = {
   clientId: "c3", clientName: "Wren Castellan", serviceType: "Deep Clean",
 };
 
-function renderPanel(canMutateOperationalData = true) {
-  return render(React.createElement(BillingPanel, { timezone: TZ, canMutateOperationalData }));
+const USER_ID = "owner-1";
+const WORKSPACE_ID = "ws-1";
+
+function renderPanel(canMutateOperationalData = true, overrides: { workspaceId?: string; userId?: string } = {}) {
+  return render(
+    React.createElement(BillingPanel, {
+      timezone: TZ,
+      canMutateOperationalData,
+      workspaceId: overrides.workspaceId ?? WORKSPACE_ID,
+      userId: overrides.userId ?? USER_ID,
+    })
+  );
 }
 
 describe("BillingPanel -- initial load", () => {
@@ -299,7 +309,7 @@ describe("BillingPanel -- status filter (client-side, no extra fetch)", () => {
     const callsBefore = calls.length;
 
     const u = userEvent.setup();
-    const select = screen.getAllByRole("combobox")[0];
+    const select = screen.getByRole("combobox", { name: "Filter by billing status" });
     await u.selectOptions(select, "paid");
 
     assert.equal(screen.queryByText("Petra Lindqvist"), null);
@@ -312,7 +322,7 @@ describe("BillingPanel -- status filter (client-side, no extra fetch)", () => {
     renderPanel();
     await screen.findByText("Petra Lindqvist");
     const u = userEvent.setup();
-    await u.selectOptions(screen.getAllByRole("combobox")[0], "missing_invoice");
+    await u.selectOptions(screen.getByRole("combobox", { name: "Filter by billing status" }), "missing_invoice");
     assert.ok(screen.getByText("Petra Lindqvist"));
     assert.equal(screen.queryByText("Simon Aldercott"), null);
   });
@@ -383,7 +393,9 @@ describe("BillingPanel -- inline editing", () => {
     renderPanel();
     await screen.findByText("Simon Aldercott");
     const u = userEvent.setup();
-    const methodSelect = screen.getAllByRole("combobox")[1]; // [0] is the status filter
+    // [0] is the sort-order dropdown, [1] is the status filter, [2+] are
+    // the per-row payment-method selects, in fetch order.
+    const methodSelect = screen.getAllByRole("combobox")[2];
     await u.selectOptions(methodSelect, "cash");
     await waitFor(() => assert.equal(calls.length, 2));
     assert.deepEqual(calls[1].body, { appointment_id: "appt-paid", payment_method: "cash" });
@@ -436,23 +448,23 @@ describe("BillingPanel -- grouped-invoice sync (fix for stale sibling rows after
     await screen.findAllByText("Beth Holcomb");
 
     const u = userEvent.setup();
-    const selects = screen.getAllByRole("combobox"); // [0] = status filter, [1..5] = one per row, in fetch order
+    const selects = screen.getAllByRole("combobox"); // [0] = sort order, [1] = status filter, [2..6] = one per row, in fetch order
     const checkboxes = screen.getAllByRole("checkbox");
-    assert.equal(selects.length, 6);
+    assert.equal(selects.length, 7);
     assert.equal(checkboxes.length, 5);
 
-    await u.selectOptions(selects[1], "zelle"); // appt-beth-1's payment method
+    await u.selectOptions(selects[2], "zelle"); // appt-beth-1's payment method
     await waitFor(() => assert.equal(calls.length, 2));
 
     // Payment method synced onto both OTHER Beth rows sharing invoice
     // 13422, even though paid hasn't changed yet.
-    assert.equal((selects[1] as HTMLSelectElement).value, "zelle");
     assert.equal((selects[2] as HTMLSelectElement).value, "zelle");
     assert.equal((selects[3] as HTMLSelectElement).value, "zelle");
+    assert.equal((selects[4] as HTMLSelectElement).value, "zelle");
     // Unrelated invoice (same client) and the other client's identical
     // invoice-number text must be untouched.
-    assert.equal((selects[4] as HTMLSelectElement).value, "");
     assert.equal((selects[5] as HTMLSelectElement).value, "");
+    assert.equal((selects[6] as HTMLSelectElement).value, "");
     for (const cb of checkboxes) assert.equal((cb as HTMLInputElement).checked, false, "paid must not change from a payment_method-only edit");
 
     await u.click(checkboxes[0]); // check Paid on appt-beth-1
@@ -509,6 +521,284 @@ describe("BillingPanel -- grouped-invoice sync (fix for stale sibling rows after
   });
 });
 
+// Service-date sort order (Oldest first / Newest first). ROW_EARLY/MID/LATE
+// span three distinct scheduledFor instants so ordering assertions read
+// client names off the table's own row order, the same way the rest of
+// this file already asserts behavior through real rendered output rather
+// than internal state.
+const ROW_EARLY = {
+  appointmentId: "appt-early", serviceDate: "2026-08-10", scheduledFor: "2026-08-10T13:00:00.000Z",
+  clientId: "c0", clientName: "Aaron Ng", serviceType: "Gutter Cleaning", priceCents: 9000,
+  billing: null,
+};
+const ROW_MID = ROW_DONE; // 2026-08-12, Petra Lindqvist
+const ROW_LATE = ROW_PAID; // 2026-08-13, Simon Aldercott
+
+function tableClientOrder(): string[] {
+  return [...document.querySelectorAll("tbody tr td:nth-child(2)")].map((td) => td.textContent ?? "");
+}
+
+describe("BillingPanel -- service-date sort order (Oldest first / Newest first)", () => {
+  test("a clearly labelled Sort dropdown renders with exactly the two documented options, defaulting to Oldest first", async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    const sortSelect = screen.getByRole("combobox", { name: "Sort by service date" }) as HTMLSelectElement;
+    const optionLabels = [...sortSelect.options].map((o) => o.textContent);
+    assert.deepEqual(optionLabels, ["Oldest first", "Newest first"]);
+    assert.equal(sortSelect.value, "oldest_first", "preserves the existing (pre-feature) sort order as the default");
+  });
+
+  test("defaults to the SAME order the table already showed before this feature existed: earliest service date first", async () => {
+    responses = [json(200, { completed: [ROW_LATE, ROW_EARLY, ROW_MID], reviewNeeded: [] })]; // fed out of order on purpose
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    assert.deepEqual(tableClientOrder(), ["Aaron Ng", "Petra Lindqvist", "Simon Aldercott"]);
+  });
+
+  test('selecting "Newest first" reverses the table to the most recent service date first, without a new fetch', async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    const callsBefore = calls.length;
+
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+
+    assert.deepEqual(tableClientOrder(), ["Simon Aldercott", "Petra Lindqvist", "Aaron Ng"]);
+    assert.equal(calls.length, callsBefore, "sort order must not trigger another network request");
+  });
+
+  test('switching back to "Oldest first" restores ascending order', async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    const u = userEvent.setup();
+    const sortSelect = screen.getByRole("combobox", { name: "Sort by service date" });
+    await u.selectOptions(sortSelect, "newest_first");
+    assert.deepEqual(tableClientOrder(), ["Simon Aldercott", "Petra Lindqvist", "Aaron Ng"]);
+    await u.selectOptions(sortSelect, "oldest_first");
+    assert.deepEqual(tableClientOrder(), ["Aaron Ng", "Petra Lindqvist", "Simon Aldercott"]);
+  });
+
+  test("two rows sharing the exact same service date/time still render in a consistent, stable order in both directions", async () => {
+    const tiedA = { ...ROW_EARLY, appointmentId: "appt-tied-a", clientName: "Aaron Ng" };
+    const tiedB = { ...ROW_EARLY, appointmentId: "appt-tied-b", clientName: "Zoe Baptiste" };
+    responses = [json(200, { completed: [tiedB, tiedA], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    // Stable tie-breaker is appointmentId ascending ("appt-tied-a" before
+    // "appt-tied-b"), so Aaron renders first -- regardless of direction.
+    assert.deepEqual(tableClientOrder(), ["Aaron Ng", "Zoe Baptiste"]);
+
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+    assert.deepEqual(tableClientOrder(), ["Aaron Ng", "Zoe Baptiste"], "the tie order itself does not flip just because the direction did");
+  });
+
+  test("sorting is applied to the FULL status-filtered and client-searched result set, not merely the originally-fetched order", async () => {
+    // Petra (missing invoice) and Simon (paid) differ in status; only
+    // Petra and a third missing-invoice row should remain after filtering
+    // to "Missing Invoice #" -- sort must still apply correctly to that
+    // narrowed set.
+    const thirdMissing = { ...ROW_EARLY, appointmentId: "appt-third", clientName: "Mina Oduya", serviceDate: "2026-08-11", scheduledFor: "2026-08-11T13:00:00.000Z" };
+    responses = [json(200, { completed: [ROW_MID, ROW_LATE, thirdMissing], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Filter by billing status" }), "missing_invoice");
+    assert.deepEqual(tableClientOrder(), ["Mina Oduya", "Petra Lindqvist"], "filtered set in default oldest-first order");
+
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+    assert.deepEqual(tableClientOrder(), ["Petra Lindqvist", "Mina Oduya"], "same filtered set, now newest-first -- Simon never reappears");
+  });
+
+  test("changing sort order never changes the summary totals (a pure display-order change)", async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    const statValue = (label: string) => screen.getByText(label).parentElement!.querySelector("div.font-semibold")!.textContent;
+    const before = { jobs: statValue("Completed Jobs"), work: statValue("Completed Work $") };
+
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+
+    assert.equal(statValue("Completed Jobs"), before.jobs);
+    assert.equal(statValue("Completed Work $"), before.work);
+  });
+
+  test("changing sort order never changes which jobs are billing-eligible or what's already saved -- the same billing rows are shown, just reordered", async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    assert.ok(screen.getByDisplayValue("INV-9"), "Simon's already-saved invoice number is present before reordering");
+
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+
+    assert.ok(screen.getByDisplayValue("INV-9"), "still present, unchanged, after reordering");
+    assert.ok(screen.getByText("Aaron Ng"));
+    assert.ok(screen.getByText("Petra Lindqvist"));
+    assert.ok(screen.getByText("Simon Aldercott"));
+  });
+});
+
+describe("BillingPanel -- sort order preference persistence (per user + workspace, localStorage)", () => {
+  test("selecting Newest first persists to localStorage, scoped by the current userId and workspaceId", async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+    assert.equal(window.localStorage.getItem(`sft_billing_sort_order_v1_${USER_ID}_${WORKSPACE_ID}`), "newest_first");
+  });
+
+  test("a later mount for the SAME user+workspace restores the saved preference, without the owner reselecting it", async () => {
+    responses = [
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+    ];
+    const first = renderPanel();
+    await screen.findByText("Aaron Ng");
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+    first.unmount();
+
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    assert.equal((screen.getByRole("combobox", { name: "Sort by service date" }) as HTMLSelectElement).value, "newest_first");
+    assert.deepEqual(tableClientOrder(), ["Simon Aldercott", "Petra Lindqvist", "Aaron Ng"]);
+  });
+
+  test("two different users in the same workspace never share this preference", async () => {
+    responses = [
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+    ];
+    const asOwnerA = renderPanel(true, { userId: "owner-A" });
+    await screen.findByText("Aaron Ng");
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+    asOwnerA.unmount();
+
+    renderPanel(true, { userId: "owner-B" });
+    await screen.findByText("Aaron Ng");
+    assert.equal(
+      (screen.getByRole("combobox", { name: "Sort by service date" }) as HTMLSelectElement).value,
+      "oldest_first",
+      "a different owner in the same workspace sees their own default, not owner-A's saved preference"
+    );
+  });
+
+  test("the same user in a different workspace never shares this preference", async () => {
+    responses = [
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+    ];
+    const inWorkspace1 = renderPanel(true, { workspaceId: "ws-A" });
+    await screen.findByText("Aaron Ng");
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+    inWorkspace1.unmount();
+
+    renderPanel(true, { workspaceId: "ws-B" });
+    await screen.findByText("Aaron Ng");
+    assert.equal((screen.getByRole("combobox", { name: "Sort by service date" }) as HTMLSelectElement).value, "oldest_first");
+  });
+
+  test("a corrupted/invalid stored value is ignored, falling back to the default rather than throwing or showing a blank selection", async () => {
+    window.localStorage.setItem(`sft_billing_sort_order_v1_${USER_ID}_${WORKSPACE_ID}`, "not-a-real-order");
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    assert.equal((screen.getByRole("combobox", { name: "Sort by service date" }) as HTMLSelectElement).value, "oldest_first");
+    assert.deepEqual(tableClientOrder(), ["Aaron Ng", "Petra Lindqvist", "Simon Aldercott"]);
+  });
+
+  test("an unavailable localStorage (throws on every access) never crashes the panel, and the selection still works in-memory for this session", async () => {
+    const realGetItem = window.localStorage.getItem.bind(window.localStorage);
+    const realSetItem = window.localStorage.setItem.bind(window.localStorage);
+    window.localStorage.getItem = () => { throw new Error("storage disabled"); };
+    window.localStorage.setItem = () => { throw new Error("storage disabled"); };
+    try {
+      responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+      renderPanel();
+      await screen.findByText("Aaron Ng");
+      const u = userEvent.setup();
+      await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+      assert.deepEqual(tableClientOrder(), ["Simon Aldercott", "Petra Lindqvist", "Aaron Ng"], "in-memory selection still works even though persistence silently fails");
+    } finally {
+      window.localStorage.getItem = realGetItem;
+      window.localStorage.setItem = realSetItem;
+    }
+  });
+});
+
+// Real risk this guards against: if BillingPanel keyed its rows by array
+// index instead of appointmentId, reordering would either lose an
+// in-progress (unsaved, not-yet-blurred) invoice-number draft or, worse,
+// silently reattach it to a DIFFERENT job that happened to land in the
+// same table position after the resort.
+describe("BillingPanel -- changing sort order never loses or misattributes an unsaved invoice-number draft", () => {
+  test("an unsaved draft typed into one row stays attached to that SAME client after reordering, and is not shown on any other row", async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+
+    // Aaron Ng (appt-early) is the first row (oldest first) -- type a draft
+    // invoice number into HIS row specifically, without blurring/saving.
+    const aaronRow = screen.getByText("Aaron Ng").closest("tr")!;
+    const aaronInput = aaronRow.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.change(aaronInput, { target: { value: "DRAFT-FOR-AARON" } });
+    assert.equal(aaronInput.value, "DRAFT-FOR-AARON");
+
+    // Reorder -- Aaron's row now moves to the BOTTOM of the table.
+    const u = userEvent.setup();
+    await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
+    assert.deepEqual(tableClientOrder(), ["Simon Aldercott", "Petra Lindqvist", "Aaron Ng"]);
+
+    // The draft must have followed Aaron's row to its new position --
+    // never left behind attached to whichever row is now first (Simon),
+    // and never silently cleared.
+    const simonRow = screen.getByText("Simon Aldercott").closest("tr")!;
+    const simonInput = simonRow.querySelector('input[type="text"]') as HTMLInputElement;
+    assert.equal(simonInput.value, "INV-9", "Simon's own already-saved invoice number (not Aaron's draft) must be what shows in his field");
+
+    const aaronRowAfter = screen.getByText("Aaron Ng").closest("tr")!;
+    const aaronInputAfter = aaronRowAfter.querySelector('input[type="text"]') as HTMLInputElement;
+    assert.equal(aaronInputAfter.value, "DRAFT-FOR-AARON", "Aaron's draft must still be exactly his, after moving position");
+
+    // No PATCH was ever sent (the draft was never blurred) -- confirms the
+    // value survived purely via React's keyed reconciliation, not a save.
+    assert.equal(calls.filter((c) => c.method === "PATCH").length, 0);
+  });
+
+  test("a draft survives TWO reorders (there and back) and can still be saved correctly afterward", async () => {
+    responses = [
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { ok: true, billing: { id: "b-new", workspace_id: WORKSPACE_ID, appointment_id: "appt-early", client_id: "c0", invoice_number: "DRAFT-ROUNDTRIP", paid: false, payment_method: null, created_at: "x", updated_at: "x" } }),
+    ];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+
+    const aaronInput = screen.getByText("Aaron Ng").closest("tr")!.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.change(aaronInput, { target: { value: "DRAFT-ROUNDTRIP" } });
+
+    const u = userEvent.setup();
+    const sortSelect = screen.getByRole("combobox", { name: "Sort by service date" });
+    await u.selectOptions(sortSelect, "newest_first");
+    await u.selectOptions(sortSelect, "oldest_first");
+
+    const aaronInputAfter = screen.getByText("Aaron Ng").closest("tr")!.querySelector('input[type="text"]') as HTMLInputElement;
+    assert.equal(aaronInputAfter.value, "DRAFT-ROUNDTRIP");
+
+    fireEvent.blur(aaronInputAfter);
+    await waitFor(() => assert.equal(calls.filter((c) => c.method === "PATCH").length, 1));
+    assert.deepEqual(calls[calls.length - 1].body, { appointment_id: "appt-early", invoice_number: "DRAFT-ROUNDTRIP" });
+  });
+});
+
 describe("BillingPanel -- read-only mode", () => {
   test("canMutateOperationalData=false disables invoice input, paid checkbox, and payment method select", async () => {
     responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [] })];
@@ -516,7 +806,10 @@ describe("BillingPanel -- read-only mode", () => {
     await screen.findByText("Petra Lindqvist");
     assert.equal((screen.getByPlaceholderText("—") as HTMLInputElement).disabled, true);
     assert.equal((screen.getByRole("checkbox") as HTMLInputElement).disabled, true);
-    const methodSelect = screen.getAllByRole("combobox")[1];
+    // [0] = sort order, [1] = status filter (neither is gated by
+    // canMutateOperationalData -- display-order/visibility controls, not
+    // mutations), [2] = this row's payment-method select.
+    const methodSelect = screen.getAllByRole("combobox")[2];
     assert.equal((methodSelect as HTMLSelectElement).disabled, true);
   });
 });

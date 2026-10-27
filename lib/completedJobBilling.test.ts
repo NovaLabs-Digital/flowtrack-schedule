@@ -13,6 +13,10 @@ import {
   computeBillingSummary,
   isValidPaymentMethod,
   matchesClientSearch,
+  sortCompletedJobRows,
+  isValidBillingSortOrder,
+  BILLING_SORT_ORDERS,
+  DEFAULT_BILLING_SORT_ORDER,
   type CompletedJobBilling,
   type CompletedJobRow,
 } from "./completedJobBilling.ts";
@@ -473,6 +477,100 @@ describe("applyBillingStatusFilter", () => {
     const withZelle = [...rows, zellePaid];
     assert.deepEqual(applyBillingStatusFilter(withZelle, "missing_invoice").map((r) => r.appointmentId), ["a1"]);
     assert.deepEqual(applyBillingStatusFilter(withZelle, "paid").map((r) => r.appointmentId), ["a3", "a4", "a5"]);
+  });
+});
+
+describe("sortCompletedJobRows", () => {
+  function rowAt(appointmentId: string, scheduledFor: string): CompletedJobRow {
+    return {
+      appointmentId,
+      serviceDate: scheduledFor.slice(0, 10),
+      scheduledFor,
+      clientId: "c1",
+      clientName: "Client " + appointmentId,
+      serviceType: "Regular Cleaning",
+      priceCents: 10000,
+      billing: null,
+    };
+  }
+
+  const early = rowAt("a-early", "2026-08-10T13:00:00.000Z");
+  const middle = rowAt("a-middle", "2026-08-12T13:00:00.000Z");
+  const late = rowAt("a-late", "2026-08-15T13:00:00.000Z");
+  const unsorted = [middle, late, early];
+
+  test("DEFAULT_BILLING_SORT_ORDER is \"oldest_first\", matching buildCompletedJobRows' own existing ascending default exactly", () => {
+    assert.equal(DEFAULT_BILLING_SORT_ORDER, "oldest_first");
+    assert.deepEqual(BILLING_SORT_ORDERS.map((o) => o.value), ["oldest_first", "newest_first"]);
+  });
+
+  test('"oldest_first" sorts ascending by actual scheduledFor instant, earliest first', () => {
+    assert.deepEqual(sortCompletedJobRows(unsorted, "oldest_first").map((r) => r.appointmentId), ["a-early", "a-middle", "a-late"]);
+  });
+
+  test('"newest_first" sorts descending by actual scheduledFor instant, latest first', () => {
+    assert.deepEqual(sortCompletedJobRows(unsorted, "newest_first").map((r) => r.appointmentId), ["a-late", "a-middle", "a-early"]);
+  });
+
+  test("sorts by the actual scheduledFor INSTANT, not merely the calendar serviceDate -- two same-day rows at different times still order correctly", () => {
+    const morning = { ...rowAt("a-morning", "2026-08-12T13:00:00.000Z") }; // 9am ET
+    const afternoon = { ...rowAt("a-afternoon", "2026-08-12T19:00:00.000Z") }; // 3pm ET, same calendar day
+    assert.deepEqual(
+      sortCompletedJobRows([afternoon, morning], "oldest_first").map((r) => r.appointmentId),
+      ["a-morning", "a-afternoon"]
+    );
+    assert.deepEqual(
+      sortCompletedJobRows([afternoon, morning], "newest_first").map((r) => r.appointmentId),
+      ["a-afternoon", "a-morning"]
+    );
+  });
+
+  test("a stable tie-breaker (appointmentId ascending) applies when two rows share the EXACT SAME scheduledFor instant, regardless of direction", () => {
+    const tiedZ = rowAt("z-tied", "2026-08-12T13:00:00.000Z");
+    const tiedA = rowAt("a-tied", "2026-08-12T13:00:00.000Z");
+    // Deliberately fed in an order where the tie-breaker (not insertion
+    // order) is the only thing that can produce "a-tied" before "z-tied".
+    assert.deepEqual(
+      sortCompletedJobRows([tiedZ, tiedA], "oldest_first").map((r) => r.appointmentId),
+      ["a-tied", "z-tied"]
+    );
+    // Tie order stays the SAME (a-tied still before z-tied) in the
+    // opposite primary direction too -- the tie-breaker is not flipped
+    // along with the direction, so two tied rows never look like they
+    // randomly reshuffled when the owner just toggles Oldest/Newest.
+    assert.deepEqual(
+      sortCompletedJobRows([tiedZ, tiedA], "newest_first").map((r) => r.appointmentId),
+      ["a-tied", "z-tied"]
+    );
+  });
+
+  test("does not mutate the input array", () => {
+    const original = [middle, late, early];
+    const originalOrder = original.map((r) => r.appointmentId);
+    sortCompletedJobRows(original, "newest_first");
+    assert.deepEqual(original.map((r) => r.appointmentId), originalOrder, "the input array's own order must be untouched");
+  });
+
+  test("an empty list sorts to an empty list, in either direction", () => {
+    assert.deepEqual(sortCompletedJobRows([], "oldest_first"), []);
+    assert.deepEqual(sortCompletedJobRows([], "newest_first"), []);
+  });
+
+  test("a single-row list is returned unchanged (as a new array) in either direction", () => {
+    assert.deepEqual(sortCompletedJobRows([early], "oldest_first").map((r) => r.appointmentId), ["a-early"]);
+    assert.deepEqual(sortCompletedJobRows([early], "newest_first").map((r) => r.appointmentId), ["a-early"]);
+  });
+});
+
+describe("isValidBillingSortOrder", () => {
+  test("accepts exactly the two documented values", () => {
+    assert.equal(isValidBillingSortOrder("oldest_first"), true);
+    assert.equal(isValidBillingSortOrder("newest_first"), true);
+  });
+  test("rejects anything else, including case variants, other strings, and non-strings", () => {
+    for (const bad of ["OLDEST_FIRST", "newest", "", null, undefined, 1, {}, ["oldest_first"]]) {
+      assert.equal(isValidBillingSortOrder(bad), false, `expected ${JSON.stringify(bad)} to be invalid`);
+    }
   });
 });
 

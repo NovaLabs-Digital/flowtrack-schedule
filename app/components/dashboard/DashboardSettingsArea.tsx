@@ -27,6 +27,12 @@ type Props = {
   // DashboardShell already threads to every other scheduling/display
   // consumer), never re-derived from the browser's ambient timezone.
   timezone: string;
+  // Billing / Completed Jobs sort-order preference: passed straight
+  // through to SettingsPanel, which forwards it only to BillingPanel, for
+  // scoping its localStorage key per (user, workspace) -- same values
+  // DashboardShell already threads to useDashboardLayoutPrefs.
+  workspaceId: string;
+  userId: string;
 };
 
 // Owner always gets the real, unrestricted Settings sidebar/panel — untouched
@@ -46,6 +52,8 @@ export default function DashboardSettingsArea({
   canMutateOperationalData,
   isTrialing,
   timezone,
+  workspaceId,
+  userId,
 }: Props) {
   const { active, currentStep, restart } = useDemoExperienceContext();
 
@@ -54,7 +62,7 @@ export default function DashboardSettingsArea({
       <div className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
         <div className="flex-1 min-h-0 overflow-auto pt-8">
-          <SettingsPanel section={settingsSection} canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} timezone={timezone} />
+          <SettingsPanel section={settingsSection} canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} timezone={timezone} workspaceId={workspaceId} userId={userId} />
         </div>
       </div>
     );

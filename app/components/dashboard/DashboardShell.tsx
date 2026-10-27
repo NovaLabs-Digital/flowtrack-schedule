@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { RotateCcw, PanelRightClose, PanelRightOpen } from "lucide-react";
 import TopBar from "@/app/components/dashboard/TopBar";
 import LeftBar from "@/app/components/dashboard/LeftBar";
 import ScheduleGrid from "@/app/components/dashboard/ScheduleGrid";
@@ -15,6 +16,16 @@ import MoveConfirmDialog from "@/app/components/dashboard/MoveConfirmDialog";
 import MobileDashboard from "@/app/components/mobile/MobileDashboard";
 import OwnerBillingBanner from "@/app/components/dashboard/OwnerBillingBanner";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
+import ResizeHandle from "@/app/components/dashboard/ResizeHandle";
+import {
+  useDashboardLayoutPrefs,
+  MIN_SCHEDULE_HEIGHT_PCT,
+  MAX_SCHEDULE_HEIGHT_PCT,
+  MIN_SIDEBAR_WIDTH_PX,
+  MAX_SIDEBAR_WIDTH_PX,
+  LEFT_BAR_WIDTH_PX,
+  LEFT_BAR_COLLAPSED_WIDTH_PX,
+} from "@/app/components/dashboard/useDashboardLayoutPrefs";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
 import MobileExperiencePreview from "@/app/components/demo-experience/MobileExperiencePreview";
@@ -50,6 +61,8 @@ export default function DashboardShell({
   entitlement,
   timezone,
   businessHours,
+  workspaceId,
+  userId,
 }: {
   clients: Client[];
   appointments: Appointment[];
@@ -100,6 +113,19 @@ export default function DashboardShell({
   // and does not consume this. The single source of truth for the grid's
   // visible hour range; no second, independent schedule range exists.
   businessHours: BusinessHours;
+  // Resizable desktop panel layout: the server-assigned workspace id
+  // (never request-derived -- see app/dashboard/page.tsx), used only to
+  // scope the saved panel-size preference in localStorage so a tester's
+  // fixed demo workspace and a real workspace never share or leak each
+  // other's saved sizes on the same browser. Never sent to any server
+  // route and never used for data access -- every query that matters is
+  // already scoped server-side before this component ever renders.
+  workspaceId: string;
+  // Paired with workspaceId to scope the same saved layout preference per
+  // individual person, not just per tenant -- an owner's real authUserId,
+  // or the literal "tester" for demo sessions (see app/dashboard/page.tsx).
+  // Same UI-only, never-sent-to-a-server-route rule as workspaceId above.
+  userId: string;
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
@@ -124,6 +150,39 @@ export default function DashboardShell({
   const [pendingMove, setPendingMove] = useState<
     { appointment: Appointment; client: Client; scheduledFor: string; scheduledEnd: string | null } | null
   >(null);
+
+  // Resizable desktop panel layout -- see useDashboardLayoutPrefs.ts for
+  // clamping, persistence, and viewport-reclamp behavior. scheduleColumnRef
+  // measures the live pixel height of the column holding the schedule
+  // grid and the lower details panel, so a vertical drag can be converted
+  // into a percentage delta of whatever height is actually available.
+  const {
+    scheduleHeightPct,
+    setScheduleHeightPct,
+    sidebarWidthPx,
+    setSidebarWidthPx,
+    leftCollapsed,
+    toggleLeftCollapsed,
+    rightCollapsed,
+    toggleRightCollapsed,
+    resetLayout,
+  } = useDashboardLayoutPrefs(workspaceId, userId);
+  const scheduleColumnRef = useRef<HTMLDivElement | null>(null);
+
+  function handleScheduleDividerDelta(deltaPx: number) {
+    const containerHeight = scheduleColumnRef.current?.clientHeight;
+    if (!containerHeight) return;
+    const deltaPct = (deltaPx / containerHeight) * 100;
+    setScheduleHeightPct((prev) => prev + deltaPct);
+  }
+
+  function handleSidebarDividerDelta(deltaPx: number) {
+    // Inverted relative to the schedule divider: dragging the sidebar
+    // divider right (positive deltaPx) widens main content, which means
+    // SHRINKING the controlled value (sidebarWidthPx) -- see
+    // ResizeHandle.ts's own onDelta doc comment.
+    setSidebarWidthPx((prev) => prev - deltaPx);
+  }
 
   // Mirrors the employeeHours prop, but can also be updated the instant a
   // manual-hours save succeeds — every other mutation in this component
@@ -374,8 +433,13 @@ export default function DashboardShell({
         timezone={timezone}
       />
       <div className="flex-1 min-h-0 flex">
-      {/* Left bar — full height, never moves */}
-      <aside className="shrink-0 w-[230px] p-2 pr-0">
+      {/* Left bar — full height, never moves. Collapses to a narrow icon
+          strip (LeftBar.tsx owns its own collapsed rendering and toggle
+          button); width here is the only thing DashboardShell controls. */}
+      <aside
+        className="shrink-0 p-2 pr-0"
+        style={{ width: leftCollapsed ? LEFT_BAR_COLLAPSED_WIDTH_PX : LEFT_BAR_WIDTH_PX }}
+      >
         <LeftBar
           viewMode={viewMode}
           onChangeView={(m) => {
@@ -389,6 +453,8 @@ export default function DashboardShell({
           onToggleClientsHidden={() => setClientsHidden((v) => !v)}
           selectedClientId={selectedClientId}
           onSelectClient={handleSelectClient}
+          collapsed={leftCollapsed}
+          onToggleCollapsed={toggleLeftCollapsed}
         />
       </aside>
 
@@ -406,17 +472,23 @@ export default function DashboardShell({
           canMutateOperationalData={entitlement.canMutateOperationalData}
         />
 
-        <div className="flex-1 min-h-0 flex flex-col px-2 pb-2">
+        <div ref={scheduleColumnRef} className="flex-1 min-h-0 flex flex-col px-2 pb-2">
           {centerMode === "schedule" ? (
             <>
-              {/* Schedule grid — 68% of available height. Phase 3: Month view
-                  swaps in the dedicated ScheduleMonthGrid overview here;
-                  Day/Weekdays/Week continue to render through the existing
-                  hourly ScheduleGrid, completely unchanged. Everything else
-                  on this page (left bar, top bar, dispatch panel, client/
+              {/* Schedule grid — scheduleHeightPct of available height
+                  (default 68%, user-resizable via the divider below).
+                  Phase 3: Month view swaps in the dedicated
+                  ScheduleMonthGrid overview here; Day/Weekdays/Week
+                  continue to render through the existing hourly
+                  ScheduleGrid, completely unchanged. Everything else on
+                  this page (left bar, top bar, dispatch panel, client/
                   appointment detail area below) is identical regardless of
                   which one renders. */}
-              <div data-tour="schedule-grid" className="min-h-0 pb-2" style={{ flex: "68 1 0%" }}>
+              <div
+                data-tour="schedule-grid"
+                className="min-h-0 pb-2"
+                style={{ flexGrow: 0, flexShrink: 1, flexBasis: `${scheduleHeightPct}%`, minHeight: 220 }}
+              >
                 {viewMode === "month" ? (
                   <ScheduleMonthGrid
                     appointments={appointments}
@@ -454,8 +526,36 @@ export default function DashboardShell({
                 )}
               </div>
 
-              {/* Client workspace — 32% of available height */}
-              <div className="min-h-0 overflow-auto" style={{ flex: "32 1 0%" }}>
+              {/* Draggable divider: up enlarges the details panel below,
+                  down enlarges the calendar above. The reset button
+                  restores both this split and the sidebar width below to
+                  their default proportions in one action. */}
+              <div className="relative shrink-0">
+                <ResizeHandle
+                  orientation="horizontal"
+                  ariaLabel="Resize calendar and details panel"
+                  valueNow={scheduleHeightPct}
+                  valueMin={MIN_SCHEDULE_HEIGHT_PCT}
+                  valueMax={MAX_SCHEDULE_HEIGHT_PCT}
+                  valueText={`Calendar ${Math.round(scheduleHeightPct)}% of available height`}
+                  onDelta={handleScheduleDividerDelta}
+                  onJumpToMin={() => setScheduleHeightPct(MIN_SCHEDULE_HEIGHT_PCT)}
+                  onJumpToMax={() => setScheduleHeightPct(MAX_SCHEDULE_HEIGHT_PCT)}
+                />
+                <button
+                  type="button"
+                  onClick={resetLayout}
+                  title="Reset layout"
+                  aria-label="Reset panel layout to default sizes"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center rounded-md p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 transition-colors"
+                >
+                  <RotateCcw aria-hidden="true" size={12} />
+                </button>
+              </div>
+
+              {/* Client workspace — fills the remaining height below the
+                  schedule grid and divider. */}
+              <div className="min-h-0 overflow-auto" style={{ flex: "1 1 0%", minHeight: 160 }}>
                 {selectedAppt ? (
                   <AppointmentDetailPanel
                     appointment={selectedAppt}
@@ -492,26 +592,71 @@ export default function DashboardShell({
               canMutateOperationalData={entitlement.canMutateOperationalData}
               isTrialing={entitlement.isTrialing}
               timezone={timezone}
+              workspaceId={workspaceId}
+              userId={userId}
             />
           )}
         </div>
       </div>
 
-      {/* Right dispatch panel — hidden on phone landscape */}
+      {/* Right dispatch panel — hidden on phone landscape. Collapsible:
+          when collapsed, neither the draggable divider nor the panel
+          itself renders, only a slim reopen strip. Draggable divider when
+          expanded: left widens the sidebar, right widens main content. */}
       {!isPhoneLandscape && (
-        <aside data-tour="dispatch-sidebar" className="shrink-0 w-[380px] p-2 pl-0">
-          <DispatchPanel
-            appointments={appointments}
-            clients={clients}
-            employees={employees}
-            employeeHours={employeeHoursState}
-            assignments={assignments}
-            selectedAppointmentId={selectedApptId}
-            onHoursSaved={handleHoursSaved}
-            canUseJobTracking={entitlement.canUseJobTracking}
-            timezone={timezone}
-          />
-        </aside>
+        rightCollapsed ? (
+          <div className="shrink-0 w-9 p-2 pl-0 flex flex-col items-center">
+            <button
+              type="button"
+              onClick={toggleRightCollapsed}
+              title="Show dispatch panel"
+              aria-label="Show dispatch panel"
+              aria-expanded={false}
+              className="flex items-center justify-center rounded-lg border border-slate-300 bg-white p-1.5 text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 transition-colors"
+            >
+              <PanelRightOpen aria-hidden="true" size={16} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="relative shrink-0 self-stretch">
+              <ResizeHandle
+                orientation="vertical"
+                ariaLabel="Resize main content and dispatch sidebar"
+                valueNow={sidebarWidthPx}
+                valueMin={MIN_SIDEBAR_WIDTH_PX}
+                valueMax={MAX_SIDEBAR_WIDTH_PX}
+                valueText={`Sidebar ${Math.round(sidebarWidthPx)} pixels wide`}
+                onDelta={handleSidebarDividerDelta}
+                onJumpToMin={() => setSidebarWidthPx(MIN_SIDEBAR_WIDTH_PX)}
+                onJumpToMax={() => setSidebarWidthPx(MAX_SIDEBAR_WIDTH_PX)}
+              />
+              <button
+                type="button"
+                onClick={toggleRightCollapsed}
+                title="Collapse dispatch panel"
+                aria-label="Collapse dispatch panel"
+                aria-expanded={true}
+                className="absolute left-1/2 top-2 -translate-x-1/2 flex items-center justify-center rounded-md p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 transition-colors"
+              >
+                <PanelRightClose aria-hidden="true" size={12} />
+              </button>
+            </div>
+            <aside data-tour="dispatch-sidebar" className="shrink-0 p-2 pl-0" style={{ width: sidebarWidthPx }}>
+            <DispatchPanel
+              appointments={appointments}
+              clients={clients}
+              employees={employees}
+              employeeHours={employeeHoursState}
+              assignments={assignments}
+              selectedAppointmentId={selectedApptId}
+              onHoursSaved={handleHoursSaved}
+              canUseJobTracking={entitlement.canUseJobTracking}
+              timezone={timezone}
+            />
+            </aside>
+          </>
+        )
       )}
       </div>
 

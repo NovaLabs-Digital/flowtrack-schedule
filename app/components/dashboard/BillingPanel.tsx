@@ -6,11 +6,16 @@ import { formatCents } from "@/lib/money";
 import {
   PAYMENT_METHODS,
   BILLING_STATUS_FILTERS,
+  BILLING_SORT_ORDERS,
+  DEFAULT_BILLING_SORT_ORDER,
   applyBillingStatusFilter,
   applyGroupedBillingUpdate,
   computeBillingSummary,
   matchesClientSearch,
+  sortCompletedJobRows,
+  isValidBillingSortOrder,
   type BillingStatusFilter,
+  type BillingSortOrder,
   type CompletedJobRow,
   type ReviewNeededRow,
 } from "@/lib/completedJobBilling";
@@ -59,15 +64,59 @@ function formatMMDDYY(isoDate: string): string {
 
 type FetchState = { completed: CompletedJobRow[]; reviewNeeded: ReviewNeededRow[] } | null;
 
+// Service-date sort order preference: remembered per (user, workspace) on
+// this browser only -- same sft_... prefix and per-person+per-tenant
+// scoping convention as useDashboardLayoutPrefs.ts's localStorage key
+// (never read or written by any server route). Deliberately a plain
+// read/write pair rather than a reusable hook: this is a single enum
+// value with no clamping/viewport-reclamp concerns, so a small inline
+// hydration effect (below, matching IncomeProjection.tsx's established
+// pattern) is proportionate.
+function billingSortStorageKey(userId: string, workspaceId: string): string {
+  return `sft_billing_sort_order_v1_${userId}_${workspaceId}`;
+}
+
+function readStoredSortOrder(userId: string, workspaceId: string): BillingSortOrder {
+  try {
+    const raw = window.localStorage.getItem(billingSortStorageKey(userId, workspaceId));
+    // Any missing, corrupted, or otherwise invalid stored value falls back
+    // to the documented default -- never trusted verbatim, matching every
+    // other localStorage read in this app (see
+    // useDashboardLayoutPrefs.ts's own readStoredPrefs).
+    return isValidBillingSortOrder(raw) ? raw : DEFAULT_BILLING_SORT_ORDER;
+  } catch {
+    // Unavailable storage (e.g. Safari private mode throws on access) --
+    // fall back to the default exactly as if nothing had ever been saved.
+    return DEFAULT_BILLING_SORT_ORDER;
+  }
+}
+
+function writeStoredSortOrder(userId: string, workspaceId: string, order: BillingSortOrder) {
+  try {
+    window.localStorage.setItem(billingSortStorageKey(userId, workspaceId), order);
+  } catch {
+    // Quota exceeded or storage disabled -- the in-memory selection still
+    // works for the rest of this session, it just won't be remembered.
+  }
+}
+
 export default function BillingPanel({
   timezone,
   canMutateOperationalData,
+  workspaceId,
+  userId,
 }: {
   timezone: string;
   // Read-only (locked/canceled/read-only-grace workspace) disables every
   // inline edit control below, matching how every other owner-mutation
   // surface in this dashboard already gates on this exact prop.
   canMutateOperationalData: boolean;
+  // UI-only scoping for the sort-order preference below -- same values
+  // DashboardShell already threads to useDashboardLayoutPrefs, forwarded
+  // here via DashboardSettingsArea -> SettingsPanel. Never sent to any
+  // server route and never used for data access.
+  workspaceId: string;
+  userId: string;
 }) {
   const [rangeStart, setRangeStart] = useState(() => toDateInputValue(mondayOfWeek(0, timezone)));
   const [rangeEnd, setRangeEnd] = useState(() => toDateInputValue(addDays(mondayOfWeek(0, timezone), 6)));
@@ -78,6 +127,24 @@ export default function BillingPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [savingRows, setSavingRows] = useState<Record<string, boolean>>({});
+  // Starts at the documented default (matches the shipped behavior exactly
+  // -- see DEFAULT_BILLING_SORT_ORDER's own doc comment) and is replaced
+  // by any saved preference once the hydration effect below runs. Never
+  // read from localStorage during the initial render (SSR has no window),
+  // matching useDashboardLayoutPrefs.ts's own hydration-safe pattern.
+  const [sortOrder, setSortOrderState] = useState<BillingSortOrder>(DEFAULT_BILLING_SORT_ORDER);
+
+  useEffect(() => {
+    setSortOrderState(readStoredSortOrder(userId, workspaceId));
+    // Re-reads if userId or workspaceId itself changes, so each (user,
+    // workspace) pair gets its own independently-remembered preference,
+    // never a cross-user or cross-workspace leak.
+  }, [userId, workspaceId]);
+
+  function setSortOrder(order: BillingSortOrder) {
+    setSortOrderState(order);
+    writeStoredSortOrder(userId, workspaceId, order);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -122,6 +189,15 @@ export default function BillingPanel({
     () => applyBillingStatusFilter(searchedCompleted, statusFilter),
     [searchedCompleted, statusFilter]
   );
+  // Sort is applied LAST, over the full date-range + search + status
+  // matched set -- i.e. every row that will actually be shown, not a
+  // subset -- so there is nothing left to reorder after this (there is no
+  // further server-side pagination of this list; see
+  // app/api/billing/completed-jobs/route.ts's own doc comment on why it
+  // returns the whole date-range result at once). A pure display-order
+  // change only: it never touches searchedCompleted, so the summary totals
+  // below are completely unaffected by which direction is selected.
+  const sortedRows = useMemo(() => sortCompletedJobRows(filteredRows, sortOrder), [filteredRows, sortOrder]);
   // Totals always reflect the FULL in-range (and now in-search) completed
   // list, never the status-filtered subset -- see computeBillingSummary's
   // own doc comment.
@@ -209,10 +285,24 @@ export default function BillingPanel({
         <span className="text-slate-400">&#8594;</span>
         <DateField value={rangeEnd} onChange={setRangeEnd} label="Billing report end date" />
 
-        <div className="ml-auto">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-slate-600">
+            <span className="whitespace-nowrap">Sort:</span>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as BillingSortOrder)}
+              aria-label="Sort by service date"
+              className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {BILLING_SORT_ORDERS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as BillingStatusFilter)}
+            aria-label="Filter by billing status"
             className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             {BILLING_STATUS_FILTERS.map((f) => (
@@ -266,7 +356,7 @@ export default function BillingPanel({
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.length === 0 ? (
+                {sortedRows.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-3 py-6 text-center text-slate-400">
                       {clientSearch.trim()
@@ -275,7 +365,7 @@ export default function BillingPanel({
                     </td>
                   </tr>
                 ) : (
-                  filteredRows.map((row) => (
+                  sortedRows.map((row) => (
                     <BillingRow
                       key={row.appointmentId}
                       row={row}

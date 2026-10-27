@@ -26,6 +26,16 @@ export default async function DashboardPage() {
   }
   const isTester = session.role === "tester";
   const workspaceId = session.workspaceId;
+  // Resizable/collapsible desktop panel layout: a per-person id, scoping
+  // the saved layout preference alongside workspaceId so two different
+  // people signed into the same workspace on a shared browser never
+  // overwrite each other's panel sizes/collapse state. Owner sessions
+  // carry a real, individually-provisioned authUserId (lib/session.ts);
+  // tester sessions have no individual identity at all (every tester
+  // shares the fixed DEMO_WORKSPACE_ID), so they fall back to a constant
+  // -- every tester session on a given browser already shares one layout,
+  // same as before this feature existed. Never sent to any server route.
+  const userId = session.role === "owner" ? session.authUserId : "tester";
 
   // Phase 5.7D: re-verified BEFORE any business-data query, not just
   // BEFORE entitlement resolution. A signature/exp-valid owner cookie may
@@ -319,6 +329,8 @@ export default async function DashboardPage() {
       entitlement={entitlement}
       timezone={timezone}
       businessHours={businessHours}
+      workspaceId={workspaceId}
+      userId={userId}
     />
   );
 }

@@ -394,6 +394,52 @@ export function matchesClientSearch(clientName: string, query: string): boolean 
   return clientName.toLowerCase().includes(q);
 }
 
+// ---------------------------------------------------------------------
+// Service-date sort order (client-side, applied over the already date-
+// range/search/status-matched rows -- see BillingPanel.tsx)
+// ---------------------------------------------------------------------
+
+export type BillingSortOrder = "oldest_first" | "newest_first";
+
+// Order here is the order shown in the UI's <select>. "oldest_first"
+// matches buildCompletedJobRows' own existing ascending-scheduledFor sort
+// above, so it is the correct DEFAULT -- selecting it must visibly change
+// nothing from the shipped behavior.
+export const BILLING_SORT_ORDERS: { value: BillingSortOrder; label: string }[] = [
+  { value: "oldest_first", label: "Oldest first" },
+  { value: "newest_first", label: "Newest first" },
+];
+export const DEFAULT_BILLING_SORT_ORDER: BillingSortOrder = "oldest_first";
+
+const BILLING_SORT_ORDER_VALUES: readonly string[] = BILLING_SORT_ORDERS.map((o) => o.value);
+
+export function isValidBillingSortOrder(value: unknown): value is BillingSortOrder {
+  return typeof value === "string" && BILLING_SORT_ORDER_VALUES.includes(value);
+}
+
+// Sorts by the appointment's actual scheduledFor instant (an ISO string,
+// so plain string comparison is already chronological) -- never by
+// serviceDate alone, which is only a workspace-local CALENDAR DAY and
+// would leave same-day appointments in an arbitrary order. Returns a new
+// array; never mutates the input (BillingPanel passes this the live
+// filtered/searched rows array on every render).
+//
+// Stable tie-breaker: two rows sharing the exact same scheduledFor instant
+// are always ordered by appointmentId ascending, REGARDLESS of the
+// selected direction -- not merely "whatever order they happened to
+// arrive in," and not flipped along with the primary direction either.
+// This keeps same-instant rows in one consistent relative order whether
+// the owner is viewing oldest-first or newest-first, instead of letting
+// a tie look like it randomly reshuffled when the direction is toggled.
+export function sortCompletedJobRows(rows: CompletedJobRow[], order: BillingSortOrder): CompletedJobRow[] {
+  const sign = order === "newest_first" ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const primary = a.scheduledFor.localeCompare(b.scheduledFor) * sign;
+    if (primary !== 0) return primary;
+    return a.appointmentId.localeCompare(b.appointmentId);
+  });
+}
+
 export function applyBillingStatusFilter(rows: CompletedJobRow[], filter: BillingStatusFilter): CompletedJobRow[] {
   switch (filter) {
     case "missing_invoice":

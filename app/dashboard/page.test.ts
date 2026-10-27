@@ -222,6 +222,33 @@ describe("app/dashboard/page.tsx -- business hours resolved server-side and pass
   });
 });
 
+describe("app/dashboard/page.tsx -- resizable desktop panel layout: workspaceId passed to DashboardShell for UI-only preference scoping", () => {
+  test("workspaceId is passed to DashboardShell", () => {
+    const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
+    assert.ok(shellBlock);
+    assert.ok(shellBlock![0].includes("workspaceId={workspaceId}"));
+  });
+});
+
+describe("app/dashboard/page.tsx -- collapsible desktop sidebars: userId passed to DashboardShell, paired with workspaceId, for per-person layout scoping", () => {
+  test("userId is derived from the owner's real authUserId, with a literal \"tester\" fallback for tester sessions", () => {
+    assert.ok(source.includes('const userId = session.role === "owner" ? session.authUserId : "tester";'));
+  });
+
+  test("the userId derivation runs after the role has already been narrowed to owner/tester (no access to session.authUserId on a wider/unnarrowed type)", () => {
+    const narrowIdx = source.indexOf('if (session.role !== "owner" && session.role !== "tester")');
+    const userIdIdx = source.indexOf("const userId = session.role");
+    assert.ok(narrowIdx > -1 && userIdIdx > -1);
+    assert.ok(narrowIdx < userIdIdx, "the role-narrowing redirect guard must come before reading session.authUserId");
+  });
+
+  test("userId is passed to DashboardShell", () => {
+    const shellBlock = source.match(/<DashboardShell[\s\S]*?\/>/);
+    assert.ok(shellBlock);
+    assert.ok(shellBlock![0].includes("userId={userId}"));
+  });
+});
+
 // Calendar Paid Indicator: the Schedule grid's "$" badge needs only
 // appointment_id -> paid true/false, never the full Billing report, never a
 // per-appointment lookup, and -- per the architecture correction below --
