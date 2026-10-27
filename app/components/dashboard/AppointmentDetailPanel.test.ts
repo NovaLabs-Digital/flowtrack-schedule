@@ -253,12 +253,12 @@ describe("historical-record protection (founder decision): a past/completed/canc
   });
 
   test("statusLabel is Cancelled/Completed/Scheduled/In Progress, derived from the ONE shared displayAppointmentStatus rule (SFT status-display-consistency fix) -- never a locally re-derived ternary, and never conflating elapsed time with Completed", () => {
-    assert.ok(source.includes("const statusLabel = displayAppointmentStatus(appointment, assignments);"));
+    assert.ok(source.includes("const statusLabel = displayAppointmentStatus(appointment, assignments, employeeHours);"));
     assert.ok(source.includes("{statusLabel}"));
   });
 
   test("pastDue is derived from the separate isAppointmentPastDue signal, shown alongside (never folded into) statusLabel", () => {
-    assert.ok(source.includes("const pastDue = isAppointmentPastDue(appointment, assignments);"));
+    assert.ok(source.includes("const pastDue = isAppointmentPastDue(appointment, assignments, new Date(), employeeHours);"));
     assert.ok(source.includes("{pastDue &&"));
   });
 

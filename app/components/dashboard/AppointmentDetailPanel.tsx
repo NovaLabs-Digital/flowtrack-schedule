@@ -127,8 +127,8 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
   // is the separate, explicit "scheduled_end has elapsed but nothing was
   // ever recorded or cancelled" signal -- shown alongside statusLabel, never
   // folded into it.
-  const statusLabel = displayAppointmentStatus(appointment, assignments);
-  const pastDue = isAppointmentPastDue(appointment, assignments);
+  const statusLabel = displayAppointmentStatus(appointment, assignments, employeeHours);
+  const pastDue = isAppointmentPastDue(appointment, assignments, new Date(), employeeHours);
 
   // SFT past-appointment-cancellation fix: whether every assigned
   // employee's Job Tracking is actually complete (not just "the scheduled

@@ -119,8 +119,8 @@ export default function MobileAppointmentDetail({
   // elapsed." isHistorical above is UNCHANGED and still correctly governs
   // whether Edit/the normal Cancel control render. pastDue is the separate
   // "elapsed but nothing was ever recorded or cancelled" signal.
-  const statusLabel = displayAppointmentStatus(appointment, assignments);
-  const pastDue = isAppointmentPastDue(appointment, assignments);
+  const statusLabel = displayAppointmentStatus(appointment, assignments, employeeHours);
+  const pastDue = isAppointmentPastDue(appointment, assignments, new Date(), employeeHours);
 
   // SFT past-appointment-cancellation fix: whether every assigned
   // employee's Job Tracking is actually complete -- the server's own rule

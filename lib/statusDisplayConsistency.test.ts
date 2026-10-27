@@ -40,24 +40,24 @@ const payrollSource = readSource("./payroll.ts");
 
 describe("status display consistency -- all four surfaces now call the ONE shared displayAppointmentStatus rule (lib/payroll.ts), never a locally re-derived one", () => {
   test("ScheduleGrid's calendar card label is displayAppointmentStatus(a, assignmentsFor(a.id)) -- the old locally re-derived statusLabel switch is gone entirely", () => {
-    assert.ok(scheduleGridSource.includes("{displayAppointmentStatus(a, assignmentsFor(a.id))}"));
+    assert.ok(scheduleGridSource.includes("{displayAppointmentStatus(a, assignmentsFor(a.id), employeeHours)}"));
     assert.ok(!scheduleGridSource.includes("function statusLabel("));
     assert.ok(scheduleGridSource.includes('import { needsWorkedHoursAttention, appointmentNeedsWorkedTimeReview, isHistoricalAppointment, displayAppointmentStatus } from "@/lib/payroll";'));
   });
 
   test("DispatchPanel's Status row is displayAppointmentStatus(selectedAppt, selectedApptAssignments) -- the old local ternary (status==='cancelled' ? ... : selectedApptStatus===...) is gone", () => {
-    assert.ok(dispatchPanelSource.includes("const selectedApptDisplayStatus = selectedAppt ? displayAppointmentStatus(selectedAppt, selectedApptAssignments) : \"Scheduled\";"));
+    assert.ok(dispatchPanelSource.includes("const selectedApptDisplayStatus = selectedAppt ? displayAppointmentStatus(selectedAppt, selectedApptAssignments, employeeHours) : \"Scheduled\";"));
     assert.ok(dispatchPanelSource.includes('<InfoRow label="Status" value={selectedApptDisplayStatus} />'));
     assert.ok(!dispatchPanelSource.includes('selectedAppt.status === "cancelled" ? "Cancelled"\n                : selectedApptStatus'));
   });
 
   test("AppointmentDetailPanel's statusLabel is displayAppointmentStatus(appointment, assignments) -- the old ternary that treated elapsed time (isHistorical) as 'Completed' is gone", () => {
-    assert.ok(appointmentDetailPanelSource.includes("const statusLabel = displayAppointmentStatus(appointment, assignments);"));
+    assert.ok(appointmentDetailPanelSource.includes("const statusLabel = displayAppointmentStatus(appointment, assignments, employeeHours);"));
     assert.ok(!appointmentDetailPanelSource.includes('const statusLabel = appointment.status === "cancelled" ? "Cancelled" : isHistorical ? "Completed" : "Scheduled";'));
   });
 
   test("MobileAppointmentDetail's statusLabel is displayAppointmentStatus(appointment, assignments) -- identical to desktop, same old elapsed-time conflation removed", () => {
-    assert.ok(mobileAppointmentDetailSource.includes("const statusLabel = displayAppointmentStatus(appointment, assignments);"));
+    assert.ok(mobileAppointmentDetailSource.includes("const statusLabel = displayAppointmentStatus(appointment, assignments, employeeHours);"));
     assert.ok(!mobileAppointmentDetailSource.includes('const statusLabel = appointment.status === "cancelled" ? "Cancelled" : isHistorical ? "Completed" : "Scheduled";'));
   });
 
@@ -72,7 +72,7 @@ describe("status display consistency -- all four surfaces now call the ONE share
     assert.ok(!body.includes("scheduled_end"));
     assert.ok(!body.includes("scheduled_for"));
     assert.ok(body.includes('if (appt.status === "cancelled") return "Cancelled";'));
-    assert.ok(body.includes("deriveAppointmentTrackingStatus(assignments)"));
+    assert.ok(body.includes("deriveAppointmentTrackingStatus(assignments, employeeHours)"));
   });
 
   test("isAppointmentPastDue is a SEPARATE export from displayAppointmentStatus -- the 'optional Past due indicator' is never folded into the main status label", () => {
@@ -85,7 +85,7 @@ describe("status display consistency -- all four surfaces now call the ONE share
 
   test("both AppointmentDetailPanel and MobileAppointmentDetail render the separate (Past due) indicator alongside, never inside, statusLabel", () => {
     for (const source of [appointmentDetailPanelSource, mobileAppointmentDetailSource]) {
-      assert.ok(source.includes("const pastDue = isAppointmentPastDue(appointment, assignments);"));
+      assert.ok(source.includes("const pastDue = isAppointmentPastDue(appointment, assignments, new Date(), employeeHours);"));
       assert.ok(source.includes("{pastDue && <span"));
     }
   });

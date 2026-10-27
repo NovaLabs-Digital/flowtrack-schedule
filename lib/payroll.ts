@@ -175,11 +175,47 @@ export function isEligibleForWorkedHoursWarning(appt: Pick<Appointment, "schedul
 //     employee has a valid (isJobTrackingComplete) completed timestamp.
 export type AssignmentTrackingStatus = "scheduled" | "in_progress" | "completed";
 
-export function deriveAppointmentTrackingStatus(assignments: TimestampPair[]): AssignmentTrackingStatus {
+// Franklin International fix (Teresa/Roxana, Oct 23 2026): an assignment
+// whose RAW Job Tracking never produced a valid duration -- clocked in and
+// out within the same minute, forgot to clock in at all, forgot to clock
+// out at all -- fails isJobTrackingComplete by design (see that function's
+// own MIN_VALID_TRACKING_MS comment); that part was never the bug. The bug
+// was that deriveAppointmentTrackingStatus asked isJobTrackingComplete alone
+// whether an employee's work was DONE, with no way to see that the owner had
+// already reviewed and corrected exactly that gap via AdjustWorkedTimeControl
+// (an appointment_employee_hours row -- migrations/030 guarantees this never
+// rewrites actual_started_at/actual_completed_at themselves). Meanwhile
+// assignmentHasWorkedHours (used by billing eligibility and the missing-
+// hours warning) already correctly treated an owner override as equivalent
+// to a valid tracked duration -- the same real-world fact, "is this
+// employee's work for this job resolved," was answered two different ways by
+// two different functions. This resolves them to the ONE answer
+// assignmentHasWorkedHours already gave, for tracking-status purposes too:
+// an owner's explicit correction establishes the work as done exactly like a
+// valid Start/Complete pair does, because both are now genuinely ESTABLISHED,
+// never merely elapsed time (isEligibleForWorkedHoursWarning/scheduled_end
+// elapsing is never consulted here, so a late-but-untouched job still never
+// auto-completes).
+//
+// employeeHours defaults to [] so every existing caller that doesn't pass it
+// (isHistoricalAppointment, every pre-existing test) is COMPLETELY
+// unaffected: assignmentHasWorkedHours's manual-entry branch can never match
+// against an empty array, so the result is identical to the old
+// isJobTrackingComplete-only check in that case.
+export function deriveAppointmentTrackingStatus(
+  assignments: Pick<AppointmentEmployeeAssignment, "appointment_id" | "employee_id" | "actual_started_at" | "actual_completed_at">[],
+  employeeHours: EmployeeHours[] = []
+): AssignmentTrackingStatus {
   if (assignments.length === 0) return "scheduled";
-  const anyStarted = assignments.some((a) => !!a.actual_started_at);
+  // "Started" now also counts an owner override with nothing ever tracked
+  // at all (forgot to clock in AND never came back to Job Tracking) -- the
+  // owner's correction is itself evidence the job happened, so a fully
+  // hand-corrected assignment must never leave the WHOLE appointment stuck
+  // showing "Scheduled" (vacuously, as if no one had done anything) any more
+  // than it should stay stuck on "In Progress".
+  const anyStarted = assignments.some((a) => !!a.actual_started_at || assignmentHasWorkedHours(a.appointment_id, a.employee_id, a, employeeHours));
   if (!anyStarted) return "scheduled";
-  const allComplete = assignments.every((a) => isJobTrackingComplete(a));
+  const allComplete = assignments.every((a) => assignmentHasWorkedHours(a.appointment_id, a.employee_id, a, employeeHours));
   return allComplete ? "completed" : "in_progress";
 }
 
@@ -218,9 +254,14 @@ export function deriveAppointmentTrackingStatus(assignments: TimestampPair[]): A
 // to decide whether normal appointment-management actions are allowed.
 export function isHistoricalAppointment(
   appt: AppointmentPastInput,
-  assignments: TimestampPair[],
+  assignments: Pick<AppointmentEmployeeAssignment, "appointment_id" | "employee_id" | "actual_started_at" | "actual_completed_at">[],
   now: Date = new Date()
 ): boolean {
+  // Deliberately NOT given an employeeHours parameter -- unlike
+  // displayAppointmentStatus/isAppointmentPastDue below, this gating
+  // predicate's behavior is intentionally left unchanged by the Franklin
+  // International fix (see deriveAppointmentTrackingStatus's own comment);
+  // it already treats a merely-elapsed appointment as historical regardless.
   if (deriveAppointmentTrackingStatus(assignments) === "completed") return true;
   return isPastAppointment(appt, now);
 }
@@ -249,12 +290,15 @@ export function isHistoricalAppointment(
 // actually did the work, not merely "the clock ran out."
 export type AppointmentDisplayStatus = "Scheduled" | "In Progress" | "Completed" | "Cancelled";
 
+// employeeHours defaults to [] -- a caller that omits it (none exist today;
+// every real UI surface passes it) sees exactly the prior behavior.
 export function displayAppointmentStatus(
   appt: Pick<Appointment, "status">,
-  assignments: TimestampPair[]
+  assignments: Pick<AppointmentEmployeeAssignment, "appointment_id" | "employee_id" | "actual_started_at" | "actual_completed_at">[],
+  employeeHours: EmployeeHours[] = []
 ): AppointmentDisplayStatus {
   if (appt.status === "cancelled") return "Cancelled";
-  switch (deriveAppointmentTrackingStatus(assignments)) {
+  switch (deriveAppointmentTrackingStatus(assignments, employeeHours)) {
     case "completed":
       return "Completed";
     case "in_progress":
@@ -271,13 +315,17 @@ export function displayAppointmentStatus(
 // rule above, since no work was ever recorded) AND past due at the same
 // time; the two are shown as separate pieces of information, never
 // conflated into a single misleading "Completed" label.
+// employeeHours is trailing/optional (after `now`, which already had a
+// default) so every existing positional call -- including every test that
+// passes `now` as the 3rd argument -- keeps working unchanged.
 export function isAppointmentPastDue(
   appt: AppointmentPastInput,
-  assignments: TimestampPair[],
-  now: Date = new Date()
+  assignments: Pick<AppointmentEmployeeAssignment, "appointment_id" | "employee_id" | "actual_started_at" | "actual_completed_at">[],
+  now: Date = new Date(),
+  employeeHours: EmployeeHours[] = []
 ): boolean {
   if (appt.status === "cancelled") return false;
-  if (deriveAppointmentTrackingStatus(assignments) === "completed") return false;
+  if (deriveAppointmentTrackingStatus(assignments, employeeHours) === "completed") return false;
   return isPastAppointment(appt, now);
 }
 

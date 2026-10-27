@@ -689,7 +689,7 @@ export default function ScheduleGrid({
                                 {a.frequency_type && a.frequency_type !== "one_time" && (
                                   <span className="text-blue-500" title={freqLabel(a)}>&#8635;</span>
                                 )}
-                                {displayAppointmentStatus(a, assignmentsFor(a.id))}
+                                {displayAppointmentStatus(a, assignmentsFor(a.id), employeeHours)}
                               </div>
                             </div>
                             <div className={`text-[11px] text-slate-600 mt-0.5${darkClientCls}`}>{clientName(a.client_id)}</div>

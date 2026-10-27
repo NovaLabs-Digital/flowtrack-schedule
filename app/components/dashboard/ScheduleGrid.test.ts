@@ -397,7 +397,7 @@ describe("Worked-hours warning icon -- SFT visual-polish pass: no decorative emo
 
 describe("SFT status-display-consistency fix: the calendar card's status text uses the one shared displayAppointmentStatus rule", () => {
   test("the card label is displayAppointmentStatus(a, assignmentsFor(a.id)) -- never a locally re-derived switch on the raw status column, and never isHistoricalAppointment (which would wrongly conflate elapsed time with Completed)", () => {
-    assert.ok(source.includes("{displayAppointmentStatus(a, assignmentsFor(a.id))}"));
+    assert.ok(source.includes("{displayAppointmentStatus(a, assignmentsFor(a.id), employeeHours)}"));
     assert.ok(!source.includes("function statusLabel("), "the old locally re-derived statusLabel function must be gone entirely, not just unused");
   });
 

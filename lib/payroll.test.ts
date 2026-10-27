@@ -254,6 +254,120 @@ describe("Phase 5.7D-R18: deriveAppointmentTrackingStatus", () => {
     });
     assert.equal(deriveAppointmentTrackingStatus([invalidComplete]), "in_progress");
   });
+
+  test("the same sub-minute gap, with NO employeeHours override at all, is still in_progress (default param is a no-op) -- confirms zero behavior change for every caller that omits it", () => {
+    const start = new Date(Date.now() - HOUR_MS);
+    const invalidComplete = assignment({
+      actual_started_at: start.toISOString(),
+      actual_completed_at: new Date(start.getTime() + 10_000).toISOString(),
+    });
+    assert.equal(deriveAppointmentTrackingStatus([invalidComplete], []), "in_progress");
+  });
+});
+
+// Franklin International, Fri Oct 23 2026, 9:00-10:30 AM -- the reported
+// regression. Teresa's raw Job Tracking genuinely completed (56m, valid);
+// the owner separately reviewed it ("Keep Time As Is" or an equal
+// correction, "Reviewed by owner"). Roxana's raw Job Tracking produced an
+// INVALID (sub-60-second) gap -- both timestamps present but essentially
+// simultaneous, exactly what isJobTrackingComplete is supposed to reject --
+// and the owner corrected her payable time to 1h14m via
+// AdjustWorkedTimeControl ("forgot to clock in"), which is why
+// AppointmentDetailPanel shows her as "Adjusted by owner." rather than
+// "Reviewed by owner ✓" (isOwnerReviewConfirmation is false: 74 minutes !=
+// her near-zero tracked gap). Before this fix, the appointment stayed
+// "In Progress" everywhere (ScheduleGrid, DispatchPanel, AppointmentDetailPanel,
+// MobileAppointmentDetail) despite both employees' work being fully resolved
+// by the owner, because deriveAppointmentTrackingStatus asked ONLY
+// isJobTrackingComplete, never checking employeeHours the way
+// assignmentHasWorkedHours (billing eligibility, missing-hours) already did.
+describe("Franklin International fix: an owner correction that establishes completed work resolves tracking status, not just billing eligibility", () => {
+  const teresa = assignment({
+    id: "ae-teresa-franklin", appointment_id: "appt-franklin", employee_id: "teresa",
+    actual_started_at: "2026-10-23T13:00:00.000Z", // 9:00 AM ET
+    actual_completed_at: "2026-10-23T13:56:00.000Z", // 9:56 AM ET -- genuinely valid, 56m
+  });
+  const teresaHours: EmployeeHours = {
+    id: "eh-teresa-franklin", appointment_id: "appt-franklin", employee_id: "teresa",
+    hours_worked: 56 / 60, note: "forgot to clock out", created_at: "", updated_at: "",
+  };
+
+  // Roxana: both raw timestamps present but 5 seconds apart -- an invalid
+  // gap (isJobTrackingComplete is false), exactly the "Started and Completed
+  // both display as 9:59 AM" symptom (the UI's own minute-granularity
+  // formatting hides the sub-minute gap between them).
+  const roxanaInvalidGap = assignment({
+    id: "ae-roxana-franklin", appointment_id: "appt-franklin", employee_id: "roxana",
+    actual_started_at: "2026-10-23T13:59:00.000Z",
+    actual_completed_at: "2026-10-23T13:59:05.000Z",
+  });
+  const roxanaHours: EmployeeHours = {
+    id: "eh-roxana-franklin", appointment_id: "appt-franklin", employee_id: "roxana",
+    hours_worked: 74 / 60, note: "forgot to clock in", created_at: "", updated_at: "",
+  };
+
+  test("forgotten clock-in (invalid near-zero raw gap + owner override) on a two-employee appointment, the other employee genuinely complete -> completed", () => {
+    assert.equal(
+      deriveAppointmentTrackingStatus([teresa, roxanaInvalidGap], [teresaHours, roxanaHours]),
+      "completed"
+    );
+  });
+
+  test("forgotten clock-out variant: an assignment that never got a completed timestamp AT ALL (not even an invalid one), corrected by the owner -> still completed", () => {
+    const neverCompleted = assignment({
+      id: "ae-roxana-neverclocked", appointment_id: "appt-franklin", employee_id: "roxana",
+      actual_started_at: "2026-10-23T13:59:00.000Z",
+      actual_completed_at: null,
+    });
+    assert.equal(
+      deriveAppointmentTrackingStatus([teresa, neverCompleted], [teresaHours, roxanaHours]),
+      "completed"
+    );
+  });
+
+  test("forgot to clock in AND never touched Job Tracking again (both raw timestamps null), corrected entirely by the owner -> completed, never vacuously 'scheduled'", () => {
+    const neverTrackedAtAll = assignment({
+      id: "ae-roxana-untracked", appointment_id: "appt-franklin", employee_id: "roxana",
+      actual_started_at: null,
+      actual_completed_at: null,
+    });
+    assert.equal(
+      deriveAppointmentTrackingStatus([teresa, neverTrackedAtAll], [teresaHours, roxanaHours]),
+      "completed"
+    );
+  });
+
+  test("mixed completed/still-working: Roxana's invalid gap has NOT yet been reviewed by the owner -- must remain in_progress, never over-corrected", () => {
+    assert.equal(
+      deriveAppointmentTrackingStatus([teresa, roxanaInvalidGap], [teresaHours] /* no roxanaHours yet */),
+      "in_progress"
+    );
+  });
+
+  test("mixed completed/still-working: Roxana is genuinely still out in the field (started, not completed, no override at all) -- must remain in_progress", () => {
+    const stillWorking = assignment({
+      id: "ae-roxana-working", appointment_id: "appt-franklin", employee_id: "roxana",
+      actual_started_at: "2026-10-23T14:10:00.000Z",
+      actual_completed_at: null,
+    });
+    assert.equal(
+      deriveAppointmentTrackingStatus([teresa, stillWorking], [teresaHours]),
+      "in_progress"
+    );
+  });
+
+  test("an override for the WRONG appointment_id (or wrong employee_id) must never resolve this assignment -- the fix still respects exact (appointment_id, employee_id) matching", () => {
+    const wrongApptHours: EmployeeHours = { ...roxanaHours, appointment_id: "some-other-appt" };
+    const wrongEmployeeHours: EmployeeHours = { ...roxanaHours, employee_id: "someone-else" };
+    assert.equal(
+      deriveAppointmentTrackingStatus([teresa, roxanaInvalidGap], [teresaHours, wrongApptHours]),
+      "in_progress"
+    );
+    assert.equal(
+      deriveAppointmentTrackingStatus([teresa, roxanaInvalidGap], [teresaHours, wrongEmployeeHours]),
+      "in_progress"
+    );
+  });
 });
 
 describe("isHistoricalAppointment -- the canonical historical-record predicate (completed, cancelled, or scheduled_end elapsed)", () => {
@@ -406,6 +520,56 @@ describe("displayAppointmentStatus / isAppointmentPastDue -- the SFT status-disp
     const after = appt({ status: "cancelled", scheduled_for: "2026-08-01T15:00:00.000Z", scheduled_end: "2026-08-01T17:00:00.000Z" });
     assert.equal(displayAppointmentStatus(before, []), "Scheduled");
     assert.equal(displayAppointmentStatus(after, []), "Cancelled");
+  });
+
+  // Franklin International, end to end through the exact same two functions
+  // every one of the four surfaces calls -- see the dedicated
+  // deriveAppointmentTrackingStatus describe block above for the detailed
+  // per-assignment breakdown; this proves the SAME scenario through the
+  // actual display-facing functions, including the past-due interaction
+  // (scheduled_end has long since elapsed by any "now" after Oct 23 2026).
+  test("Franklin International: owner-resolved work on both employees (one valid tracking + review, one invalid raw gap + override) -> displayAppointmentStatus is 'Completed' and isAppointmentPastDue is false", () => {
+    const a = appt({
+      id: "appt-franklin", status: "scheduled",
+      scheduled_for: "2026-10-23T13:00:00.000Z", // 9:00 AM ET
+      scheduled_end: "2026-10-23T14:30:00.000Z", // 10:30 AM ET
+    });
+    const teresa = assignment({
+      id: "ae-teresa-franklin", appointment_id: "appt-franklin", employee_id: "teresa",
+      actual_started_at: "2026-10-23T13:00:00.000Z",
+      actual_completed_at: "2026-10-23T13:56:00.000Z",
+    });
+    const roxanaInvalidGap = assignment({
+      id: "ae-roxana-franklin", appointment_id: "appt-franklin", employee_id: "roxana",
+      actual_started_at: "2026-10-23T13:59:00.000Z",
+      actual_completed_at: "2026-10-23T13:59:05.000Z",
+    });
+    const hours: EmployeeHours[] = [
+      { id: "eh-t", appointment_id: "appt-franklin", employee_id: "teresa", hours_worked: 56 / 60, note: "forgot to clock out", created_at: "", updated_at: "" },
+      { id: "eh-r", appointment_id: "appt-franklin", employee_id: "roxana", hours_worked: 74 / 60, note: "forgot to clock in", created_at: "", updated_at: "" },
+    ];
+    const laterNow = new Date("2026-10-27T15:00:00.000Z"); // the date this bug was reported/fixed
+    assert.equal(displayAppointmentStatus(a, [teresa, roxanaInvalidGap], hours), "Completed");
+    assert.equal(isAppointmentPastDue(a, [teresa, roxanaInvalidGap], laterNow, hours), false, "genuinely (owner-)completed work is never ALSO flagged past due");
+  });
+
+  test("Franklin International, mixed case: if Roxana's gap had NOT yet been reviewed by the owner, displayAppointmentStatus correctly stays 'In Progress' (not prematurely marked Completed)", () => {
+    const a = appt({
+      id: "appt-franklin-2", status: "scheduled",
+      scheduled_for: "2026-10-23T13:00:00.000Z",
+      scheduled_end: "2026-10-23T14:30:00.000Z",
+    });
+    const teresa = assignment({
+      id: "ae-teresa-f2", appointment_id: "appt-franklin-2", employee_id: "teresa",
+      actual_started_at: "2026-10-23T13:00:00.000Z",
+      actual_completed_at: "2026-10-23T13:56:00.000Z",
+    });
+    const roxanaInvalidGapUnreviewed = assignment({
+      id: "ae-roxana-f2", appointment_id: "appt-franklin-2", employee_id: "roxana",
+      actual_started_at: "2026-10-23T13:59:00.000Z",
+      actual_completed_at: "2026-10-23T13:59:05.000Z",
+    });
+    assert.equal(displayAppointmentStatus(a, [teresa, roxanaInvalidGapUnreviewed], []), "In Progress");
   });
 });
 

@@ -22,7 +22,8 @@ import { register } from "node:module";
 
 import "../../../lib/testDom.ts";
 import React from "react";
-import { render, screen, cleanup, within } from "@testing-library/react";
+import { render, screen, cleanup, within, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { DEFAULT_BUSINESS_HOURS } from "../../../lib/businessHours.ts";
 
 // Node cannot import .tsx by itself; opt this file into the transpile hook
@@ -173,5 +174,244 @@ describe("rendered status display: after the owner records the cancellation, eve
     assert.ok(screen.getByText("Cancelled"));
     assert.equal(screen.queryByText("Scheduled"), null);
     assert.equal(screen.queryByText("(Past due)"), null);
+  });
+});
+
+// Franklin International fix (the reported regression, placed on this same
+// frozen "now" rather than its real Oct 23 2026 date, so this file's single
+// mock.timers.enable call above stays the only clock freeze needed): Teresa's
+// Job Tracking genuinely completed (56m, valid); Roxana's raw Job Tracking
+// produced an invalid sub-minute gap (both timestamps land in the same
+// displayed minute, 9:59 AM -- exactly the "Started and Completed at 9:59 AM"
+// symptom from the report), corrected by the owner to 1h14m via
+// AdjustWorkedTimeControl. Before the fix, every surface stayed stuck on
+// "In Progress" despite both employees' work being fully resolved by the
+// owner. "After reloading" is exactly what a fresh render proves here: these
+// are pure functions of already-persisted assignment/employeeHours rows --
+// there is no cache or one-time state to go stale, so a freshly rendered
+// read produces the same correct result a page reload would.
+const FRANKLIN_APPT_ID = "22222222-2222-4222-8222-222222222222";
+const FRANKLIN_CLIENT_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const franklinClient = { id: FRANKLIN_CLIENT_ID, name: "Franklin International", email: null, phone: "+15559876543" };
+const teresaEmployee = { id: "emp-teresa", name: "Teresa", phone: null, color: "#3B82F6", active: true };
+const roxanaEmployee = { id: "emp-roxana", name: "Roxana", phone: null, color: "#10B981", active: true };
+
+function franklinAppt(id = FRANKLIN_APPT_ID) {
+  const now = Date.now(); // frozen to 2026-08-03T18:00:00.000Z (2:00 PM ET) above
+  return {
+    id, client_id: FRANKLIN_CLIENT_ID, service_type: "Regular Cleaning",
+    scheduled_for: new Date(now - 5 * 60 * 60 * 1000).toISOString(), // 9:00 AM ET
+    scheduled_end: new Date(now - 3.5 * 60 * 60 * 1000).toISOString(), // 10:30 AM ET
+    status: "scheduled" as const,
+    notes: null, duration_minutes: 90, series_id: null,
+    frequency_type: "one_time" as const, repeat_weeks: 1, repeat_months: null,
+    price_cents: 15000, team_color: null,
+  };
+}
+function teresaAssignment(appointmentId = FRANKLIN_APPT_ID) {
+  const now = Date.now();
+  return {
+    id: "ae-teresa", appointment_id: appointmentId, employee_id: "emp-teresa",
+    actual_started_at: new Date(now - 5 * 60 * 60 * 1000).toISOString(), // 9:00 AM
+    actual_completed_at: new Date(now - 5 * 60 * 60 * 1000 + 56 * 60 * 1000).toISOString(), // 9:56 AM, valid 56m
+    job_notes: null, created_at: "2026-07-01T00:00:00.000Z", updated_at: "2026-07-01T00:00:00.000Z",
+  };
+}
+// Started and completed 5 seconds apart -- an INVALID gap (isJobTrackingComplete
+// is false), both rounding to the same displayed minute ("9:59 AM"), exactly
+// the report's own symptom.
+function roxanaInvalidGapAssignment(appointmentId = FRANKLIN_APPT_ID) {
+  const now = Date.now();
+  const roxanaStart = now - 5 * 60 * 60 * 1000 + 59 * 60 * 1000; // 9:59:00 AM
+  return {
+    id: "ae-roxana", appointment_id: appointmentId, employee_id: "emp-roxana",
+    actual_started_at: new Date(roxanaStart).toISOString(),
+    actual_completed_at: new Date(roxanaStart + 5_000).toISOString(), // +5s
+    job_notes: null, created_at: "2026-07-01T00:00:00.000Z", updated_at: "2026-07-01T00:00:00.000Z",
+  };
+}
+function franklinHours(appointmentId = FRANKLIN_APPT_ID) {
+  return [
+    { id: "eh-teresa", appointment_id: appointmentId, employee_id: "emp-teresa", hours_worked: 56 / 60, note: "forgot to clock out", created_at: "", updated_at: "" },
+    { id: "eh-roxana", appointment_id: appointmentId, employee_id: "emp-roxana", hours_worked: 74 / 60, note: "forgot to clock in", created_at: "", updated_at: "" },
+  ];
+}
+
+describe("rendered status display: Franklin International -- an owner correction on an invalid/never-clocked-in gap resolves 'Completed' on every surface, never stuck at 'In Progress'", () => {
+  test("ScheduleGrid (the calendar): the card shows 'Completed'", () => {
+    const appt = franklinAppt();
+    render(React.createElement(ScheduleGrid, {
+      viewMode: "day", clients: [franklinClient], appointments: [appt], services: [], employees: [teresaEmployee, roxanaEmployee],
+      employeeHours: franklinHours(), assignments: [teresaAssignment(), roxanaInvalidGapAssignment()],
+      selectedClientId: null, selectedAppointmentId: null,
+      onSelectAppointment: () => {}, onEditAppointment: () => {}, onCellClick: () => {}, onDropAppointment: () => {},
+      weekOffset: 0, canMutateOperationalData: true, timezone: TZ, businessHours: DEFAULT_BUSINESS_HOURS, paidAppointmentIds: [],
+    }));
+    assert.ok(screen.getByText("Completed"), "the calendar card shows 'Completed' once both employees' work is owner-resolved");
+    assert.equal(screen.queryByText("In Progress"), null);
+  });
+
+  test("DispatchPanel: the Appointment Details Status row shows 'Completed'", () => {
+    const appt = franklinAppt();
+    render(React.createElement(DispatchPanel, {
+      appointments: [appt], clients: [franklinClient], employees: [teresaEmployee, roxanaEmployee],
+      employeeHours: franklinHours(), assignments: [teresaAssignment(), roxanaInvalidGapAssignment()],
+      selectedAppointmentId: FRANKLIN_APPT_ID, onHoursSaved: () => {}, canUseJobTracking: true, timezone: TZ,
+    }));
+    const statusRow = screen.getByText("Status").parentElement!;
+    assert.equal(within(statusRow).getByText("Completed", { selector: "span" }).textContent, "Completed");
+  });
+
+  test("AppointmentDetailPanel (desktop): statusLabel shows 'Completed', and the Past due indicator is gone", () => {
+    const appt = franklinAppt();
+    render(React.createElement(AppointmentDetailPanel, {
+      appointment: appt, client: franklinClient, employees: [teresaEmployee, roxanaEmployee], services: [],
+      assignments: [teresaAssignment(), roxanaInvalidGapAssignment()], employeeHours: franklinHours(),
+      onEdit: () => {}, onCancelled: () => {}, canMutateOperationalData: true, timezone: TZ,
+    }));
+    assert.ok(screen.getByText("Completed"));
+    assert.equal(screen.queryByText("In Progress"), null);
+    assert.equal(screen.queryByText("(Past due)"), null, "genuinely (owner-)completed work is never also flagged past due");
+  });
+
+  test("MobileAppointmentDetail: statusLabel shows 'Completed', identical to desktop", () => {
+    const appt = franklinAppt();
+    render(React.createElement(MobileAppointmentDetail, {
+      appointment: appt, client: franklinClient, employees: [teresaEmployee, roxanaEmployee],
+      assignments: [teresaAssignment(), roxanaInvalidGapAssignment()], employeeHours: franklinHours(), durationMinutes: 90,
+      onBack: () => {}, onEdit: () => {}, onCancelled: () => {}, canMutateOperationalData: true, timezone: TZ,
+    }));
+    assert.ok(screen.getByText("Completed"));
+    assert.equal(screen.queryByText("In Progress"), null);
+    assert.equal(screen.queryByText("(Past due)"), null);
+  });
+
+  test("the exact same fixtures re-rendered fresh (simulating a page reload, not a post-save in-memory update) still show 'Completed' on every surface -- this is a pure read/display rule, no data repair required", () => {
+    const appt = franklinAppt();
+    const assignments = [teresaAssignment(), roxanaInvalidGapAssignment()];
+    const hours = franklinHours();
+
+    render(React.createElement(AppointmentDetailPanel, {
+      appointment: appt, client: franklinClient, employees: [teresaEmployee, roxanaEmployee], services: [],
+      assignments, employeeHours: hours, onEdit: () => {}, onCancelled: () => {}, canMutateOperationalData: true, timezone: TZ,
+    }));
+    assert.ok(screen.getByText("Completed"), "AppointmentDetailPanel must show 'Completed' on a fresh render from already-persisted data");
+    cleanup();
+
+    render(React.createElement(MobileAppointmentDetail, {
+      appointment: appt, client: franklinClient, employees: [teresaEmployee, roxanaEmployee],
+      assignments, employeeHours: hours, durationMinutes: 90,
+      onBack: () => {}, onEdit: () => {}, onCancelled: () => {}, canMutateOperationalData: true, timezone: TZ,
+    }));
+    assert.ok(screen.getByText("Completed"), "MobileAppointmentDetail must show 'Completed' on a fresh render from already-persisted data");
+  });
+});
+
+describe("rendered status display: Franklin International, mixed case -- Roxana's invalid gap has NOT yet been reviewed by the owner, so every surface correctly stays 'In Progress'", () => {
+  const MIXED_APPT_ID = "33333333-3333-4333-8333-333333333333";
+
+  test("ScheduleGrid: the card shows 'In Progress', never prematurely 'Completed'", () => {
+    const appt = franklinAppt(MIXED_APPT_ID);
+    render(React.createElement(ScheduleGrid, {
+      viewMode: "day", clients: [franklinClient], appointments: [appt], services: [], employees: [teresaEmployee, roxanaEmployee],
+      employeeHours: [franklinHours(MIXED_APPT_ID)[0]] /* only Teresa reviewed */,
+      assignments: [teresaAssignment(MIXED_APPT_ID), roxanaInvalidGapAssignment(MIXED_APPT_ID)],
+      selectedClientId: null, selectedAppointmentId: null,
+      onSelectAppointment: () => {}, onEditAppointment: () => {}, onCellClick: () => {}, onDropAppointment: () => {},
+      weekOffset: 0, canMutateOperationalData: true, timezone: TZ, businessHours: DEFAULT_BUSINESS_HOURS, paidAppointmentIds: [],
+    }));
+    assert.ok(screen.getByText("In Progress"));
+    assert.equal(screen.queryByText("Completed"), null);
+  });
+
+  test("AppointmentDetailPanel: statusLabel shows 'In Progress', and the Past due indicator correctly appears (nothing is over-corrected)", () => {
+    const appt = franklinAppt(MIXED_APPT_ID);
+    render(React.createElement(AppointmentDetailPanel, {
+      appointment: appt, client: franklinClient, employees: [teresaEmployee, roxanaEmployee], services: [],
+      assignments: [teresaAssignment(MIXED_APPT_ID), roxanaInvalidGapAssignment(MIXED_APPT_ID)],
+      employeeHours: [franklinHours(MIXED_APPT_ID)[0]],
+      onEdit: () => {}, onCancelled: () => {}, canMutateOperationalData: true, timezone: TZ,
+    }));
+    assert.ok(screen.getByText("In Progress"));
+    assert.equal(screen.queryByText("Completed"), null);
+    assert.ok(screen.getByText("(Past due)"), "an unresolved, elapsed appointment is still correctly flagged past due");
+  });
+});
+
+// Save-flow verification (explicitly requested): proves the fix through the
+// REAL owner interaction, not just a before/after prop swap -- the owner
+// opens AdjustWorkedTimeControl's "missing" variant for Roxana (her invalid
+// gap puts her in missingHoursEmployeeIds, same as the real report), enters
+// Clock-in/Clock-out/Reason, and clicks Save. A Host component holds
+// employeeHours as real React state (exactly like DashboardShell does in
+// production) and wires DispatchPanel's onHoursSaved to update it, so the
+// status flip happens via the SAME save -> state-update -> re-render path
+// the live app uses, not a hand-constructed "after" fixture. Only
+// /api/appointments/employee-hours is faked here (DispatchPanel renders no
+// other fetching component), matching BillingPanel.test.ts's established
+// fetch-mocking pattern.
+describe("save-flow verification: an owner correction submitted live through AdjustWorkedTimeControl flips the displayed status from 'In Progress' to 'Completed', without a page reload", () => {
+  const SAVE_FLOW_APPT_ID = "44444444-4444-4444-8444-444444444444";
+  const originalFetch = globalThis.fetch;
+
+  function Host() {
+    const [employeeHours, setEmployeeHours] = React.useState(() => [franklinHours(SAVE_FLOW_APPT_ID)[0]]); // only Teresa reviewed so far
+    return React.createElement(DispatchPanel, {
+      appointments: [franklinAppt(SAVE_FLOW_APPT_ID)],
+      clients: [franklinClient],
+      employees: [teresaEmployee, roxanaEmployee],
+      employeeHours,
+      assignments: [teresaAssignment(SAVE_FLOW_APPT_ID), roxanaInvalidGapAssignment(SAVE_FLOW_APPT_ID)],
+      selectedAppointmentId: SAVE_FLOW_APPT_ID,
+      onHoursSaved: (entry: unknown) => setEmployeeHours((prev) => [...prev, entry as typeof employeeHours[number]]),
+      canUseJobTracking: true,
+      timezone: TZ,
+    });
+  }
+
+  test("before saving: the Status row shows 'In Progress' (Roxana's invalid gap is still unresolved)", () => {
+    render(React.createElement(Host));
+    const statusRow = screen.getByText("Status").parentElement!;
+    assert.equal(within(statusRow).getByText("In Progress", { selector: "span" }).textContent, "In Progress");
+  });
+
+  test("the owner fills Clock-in/Clock-out/Reason and clicks 'Save Worked Time' -- after the real POST resolves and onHoursSaved updates state, the SAME mounted Status row flips to 'Completed'", async () => {
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        assert.ok(url.includes("/api/appointments/employee-hours"), `unexpected fetch to ${url}`);
+        const body = JSON.parse(String(init?.body));
+        assert.equal(body.appointment_id, SAVE_FLOW_APPT_ID);
+        assert.equal(body.employee_id, "emp-roxana");
+        const entry = {
+          id: "eh-roxana-live", appointment_id: body.appointment_id, employee_id: body.employee_id,
+          hours_worked: body.hours_worked, note: body.note, created_at: "2026-08-03T18:00:00.000Z", updated_at: "2026-08-03T18:00:00.000Z",
+        };
+        return new Response(JSON.stringify({ entry }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch;
+
+      render(React.createElement(Host));
+      const statusRow = screen.getByText("Status").parentElement!;
+      assert.equal(within(statusRow).getByText("In Progress", { selector: "span" }).textContent, "In Progress", "sanity check before saving");
+
+      // jsdom's <input type="time"> needs a cleared field + digits-only
+      // input (no colon) via userEvent.type -- same technique as
+      // AdjustWorkedTimeControl.test.ts's own setTime helper.
+      const clockIn = screen.getByLabelText("Corrected clock-in time");
+      await userEvent.clear(clockIn);
+      await userEvent.type(clockIn, "0959");
+      const clockOut = screen.getByLabelText("Corrected clock-out time");
+      await userEvent.clear(clockOut);
+      await userEvent.type(clockOut, "1113");
+      await userEvent.type(screen.getByLabelText("Correction reason"), "forgot to clock in");
+      await userEvent.click(screen.getByText("Save Worked Time"));
+
+      await waitFor(() => {
+        assert.equal(within(statusRow).getByText("Completed", { selector: "span" }).textContent, "Completed");
+      });
+      assert.equal(within(statusRow).queryByText("In Progress"), null, "must not still show the stale pre-save status");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

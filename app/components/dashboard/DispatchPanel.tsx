@@ -182,7 +182,7 @@ export default function DispatchPanel({
   // otherwise the label comes purely from actual Job Tracking (never
   // elapsed time). This panel's own rule already matched that shape before
   // this fix; it's reused here now instead of re-derived inline.
-  const selectedApptDisplayStatus = selectedAppt ? displayAppointmentStatus(selectedAppt, selectedApptAssignments) : "Scheduled";
+  const selectedApptDisplayStatus = selectedAppt ? displayAppointmentStatus(selectedAppt, selectedApptAssignments, employeeHours) : "Scheduled";
   const missingHoursEmployeeIds = selectedAppt ? getMissingHoursEmployeeIds(selectedAppt, selectedApptAssignments, employeeHours) : [];
 
   return (
