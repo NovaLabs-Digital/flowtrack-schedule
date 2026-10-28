@@ -28,6 +28,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { useNeedsAttentionData } from "@/app/components/dashboard/useNeedsAttentionData";
 import { useOverlayMaxHeight } from "@/app/components/dashboard/useOverlayMaxHeight";
+import { formatMMDDYY } from "@/lib/dateDisplay";
 
 const FALLBACK_MAX_HEIGHT_PX = 420;
 
@@ -108,7 +109,7 @@ export default function MobileNeedsAttentionControl({
         >
           <div className="px-3 py-2 border-b border-slate-100 text-[10px] text-slate-400">
             {rangeStart && rangeEnd
-              ? `Showing issues from ${rangeStart} to ${rangeEnd}.`
+              ? `Showing issues from ${formatMMDDYY(rangeStart)} to ${formatMMDDYY(rangeEnd)}.`
               : "Loading date range..."}
             <div className="mt-0.5">Billing review is available on desktop.</div>
           </div>
@@ -130,7 +131,7 @@ export default function MobileNeedsAttentionControl({
                     >
                       <div className="text-xs font-medium text-slate-900 break-words">{entry.clientName}</div>
                       <div className="text-[11px] text-slate-500 break-words">
-                        {entry.serviceType} · {entry.serviceDate}
+                        {entry.serviceType} · {formatMMDDYY(entry.serviceDate)}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-1">
                         {entry.issues.map((issue, idx) => (

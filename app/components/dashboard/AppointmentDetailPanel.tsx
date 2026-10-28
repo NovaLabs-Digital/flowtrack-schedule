@@ -5,6 +5,7 @@ import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeH
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { toBusinessLocal } from "@/lib/timezone";
+import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, displayAppointmentStatus, isAppointmentPastDue, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { AppointmentMessageHistory } from "@/app/components/dashboard/MessageHistory";
@@ -35,16 +36,12 @@ function formatTime(d: Date) {
   return m === 0 ? `${h12}:00 ${ampm}` : `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
-// cancellation_reported_date is a plain DATE (no time, no timezone) --
-// deliberately parsed via the 3-argument Date constructor (which builds a
-// LOCAL calendar date from the given year/month/day components) rather
-// than `new Date("YYYY-MM-DD")` (which parses as UTC midnight and would
-// then display a day off in any timezone behind UTC, e.g. all of the US).
-// There is no "business timezone" to convert through here -- the date was
-// entered and means exactly the calendar day it says, nothing else.
-function formatReportedDate(dateOnly: string): string {
-  const [y, m, d] = dateOnly.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+// Combines the shared MM/DD/YY date formatter (lib/dateDisplay.ts) with
+// this file's own formatTime (hour:minute AM/PM) for an instant that needs
+// both shown together -- one formatting rule per concern (date, time),
+// never a second independently-invented combined rule per call site.
+function formatRecordedAt(iso: string, tz: string): string {
+  return `${formatTimestampMMDDYY(iso, tz)}, ${formatTime(toBusinessLocal(iso, tz))}`;
 }
 
 type Props = {
@@ -296,18 +293,18 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
           only if actually present -- an older cancelled record (from before
           this migration, or a live cancellation that never collected a
           reason/reported date) shows "Not recorded" rather than a blank or
-          a guessed value. cancelled_at is a real instant -> formatted in
-          the business's own timezone (toBusinessLocal), exactly
-          like every other instant this panel already displays;
-          cancellation_reported_date is a plain calendar date with no time
-          or zone of its own -> formatted via formatReportedDate, never
-          routed through toBusinessLocal. */}
+          a guessed value. cancelled_at is a real instant -> formatted via
+          formatRecordedAt (MM/DD/YY in the business's own timezone, plus
+          time), exactly like every other instant this panel already
+          displays; cancellation_reported_date is a plain calendar date
+          with no time or zone of its own -> formatted via the shared
+          formatMMDDYY directly, never routed through toBusinessLocal. */}
       {appointment.status === "cancelled" && (
         <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 space-y-1 text-xs">
           <div className="text-xs font-medium text-slate-600">Cancellation Details</div>
           <div className="text-slate-700">
             Client reported: <span className="font-medium text-slate-900">
-              {appointment.cancellation_reported_date ? formatReportedDate(appointment.cancellation_reported_date) : "Not recorded"}
+              {appointment.cancellation_reported_date ? formatMMDDYY(appointment.cancellation_reported_date) : "Not recorded"}
             </span>
           </div>
           <div className="text-slate-700">
@@ -318,7 +315,7 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
           <div className="text-slate-700">
             Recorded: <span className="font-medium text-slate-900">
               {appointment.cancelled_at
-                ? toBusinessLocal(appointment.cancelled_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+                ? formatRecordedAt(appointment.cancelled_at, timezone)
                 : "Not recorded"}
             </span>
           </div>
@@ -364,10 +361,10 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
             }
 
             const startedLabel = assignment.actual_started_at
-              ? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+              ? formatRecordedAt(assignment.actual_started_at, timezone)
               : "Not recorded";
             const completedLabel = assignment.actual_completed_at
-              ? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+              ? formatRecordedAt(assignment.actual_completed_at, timezone)
               : "Not recorded";
             const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);
             // Owner override wins for display -- see resolveWorkedMinutes

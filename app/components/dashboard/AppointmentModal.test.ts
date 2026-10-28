@@ -758,9 +758,14 @@ describe("Phase 5C: workspace-timezone-aware create/edit -- the traveling-owner 
 });
 
 describe("Phase 5E: Worked Hours Started/Completed labels display in the business's own resolved timezone, not the owner's device timezone", () => {
-  test("startedLabel/completedLabel are built from toBusinessLocal(..., timezone), never a bare new Date(...).toLocaleString(...)", () => {
-    assert.ok(source.includes("toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: \"short\", day: \"numeric\", hour: \"numeric\", minute: \"2-digit\" })"));
-    assert.ok(source.includes("toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: \"short\", day: \"numeric\", hour: \"numeric\", minute: \"2-digit\" })"));
+  test("startedLabel/completedLabel are built via formatRecordedAt, which combines the shared formatTimestampMMDDYY (date) with toBusinessLocal (time) -- never a bare new Date(...).toLocaleString(...)", () => {
+    assert.ok(source.includes('import { formatTimestampMMDDYY } from "@/lib/dateDisplay";'));
+    assert.match(
+      source,
+      /function formatRecordedAt\(iso: string, tz: string\): string \{\s*\n\s*const time = toBusinessLocal\(iso, tz\)\.toLocaleString\(undefined, \{ hour: "numeric", minute: "2-digit" \}\);\s*\n\s*return `\$\{formatTimestampMMDDYY\(iso, tz\)\}, \$\{time\}`;\s*\n\s*\}/
+    );
+    assert.ok(source.includes("formatRecordedAt(assignment.actual_started_at, timezone)"));
+    assert.ok(source.includes("formatRecordedAt(assignment.actual_completed_at, timezone)"));
     assert.ok(!source.includes("new Date(assignment.actual_started_at).toLocaleString"));
     assert.ok(!source.includes("new Date(assignment.actual_completed_at).toLocaleString"));
   });

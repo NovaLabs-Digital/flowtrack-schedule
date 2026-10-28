@@ -66,7 +66,7 @@ describe("rendered Cancellation Details: saved values display correctly", () => 
       onEdit: () => {}, onCancelled: () => {}, canMutateOperationalData: true, timezone: TZ,
     }));
     const section = screen.getByText("Cancellation Details").parentElement!;
-    assert.ok(within(section).getByText("Oct 8, 2026"), "the reported date, formatted plainly, exact calendar day as entered");
+    assert.ok(within(section).getByText("10/08/26"), "the reported date, formatted MM/DD/YY via the shared formatter, exact calendar day as entered");
     assert.ok(within(section).getByText("Client called to cancel due to a scheduling conflict."), "the entered reason text is preserved exactly, not summarized or truncated");
     assert.ok(within(section).getByText(/2:30 PM/), "cancelled_at is formatted in the business (ET) timezone, not UTC or device-local -- scoped to this section so it can't match the unrelated 11:00 AM-12:30 PM summary time range above");
   });
@@ -82,7 +82,7 @@ describe("rendered Cancellation Details: saved values display correctly", () => 
       onBack: () => {}, onEdit: () => {}, onCancelled: () => {}, canMutateOperationalData: true, timezone: TZ,
     }));
     const section = screen.getByText("Cancellation Details").parentElement!;
-    assert.ok(within(section).getByText("Oct 8, 2026"));
+    assert.ok(within(section).getByText("10/08/26"));
     assert.ok(within(section).getByText("Client called to cancel due to a scheduling conflict."));
     assert.ok(within(section).getByText(/2:30 PM/));
   });
@@ -303,7 +303,7 @@ describe("rendered end-to-end: selecting a history entry opens that EXACT appoin
     assert.ok(screen.getByText("Move-Out Deep Clean"), "the correct appointment's own service type");
     assert.ok(screen.getByText("Cancellation Details"));
     const section = screen.getByText("Cancellation Details").parentElement!;
-    assert.ok(within(section).getByText("May 1, 2026"), "its own reported date");
+    assert.ok(within(section).getByText("05/01/26"), "its own reported date, formatted MM/DD/YY via the shared formatter");
     assert.ok(within(section).getByText("Client sold the property before the scheduled date."), "its own reason, verbatim");
     // None of the "recent" jobs' content leaked into this view.
     assert.equal(screen.queryByText("Recent Job 0"), null);

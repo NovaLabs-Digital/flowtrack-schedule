@@ -2,23 +2,28 @@
 
 import { Phone, MessageCircle, MapPin, Mail } from "lucide-react";
 import { Client, Appointment } from "@/app/components/dashboard/types";
-import { toBusinessLocal } from "@/lib/timezone";
+import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
 
 // For a plain "YYYY-MM-DD" calendar field (client_since) with no
-// time-of-day meaning -- parses the components directly, never through a
-// timezone conversion (which would shift the date backward a day in
-// negative-UTC-offset zones, since a date-only ISO string parses as UTC
-// midnight).
+// time-of-day meaning -- the shared formatMMDDYY (lib/dateDisplay.ts) never
+// constructs a Date or applies a timezone conversion, so it can never shift
+// the date backward a day in negative-UTC-offset zones. (The previous local
+// implementation here parsed the ISO string via a bare Date constructor
+// before formatting it, which -- despite its own comment's stated intent --
+// DID parse through a UTC-midnight conversion; switching to the shared
+// formatter both standardizes the display and corrects that pre-existing
+// mismatch between this function's comment and its actual behavior.)
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+  return formatMMDDYY(iso);
 }
 
 // For a real timestamp (an appointment's scheduled_for) -- anchored to the
 // workspace's own resolved timezone (Phase 5C), never the device's own
-// ambient one. Distinct from fmtDate above, which is for date-only
-// calendar fields where a timezone conversion would be wrong, not right.
+// ambient one, via the shared formatTimestampMMDDYY. Distinct from fmtDate
+// above, which is for date-only calendar fields where a timezone
+// conversion would be wrong, not right.
 function fmtApptDate(iso: string, tz: string) {
-  return toBusinessLocal(iso, tz).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+  return formatTimestampMMDDYY(iso, tz);
 }
 
 type Props = {

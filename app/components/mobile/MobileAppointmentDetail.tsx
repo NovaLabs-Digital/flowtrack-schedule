@@ -4,6 +4,7 @@ import { useState } from "react";
 import { CalendarDays, Clock, User, MapPin, Phone, MessageCircle } from "lucide-react";
 import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeHours } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
+import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, displayAppointmentStatus, isAppointmentPastDue, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
@@ -34,15 +35,12 @@ function durationLabel(mins: number) {
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
 }
 
-// Mirrors desktop's AppointmentDetailPanel.tsx exactly -- see its own
-// comment for why a plain DATE string is never routed through
-// toBusinessLocal (there is no time-of-day or timezone to convert; the
-// 3-argument Date constructor builds a local calendar date directly from
-// the given year/month/day, avoiding the UTC-midnight-then-reinterpreted
-// off-by-one-day bug a bare `new Date("YYYY-MM-DD")` would risk).
-function formatReportedDate(dateOnly: string): string {
-  const [y, m, d] = dateOnly.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+// Mirrors desktop's AppointmentDetailPanel.tsx exactly -- combines the
+// shared MM/DD/YY date formatter (lib/dateDisplay.ts) with this file's own
+// formatTime (hour:minute AM/PM) for an instant that needs both shown
+// together.
+function formatRecordedAt(iso: string, tz: string): string {
+  return `${formatTimestampMMDDYY(iso, tz)}, ${formatTime(toBusinessLocal(iso, tz))}`;
 }
 
 type Props = {
@@ -306,7 +304,7 @@ export default function MobileAppointmentDetail({
             <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cancellation Details</div>
             <div className="text-slate-700">
               Client reported: <span className="font-medium text-slate-900">
-                {appointment.cancellation_reported_date ? formatReportedDate(appointment.cancellation_reported_date) : "Not recorded"}
+                {appointment.cancellation_reported_date ? formatMMDDYY(appointment.cancellation_reported_date) : "Not recorded"}
               </span>
             </div>
             <div className="text-slate-700">
@@ -317,7 +315,7 @@ export default function MobileAppointmentDetail({
             <div className="text-slate-700">
               Recorded: <span className="font-medium text-slate-900">
                 {appointment.cancelled_at
-                  ? toBusinessLocal(appointment.cancelled_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+                  ? formatRecordedAt(appointment.cancelled_at, timezone)
                   : "Not recorded"}
               </span>
             </div>
@@ -362,10 +360,10 @@ export default function MobileAppointmentDetail({
               }
 
               const startedLabel = assignment.actual_started_at
-                ? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                ? formatRecordedAt(assignment.actual_started_at, timezone)
                 : "Not recorded";
               const completedLabel = assignment.actual_completed_at
-                ? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                ? formatRecordedAt(assignment.actual_completed_at, timezone)
                 : "Not recorded";
               const workedMins = resolveWorkedMinutes(appointment.id, assignment.employee_id, assignment, employeeHours);
               // Owner override wins for display -- see resolveWorkedMinutes

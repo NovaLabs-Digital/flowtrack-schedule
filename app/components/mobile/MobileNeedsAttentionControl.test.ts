@@ -84,8 +84,21 @@ describe("MobileNeedsAttentionControl -- open/close", () => {
     await u.click(button);
     assert.equal(button.getAttribute("aria-expanded"), "true");
     await screen.findByText("Petra Lindqvist");
-    await screen.findByText(/Showing issues from 2026-06-22 to 2026-08-20/);
+    await screen.findByText(/Showing issues from 06\/22\/26 to 08\/20\/26/);
     await waitFor(() => assert.equal(calls.length, 2));
+  });
+
+  test("each entry's own service date is formatted MM/DD/YY too, same as the date range above it", async () => {
+    responses = [
+      json(200, { entries: [ENTRY_SINGLE], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
+      json(200, { entries: [ENTRY_SINGLE], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
+    ];
+    renderControl();
+    const button = await screen.findByRole("button", { name: "Needs attention · 1" });
+    await userEvent.setup().click(button);
+    // ENTRY_SINGLE.serviceDate is "2026-08-12"
+    await screen.findByText("Window Washing · 08/12/26");
+    assert.equal(screen.queryByText(/2026-08-12/), null, "the raw ISO string must never be shown to the owner");
   });
 
   test("empty state reads \"No items need attention\"", async () => {

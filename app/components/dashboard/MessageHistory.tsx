@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toBusinessLocal } from "@/lib/timezone";
+import { formatTimestampMMDDYY } from "@/lib/dateDisplay";
 
 type MessageStatusCode = "sent" | "failed" | "skipped_disabled" | "skipped_notifications_off" | "unknown";
 
@@ -27,10 +28,12 @@ const STATUS_STYLES: Record<MessageStatusCode, string> = {
   unknown: "text-amber-700 bg-amber-50",
 };
 
+// Date portion via the shared MM/DD/YY formatter (lib/dateDisplay.ts);
+// time portion still the native toLocaleString -- only the date format
+// was standardized, time formatting is unchanged.
 function formatSentAt(iso: string, timezone: string) {
-  return toBusinessLocal(iso, timezone).toLocaleString(undefined, {
-    month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
-  });
+  const time = toBusinessLocal(iso, timezone).toLocaleString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${formatTimestampMMDDYY(iso, timezone)}, ${time}`;
 }
 
 // Shared list body for both scopes below -- a single fetch/paginate/render

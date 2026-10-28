@@ -11,6 +11,7 @@ import { centsToInputValue, parsePriceToCents } from "@/lib/money";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";
 import { zonedDateValue, zonedTimeValue, zonedDateTimeToUTC, toBusinessLocal } from "@/lib/timezone";
+import { formatTimestampMMDDYY } from "@/lib/dateDisplay";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via
 // aria-describedby by every capability-gated mutation button below, rather
@@ -71,6 +72,15 @@ function durationLabel(mins: number) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
+// Combines the shared MM/DD/YY date formatter (lib/dateDisplay.ts) with the
+// business-timezone time-of-day for a Worked Hours Started/Completed
+// timestamp -- same formatRecordedAt pattern as AppointmentDetailPanel.tsx/
+// MobileAppointmentDetail.tsx's read-only equivalent of this same card.
+function formatRecordedAt(iso: string, tz: string): string {
+  const time = toBusinessLocal(iso, tz).toLocaleString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `${formatTimestampMMDDYY(iso, tz)}, ${time}`;
 }
 
 function frequencyLabel(ft?: string | null, rw?: number | null, rm?: number | null): string {
@@ -1183,15 +1193,12 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
                 }
 
                 // Displayed in the business's own resolved timezone, not
-                // the owner's device timezone -- toBusinessLocal's
-                // synthesized Date is self-consistent for this native
-                // toLocaleString() read (no explicit timeZone needed) the
-                // same way it already is for native getters elsewhere.
+                // the owner's device timezone -- see formatRecordedAt above.
                 const startedLabel = assignment.actual_started_at
-                  ? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                  ? formatRecordedAt(assignment.actual_started_at, timezone)
                   : "Not recorded";
                 const completedLabel = assignment.actual_completed_at
-                  ? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                  ? formatRecordedAt(assignment.actual_completed_at, timezone)
                   : "Not recorded";
                 const workedMins = resolveWorkedMinutes(editing!.appointment.id, assignment.employee_id, assignment, employeeHours);
                 // An owner override (appointment_employee_hours row) wins for

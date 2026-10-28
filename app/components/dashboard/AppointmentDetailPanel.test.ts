@@ -324,10 +324,42 @@ describe("historical-record protection (founder decision): a past/completed/canc
   });
 
   test("Started/Completed fall back to the clean 'Not recorded' empty state -- never fabricated -- and Job Notes only renders when assignment.job_notes is truthy", () => {
-    assert.ok(source.includes('? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n              : "Not recorded";'));
-    assert.ok(source.includes('? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n              : "Not recorded";'));
+    assert.ok(source.includes('? formatRecordedAt(assignment.actual_started_at, timezone)\n              : "Not recorded";'));
+    assert.ok(source.includes('? formatRecordedAt(assignment.actual_completed_at, timezone)\n              : "Not recorded";'));
     assert.ok(source.includes("{assignment.job_notes && ("));
     assert.ok(source.includes('<div className="font-medium text-slate-700">Job Notes:</div>'));
+  });
+
+  // Date-formatting standardization: numeric date displays now go through
+  // the shared MM/DD/YY formatter (lib/dateDisplay.ts) instead of each
+  // component re-implementing its own toLocaleDateString/toLocaleString
+  // call. Time formatting (formatTime) is untouched -- only the date
+  // portion changed.
+  describe("numeric date displays use the shared MM/DD/YY formatter (lib/dateDisplay.ts)", () => {
+    test("imports formatMMDDYY and formatTimestampMMDDYY from lib/dateDisplay", () => {
+      assert.match(source, /import \{ formatMMDDYY, formatTimestampMMDDYY \} from "@\/lib\/dateDisplay";/);
+    });
+
+    test("formatRecordedAt combines formatTimestampMMDDYY (date) with the existing formatTime (time) -- one formatting rule per concern, not a re-invented combined one", () => {
+      assert.match(
+        source,
+        /function formatRecordedAt\(iso: string, tz: string\): string \{\s*\n\s*return `\$\{formatTimestampMMDDYY\(iso, tz\)\}, \$\{formatTime\(toBusinessLocal\(iso, tz\)\)\}`;\s*\n\s*\}/
+      );
+    });
+
+    test("cancellation_reported_date (date-only, never toBusinessLocal) uses the shared formatMMDDYY directly, not formatRecordedAt", () => {
+      assert.match(source, /\{appointment\.cancellation_reported_date \? formatMMDDYY\(appointment\.cancellation_reported_date\) : "Not recorded"\}/);
+    });
+
+    test("cancelled_at (a real instant) uses formatRecordedAt, same as Started/Completed", () => {
+      assert.match(source, /\{appointment\.cancelled_at\s*\n\s*\? formatRecordedAt\(appointment\.cancelled_at, timezone\)\s*\n\s*: "Not recorded"\}/);
+    });
+
+    test("the old local formatReportedDate/toLocaleString-based date formatting is gone entirely from this file", () => {
+      assert.doesNotMatch(source, /function formatReportedDate/);
+      assert.doesNotMatch(source, /toLocaleString\(undefined, \{ month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" \}\)/);
+      assert.doesNotMatch(source, /toLocaleDateString\(undefined, \{ month: "short", day: "numeric", year: "numeric" \}\)/);
+    });
   });
 
   test("Worked Hours never mutates anything -- no fetch, no notifyDemoAction, inside the card's render", () => {

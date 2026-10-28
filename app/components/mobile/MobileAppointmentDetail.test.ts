@@ -418,10 +418,21 @@ describe("historical-record protection (founder decision): mobile's sole edit en
   });
 
   test("Started/Completed fall back to the clean 'Not recorded' empty state -- never fabricated -- and Job Notes only renders when assignment.job_notes is truthy", () => {
-    assert.ok(source.includes('? toBusinessLocal(assignment.actual_started_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n                : "Not recorded";'));
-    assert.ok(source.includes('? toBusinessLocal(assignment.actual_completed_at, timezone).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })\n                : "Not recorded";'));
+    assert.ok(source.includes('? formatRecordedAt(assignment.actual_started_at, timezone)\n                : "Not recorded";'));
+    assert.ok(source.includes('? formatRecordedAt(assignment.actual_completed_at, timezone)\n                : "Not recorded";'));
     assert.ok(source.includes("{assignment.job_notes && ("));
     assert.ok(source.includes('<div className="font-medium text-slate-700">Job Notes:</div>'));
+  });
+
+  describe("numeric date displays use the shared MM/DD/YY formatter (lib/dateDisplay.ts), mirroring desktop's AppointmentDetailPanel", () => {
+    test("imports formatMMDDYY and formatTimestampMMDDYY from lib/dateDisplay", () => {
+      assert.match(source, /import \{ formatMMDDYY, formatTimestampMMDDYY \} from "@\/lib\/dateDisplay";/);
+    });
+
+    test("the old local formatReportedDate/toLocaleString-based date formatting is gone entirely from this file", () => {
+      assert.doesNotMatch(source, /function formatReportedDate/);
+      assert.doesNotMatch(source, /toLocaleString\(undefined, \{ month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" \}\)/);
+    });
   });
 
   test("Worked Hours never mutates anything -- no fetch, no notifyDemoAction, inside the card's render", () => {

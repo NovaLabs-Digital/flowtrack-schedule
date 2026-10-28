@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Client, Appointment } from "@/app/components/dashboard/types";
 import { toBusinessLocal } from "@/lib/timezone";
+import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { ClientMessageHistory } from "@/app/components/dashboard/MessageHistory";
 
@@ -85,7 +86,7 @@ function EmptyCol({ icon, line1, line2 }: { icon: string; line1: string; line2: 
 // same business-local time the schedule grid itself shows, regardless of
 // the owner's own device timezone.
 function fmtDate(iso: string, tz: string) {
-  return toBusinessLocal(iso, tz).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return formatTimestampMMDDYY(iso, tz);
 }
 function fmtTime(iso: string, tz: string) {
   const d = toBusinessLocal(iso, tz);
@@ -98,8 +99,7 @@ function fmtTime(iso: string, tz: string) {
 // timezone conversion, which would otherwise shift the date backward a day in
 // negative-UTC-offset zones (a date-only ISO string parses as UTC midnight).
 function fmtCalendarDate(dateOnly: string) {
-  const [y, m, d] = dateOnly.split("-").map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return formatMMDDYY(dateOnly);
 }
 
 type EditForm = {
