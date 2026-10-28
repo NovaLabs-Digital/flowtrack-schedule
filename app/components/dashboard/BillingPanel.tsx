@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { nowInBusinessTz } from "@/lib/timezone";
 import { formatCents } from "@/lib/money";
 import {
@@ -38,6 +38,24 @@ function addDays(d: Date, n: number): Date {
   const x = new Date(d);
   x.setDate(x.getDate() + n);
   return x;
+}
+
+// Monday 00:00 of the week CONTAINING a given "YYYY-MM-DD" workspace-local
+// calendar date -- used only when this panel is opened with a deep-link
+// focus target (e.g. from the Needs Attention control), to seed the date
+// range around that job's own service date instead of "this week." Plain
+// local-calendar arithmetic (3-argument Date constructor, never
+// `new Date("YYYY-MM-DD")`) -- the input is already a resolved
+// workspace-local calendar day, so no further timezone conversion is
+// needed or safe to apply (same convention as AppointmentDetailPanel.tsx's
+// formatReportedDate).
+function mondayOfWeekContaining(dateStr: string): Date {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const dow = dt.getDay();
+  const diff = (dow + 6) % 7;
+  dt.setDate(dt.getDate() - diff);
+  return dt;
 }
 function toDateInputValue(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -105,6 +123,8 @@ export default function BillingPanel({
   canMutateOperationalData,
   workspaceId,
   userId,
+  focusAppointmentId,
+  focusServiceDate,
 }: {
   timezone: string;
   // Read-only (locked/canceled/read-only-grace workspace) disables every
@@ -117,9 +137,24 @@ export default function BillingPanel({
   // server route and never used for data access.
   workspaceId: string;
   userId: string;
+  // Deep-link target from the Needs Attention control (DashboardShell):
+  // when both are set, the initial date range is seeded around
+  // focusServiceDate instead of "this week," so a job from another week is
+  // actually visible rather than silently excluded by the default range --
+  // and the matching row is highlighted/scrolled into view once loaded.
+  // Read only at mount (via the lazy useState initializers below) --
+  // BillingPanel remounts fresh every time Settings -> Billing is entered
+  // (see SettingsPanel.tsx's own conditional render), so this never fights
+  // the owner's own subsequent range edits.
+  focusAppointmentId?: string | null;
+  focusServiceDate?: string | null;
 }) {
-  const [rangeStart, setRangeStart] = useState(() => toDateInputValue(mondayOfWeek(0, timezone)));
-  const [rangeEnd, setRangeEnd] = useState(() => toDateInputValue(addDays(mondayOfWeek(0, timezone), 6)));
+  const [rangeStart, setRangeStart] = useState(() =>
+    focusServiceDate ? toDateInputValue(mondayOfWeekContaining(focusServiceDate)) : toDateInputValue(mondayOfWeek(0, timezone))
+  );
+  const [rangeEnd, setRangeEnd] = useState(() =>
+    focusServiceDate ? toDateInputValue(addDays(mondayOfWeekContaining(focusServiceDate), 6)) : toDateInputValue(addDays(mondayOfWeek(0, timezone), 6))
+  );
   const [statusFilter, setStatusFilter] = useState<BillingStatusFilter>("all");
   const [clientSearch, setClientSearch] = useState("");
   const [data, setData] = useState<FetchState>(null);
@@ -373,6 +408,7 @@ export default function BillingPanel({
                       saving={!!savingRows[row.appointmentId]}
                       error={rowErrors[row.appointmentId]}
                       onSave={(patch) => saveBillingFields(row.appointmentId, patch)}
+                      isFocused={!!focusAppointmentId && row.appointmentId === focusAppointmentId}
                     />
                   ))
                 )}
@@ -471,12 +507,18 @@ function BillingRow({
   saving,
   error,
   onSave,
+  isFocused,
 }: {
   row: CompletedJobRow;
   disabled: boolean;
   saving: boolean;
   error?: string;
   onSave: (patch: Record<string, unknown>) => void;
+  // Needs Attention deep-link target (see BillingPanel's own focusAppointmentId
+  // prop): scrolls this row into view once mounted/visible and applies a
+  // brief visual highlight, so "open the corresponding job in Billing"
+  // actually shows the owner WHICH row, not just the right date range.
+  isFocused?: boolean;
 }) {
   // Local draft state for the text input (can't be purely derived from
   // props on every render, or it would reset mid-typing). Resynced when the
@@ -497,13 +539,31 @@ function BillingRow({
   const paid = row.billing?.paid ?? false;
   const paymentMethod = row.billing?.payment_method ?? "";
 
+  const rowRef = useRef<HTMLTableRowElement | null>(null);
+  useEffect(() => {
+    if (isFocused && typeof rowRef.current?.scrollIntoView === "function") {
+      rowRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    // Only on mount of a row that's already the focus target -- a row
+    // never becomes focused after the fact in this panel's own lifecycle
+    // (focusAppointmentId is read once, at BillingPanel's mount), so this
+    // never needs to re-run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function commitInvoiceNumber() {
     if (invoiceDraft === (row.billing?.invoice_number ?? "")) return;
     onSave({ invoice_number: invoiceDraft });
   }
 
   return (
-    <tr className="border-b border-slate-100 last:border-b-0 align-top">
+    <tr
+      ref={rowRef}
+      className={[
+        "border-b border-slate-100 last:border-b-0 align-top",
+        isFocused ? "bg-amber-50 ring-1 ring-inset ring-amber-300" : "",
+      ].join(" ")}
+    >
       <td className="px-3 py-2 whitespace-nowrap text-slate-700">{formatMMDDYY(row.serviceDate)}</td>
       <td className="px-3 py-2 text-slate-900 font-medium">{row.clientName}</td>
       <td className="px-3 py-2 text-slate-700">{row.serviceType}</td>

@@ -301,3 +301,28 @@ describe("Phase 5C: workspace-timezone-aware Today screen and child threading", 
     }
   });
 });
+
+describe("Needs Attention: equivalent mobile entry point (MobileNeedsAttentionControl)", () => {
+  test("imports and renders MobileNeedsAttentionControl inside the Today tab", () => {
+    assert.match(source, /import MobileNeedsAttentionControl from "@\/app\/components\/mobile\/MobileNeedsAttentionControl"/);
+    const todayBlockStart = source.indexOf('activeTab === "today"');
+    const todayBlockEnd = source.indexOf('activeTab === "schedule"');
+    assert.ok(todayBlockStart > -1 && todayBlockEnd > -1);
+    const todayBlock = source.slice(todayBlockStart, todayBlockEnd);
+    assert.match(todayBlock, /<MobileNeedsAttentionControl/);
+  });
+
+  test("is wired to the same setSelectedApptId used by the Today appointment cards -- selecting an item opens that appointment's own detail screen", () => {
+    const idx = source.indexOf("<MobileNeedsAttentionControl");
+    const closeIdx = source.indexOf("/>", idx);
+    const jsx = source.slice(idx, closeIdx);
+    assert.match(jsx, /onSelectAppointment=\{setSelectedApptId\}/);
+  });
+
+  test("renders ABOVE the day strip, so it doesn't disturb the existing Today-tab layout order", () => {
+    const controlIdx = source.indexOf("<MobileNeedsAttentionControl");
+    const dayStripIdx = source.indexOf("{/* Day strip */}");
+    assert.ok(controlIdx > -1 && dayStripIdx > -1);
+    assert.ok(controlIdx < dayStripIdx);
+  });
+});

@@ -567,6 +567,11 @@ describe("only the approved routes reference the capability gates -- every other
     // respectively.
     path.join("app", "api", "appointments", "messages", "route.ts"),
     path.join("app", "api", "clients", "messages", "route.ts"),
+    // Needs Attention -- read-only (canViewExistingData, same read-gate
+    // precedent as the routes above), aggregating worked-time-review,
+    // needs-invoicing, and failed-message items for the right-sidebar/
+    // mobile control.
+    path.join("app", "api", "dashboard", "needs-attention", "route.ts"),
   ];
 
   // Server-trusted-workspace gate: no session exists at this call site at

@@ -15,6 +15,8 @@ export default function SettingsPanel({
   timezone,
   workspaceId,
   userId,
+  billingFocusAppointmentId,
+  billingFocusServiceDate,
 }: {
   section: SettingsSection;
   // Phase 5.5E-E1E forwarded this only to ArchivedClientsPanel. Phase
@@ -37,12 +39,29 @@ export default function SettingsPanel({
   // useDashboardLayoutPrefs. Never sent to any server route.
   workspaceId: string;
   userId: string;
+  // Needs Attention deep-link (DashboardShell's NeedsAttentionControl
+  // wiring): forwarded only to BillingPanel's own focusAppointmentId/
+  // focusServiceDate props, so switching to this section with a specific
+  // job in mind actually seeds its date range around that job.
+  billingFocusAppointmentId?: string | null;
+  billingFocusServiceDate?: string | null;
 }) {
   if (section === "company") return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} />;
   if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "staff") return <StaffPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "archived") return <ArchivedClientsPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "recurring") return <RecurringSeriesPanel canMutateOperationalData={canMutateOperationalData} />;
-  if (section === "billing") return <BillingPanel timezone={timezone} canMutateOperationalData={canMutateOperationalData} workspaceId={workspaceId} userId={userId} />;
+  if (section === "billing") {
+    return (
+      <BillingPanel
+        timezone={timezone}
+        canMutateOperationalData={canMutateOperationalData}
+        workspaceId={workspaceId}
+        userId={userId}
+        focusAppointmentId={billingFocusAppointmentId}
+        focusServiceDate={billingFocusServiceDate}
+      />
+    );
+  }
   return null;
 }

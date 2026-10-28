@@ -13,6 +13,7 @@ import MobileClientsList from "@/app/components/mobile/MobileClientsList";
 import MobileSettings from "@/app/components/mobile/MobileSettings";
 import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
+import MobileNeedsAttentionControl from "@/app/components/mobile/MobileNeedsAttentionControl";
 import OwnerBillingBanner, { OwnerBillingBannerProps } from "@/app/components/dashboard/OwnerBillingBanner";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 
@@ -215,6 +216,15 @@ export default function MobileDashboard({
                     </div>
                   </div>
                 </div>
+
+                {/* Needs attention -- same underlying data/rules as the
+                    desktop sidebar control (NeedsAttentionControl.tsx),
+                    scoped to this workspace server-side. A single tap on
+                    any item selects that appointment (see
+                    MobileNeedsAttentionControl.tsx's own header comment
+                    for why every issue kind resolves to that one action on
+                    mobile, unlike desktop's billing-specific deep link). */}
+                <MobileNeedsAttentionControl onSelectAppointment={setSelectedApptId} />
 
                 {/* Day strip */}
                 <div className="shrink-0 bg-white border-b border-slate-200 px-2 py-2 flex items-center gap-1">

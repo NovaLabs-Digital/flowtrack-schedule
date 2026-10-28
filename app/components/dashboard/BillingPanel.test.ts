@@ -3,7 +3,7 @@
 // Only the network is faked: a scripted `fetch` stands in for
 // GET /api/billing/completed-jobs and PATCH /api/billing/completed-jobs/update.
 // Same pattern as app/components/dashboard/AppointmentModal.render.test.ts.
-import { test, describe, afterEach, beforeEach } from "node:test";
+import { test, describe, afterEach, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { register } from "node:module";
 
@@ -53,13 +53,18 @@ const REVIEW_ROW = {
 const USER_ID = "owner-1";
 const WORKSPACE_ID = "ws-1";
 
-function renderPanel(canMutateOperationalData = true, overrides: { workspaceId?: string; userId?: string } = {}) {
+function renderPanel(
+  canMutateOperationalData = true,
+  overrides: { workspaceId?: string; userId?: string; focusAppointmentId?: string | null; focusServiceDate?: string | null } = {}
+) {
   return render(
     React.createElement(BillingPanel, {
       timezone: TZ,
       canMutateOperationalData,
       workspaceId: overrides.workspaceId ?? WORKSPACE_ID,
       userId: overrides.userId ?? USER_ID,
+      focusAppointmentId: overrides.focusAppointmentId,
+      focusServiceDate: overrides.focusServiceDate,
     })
   );
 }
@@ -796,6 +801,69 @@ describe("BillingPanel -- changing sort order never loses or misattributes an un
     fireEvent.blur(aaronInputAfter);
     await waitFor(() => assert.equal(calls.filter((c) => c.method === "PATCH").length, 1));
     assert.deepEqual(calls[calls.length - 1].body, { appointment_id: "appt-early", invoice_number: "DRAFT-ROUNDTRIP" });
+  });
+});
+
+// Needs Attention deep-link: focusAppointmentId/focusServiceDate let a
+// caller (DashboardShell's NeedsAttentionControl wiring) open this panel
+// already scoped to a specific job's own week, instead of silently hiding
+// it behind the default "this week" range -- and highlight which row it
+// is. jsdom has no scrollIntoView implementation at all (not even a
+// no-op), so it's stubbed here only to prove the component calls it; the
+// component itself guards defensively against it being absent (see
+// BillingRow's own typeof check), which is what makes this stub optional
+// for every OTHER test in this file to keep passing without it.
+describe("BillingPanel -- Needs Attention deep-link (focusAppointmentId/focusServiceDate)", () => {
+  const scrollSpy = mock.fn();
+  const realScrollIntoView = (window.HTMLElement.prototype as any).scrollIntoView;
+  beforeEach(() => {
+    scrollSpy.mock.resetCalls();
+    (window.HTMLElement.prototype as any).scrollIntoView = scrollSpy;
+  });
+  afterEach(() => {
+    (window.HTMLElement.prototype as any).scrollIntoView = realScrollIntoView;
+  });
+
+  test("with no focus props, the initial fetch still uses the default \"this week\" range (unchanged behavior)", async () => {
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    // Just confirms a request was made with SOME valid range -- the exact
+    // "this week" value is already covered by the MM/DD/YY describe block
+    // above; this test exists to contrast against the focused case below.
+    assert.match(calls[0].url, /\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/);
+  });
+
+  test("with a focusServiceDate from another week, the initial fetch's range covers that date, not \"this week\"", async () => {
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    // A date almost certainly outside "this week" in any real test run.
+    renderPanel(true, { focusAppointmentId: "appt-far-away", focusServiceDate: "2020-03-10" });
+    await waitFor(() => assert.equal(calls.length, 1));
+    const url = new URL(calls[0].url, "http://localhost");
+    const start = url.searchParams.get("start")!;
+    const end = url.searchParams.get("end")!;
+    assert.ok(start <= "2020-03-10" && "2020-03-10" <= end, `expected 2020-03-10 to fall within [${start}, ${end}]`);
+  });
+
+  test("the focused row is visually highlighted and scrolled into view once it loads", async () => {
+    const targetRow = { ...ROW_DONE, appointmentId: "appt-focus-target" };
+    responses = [json(200, { completed: [targetRow, ROW_PAID], reviewNeeded: [] })];
+    renderPanel(true, { focusAppointmentId: "appt-focus-target", focusServiceDate: targetRow.serviceDate });
+    await screen.findByText("Petra Lindqvist");
+    const targetTr = screen.getByText("Petra Lindqvist").closest("tr")!;
+    assert.ok(targetTr.className.includes("bg-amber-50"), "the focused row gets a visible highlight");
+    const otherTr = screen.getByText("Simon Aldercott").closest("tr")!;
+    assert.ok(!otherTr.className.includes("bg-amber-50"), "no other row is highlighted");
+    assert.equal(scrollSpy.mock.callCount(), 1);
+  });
+
+  test("no row is highlighted and scrollIntoView is never called when focusAppointmentId is absent", async () => {
+    responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    const row = screen.getByText("Petra Lindqvist").closest("tr")!;
+    assert.ok(!row.className.includes("bg-amber-50"));
+    assert.equal(scrollSpy.mock.callCount(), 0);
   });
 });
 

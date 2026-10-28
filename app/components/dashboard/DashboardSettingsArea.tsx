@@ -33,6 +33,11 @@ type Props = {
   // DashboardShell already threads to useDashboardLayoutPrefs.
   workspaceId: string;
   userId: string;
+  // Needs Attention deep-link: passed straight through to SettingsPanel,
+  // which forwards it only to BillingPanel's own focusAppointmentId/
+  // focusServiceDate props.
+  billingFocusAppointmentId?: string | null;
+  billingFocusServiceDate?: string | null;
 };
 
 // Owner always gets the real, unrestricted Settings sidebar/panel — untouched
@@ -54,6 +59,8 @@ export default function DashboardSettingsArea({
   timezone,
   workspaceId,
   userId,
+  billingFocusAppointmentId,
+  billingFocusServiceDate,
 }: Props) {
   const { active, currentStep, restart } = useDemoExperienceContext();
 
@@ -62,7 +69,16 @@ export default function DashboardSettingsArea({
       <div className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
         <div className="flex-1 min-h-0 overflow-auto pt-8">
-          <SettingsPanel section={settingsSection} canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} timezone={timezone} workspaceId={workspaceId} userId={userId} />
+          <SettingsPanel
+            section={settingsSection}
+            canMutateOperationalData={canMutateOperationalData}
+            isTrialing={isTrialing}
+            timezone={timezone}
+            workspaceId={workspaceId}
+            userId={userId}
+            billingFocusAppointmentId={billingFocusAppointmentId}
+            billingFocusServiceDate={billingFocusServiceDate}
+          />
         </div>
       </div>
     );
