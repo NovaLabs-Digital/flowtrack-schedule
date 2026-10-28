@@ -38,6 +38,9 @@ type Props = {
   // focusServiceDate props.
   billingFocusAppointmentId?: string | null;
   billingFocusServiceDate?: string | null;
+  // Needs Attention refresh: passed straight through to SettingsPanel,
+  // which forwards it only to BillingPanel's own onBillingSaved prop.
+  onBillingSaved?: () => void;
 };
 
 // Owner always gets the real, unrestricted Settings sidebar/panel — untouched
@@ -61,6 +64,7 @@ export default function DashboardSettingsArea({
   userId,
   billingFocusAppointmentId,
   billingFocusServiceDate,
+  onBillingSaved,
 }: Props) {
   const { active, currentStep, restart } = useDemoExperienceContext();
 
@@ -78,6 +82,7 @@ export default function DashboardSettingsArea({
             userId={userId}
             billingFocusAppointmentId={billingFocusAppointmentId}
             billingFocusServiceDate={billingFocusServiceDate}
+            onBillingSaved={onBillingSaved}
           />
         </div>
       </div>

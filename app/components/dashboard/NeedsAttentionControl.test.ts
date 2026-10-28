@@ -44,6 +44,10 @@ const ENTRY_BILLING = {
   appointmentId: "appt-billing", clientName: "Simon Aldercott", serviceType: "Lawn Mowing", serviceDate: "2026-08-13",
   scheduledFor: "2026-08-13T13:00:00.000Z", issues: [{ kind: "needs_invoicing", label: "Needs invoice number" }],
 };
+const ENTRY_PAYMENT_OUTSTANDING = {
+  appointmentId: "appt-payment", clientName: "Holly Adebayo", serviceType: "Gutter Cleaning", serviceDate: "2026-08-15",
+  scheduledFor: "2026-08-15T13:00:00.000Z", issues: [{ kind: "payment_outstanding", label: "Payment outstanding" }],
+};
 const ENTRY_MULTI = {
   appointmentId: "appt-multi", clientName: "Wren Castellan", serviceType: "Deep Clean", serviceDate: "2026-08-14",
   scheduledFor: "2026-08-14T13:00:00.000Z",
@@ -117,7 +121,7 @@ describe("NeedsAttentionControl -- opening and closing", () => {
     await screen.findByText("No items need attention.");
   });
 
-  test("the dropdown discloses the date range it covers", async () => {
+  test("the dropdown discloses the date range it covers, formatted MM/DD/YY -- never the raw API \"YYYY-MM-DD\" string", async () => {
     responses = [
       json(200, { entries: [ENTRY_REVIEW], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
       json(200, { entries: [ENTRY_REVIEW], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
@@ -125,7 +129,20 @@ describe("NeedsAttentionControl -- opening and closing", () => {
     renderControl();
     const button = await screen.findByRole("button", { name: "Needs attention · 1" });
     await userEvent.setup().click(button);
-    await screen.findByText(/Showing issues from 2026-06-22 to 2026-08-20/);
+    await screen.findByText(/Showing issues from 06\/22\/26 to 08\/20\/26/);
+  });
+
+  test("each entry's own service date is formatted MM/DD/YY too -- consistent with the date range above it", async () => {
+    responses = [
+      json(200, { entries: [ENTRY_REVIEW], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
+      json(200, { entries: [ENTRY_REVIEW], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
+    ];
+    renderControl();
+    const button = await screen.findByRole("button", { name: "Needs attention · 1" });
+    await userEvent.setup().click(button);
+    // ENTRY_REVIEW.serviceDate is "2026-08-12"
+    await screen.findByText("Window Washing · 08/12/26");
+    assert.equal(screen.queryByText(/2026-08-12/), null, "the raw ISO string must never be shown to the owner");
   });
 
   test("clicking the button again (toggling) closes the dropdown", async () => {
@@ -272,6 +289,29 @@ describe("NeedsAttentionControl -- navigation", () => {
     await u.click(button);
     await u.click(await screen.findByRole("button", { name: "Needs invoice number" }));
     assert.deepEqual(navigated, { id: "appt-billing", date: "2026-08-13" });
+  });
+
+  // Regression: "Payment outstanding" is a DISTINCT issue kind from
+  // "Needs invoice number" (lib/needsAttention.ts never generates both for
+  // the same job), but both must open and highlight the same Billing row
+  // via the identical onNavigateToBilling destination.
+  test("clicking a payment-outstanding issue ALSO calls onNavigateToBilling with the appointmentId AND serviceDate, same destination as needs-invoicing", async () => {
+    responses = [
+      json(200, { entries: [ENTRY_PAYMENT_OUTSTANDING], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
+      json(200, { entries: [ENTRY_PAYMENT_OUTSTANDING], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
+    ];
+    let navigated: { id: string; date: string } | null = null;
+    let appointmentNavigated = false;
+    renderControl({
+      onNavigateToBilling: (id: string, date: string) => { navigated = { id, date }; },
+      onNavigateToAppointment: () => { appointmentNavigated = true; },
+    });
+    const button = await screen.findByRole("button", { name: "Needs attention · 1" });
+    const u = userEvent.setup();
+    await u.click(button);
+    await u.click(await screen.findByRole("button", { name: "Payment outstanding" }));
+    assert.deepEqual(navigated, { id: "appt-payment", date: "2026-08-15" });
+    assert.equal(appointmentNavigated, false, "a billing issue must never also call onNavigateToAppointment");
   });
 
   test("an appointment with multiple issues renders one clearly labelled, independently clickable action per issue", async () => {

@@ -169,7 +169,7 @@ describe("buildNeedsAttentionEntries -- item 1: worked-time review (reuses build
   });
 });
 
-describe("buildNeedsAttentionEntries -- item 2: needs invoicing (reuses buildCompletedJobRows + applyBillingStatusFilter verbatim)", () => {
+describe("buildNeedsAttentionEntries -- item 2: billing (needs invoicing / payment outstanding, mutually exclusive, reuses buildCompletedJobRows + applyBillingStatusFilter verbatim)", () => {
   function completedAppt(id: string): { a: BillableAppointment; asg: AppointmentEmployeeAssignment } {
     const a = appt({ id, status: "scheduled" });
     const asg = assignment({
@@ -189,22 +189,50 @@ describe("buildNeedsAttentionEntries -- item 2: needs invoicing (reuses buildCom
     assert.deepEqual(entries[0].issues, [{ kind: "needs_invoicing", label: "Needs invoice number" }]);
   });
 
-  test("a completed job that's invoiced but not yet paid is NOT flagged -- invoiced_unpaid (payment follow-up) is deliberately excluded from this first release", () => {
+  test("a completed job that's invoiced but not yet paid is flagged \"Payment outstanding\" -- a DISTINCT issue from \"Needs invoice number\", never both at once", () => {
     const { a, asg } = completedAppt("appt-invoiced-unpaid");
     const b = billing({ appointment_id: "appt-invoiced-unpaid", invoice_number: "INV-1", paid: false });
     const entries = buildNeedsAttentionEntries(baseArgs({
       appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
     }));
-    assert.equal(entries.length, 0);
+    assert.equal(entries.length, 1);
+    assert.deepEqual(entries[0].issues, [{ kind: "payment_outstanding", label: "Payment outstanding" }]);
   });
 
-  test("a fully paid, invoiced job is NOT flagged", () => {
+  test("a fully paid, invoiced job is NOT flagged with either billing issue", () => {
     const { a, asg } = completedAppt("appt-paid");
     const b = billing({ appointment_id: "appt-paid", invoice_number: "INV-2", paid: true, payment_method: "zelle" });
     const entries = buildNeedsAttentionEntries(baseArgs({
       appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
     }));
     assert.equal(entries.length, 0);
+  });
+
+  // Regression: the full lifecycle of a single job, one state at a time --
+  // the EXACT same appointment/assignment fixture, only the billing row
+  // changes between calls, matching how a real job progresses: no billing
+  // row yet -> invoiced -> paid.
+  test("the full missing-invoice -> invoiced/unpaid -> paid lifecycle: exactly one issue (or none) at each stage, never two at once", () => {
+    const { a, asg } = completedAppt("appt-lifecycle");
+    const clients_ = [client()];
+    const assignments = assignmentsMap([asg]);
+
+    const stage1 = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: clients_, assignmentsByAppointmentId: assignments, billingByAppointmentId: new Map(),
+    }));
+    assert.deepEqual(stage1[0].issues.map((i) => i.kind), ["needs_invoicing"]);
+
+    const invoicedUnpaid = billing({ appointment_id: "appt-lifecycle", invoice_number: "INV-9", paid: false });
+    const stage2 = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: clients_, assignmentsByAppointmentId: assignments, billingByAppointmentId: billingMap([invoicedUnpaid]),
+    }));
+    assert.deepEqual(stage2[0].issues.map((i) => i.kind), ["payment_outstanding"]);
+
+    const paid = billing({ appointment_id: "appt-lifecycle", invoice_number: "INV-9", paid: true, payment_method: "zelle" });
+    const stage3 = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: clients_, assignmentsByAppointmentId: assignments, billingByAppointmentId: billingMap([paid]),
+    }));
+    assert.equal(stage3.length, 0, "a paid job has no entry at all once no other issue applies");
   });
 
   test("a paid-Cash job with no invoice (a legitimate closed state) is NOT flagged -- same carve-out as the Billing panel's own filter", () => {
@@ -234,6 +262,16 @@ describe("buildNeedsAttentionEntries -- destination-permission gate (includeInvo
       appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), includeInvoicing: false,
     }));
     assert.equal(entries.length, 0, "no destination exists for this session/surface, so the issue is never generated at all");
+  });
+
+  test("includeInvoicing: false also never generates a payment_outstanding issue -- the same gate covers BOTH billing-destination issue kinds", () => {
+    const { a, asg } = completedAppt("appt-payment-outstanding-excluded");
+    const b = billing({ appointment_id: "appt-payment-outstanding-excluded", invoice_number: "INV-1", paid: false });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
+      includeInvoicing: false,
+    }));
+    assert.equal(entries.length, 0, "no Billing destination exists for this session/surface, so payment_outstanding is never generated either");
   });
 
   test("includeInvoicing: false still allows worked-time-review and failed-message issues for the same appointment", () => {
@@ -358,6 +396,22 @@ describe("buildNeedsAttentionEntries -- grouping/deduplication: multiple issues 
     }));
     assert.equal(entries.length, 1);
     assert.deepEqual(entries[0].issues.map((i) => i.kind).sort(), ["failed_message", "needs_invoicing"]);
+  });
+
+  test("an appointment with payment outstanding AND a failed message also collapses into one entry, and never also carries needs_invoicing", () => {
+    const a = appt({ id: "appt-payment-and-failed", status: "scheduled" });
+    const asg = assignment({
+      appointment_id: "appt-payment-and-failed",
+      actual_started_at: "2026-08-12T13:00:00.000Z",
+      actual_completed_at: "2026-08-12T14:00:00.000Z",
+    });
+    const b = billing({ appointment_id: "appt-payment-and-failed", invoice_number: "INV-1", paid: false });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
+      failedMessageCountsByAppointmentId: new Map([["appt-payment-and-failed", 1]]),
+    }));
+    assert.equal(entries.length, 1);
+    assert.deepEqual(entries[0].issues.map((i) => i.kind).sort(), ["failed_message", "payment_outstanding"]);
   });
 
   test("the entry's own client/service fields are populated once, from the appointment and client fixtures, regardless of how many issues it has", () => {

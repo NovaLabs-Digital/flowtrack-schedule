@@ -259,13 +259,17 @@ describe("GET /api/dashboard/needs-attention -- failed messages (item 3)", () =>
   });
 });
 
-describe("GET /api/dashboard/needs-attention -- needs-invoicing scope (missing_invoice only)", () => {
+describe("GET /api/dashboard/needs-attention -- billing scope (needs invoicing / payment outstanding, mutually exclusive)", () => {
   const INVOICED_UNPAID_BILLING = {
     id: "bill-unpaid", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-unbilled",
     invoice_number: "INV-9", paid: false, payment_method: null, created_at: "x", updated_at: "x",
   };
+  const PAID_BILLING = {
+    id: "bill-paid", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-unbilled",
+    invoice_number: "INV-9", paid: true, payment_method: "zelle", created_at: "x", updated_at: "x",
+  };
 
-  test("a completed job that's invoiced but not yet paid is NOT flagged -- invoiced_unpaid is excluded from this first release", async () => {
+  test("a completed job that's invoiced but not yet paid is flagged \"Payment outstanding\" -- a distinct issue from \"Needs invoice number\"", async () => {
     resetFixtures({
       ...ACTIVE,
       company_settings: [{ data: { timezone: "America/New_York" } }],
@@ -278,7 +282,54 @@ describe("GET /api/dashboard/needs-attention -- needs-invoicing scope (missing_i
     });
     sessionToReturn = OWNER_SESSION;
     const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 1);
+    assert.deepEqual(body.entries[0].issues, [{ kind: "payment_outstanding", label: "Payment outstanding" }]);
+  });
+
+  test("a completed, invoiced, PAID job is flagged with neither billing issue", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [COMPLETED_UNBILLED_APPT] }],
+      appointment_employees: [{ data: [COMPLETED_UNBILLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [PAID_BILLING] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
     assert.equal(body.entries.length, 0);
+  });
+
+  // Regression: the full lifecycle through the live route -- missing
+  // invoice (no billing row at all) -> invoiced/unpaid -> paid. Each stage
+  // re-fetches independently (resetFixtures starts a fresh fake Supabase
+  // each time), exactly like three separate real requests as the owner's
+  // own saves progress the same job through Billing.
+  test("the full missing-invoice -> invoiced/unpaid -> paid lifecycle produces exactly one issue (or none) at each stage, through the live route", async () => {
+    const baseFixtures = {
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [COMPLETED_UNBILLED_APPT] }],
+      appointment_employees: [{ data: [COMPLETED_UNBILLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    };
+    sessionToReturn = OWNER_SESSION;
+
+    resetFixtures({ ...baseFixtures, completed_job_billing: [{ data: [] }] });
+    const stage1 = await (await GET(req())).json();
+    assert.deepEqual(stage1.entries[0].issues.map((i: any) => i.kind), ["needs_invoicing"]);
+
+    resetFixtures({ ...baseFixtures, completed_job_billing: [{ data: [INVOICED_UNPAID_BILLING] }] });
+    const stage2 = await (await GET(req())).json();
+    assert.deepEqual(stage2.entries[0].issues.map((i: any) => i.kind), ["payment_outstanding"]);
+
+    resetFixtures({ ...baseFixtures, completed_job_billing: [{ data: [PAID_BILLING] }] });
+    const stage3 = await (await GET(req())).json();
+    assert.equal(stage3.entries.length, 0);
   });
 });
 
@@ -331,6 +382,109 @@ describe("GET /api/dashboard/needs-attention -- destination-permission gate", ()
     const body = await (await GET(req())).json();
     assert.equal(body.entries.length, 1);
     assert.deepEqual(body.entries[0].issues, [{ kind: "needs_invoicing", label: "Needs invoice number" }]);
+  });
+
+  const INVOICED_UNPAID_FOR_GATE = {
+    id: "bill-unpaid-gate", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-unbilled",
+    invoice_number: "INV-9", paid: false, payment_method: null, created_at: "x", updated_at: "x",
+  };
+
+  test("a tester/demo session never receives a payment_outstanding issue either -- the same destination gate covers both billing issue kinds", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [COMPLETED_UNBILLED_APPT] }],
+      appointment_employees: [{ data: [COMPLETED_UNBILLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [INVOICED_UNPAID_FOR_GATE] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = TESTER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 0);
+  });
+
+  test("an owner session requesting the mobile surface never receives a payment_outstanding issue either", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [COMPLETED_UNBILLED_APPT] }],
+      appointment_employees: [{ data: [COMPLETED_UNBILLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [INVOICED_UNPAID_FOR_GATE] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req("?surface=mobile"))).json();
+    assert.equal(body.entries.length, 0);
+  });
+});
+
+// Tenant isolation: the billing-status derivation added by this feature
+// reads the SAME completed_job_billing query every other issue already
+// reads from -- this proves that query (and the appointments query it's
+// joined against) is scoped to the session's own workspace, exactly like
+// the pre-existing is_demo/workspace_id assertions above, now re-verified
+// specifically for a session that has an invoiced-unpaid job in scope.
+describe("GET /api/dashboard/needs-attention -- tenant isolation (payment outstanding)", () => {
+  test("an owner (real-workspace) session's completed_job_billing query is scoped to workspace_id=REAL_WORKSPACE_ID, never the demo workspace", async () => {
+    const invoicedUnpaid = {
+      id: "bill-unpaid-tenant", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-unbilled",
+      invoice_number: "INV-9", paid: false, payment_method: null, created_at: "x", updated_at: "x",
+    };
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [COMPLETED_UNBILLED_APPT] }],
+      appointment_employees: [{ data: [COMPLETED_UNBILLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [invoicedUnpaid] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 1, "the owner's own invoiced-unpaid job is surfaced");
+    assert.deepEqual(body.entries[0].issues, [{ kind: "payment_outstanding", label: "Payment outstanding" }]);
+
+    const billingWorkspaceCall = currentFake.calls.find(
+      (c) => c.table === "completed_job_billing" && c.method === "eq" && c.args[0] === "workspace_id"
+    );
+    assert.deepEqual(billingWorkspaceCall?.args, ["workspace_id", REAL_WORKSPACE_ID]);
+    const apptWorkspaceCall = currentFake.calls.find(
+      (c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "workspace_id"
+    );
+    assert.deepEqual(apptWorkspaceCall?.args, ["workspace_id", REAL_WORKSPACE_ID]);
+  });
+
+  test("a tester (demo-workspace) session's completed_job_billing query is scoped to the fixed DEMO_WORKSPACE_ID, never the real workspace", async () => {
+    const invoicedUnpaid = {
+      id: "bill-unpaid-tenant-demo", workspace_id: DEMO_WORKSPACE_ID, appointment_id: "appt-unbilled",
+      invoice_number: "INV-9", paid: false, payment_method: null, created_at: "x", updated_at: "x",
+    };
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [COMPLETED_UNBILLED_APPT] }],
+      appointment_employees: [{ data: [COMPLETED_UNBILLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [invoicedUnpaid] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    // Tester is also the destination-permission-excluded case -- entries
+    // are empty for that reason, but the QUERY must still be correctly
+    // workspace-scoped before that gate is ever applied client-side.
+    sessionToReturn = TESTER_SESSION;
+    await GET(req());
+    const billingWorkspaceCall = currentFake.calls.find(
+      (c) => c.table === "completed_job_billing" && c.method === "eq" && c.args[0] === "workspace_id"
+    );
+    assert.deepEqual(billingWorkspaceCall?.args, ["workspace_id", DEMO_WORKSPACE_ID]);
   });
 });
 

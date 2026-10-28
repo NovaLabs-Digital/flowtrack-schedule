@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { nowInBusinessTz } from "@/lib/timezone";
 import { formatCents } from "@/lib/money";
+import { formatMMDDYY } from "@/lib/dateDisplay";
 import {
   PAYMENT_METHODS,
   BILLING_STATUS_FILTERS,
@@ -61,25 +62,6 @@ function toDateInputValue(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-// DISPLAY FORMATTING ONLY -- this never touches storage, API query
-// parameters, date-range math, or timezone resolution; it only changes
-// what the owner SEES. Input is always the existing canonical
-// "YYYY-MM-DD" workspace-local calendar-date string (the same value
-// already used for fetch query params, <input type="date"> values, and
-// isInDateRange's own range math) -- never re-parsed through `new Date()`
-// (which would reinterpret it in the browser's own local timezone and
-// risks shifting the displayed day). Plain substring rearrangement only,
-// so it can never disagree with the date that was actually fetched/saved.
-// "YY" is the last two digits of the year (26 for 2026), never a 4-digit
-// year. MM/DD/YY (not DD/MM/YY -- a prior pass used DD/MM/YY, but that read
-// as confusing against QuickBooks, which Alberto compares side-by-side with
-// Billing and which always displays US-style MM/DD/YY).
-function formatMMDDYY(isoDate: string): string {
-  const [y, m, d] = isoDate.split("-");
-  if (!y || !m || !d) return isoDate; // defensive: never throw on an unexpected shape
-  return `${m}/${d}/${y.slice(-2)}`;
-}
-
 type FetchState = { completed: CompletedJobRow[]; reviewNeeded: ReviewNeededRow[] } | null;
 
 // Service-date sort order preference: remembered per (user, workspace) on
@@ -125,6 +107,7 @@ export default function BillingPanel({
   userId,
   focusAppointmentId,
   focusServiceDate,
+  onBillingSaved,
 }: {
   timezone: string;
   // Read-only (locked/canceled/read-only-grace workspace) disables every
@@ -148,6 +131,13 @@ export default function BillingPanel({
   // the owner's own subsequent range edits.
   focusAppointmentId?: string | null;
   focusServiceDate?: string | null;
+  // Needs Attention: called after a billing field save actually succeeds
+  // (invoice number entered, paid/payment method changed) -- lets
+  // DashboardShell bump its own needsAttentionRefreshToken so the sidebar
+  // control's issue labels/counts catch up without a full-page reload.
+  // Optional: every other BillingPanel render path (tests, any future
+  // caller that doesn't need this) is unaffected by its absence.
+  onBillingSaved?: () => void;
 }) {
   const [rangeStart, setRangeStart] = useState(() =>
     focusServiceDate ? toDateInputValue(mondayOfWeekContaining(focusServiceDate)) : toDateInputValue(mondayOfWeek(0, timezone))
@@ -278,6 +268,7 @@ export default function BillingPanel({
           completed: applyGroupedBillingUpdate(prev.completed, body.billing),
         };
       });
+      onBillingSaved?.();
     } catch {
       setRowErrors((prev) => ({ ...prev, [appointmentId]: "Could not save — please try again." }));
     } finally {

@@ -16,7 +16,7 @@
 // actually been loaded -- so the collapsed button's count is never wrong.
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type NeedsAttentionIssueKind = "worked_time_review" | "needs_invoicing" | "failed_message";
+export type NeedsAttentionIssueKind = "worked_time_review" | "needs_invoicing" | "payment_outstanding" | "failed_message";
 
 export type NeedsAttentionIssue = {
   kind: NeedsAttentionIssueKind;

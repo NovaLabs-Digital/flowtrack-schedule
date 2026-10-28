@@ -10,6 +10,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { useNeedsAttentionData, type NeedsAttentionEntry, type NeedsAttentionIssue, type NeedsAttentionIssueKind } from "@/app/components/dashboard/useNeedsAttentionData";
 import { useOverlayMaxHeight } from "@/app/components/dashboard/useOverlayMaxHeight";
+import { formatMMDDYY } from "@/lib/dateDisplay";
 
 // Fallback cap when there's no better signal yet (first paint before the
 // viewport-aware measurement below runs) -- roughly 65% of a typical
@@ -32,11 +33,13 @@ export default function NeedsAttentionControl({
   // screen." The issue kind is passed through so DashboardShell can scroll
   // the matching section into view (see its own needsAttentionFocusSection
   // state).
-  onNavigateToAppointment: (appointmentId: string, issueKind: Exclude<NeedsAttentionIssueKind, "needs_invoicing">) => void;
-  // Needs-invoicing issues switch to Settings -> Billing AND tell
-  // BillingPanel which job to bring into view (its own date range may
-  // default to "this week," which would otherwise hide a job from another
-  // week).
+  onNavigateToAppointment: (appointmentId: string, issueKind: Exclude<NeedsAttentionIssueKind, "needs_invoicing" | "payment_outstanding">) => void;
+  // Both billing-destination issue kinds (needs_invoicing AND
+  // payment_outstanding -- mutually exclusive per appointment, see
+  // lib/needsAttention.ts's own header, but share the same destination)
+  // switch to Settings -> Billing AND tell BillingPanel which job to bring
+  // into view (its own date range may default to "this week," which would
+  // otherwise hide a job from another week).
   onNavigateToBilling: (appointmentId: string, serviceDate: string) => void;
   // Bump this (e.g. a counter) after an action elsewhere that's likely to
   // have resolved an item -- triggers a fresh fetch without the owner
@@ -101,7 +104,7 @@ export default function NeedsAttentionControl({
   }
 
   function handleIssueClick(entry: NeedsAttentionEntry, issue: NeedsAttentionIssue) {
-    if (issue.kind === "needs_invoicing") {
+    if (issue.kind === "needs_invoicing" || issue.kind === "payment_outstanding") {
       onNavigateToBilling(entry.appointmentId, entry.serviceDate);
     } else {
       onNavigateToAppointment(entry.appointmentId, issue.kind);
@@ -141,7 +144,7 @@ export default function NeedsAttentionControl({
         >
           <div className="px-4 py-2 border-b border-slate-100 text-[11px] text-slate-400">
             {rangeStart && rangeEnd
-              ? `Showing issues from ${rangeStart} to ${rangeEnd}. Older unresolved work may still exist -- see Billing / Completed Jobs.`
+              ? `Showing issues from ${formatMMDDYY(rangeStart)} to ${formatMMDDYY(rangeEnd)}. Older unresolved work may still exist -- see Billing / Completed Jobs.`
               : "Loading date range..."}
           </div>
           {loading && entries.length === 0 ? (
@@ -157,7 +160,7 @@ export default function NeedsAttentionControl({
                   <li key={entry.appointmentId} className="px-4 py-2.5">
                     <div className="text-xs font-medium text-slate-900 break-words">{entry.clientName}</div>
                     <div className="text-[11px] text-slate-500 break-words">
-                      {entry.serviceType} · {entry.serviceDate}
+                      {entry.serviceType} · {formatMMDDYY(entry.serviceDate)}
                     </div>
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
                       {entry.issues.map((issue, idx) => (

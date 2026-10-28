@@ -17,6 +17,7 @@ export default function SettingsPanel({
   userId,
   billingFocusAppointmentId,
   billingFocusServiceDate,
+  onBillingSaved,
 }: {
   section: SettingsSection;
   // Phase 5.5E-E1E forwarded this only to ArchivedClientsPanel. Phase
@@ -45,6 +46,11 @@ export default function SettingsPanel({
   // job in mind actually seeds its date range around that job.
   billingFocusAppointmentId?: string | null;
   billingFocusServiceDate?: string | null;
+  // Needs Attention refresh: forwarded only to BillingPanel's own
+  // onBillingSaved prop, so a successful invoice/payment save there bumps
+  // DashboardShell's needsAttentionRefreshToken -- the sidebar control's
+  // issue labels/counts catch up without a full-page reload.
+  onBillingSaved?: () => void;
 }) {
   if (section === "company") return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} />;
   if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} />;
@@ -60,6 +66,7 @@ export default function SettingsPanel({
         userId={userId}
         focusAppointmentId={billingFocusAppointmentId}
         focusServiceDate={billingFocusServiceDate}
+        onBillingSaved={onBillingSaved}
       />
     );
   }

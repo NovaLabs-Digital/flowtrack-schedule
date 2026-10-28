@@ -12,20 +12,26 @@
 //      resolves every assigned employee's work is NEVER included here,
 //      because it is already excluded there (isAppointmentBillingEligible,
 //      lib/payroll.ts).
-//   2. Needs invoicing: buildCompletedJobRows + applyBillingStatusFilter
-//      ("missing_invoice" ONLY -- see below), also from
-//      lib/completedJobBilling.ts -- the exact same Billing
-//      eligibility/invoice-status rule the Billing panel's own status
-//      filter already uses for that one status. A paid-Cash job with no
-//      invoice (a legitimate closed state -- see isCashPaidWithoutInvoice's
-//      own doc comment) is correctly excluded by the same filter, not
-//      re-decided here. "invoiced_unpaid" (already invoiced, waiting on the
-//      client to pay) is DELIBERATELY EXCLUDED from this first release --
-//      payment follow-up is a separate concern from "this job still needs
-//      an invoice created," and conflating the two here would make an
-//      owner's own invoicing backlog look larger than the thing this
-//      control actually helps with. A past job that still needs a QuickBooks
-//      invoice created is the only invoicing state that belongs here.
+//   2. Billing: buildCompletedJobRows + the SAME applyBillingStatusFilter
+//      the Billing panel's own status dropdown uses, applied twice for two
+//      DISTINCT, mutually-exclusive statuses -- never merged into one
+//      issue, since they call for different owner actions (create an
+//      invoice vs. follow up on payment):
+//        - "missing_invoice" -> "Needs invoice number."
+//        - "invoiced_unpaid" -> "Payment outstanding."
+//      Mutual exclusivity is structural, not re-decided here:
+//      applyBillingStatusFilter's own "missing_invoice" case requires
+//      !hasInvoiceNumber(r), and "invoiced_unpaid" requires
+//      hasInvoiceNumber(r) -- a row can never satisfy both at once. A
+//      row marked paid satisfies neither ("invoiced_unpaid" also requires
+//      !isPaid(r)), so a paid job shows no billing issue at all. A
+//      paid-Cash job with no invoice (a legitimate closed state -- see
+//      isCashPaidWithoutInvoice's own doc comment) is correctly excluded
+//      from "missing_invoice" by that same filter, not re-decided here.
+//      "Payment outstanding" means unpaid according to this workspace's own
+//      saved billing records -- never a due-date/overdue inference (no such
+//      rule exists yet) and never anything derived from an external payment
+//      service.
 //   3. Failed messages: the caller (the API route) classifies each
 //      messages_sent row via lib/messageStatus.ts's
 //      countUnresolvedFailedMessageGroupsByAppointment, which itself only
@@ -56,7 +62,7 @@ import type { Client, AppointmentEmployeeAssignment, EmployeeHours } from "@/app
 // Billing / Completed Jobs (whose own date range is not bounded this way).
 export const NEEDS_ATTENTION_LOOKBACK_DAYS = 60;
 
-export type NeedsAttentionIssueKind = "worked_time_review" | "needs_invoicing" | "failed_message";
+export type NeedsAttentionIssueKind = "worked_time_review" | "needs_invoicing" | "payment_outstanding" | "failed_message";
 
 export type NeedsAttentionIssue = {
   kind: NeedsAttentionIssueKind;
@@ -76,6 +82,13 @@ export type NeedsAttentionEntry = {
 // every such row has no invoice_number by that filter's own definition, so
 // there is exactly one label, never a billing-row-dependent branch.
 const NEEDS_INVOICE_LABEL = "Needs invoice number";
+// Only "invoiced_unpaid" rows ever reach this -- every such row already has
+// an invoice_number and is not paid, so this is also a single fixed label,
+// never a row-dependent branch. Deliberately NOT "Overdue": this app has no
+// established due-date rule for completed jobs, so the label states only
+// what SFT's own saved records actually show (invoiced, unpaid), never an
+// inferred urgency it can't honestly back up.
+const NEEDS_PAYMENT_LABEL = "Payment outstanding";
 
 function failedMessageLabel(count: number): string {
   return count === 1 ? "1 failed message" : `${count} failed messages`;
@@ -106,14 +119,15 @@ export function buildNeedsAttentionEntries({
   rangeStart: string;
   rangeEnd: string;
   timezone: string;
-  // Destination-permission control, decided by the caller: the needs-
-  // invoicing issue's only action is "open Settings -> Billing," which is
+  // Destination-permission control, decided by the caller: gates BOTH
+  // billing-destination issues (needs_invoicing AND payment_outstanding),
+  // since each one's only action is "open Settings -> Billing," which is
   // owner-only (DashboardSettingsArea gates Billing behind !isTester) and
   // does not exist at all on mobile (MobileSettings is a placeholder).
   // Rather than surface an issue whose only action lands on a placeholder
   // or doesn't exist, the caller (the API route) sets this to false for any
-  // session/surface that cannot act on it -- the issue is never generated
-  // in the first place, not merely hidden after the fact.
+  // session/surface that cannot act on either -- neither issue is ever
+  // generated in the first place, not merely hidden after the fact.
   includeInvoicing?: boolean;
 }): NeedsAttentionEntry[] {
   const byAppointmentId = new Map<string, NeedsAttentionEntry>();
@@ -147,12 +161,13 @@ export function buildNeedsAttentionEntries({
     entryFor(appt).issues.push({ kind: "worked_time_review", label: "Worked time needs review" });
   }
 
-  // 2. Needs invoicing -- reuses buildCompletedJobRows + the same
-  // applyBillingStatusFilter the Billing panel's own status dropdown uses,
-  // "missing_invoice" only (see the module header for why invoiced_unpaid
-  // is excluded). Skipped entirely when the caller has no permitted
-  // destination to offer for it (includeInvoicing: false) -- not merely
-  // filtered after the fact.
+  // 2. Billing (needs invoicing / payment outstanding) -- reuses
+  // buildCompletedJobRows + the same applyBillingStatusFilter the Billing
+  // panel's own status dropdown uses, called once per status (see the
+  // module header for why the two are structurally mutually exclusive and
+  // never merged into one issue). Both skipped entirely when the caller has
+  // no permitted destination to offer for either (includeInvoicing: false)
+  // -- not merely filtered after the fact.
   if (includeInvoicing) {
     const completedRows = buildCompletedJobRows({
       appointments, clients, assignmentsByAppointmentId, billingByAppointmentId, employeeHours, rangeStart, rangeEnd, timezone,
@@ -162,6 +177,12 @@ export function buildNeedsAttentionEntries({
       const appt = apptById.get(row.appointmentId);
       if (!appt) continue;
       entryFor(appt).issues.push({ kind: "needs_invoicing", label: NEEDS_INVOICE_LABEL });
+    }
+    const paymentOutstandingRows = applyBillingStatusFilter(completedRows, "invoiced_unpaid");
+    for (const row of paymentOutstandingRows) {
+      const appt = apptById.get(row.appointmentId);
+      if (!appt) continue;
+      entryFor(appt).issues.push({ kind: "payment_outstanding", label: NEEDS_PAYMENT_LABEL });
     }
   }
 

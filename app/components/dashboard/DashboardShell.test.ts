@@ -380,4 +380,20 @@ describe("DashboardShell: Needs Attention refresh triggers", () => {
     assert.match(onBackBlock![0], /setCenterMode\("schedule"\)/);
     assert.match(onBackBlock![0], /setNeedsAttentionRefreshToken\(\(prev\) => prev \+ 1\)/);
   });
+
+  // Payment outstanding / needs invoicing refresh: a successful Billing
+  // save (invoice number or paid/payment method) bumps the same token
+  // immediately, without waiting for the owner to leave Settings.
+  test("handleBillingSaved bumps needsAttentionRefreshToken", () => {
+    const start = source.indexOf("function handleBillingSaved(");
+    assert.notEqual(start, -1, "function handleBillingSaved not found");
+    const body = source.slice(start, source.indexOf("\n  }", start) + 4);
+    assert.match(body, /setNeedsAttentionRefreshToken\(\(prev\) => prev \+ 1\)/);
+  });
+
+  test("DashboardSettingsArea receives onBillingSaved={handleBillingSaved}", () => {
+    const block = desktopBlock.match(/<DashboardSettingsArea[\s\S]*?\/>/);
+    assert.ok(block);
+    assert.match(block![0], /onBillingSaved=\{handleBillingSaved\}/);
+  });
 });

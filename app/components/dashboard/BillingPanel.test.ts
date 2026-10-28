@@ -55,7 +55,13 @@ const WORKSPACE_ID = "ws-1";
 
 function renderPanel(
   canMutateOperationalData = true,
-  overrides: { workspaceId?: string; userId?: string; focusAppointmentId?: string | null; focusServiceDate?: string | null } = {}
+  overrides: {
+    workspaceId?: string;
+    userId?: string;
+    focusAppointmentId?: string | null;
+    focusServiceDate?: string | null;
+    onBillingSaved?: () => void;
+  } = {}
 ) {
   return render(
     React.createElement(BillingPanel, {
@@ -65,6 +71,7 @@ function renderPanel(
       userId: overrides.userId ?? USER_ID,
       focusAppointmentId: overrides.focusAppointmentId,
       focusServiceDate: overrides.focusServiceDate,
+      onBillingSaved: overrides.onBillingSaved,
     })
   );
 }
@@ -361,6 +368,54 @@ describe("BillingPanel -- inline editing", () => {
     await waitFor(() => assert.equal(calls.length, 2));
     assert.equal(calls[1].method, "PATCH");
     assert.deepEqual(calls[1].body, { appointment_id: "appt-done", invoice_number: "INV-500" });
+  });
+
+  // Needs Attention refresh: DashboardShell bumps needsAttentionRefreshToken
+  // from this callback after a successful save, so the sidebar control's
+  // issue labels/counts (Needs invoice number / Payment outstanding) catch
+  // up without the owner leaving Settings or reloading the page.
+  test("a successful invoice-number save calls onBillingSaved exactly once", async () => {
+    responses = [
+      json(200, { completed: [ROW_DONE], reviewNeeded: [] }),
+      json(200, { ok: true, billing: { ...ROW_PAID.billing, appointment_id: "appt-done", invoice_number: "INV-500", paid: false, payment_method: null } }),
+    ];
+    let savedCount = 0;
+    renderPanel(true, { onBillingSaved: () => { savedCount += 1; } });
+    await screen.findByText("Petra Lindqvist");
+
+    const input = screen.getByPlaceholderText("—") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "INV-500" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => assert.equal(calls.length, 2));
+    assert.equal(savedCount, 1);
+  });
+
+  test("a FAILED save never calls onBillingSaved", async () => {
+    responses = [
+      json(200, { completed: [ROW_DONE], reviewNeeded: [] }),
+      json(400, { error: "Payment method is required once a job is marked Paid." }),
+    ];
+    let savedCount = 0;
+    renderPanel(true, { onBillingSaved: () => { savedCount += 1; } });
+    await screen.findByText("Petra Lindqvist");
+    const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
+    await userEvent.setup().click(checkbox);
+    await screen.findByText("Payment method is required once a job is marked Paid.");
+    assert.equal(savedCount, 0);
+  });
+
+  test("onBillingSaved being absent (e.g. a caller that doesn't need it) never throws on a successful save", async () => {
+    responses = [
+      json(200, { completed: [ROW_DONE], reviewNeeded: [] }),
+      json(200, { ok: true, billing: { ...ROW_PAID.billing, appointment_id: "appt-done", invoice_number: "INV-500", paid: false, payment_method: null } }),
+    ];
+    renderPanel(); // no onBillingSaved override
+    await screen.findByText("Petra Lindqvist");
+    const input = screen.getByPlaceholderText("—") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "INV-500" } });
+    fireEvent.blur(input);
+    await waitFor(() => assert.equal(calls.length, 2));
   });
 
   test("blurring without changing the value does not issue a PATCH", async () => {

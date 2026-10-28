@@ -236,6 +236,16 @@ export default function DashboardShell({
     setNeedsAttentionRefreshToken((prev) => prev + 1);
   }
 
+  // A successful invoice-number or paid/payment-method save in Billing may
+  // have just resolved a Needs Attention needs_invoicing or
+  // payment_outstanding item -- bump the same token handleHoursSaved uses,
+  // so the sidebar control's issue labels/counts catch up immediately,
+  // without the owner needing to leave Settings (the existing onBack bump
+  // below) or reload the page.
+  function handleBillingSaved() {
+    setNeedsAttentionRefreshToken((prev) => prev + 1);
+  }
+
   const selectedClient = useMemo(() => {
     if (!selectedClientId) return null;
     return clients.find((c) => c.id === selectedClientId) ?? null;
@@ -692,6 +702,7 @@ export default function DashboardShell({
               userId={userId}
               billingFocusAppointmentId={billingFocus?.appointmentId}
               billingFocusServiceDate={billingFocus?.serviceDate}
+              onBillingSaved={handleBillingSaved}
             />
           )}
         </div>
