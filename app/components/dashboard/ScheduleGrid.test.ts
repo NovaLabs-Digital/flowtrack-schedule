@@ -39,10 +39,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
+// Normalized to LF regardless of the file's on-disk line-ending style
+// (same convention as AppointmentDetailPanel.test.ts) -- the scroll-into-
+// view block below locates text via an exact multi-line snippet, which
+// must not depend on whether Windows/git checked this file out with
+// CRLF or LF line endings.
 const source = fs.readFileSync(
   fileURLToPath(new URL("./ScheduleGrid.tsx", import.meta.url)),
   "utf8"
-);
+).replace(/\r\n/g, "\n");
 const shellSource = fs.readFileSync(
   fileURLToPath(new URL("./DashboardShell.tsx", import.meta.url)),
   "utf8"
