@@ -352,6 +352,49 @@ describe("BillingPanel -- This Week / Last Week", () => {
   });
 });
 
+// Verified layout-shift cause (see DashboardSettingsArea.test.ts's own
+// scrollbarGutter assertion for the primary fix): the "Saving..."/error
+// status text used to sit inline right next to the Payment Method select,
+// and at narrow viewports could wrap onto a second line, growing that
+// row's height and -- via the Settings scroll container's overflow
+// threshold -- briefly shifting the whole screen left/right during every
+// save. Reproduced and confirmed via a temporary Playwright-driven harness
+// (deleted, never committed). This defense-in-depth fix makes the status
+// text absolutely positioned so it can never again grow the row at all,
+// regardless of viewport width or scrollbar-gutter browser support. jsdom
+// does no real layout, so this is tested at the level this suite can
+// actually reach: the right classes are present on the right elements.
+describe("BillingPanel -- layout-shift fix: Saving.../error status text never grows the row", () => {
+  test("the Payment Method cell establishes a positioning context, and the Saving indicator is absolutely positioned within it (never inline next to the select)", async () => {
+    responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    const row = screen.getByText("Petra Lindqvist").closest("tr")!;
+    const paymentCell = row.querySelectorAll("td")[6];
+    assert.match(paymentCell.className, /\brelative\b/, "the <td> establishes position:relative so the absolutely-positioned status text is scoped to it, not the page");
+
+    const checkbox = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    fireEvent.click(checkbox);
+    const savingSpan = paymentCell.querySelector("span.absolute");
+    assert.ok(savingSpan, "the Saving... indicator is rendered with an absolute class, not inline flow, while a save is in flight");
+    assert.match(savingSpan!.textContent ?? "", /Saving/);
+  });
+
+  test("a save error is also absolutely positioned (same treatment as the Saving indicator, never inline next to the select)", async () => {
+    responses = [
+      json(200, { completed: [ROW_DONE], reviewNeeded: [] }),
+      json(400, { error: "Invalid payment method" }),
+    ];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    const row = screen.getByText("Petra Lindqvist").closest("tr")!;
+    const select = row.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "card" } });
+    const errorEl = await screen.findByText("Invalid payment method");
+    assert.match(errorEl.className, /\babsolute\b/);
+  });
+});
+
 describe("BillingPanel -- inline editing", () => {
   test("typing an invoice number and blurring saves it via PATCH with the appointment_id", async () => {
     responses = [

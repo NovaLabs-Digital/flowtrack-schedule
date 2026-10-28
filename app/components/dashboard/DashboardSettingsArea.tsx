@@ -72,7 +72,13 @@ export default function DashboardSettingsArea({
     return (
       <div className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
-        <div className="flex-1 min-h-0 overflow-auto pt-8">
+        {/* scrollbarGutter: "stable" reserves this container's scrollbar
+            width permanently, so a transient content-height change (e.g.
+            Billing's own "Saving..." indicator wrapping to a second line)
+            can never again toggle the scrollbar and shift everything left/
+            right -- see BillingPanel.tsx's own layout-shift fix for the
+            specific trigger this was written for. */}
+        <div className="flex-1 min-h-0 overflow-auto pt-8" style={{ scrollbarGutter: "stable" }}>
           <SettingsPanel
             section={settingsSection}
             canMutateOperationalData={canMutateOperationalData}

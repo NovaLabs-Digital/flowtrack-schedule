@@ -582,7 +582,7 @@ function BillingRow({
           className="h-4 w-4 rounded border-slate-300"
         />
       </td>
-      <td className="px-3 py-2">
+      <td className="px-3 py-2 relative">
         <select
           value={paymentMethod}
           disabled={disabled}
@@ -594,8 +594,16 @@ function BillingRow({
             <option key={m.value} value={m.value}>{m.label}</option>
           ))}
         </select>
-        {saving && <span className="ml-2 text-[10px] text-slate-400">Saving...</span>}
-        {error && <div className="text-[10px] text-rose-600 mt-1">{error}</div>}
+        {/* Absolutely positioned (relative to the <td> above) so this status
+            text never participates in the row's own flow height -- it used
+            to sit inline next to the select and, at narrow viewports, wrap
+            onto a second line, growing the row and (via the Settings scroll
+            container's overflow threshold) briefly shifting the whole screen
+            left/right during every save. See DashboardSettingsArea.tsx's
+            scrollbarGutter fix for the primary fix; this is defense in depth
+            for browsers without scrollbar-gutter support. */}
+        {saving && <span className="absolute left-3 top-full mt-0.5 text-[10px] text-slate-400 whitespace-nowrap">Saving...</span>}
+        {error && <div className="absolute left-3 top-full mt-0.5 text-[10px] text-rose-600 whitespace-nowrap">{error}</div>}
       </td>
     </tr>
   );
