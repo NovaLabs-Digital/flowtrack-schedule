@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeHours, Service } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
@@ -73,6 +73,13 @@ type Props = {
   // York appointment must display as 9:00 AM here regardless of where the
   // owner's device currently is.
   timezone: string;
+  // Needs Attention: true for exactly one render right after the owner
+  // clicks a failed-message issue for THIS appointment -- scrolls the
+  // Message History card below into view, since Cancellation Details (when
+  // present) can otherwise push it below the fold. Optional/undefined
+  // everywhere else this panel is reached (a plain calendar-card click,
+  // Past Services, etc.), which never scrolls anything.
+  focusMessageHistory?: boolean;
 };
 
 // Desktop "Appointment Details" control center — the appointment-focused
@@ -80,9 +87,20 @@ type Props = {
 // just a client) is selected. Mirrors MobileAppointmentDetail.tsx's
 // Call/Text/Cancel pattern for parity with mobile, reusing the exact same
 // /api/appointments/delete endpoint — no new backend logic.
-export default function AppointmentDetailPanel({ appointment, client, employees, services, assignments, employeeHours, onEdit, onCancelled, canMutateOperationalData, timezone }: Props) {
+export default function AppointmentDetailPanel({ appointment, client, employees, services, assignments, employeeHours, onEdit, onCancelled, canMutateOperationalData, timezone, focusMessageHistory }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
+
+  // Needs Attention: scrolls the Message History card into view when
+  // focusMessageHistory is set for this exact appointment -- re-runs on
+  // appointment.id too, so navigating from one failed-message appointment
+  // straight to another (without focusMessageHistory itself changing, were
+  // that ever possible) still scrolls to the new appointment's own card.
+  const messageHistoryRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!focusMessageHistory) return;
+    messageHistoryRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [focusMessageHistory, appointment.id]);
 
   // SFT past-appointment-cancellation fix: an owner/admin recording a
   // cancellation after the scheduled time has passed (the normal
@@ -314,7 +332,7 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
           ClientPanel, not here). See app/components/dashboard/
           MessageHistory.tsx for the fetch/status/pagination logic shared
           with ClientPanel's client-scoped history. */}
-      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <div ref={messageHistoryRef} className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
         <div className="text-xs font-medium text-slate-600 mb-1.5">Message History</div>
         <AppointmentMessageHistory appointmentId={appointment.id} timezone={timezone} />
       </div>

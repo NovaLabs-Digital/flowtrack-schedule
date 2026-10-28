@@ -473,3 +473,35 @@ describe("SFT status-display-consistency fix: the Appointment Details Status row
     assert.ok(source.includes("const todayStatuses = todayAppts.map((a) => deriveAppointmentTrackingStatus(assignmentsByApptId.get(a.id) ?? []));"));
   });
 });
+
+// Needs Attention: clicking a worked-time-review issue must bring THIS
+// exact card into view, not just select the appointment and hope it's
+// already on screen -- Income Projection and Weekly Worked Hours render
+// above it and can push it below the fold in the right sidebar's own
+// scroll container.
+describe("Needs Attention: focusWorkedTimeReview scrolls the Employee Worked Hours card into view", () => {
+  test("accepts an optional focusWorkedTimeReview prop", () => {
+    assert.match(source, /focusWorkedTimeReview\?: boolean;/);
+    assert.match(source, /\n  focusWorkedTimeReview,\n\}: \{/);
+  });
+
+  test("useRef/useEffect are imported, and a ref is declared for the Employee Worked Hours card", () => {
+    assert.match(source, /import \{ useEffect, useRef, useState \} from "react";/);
+    assert.match(source, /const workedHoursRef = useRef<HTMLDivElement \| null>\(null\);/);
+  });
+
+  test("the ref is attached to the Employee Worked Hours card's own wrapper div (section 5)", () => {
+    assert.match(
+      source,
+      /<div ref=\{workedHoursRef\} className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">\s*\n\s*<div className="text-sm font-semibold text-slate-900 mb-3">Employee Worked Hours<\/div>/
+    );
+  });
+
+  test("an effect scrolls that ref into view only when focusWorkedTimeReview is true, keyed on both focusWorkedTimeReview and selectedAppointmentId", () => {
+    const effectStart = source.indexOf("useEffect(() => {\n    if (!focusWorkedTimeReview) return;");
+    assert.notEqual(effectStart, -1, "the scroll-into-view effect exists, guarded by an early return when unset");
+    const effectBody = source.slice(effectStart, source.indexOf("}, [", effectStart) + 120);
+    assert.match(effectBody, /workedHoursRef\.current\?\.scrollIntoView\(\{ block: "nearest", behavior: "smooth" \}\)/);
+    assert.match(effectBody, /\}, \[focusWorkedTimeReview, selectedAppointmentId\]\)/);
+  });
+});

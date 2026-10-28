@@ -1,6 +1,11 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { classifyMessageStatus, describeMessageKind } from "./messageStatus.ts";
+import {
+  classifyMessageStatus,
+  describeMessageKind,
+  countUnresolvedFailedMessageGroupsByAppointment,
+  type MessageAttemptRow,
+} from "./messageStatus.ts";
 
 // Realistic, correctly-shaped ids for each provider -- a UUID (Resend) and a
 // 34-character "SM" + 32 hex chars (Twilio Message SID), matching exactly
@@ -119,6 +124,101 @@ describe("classifyMessageStatus", () => {
     for (const c of codes) {
       assert.ok(!["queued", "delivered", "read"].includes(c));
     }
+  });
+});
+
+describe("countUnresolvedFailedMessageGroupsByAppointment", () => {
+  const REAL_RESEND_ID_2 = "7a1b2c3d-4e5f-4a1b-9c3d-4e5f6a1b2c3d";
+  const REAL_TWILIO_SID_2 = "SMb2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5";
+
+  function row(overrides: Partial<MessageAttemptRow> = {}): MessageAttemptRow {
+    return {
+      appointment_id: "appt-1",
+      channel: "sms",
+      kind: "confirmation",
+      scheduled_for: null,
+      provider_id: "failed",
+      created_at: "2026-08-10T00:00:00.000Z",
+      id: "m1",
+      ...overrides,
+    };
+  }
+
+  test("a single failed attempt with no retry is unresolved -- counted", () => {
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([row()]);
+    assert.equal(counts.get("appt-1"), 1);
+  });
+
+  test("a failed attempt followed by a later ACCEPTED retry for the exact same appointment/channel/kind/occurrence is resolved -- not counted", () => {
+    const failed = row({ id: "m1", created_at: "2026-08-10T00:00:00.000Z", provider_id: "failed" });
+    const retried = row({ id: "m2", created_at: "2026-08-10T01:00:00.000Z", provider_id: REAL_RESEND_ID_2, channel: "email" });
+    // same group key requires matching channel too -- make both email.
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([
+      { ...failed, channel: "email" },
+      retried,
+    ]);
+    assert.equal(counts.get("appt-1"), undefined, "the retry resolved it");
+  });
+
+  test("a failed attempt followed by a later retry that is itself ALSO failed stays unresolved", () => {
+    const first = row({ id: "m1", created_at: "2026-08-10T00:00:00.000Z", provider_id: "failed" });
+    const second = row({ id: "m2", created_at: "2026-08-10T01:00:00.000Z", provider_id: "failed" });
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([first, second]);
+    assert.equal(counts.get("appt-1"), 1, "still exactly one unresolved group, not two");
+  });
+
+  test("a later UNKNOWN-status row never resolves an earlier failure -- Unknown is never inferred as success", () => {
+    const failed = row({ id: "m1", created_at: "2026-08-10T00:00:00.000Z", provider_id: "failed" });
+    const ambiguous = row({ id: "m2", created_at: "2026-08-10T01:00:00.000Z", provider_id: "some-unrecognized-value" });
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([failed, ambiguous]);
+    assert.equal(counts.get("appt-1"), 1, "the failure is still unresolved -- Unknown never counts as a resolving retry");
+  });
+
+  test("a failed attempt followed by an accepted retry for a DIFFERENT channel does not resolve it -- channel is part of the group key", () => {
+    const failedSms = row({ id: "m1", channel: "sms", created_at: "2026-08-10T00:00:00.000Z", provider_id: "failed" });
+    const acceptedEmail = row({ id: "m2", channel: "email", created_at: "2026-08-10T01:00:00.000Z", provider_id: REAL_RESEND_ID_2 });
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([failedSms, acceptedEmail]);
+    assert.equal(counts.get("appt-1"), 1, "the sms failure is a different group from the email success");
+  });
+
+  test("a failed attempt followed by an accepted retry for a DIFFERENT scheduled occurrence (reminder) does not resolve it", () => {
+    const failedFirstOccurrence = row({
+      id: "m1", kind: "reminder_24h", scheduled_for: "2026-08-12T13:00:00.000Z",
+      created_at: "2026-08-11T13:00:00.000Z", provider_id: "failed",
+    });
+    const acceptedRescheduledOccurrence = row({
+      id: "m2", kind: "reminder_24h", scheduled_for: "2026-08-20T13:00:00.000Z",
+      created_at: "2026-08-19T13:00:00.000Z", provider_id: REAL_RESEND_ID_2, channel: "email",
+    });
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([
+      { ...failedFirstOccurrence, channel: "email" },
+      acceptedRescheduledOccurrence,
+    ]);
+    assert.equal(counts.get("appt-1"), 1, "a reschedule's new occurrence is a different group -- the old failure stands on its own");
+  });
+
+  test("two independent failed groups (different kinds) for the same appointment both count, as a group count not a row count", () => {
+    const confirmationFailed = row({ id: "m1", kind: "confirmation", provider_id: "failed" });
+    const cancelFailed = row({ id: "m2", kind: "cancel", provider_id: "failed" });
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([confirmationFailed, cancelFailed]);
+    assert.equal(counts.get("appt-1"), 2);
+  });
+
+  test("ties within a group break on id, deterministically -- never crashes or picks arbitrarily when created_at is identical", () => {
+    const a = row({ id: "m-a", created_at: "2026-08-10T00:00:00.000Z", provider_id: "failed" });
+    const b = row({ id: "m-b", created_at: "2026-08-10T00:00:00.000Z", provider_id: REAL_TWILIO_SID_2 });
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([a, b]);
+    assert.equal(counts.get("appt-1"), undefined, "id 'm-b' sorts after 'm-a', so the accepted row wins the tie");
+  });
+
+  test("an appointment with no failed groups at all is absent from the map, never a zero entry", () => {
+    const sentOnly = row({ provider_id: REAL_RESEND_ID_2 });
+    const counts = countUnresolvedFailedMessageGroupsByAppointment([sentOnly]);
+    assert.equal(counts.has("appt-1"), false);
+  });
+
+  test("an empty input returns an empty map", () => {
+    assert.equal(countUnresolvedFailedMessageGroupsByAppointment([]).size, 0);
   });
 });
 

@@ -211,3 +211,173 @@ describe("DashboardShell: layout state is independent of appointment/client sele
     assert.doesNotMatch(toggleSettingsBody, /setScheduleHeightPct|setSidebarWidthPx|resetLayout/);
   });
 });
+
+describe("DashboardShell: Needs Attention control -- placement and collapse behavior", () => {
+  test("imports NeedsAttentionControl", () => {
+    assert.match(source, /import NeedsAttentionControl from "@\/app\/components\/dashboard\/NeedsAttentionControl"/);
+  });
+
+  test("renders inside the dispatch-sidebar aside, above DispatchPanel, only in the EXPANDED branch (collapses with the rest of the right sidebar)", () => {
+    const ternaryStart = desktopBlock.indexOf("rightCollapsed ? (");
+    assert.notEqual(ternaryStart, -1);
+    const expandedBranchStart = desktopBlock.indexOf(") : (", ternaryStart);
+    assert.notEqual(expandedBranchStart, -1);
+    const expandedBranch = desktopBlock.slice(expandedBranchStart, desktopBlock.indexOf("{modalEl}"));
+    const collapsedBranch = desktopBlock.slice(ternaryStart, expandedBranchStart);
+
+    assert.doesNotMatch(collapsedBranch, /<NeedsAttentionControl/, "must not render while the sidebar is collapsed");
+    const controlIdx = expandedBranch.indexOf("<NeedsAttentionControl");
+    const dispatchIdx = expandedBranch.indexOf("<DispatchPanel");
+    assert.ok(controlIdx > -1 && dispatchIdx > -1);
+    assert.ok(controlIdx < dispatchIdx, "NeedsAttentionControl renders above DispatchPanel");
+  });
+
+  test("is wired to onNavigateToAppointment, onNavigateToBilling, and refreshToken", () => {
+    const block = desktopBlock.match(/<NeedsAttentionControl[\s\S]*?\/>/);
+    assert.ok(block, "NeedsAttentionControl is rendered");
+    assert.match(block![0], /onNavigateToAppointment=\{handleNeedsAttentionSelectAppointment\}/);
+    assert.match(block![0], /onNavigateToBilling=\{handleNeedsAttentionSelectBilling\}/);
+    assert.match(block![0], /refreshToken=\{needsAttentionRefreshToken\}/);
+  });
+});
+
+describe("DashboardShell: Needs Attention navigation handlers", () => {
+  function fnBody(name: string): string {
+    const start = source.indexOf(`function ${name}(`);
+    assert.notEqual(start, -1, `function ${name} not found`);
+    // Every handler in this file is followed by a blank line then the
+    // next declaration -- slicing to the next "function " after the
+    // opening brace is a safe, simple boundary for a single-purpose body.
+    const nextFn = source.indexOf("\n  function ", start + 1);
+    return source.slice(start, nextFn === -1 ? start + 600 : nextFn);
+  }
+
+  test("handleNeedsAttentionSelectAppointment forces centerMode back to \"schedule\" (so AppointmentDetailPanel's Message History card is visible) and selects the appointment via the existing selectAppointment", () => {
+    const body = fnBody("handleNeedsAttentionSelectAppointment");
+    assert.match(body, /setCenterMode\("schedule"\)/);
+    assert.match(body, /selectAppointment\(appointmentId\)/);
+  });
+
+  // Regression: selecting an appointment from Needs Attention used to only
+  // update selectedApptId/selectedClientId -- the schedule grid itself kept
+  // showing whatever week/month it already happened to be on, so a past (or
+  // future) appointment's own card was never actually visible on screen
+  // after "selecting" it. resolveCalendarNavigation (lib/calendarNavigation.ts,
+  // unit-tested directly in lib/calendarNavigation.test.ts) now resolves the
+  // correct view/weekOffset/monthOffset for the appointment's own date.
+  test("handleNeedsAttentionSelectAppointment imports and calls resolveCalendarNavigation with the appointment's scheduled_for, the CURRENT viewMode, and the workspace timezone", () => {
+    assert.match(source, /import \{ resolveCalendarNavigation \} from "@\/lib\/calendarNavigation";/);
+    const body = fnBody("handleNeedsAttentionSelectAppointment");
+    assert.match(body, /resolveCalendarNavigation\(appt\.scheduled_for, viewMode, timezone\)/);
+  });
+
+  test("handleNeedsAttentionSelectAppointment applies the resolved navigation (view, week, and month) before/alongside selecting the appointment", () => {
+    const body = fnBody("handleNeedsAttentionSelectAppointment");
+    assert.match(body, /setViewMode\(nav\.viewMode\)/);
+    assert.match(body, /setWeekOffset\(nav\.weekOffset\)/);
+    assert.match(body, /setMonthOffset\(nav\.monthOffset\)/);
+  });
+
+  test("the appointment is resolved from the full, un-filtered `appointments` array (never the week-filtered calendar view), and navigation is skipped (not crashed) if it's somehow missing", () => {
+    const body = fnBody("handleNeedsAttentionSelectAppointment");
+    assert.match(body, /const appt = appointments\.find\(\(a\) => a\.id === appointmentId\);/);
+    assert.match(body, /if \(appt\) \{/);
+  });
+
+  test("handleNeedsAttentionSelectBilling (the billing-destination branch) is untouched by the calendar-navigation change -- Billing has its own date-range mechanism (billingFocus), not the schedule grid's weekOffset/monthOffset", () => {
+    const body = fnBody("handleNeedsAttentionSelectBilling");
+    assert.doesNotMatch(body, /resolveCalendarNavigation/);
+    assert.doesNotMatch(body, /setWeekOffset/);
+    assert.doesNotMatch(body, /setMonthOffset/);
+  });
+
+  // Regression: a worked-time-review click and a failed-message click both
+  // used to just "select the appointment" and hope the right card happened
+  // to already be on screen. Each must now land on its OWN matching
+  // section -- see needsAttentionFocusSection's own comment.
+  describe("distinct destinations per issue kind (worked-time review vs failed message)", () => {
+    test("handleNeedsAttentionSelectAppointment takes an issueKind parameter typed to the two non-billing issue kinds", () => {
+      assert.match(
+        source,
+        /function handleNeedsAttentionSelectAppointment\(appointmentId: string, issueKind: "worked_time_review" \| "failed_message"\)/
+      );
+    });
+
+    test("needsAttentionFocusSection state exists, typed to the same two kinds (or null)", () => {
+      assert.match(
+        source,
+        /const \[needsAttentionFocusSection, setNeedsAttentionFocusSection\] = useState<"worked_time_review" \| "failed_message" \| null>\(null\);/
+      );
+    });
+
+    test("selectAppointment (the general-purpose selector, used by every OTHER selection path) unconditionally clears needsAttentionFocusSection to null", () => {
+      const start = source.indexOf("function selectAppointment(");
+      const body = source.slice(start, source.indexOf("\n  }", start) + 4);
+      assert.match(body, /setNeedsAttentionFocusSection\(null\)/);
+    });
+
+    test("handleNeedsAttentionSelectAppointment sets needsAttentionFocusSection to the issueKind AFTER calling selectAppointment (which would otherwise immediately clear it back to null)", () => {
+      const body = fnBody("handleNeedsAttentionSelectAppointment");
+      const selectCallIdx = body.indexOf("selectAppointment(appointmentId)");
+      const setFocusIdx = body.indexOf("setNeedsAttentionFocusSection(issueKind)");
+      assert.ok(selectCallIdx !== -1 && setFocusIdx !== -1, "both calls are present");
+      assert.ok(setFocusIdx > selectCallIdx, "setNeedsAttentionFocusSection must run AFTER selectAppointment, not before");
+    });
+
+    test("AppointmentDetailPanel receives focusMessageHistory, true only when the focus section is \"failed_message\"", () => {
+      const block = desktopBlock.match(/<AppointmentDetailPanel[\s\S]*?\/>/);
+      assert.ok(block, "AppointmentDetailPanel is rendered");
+      assert.match(block![0], /focusMessageHistory=\{needsAttentionFocusSection === "failed_message"\}/);
+    });
+
+    test("DispatchPanel receives focusWorkedTimeReview, true only when the focus section is \"worked_time_review\"", () => {
+      const block = desktopBlock.match(/<DispatchPanel[\s\S]*?\/>/);
+      assert.ok(block, "DispatchPanel is rendered");
+      assert.match(block![0], /focusWorkedTimeReview=\{needsAttentionFocusSection === "worked_time_review"\}/);
+    });
+  });
+
+  test("handleNeedsAttentionSelectBilling sets the billing focus target and switches to Settings -> Billing", () => {
+    const body = fnBody("handleNeedsAttentionSelectBilling");
+    assert.match(body, /setBillingFocus\(\{\s*appointmentId,\s*serviceDate\s*\}\)/);
+    assert.match(body, /setSettingsSection\("billing"\)/);
+    assert.match(body, /setCenterMode\("settings"\)/);
+  });
+
+  test("handleSettingsSelect (the owner's own manual Settings tab navigation) clears any Needs Attention billing focus, so a stale highlight never lingers", () => {
+    const body = fnBody("handleSettingsSelect");
+    assert.match(body, /setBillingFocus\(null\)/);
+    assert.match(body, /setSettingsSection\(section\)/);
+  });
+
+  test("DashboardSettingsArea receives handleSettingsSelect (not the raw setSettingsSection) and the current billing focus", () => {
+    const block = desktopBlock.match(/<DashboardSettingsArea[\s\S]*?\/>/);
+    assert.ok(block);
+    assert.match(block![0], /onSettingsSelect=\{handleSettingsSelect\}/);
+    assert.match(block![0], /billingFocusAppointmentId=\{billingFocus\?\.appointmentId\}/);
+    assert.match(block![0], /billingFocusServiceDate=\{billingFocus\?\.serviceDate\}/);
+  });
+});
+
+describe("DashboardShell: Needs Attention refresh triggers", () => {
+  test("a worked-time-hours save (handleHoursSaved) bumps needsAttentionRefreshToken -- a correction may have just resolved an item", () => {
+    const start = source.indexOf("function handleHoursSaved(");
+    const body = source.slice(start, source.indexOf("\n  function ", start + 1));
+    assert.match(body, /setNeedsAttentionRefreshToken\(\(prev\) => prev \+ 1\)/);
+  });
+
+  test("leaving Settings (handleToggleSettings' own \"settings\" -> \"schedule\" branch) bumps needsAttentionRefreshToken", () => {
+    const start = source.indexOf("function handleToggleSettings(");
+    const body = source.slice(start, source.indexOf("\n  }", start) + 4);
+    const settingsToScheduleBranch = body.slice(0, body.indexOf("} else {"));
+    assert.match(settingsToScheduleBranch, /setCenterMode\("schedule"\)/);
+    assert.match(settingsToScheduleBranch, /setNeedsAttentionRefreshToken\(\(prev\) => prev \+ 1\)/);
+  });
+
+  test("the tester carve-out's onBack (the only way a tester session leaves Settings) also bumps needsAttentionRefreshToken", () => {
+    const onBackBlock = desktopBlock.match(/onBack=\{\(\) => \{[\s\S]*?\}\}/);
+    assert.ok(onBackBlock, "onBack is passed as an inline handler");
+    assert.match(onBackBlock![0], /setCenterMode\("schedule"\)/);
+    assert.match(onBackBlock![0], /setNeedsAttentionRefreshToken\(\(prev\) => prev \+ 1\)/);
+  });
+});

@@ -6,6 +6,7 @@
 // discard recorded work" removal safeguard are each defined exactly once
 // and can never drift between call sites.
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { fetchAllPages } from "@/lib/paginate";
 import type { AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 
 // Block 2C-1 concurrency correction: mirrors lib/recurringSeries.ts's own
@@ -129,15 +130,27 @@ export async function fetchAssignments(appointmentId: string, workspaceId: strin
 // this file calls it directly (fetchAssignments below already returns
 // DB-ordered rows via its own .order() clauses).
 
+// Bounded in fixed-size batches via fetchAllPages (see that module's own
+// doc comment on the prior incident an unscoped query already caused in
+// this app) rather than one unbounded .in() query -- appointmentIds here
+// can be every appointment across a caller's own date window (e.g. the
+// needs-attention and billing/completed-jobs aggregations' 60-day lookback
+// over a busy, long-tenured workspace), which can grow past PostgREST's
+// default 1000-row response cap even though each individual call site's
+// own ID list is itself bounded.
 export async function fetchEmployeeHoursForAppointments(appointmentIds: string[], workspaceId: string): Promise<EmployeeHours[]> {
   if (appointmentIds.length === 0) return [];
-  const { data, error } = await supabaseAdmin
-    .from("appointment_employee_hours")
-    .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
-    .in("appointment_id", appointmentIds)
-    .eq("workspace_id", workspaceId);
+  const { data, error } = await fetchAllPages<EmployeeHours>(async (from, to) =>
+    supabaseAdmin
+      .from("appointment_employee_hours")
+      .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
+      .in("appointment_id", appointmentIds)
+      .eq("workspace_id", workspaceId)
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
   if (error) throw error;
-  return (data ?? []) as EmployeeHours[];
+  return data ?? [];
 }
 
 export async function insertAssignments(appointmentId: string, workspaceId: string, employeeIds: string[]): Promise<void> {

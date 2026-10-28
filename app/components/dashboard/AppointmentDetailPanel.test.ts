@@ -402,3 +402,31 @@ describe("SFT past-appointment-cancellation fix: Record Cancellation control for
     assert.notEqual(idx, -1);
   });
 });
+
+// Needs Attention: clicking a failed-message issue must bring THIS exact
+// card into view, not just select the appointment and hope it's already on
+// screen -- Cancellation Details (when present) renders directly above it
+// and can push it below the fold.
+describe("Needs Attention: focusMessageHistory scrolls the Message History card into view", () => {
+  test("accepts an optional focusMessageHistory prop", () => {
+    assert.match(source, /focusMessageHistory\?: boolean;/);
+    assert.match(source, /focusMessageHistory \}: Props\)/);
+  });
+
+  test("useRef/useEffect are imported, and a ref is declared for the Message History card", () => {
+    assert.match(source, /import \{ useEffect, useRef, useState \} from "react";/);
+    assert.match(source, /const messageHistoryRef = useRef<HTMLDivElement \| null>\(null\);/);
+  });
+
+  test("the ref is attached to the Message History card's own wrapper div (the one with the 'Message History' label and AppointmentMessageHistory)", () => {
+    assert.match(source, /<div ref=\{messageHistoryRef\} className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">\s*\n\s*<div className="text-xs font-medium text-slate-600 mb-1\.5">Message History<\/div>/);
+  });
+
+  test("an effect scrolls that ref into view only when focusMessageHistory is true, keyed on both focusMessageHistory and appointment.id", () => {
+    const effectStart = source.indexOf("useEffect(() => {\n    if (!focusMessageHistory) return;");
+    assert.notEqual(effectStart, -1, "the scroll-into-view effect exists, guarded by an early return when unset");
+    const effectBody = source.slice(effectStart, source.indexOf("}, [", effectStart) + 120);
+    assert.match(effectBody, /messageHistoryRef\.current\?\.scrollIntoView\(\{ block: "nearest", behavior: "smooth" \}\)/);
+    assert.match(effectBody, /\}, \[focusMessageHistory, appointment\.id\]\)/);
+  });
+});

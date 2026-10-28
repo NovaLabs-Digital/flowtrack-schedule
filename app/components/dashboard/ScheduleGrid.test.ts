@@ -406,3 +406,31 @@ describe("SFT status-display-consistency fix: the calendar card's status text us
     assert.ok(source.includes("useServiceColor ? `service-tint text-slate-900${darkTextCls}` : statusPill(a.status),"));
   });
 });
+
+// Cross-date navigation fix: selecting an appointment from Needs Attention
+// (DashboardShell.tsx's handleNeedsAttentionSelectAppointment, see
+// DashboardShell.test.ts and lib/calendarNavigation.test.ts) now also
+// updates weekOffset/viewMode so the right week/view is on screen, but that
+// alone doesn't guarantee the appointment's own time slot is actually
+// scrolled into the visible area of the grid's scrollable body -- this
+// block proves the card itself is scrolled into view whenever selection
+// changes, source-level only, for the same reason the rest of this file is
+// (ScheduleGrid.tsx can't be rendered by this repo's test runner).
+describe("selected appointment is scrolled into view (not just highlighted)", () => {
+  test("a ref is attached to the card's <button> only when it's the selected appointment", () => {
+    assert.match(source, /ref=\{selected \? selectedCardRef : undefined\}/);
+  });
+
+  test("an effect calls scrollIntoView on that ref whenever selectedAppointmentId, weekOffset, or viewMode changes", () => {
+    const effectStart = source.indexOf("useEffect(() => {\n    if (!selectedAppointmentId) return;");
+    assert.notEqual(effectStart, -1, "the scroll-into-view effect exists");
+    const effectBody = source.slice(effectStart, source.indexOf("}, [", effectStart) + 200);
+    assert.match(effectBody, /selectedCardRef\.current\?\.scrollIntoView\(\{ block: "nearest", inline: "nearest", behavior: "smooth" \}\)/);
+    assert.match(effectBody, /\}, \[selectedAppointmentId, weekOffset, viewMode\]\)/);
+  });
+
+  test("the ref is declared with useRef, and useRef/useEffect are both imported from react", () => {
+    assert.match(source, /import \{ useEffect, useRef, useState \} from "react";/);
+    assert.match(source, /const selectedCardRef = useRef<HTMLButtonElement \| null>\(null\);/);
+  });
+});

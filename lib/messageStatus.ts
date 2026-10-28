@@ -93,6 +93,83 @@ export function classifyMessageStatus(providerId: string | null | undefined, cha
   return { code: "unknown", label: "Unknown" };
 }
 
+// "Needs attention" (item 3, failed messages): a failed send attempt that
+// was later RETRIED and accepted must not remain actionable forever --
+// messages_sent rows are never deleted or updated in place, so a single
+// failed row from hours/days ago would otherwise flag an appointment
+// indefinitely even after a subsequent attempt for the exact same thing
+// succeeded. "The exact same thing" is defined identically to
+// app/api/cron/reminders/route.ts's own pre-existing alreadyDelivered()
+// dedup key -- appointment_id + channel + kind + scheduled_for (the
+// migrations/037 occurrence snapshot) -- reused here rather than inventing
+// a parallel notion of "the same message." scheduled_for is NULL for every
+// non-reminder kind (confirmation/update/cancel never pass it, see
+// lib/notify.ts's MessageSentRow comment), which groups every attempt of
+// that kind for that appointment together -- there is no finer-grained
+// occurrence signal available for those kinds, so that is the correct,
+// honest granularity, not a workaround.
+export type MessageAttemptRow = {
+  appointment_id: string;
+  channel: string;
+  kind: string;
+  scheduled_for: string | null;
+  provider_id: string | null;
+  created_at: string;
+  id: string;
+};
+
+function messageAttemptGroupKey(row: MessageAttemptRow): string {
+  const channel = row.channel === "sms" ? "sms" : "email";
+  return `${row.appointment_id}::${channel}::${row.kind ?? ""}::${row.scheduled_for ?? ""}`;
+}
+
+// Within one group, only the chronologically LATEST attempt whose status is
+// unambiguous (sent or failed) decides whether that group is still
+// unresolved -- a later "unknown" or skipped row never resolves an earlier
+// failure (this app can never treat Unknown as confirmed success, see
+// classifyMessageStatus above), and is simply skipped when looking for the
+// most recent unambiguous outcome. If the latest unambiguous attempt is a
+// failure, it is genuinely unresolved and must stay actionable; if it is an
+// accepted send, every earlier failure in the same group is resolved.
+function latestUnambiguousStatus(rows: MessageAttemptRow[]): MessageStatusCode | null {
+  const sorted = [...rows].sort((a, b) => {
+    const byTime = (a.created_at ?? "").localeCompare(b.created_at ?? "");
+    if (byTime !== 0) return byTime;
+    return (a.id ?? "").localeCompare(b.id ?? "");
+  });
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const row = sorted[i];
+    const channel = row.channel === "sms" ? "sms" : "email";
+    const code = classifyMessageStatus(row.provider_id, channel).code;
+    if (code === "sent" || code === "failed") return code;
+  }
+  return null;
+}
+
+// Counts, per appointment, the number of distinct (channel, kind,
+// scheduled_for) groups whose most recent unambiguous attempt is a
+// confirmed failure -- never a raw count of failed ROWS, which would
+// double-count retries and ignore accepted resends. See the module comment
+// above for why "the same group" is defined exactly as it is.
+export function countUnresolvedFailedMessageGroupsByAppointment(
+  rows: MessageAttemptRow[]
+): Map<string, number> {
+  const groups = new Map<string, MessageAttemptRow[]>();
+  for (const row of rows) {
+    const key = messageAttemptGroupKey(row);
+    const list = groups.get(key);
+    if (list) list.push(row);
+    else groups.set(key, [row]);
+  }
+  const counts = new Map<string, number>();
+  for (const group of groups.values()) {
+    if (latestUnambiguousStatus(group) !== "failed") continue;
+    const appointmentId = group[0].appointment_id;
+    counts.set(appointmentId, (counts.get(appointmentId) ?? 0) + 1);
+  }
+  return counts;
+}
+
 // Message History: a readable label for messages_sent.kind, the free-text
 // value every notify call site writes ("confirmation" | "update" | "cancel"
 // | "reminder_24h" today). An unrecognized future kind is shown verbatim

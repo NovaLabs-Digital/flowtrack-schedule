@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TriangleAlert } from "lucide-react";
 import { Client, Appointment, Service, Employee, EmployeeHours, AppointmentEmployeeAssignment, ViewMode } from "@/app/components/dashboard/types";
 import { nowInBusinessTz, toBusinessLocal, zonedDateValue, zonedDateTimeToUTC } from "@/lib/timezone";
@@ -264,6 +264,21 @@ export default function ScheduleGrid({
   // Never a second, independent schedule-range configuration.
   businessHours: BusinessHours;
 }) {
+  // Scrolls the selected appointment's own card into view whenever the
+  // selection (or the visible week/view) changes -- most relevant when the
+  // selection was just set by code outside this grid (e.g. DashboardShell's
+  // Needs Attention navigation, which can also change weekOffset/viewMode
+  // in the same action, landing on a day the owner hasn't scrolled to yet),
+  // but applies uniformly regardless of origin. A no-op when the selected
+  // appointment isn't rendered this pass (ref stays null) or is already
+  // fully visible (scrollIntoView with "nearest" never moves the scroll
+  // position in that case).
+  const selectedCardRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!selectedAppointmentId) return;
+    selectedCardRef.current?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  }, [selectedAppointmentId, weekOffset, viewMode]);
+
   const dragEnabled = !!onDropAppointment;
   // Phase 5.5E-E1B: dragging always initiates a reschedule mutation (via
   // MoveConfirmDialog -> PATCH /api/appointments/update, already
@@ -631,6 +646,7 @@ export default function ScheduleGrid({
                     return (
                       <button
                         key={a.id}
+                        ref={selected ? selectedCardRef : undefined}
                         draggable={cardDragEnabled}
                         onClick={(e) => { e.stopPropagation(); onSelectAppointment(a.id); }}
                         onDoubleClick={(e) => { e.stopPropagation(); onEditAppointment?.(a.id); }}

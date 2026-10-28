@@ -17,6 +17,7 @@ import MobileDashboard from "@/app/components/mobile/MobileDashboard";
 import OwnerBillingBanner from "@/app/components/dashboard/OwnerBillingBanner";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import ResizeHandle from "@/app/components/dashboard/ResizeHandle";
+import NeedsAttentionControl from "@/app/components/dashboard/NeedsAttentionControl";
 import {
   useDashboardLayoutPrefs,
   MIN_SCHEDULE_HEIGHT_PCT,
@@ -26,6 +27,7 @@ import {
   LEFT_BAR_WIDTH_PX,
   LEFT_BAR_COLLAPSED_WIDTH_PX,
 } from "@/app/components/dashboard/useDashboardLayoutPrefs";
+import { resolveCalendarNavigation } from "@/lib/calendarNavigation";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
 import MobileExperiencePreview from "@/app/components/demo-experience/MobileExperiencePreview";
@@ -151,6 +153,27 @@ export default function DashboardShell({
     { appointment: Appointment; client: Client; scheduledFor: string; scheduledEnd: string | null } | null
   >(null);
 
+  // Needs Attention (NeedsAttentionControl, right sidebar): a billing-issue
+  // deep-link target, cleared whenever the owner navigates Settings
+  // manually (handleSettingsSelect below) so a stale highlight never
+  // lingers after they've moved on. needsAttentionRefreshToken is bumped
+  // (not a boolean) after actions likely to have resolved an item, so the
+  // control's own effect (keyed on this value changing) refetches without
+  // needing to be reopened -- see NeedsAttentionControl.tsx's own doc
+  // comment on why the very first render is deliberately excluded from
+  // that effect.
+  const [billingFocus, setBillingFocus] = useState<{ appointmentId: string; serviceDate: string } | null>(null);
+  const [needsAttentionRefreshToken, setNeedsAttentionRefreshToken] = useState(0);
+  // Which DETAIL section (not just which appointment) a Needs Attention
+  // click should bring into view -- a worked-time-review issue scrolls
+  // DispatchPanel's Employee Worked Hours card into view, a failed-message
+  // issue scrolls AppointmentDetailPanel's Message History card into view.
+  // Cleared by the general-purpose selectAppointment below, so a plain
+  // click on a calendar card (or any other selection path) never carries a
+  // stale focus target forward -- only set again immediately after by
+  // handleNeedsAttentionSelectAppointment itself.
+  const [needsAttentionFocusSection, setNeedsAttentionFocusSection] = useState<"worked_time_review" | "failed_message" | null>(null);
+
   // Resizable desktop panel layout -- see useDashboardLayoutPrefs.ts for
   // clamping, persistence, and viewport-reclamp behavior. scheduleColumnRef
   // measures the live pixel height of the column holding the schedule
@@ -206,6 +229,11 @@ export default function DashboardShell({
       return next;
     });
     router.refresh();
+    // A worked-time correction may have just resolved a Needs Attention
+    // worked-time-review item (or made a job newly eligible for
+    // invoicing) -- bump the token so the control refetches without
+    // requiring the owner to close and reopen it.
+    setNeedsAttentionRefreshToken((prev) => prev + 1);
   }
 
   const selectedClient = useMemo(() => {
@@ -243,10 +271,69 @@ export default function DashboardShell({
 
   function selectAppointment(apptId: string) {
     setSelectedApptId(apptId);
+    setNeedsAttentionFocusSection(null);
     const appt = appointments.find((a) => a.id === apptId);
     if (!appt) return;
     setSelectedClientId(appt.client_id);
     notifyDemoAction("select-appointment");
+  }
+
+  // Needs Attention navigation (NeedsAttentionControl, right sidebar).
+  //
+  // Worked-time-review and failed-message issues both select the
+  // appointment -- selectAppointment resolves it from the full,
+  // un-filtered `appointments` array (never the week-filtered calendar
+  // view), so the detail panels below the grid always show the right
+  // appointment regardless of which week/month it falls in -- but each
+  // must also land on its OWN matching section (needsAttentionFocusSection,
+  // consumed by AppointmentDetailPanel/DispatchPanel below to scroll their
+  // own relevant card into view), not just "select the appointment and
+  // hope the right card happens to already be on screen." The GRID itself
+  // only ever shows whatever week/month it already happened to be on --
+  // without the calendar navigation below, selecting a past (or future)
+  // appointment from another week left the schedule grid showing an
+  // unrelated date range with the "selected" appointment nowhere on
+  // screen. resolveCalendarNavigation (lib/calendarNavigation.ts) resolves
+  // the correct weekOffset/monthOffset for the appointment's own date,
+  // preserving the current view when it's capable of showing that date
+  // (switching "weekdays" -> "week" only for a weekend appointment, and
+  // always switching away from "day" -- see that module's own header for
+  // why). centerMode is also forced back to "schedule" first --
+  // AppointmentDetailPanel (which carries the Message History card worked-
+  // time/failed-message issues both need visible) only renders in that
+  // mode; DispatchPanel's own worked-time review controls, in the right
+  // sidebar, are already mode-independent.
+  function handleNeedsAttentionSelectAppointment(appointmentId: string, issueKind: "worked_time_review" | "failed_message") {
+    setCenterMode("schedule");
+    const appt = appointments.find((a) => a.id === appointmentId);
+    if (appt) {
+      const nav = resolveCalendarNavigation(appt.scheduled_for, viewMode, timezone);
+      setViewMode(nav.viewMode);
+      setWeekOffset(nav.weekOffset);
+      setMonthOffset(nav.monthOffset);
+    }
+    selectAppointment(appointmentId);
+    // Set AFTER selectAppointment, which unconditionally clears this to
+    // null -- the issue kind decides which detail section below scrolls
+    // itself into view (see needsAttentionFocusSection's own comment).
+    setNeedsAttentionFocusSection(issueKind);
+  }
+
+  // Needs-invoicing issues switch to Settings -> Billing AND tell
+  // BillingPanel which job to bring into view (its own default date range
+  // is "this week," which would otherwise hide a job from another week).
+  function handleNeedsAttentionSelectBilling(appointmentId: string, serviceDate: string) {
+    setBillingFocus({ appointmentId, serviceDate });
+    setSettingsSection("billing");
+    setCenterMode("settings");
+  }
+
+  // The owner's OWN manual Settings navigation (the tab bar) -- clears any
+  // Needs Attention billing focus so a stale highlight/range never lingers
+  // after they've moved on to look at something else and come back.
+  function handleSettingsSelect(section: SettingsSection) {
+    setBillingFocus(null);
+    setSettingsSection(section);
   }
 
   function handleAppointmentCancelled() {
@@ -356,6 +443,11 @@ export default function DashboardShell({
   function handleToggleSettings() {
     if (centerMode === "settings") {
       setCenterMode("schedule");
+      // Returning from Settings (e.g. after resolving a billing issue
+      // reached via Needs Attention) -- refetch so the control reflects
+      // whatever was just resolved, without the owner needing to close
+      // and reopen it.
+      setNeedsAttentionRefreshToken((prev) => prev + 1);
     } else {
       setCenterMode("settings");
       setSettingsSection("company");
@@ -568,6 +660,7 @@ export default function DashboardShell({
                     onCancelled={handleAppointmentCancelled}
                     canMutateOperationalData={entitlement.canMutateOperationalData}
                     timezone={timezone}
+                    focusMessageHistory={needsAttentionFocusSection === "failed_message"}
                   />
                 ) : (
                   <ClientPanel
@@ -585,8 +678,11 @@ export default function DashboardShell({
             <DashboardSettingsArea
               isTester={isTester}
               settingsSection={settingsSection}
-              onSettingsSelect={setSettingsSection}
-              onBack={() => setCenterMode("schedule")}
+              onSettingsSelect={handleSettingsSelect}
+              onBack={() => {
+                setCenterMode("schedule");
+                setNeedsAttentionRefreshToken((prev) => prev + 1);
+              }}
               onSignOut={handleSignOut}
               signingOut={signingOut}
               canMutateOperationalData={entitlement.canMutateOperationalData}
@@ -594,6 +690,8 @@ export default function DashboardShell({
               timezone={timezone}
               workspaceId={workspaceId}
               userId={userId}
+              billingFocusAppointmentId={billingFocus?.appointmentId}
+              billingFocusServiceDate={billingFocus?.serviceDate}
             />
           )}
         </div>
@@ -642,18 +740,26 @@ export default function DashboardShell({
                 <PanelRightClose aria-hidden="true" size={12} />
               </button>
             </div>
-            <aside data-tour="dispatch-sidebar" className="shrink-0 p-2 pl-0" style={{ width: sidebarWidthPx }}>
-            <DispatchPanel
-              appointments={appointments}
-              clients={clients}
-              employees={employees}
-              employeeHours={employeeHoursState}
-              assignments={assignments}
-              selectedAppointmentId={selectedApptId}
-              onHoursSaved={handleHoursSaved}
-              canUseJobTracking={entitlement.canUseJobTracking}
-              timezone={timezone}
+            <aside data-tour="dispatch-sidebar" className="shrink-0 p-2 pl-0 flex flex-col gap-2 min-h-0 h-full" style={{ width: sidebarWidthPx }}>
+            <NeedsAttentionControl
+              onNavigateToAppointment={handleNeedsAttentionSelectAppointment}
+              onNavigateToBilling={handleNeedsAttentionSelectBilling}
+              refreshToken={needsAttentionRefreshToken}
             />
+            <div className="flex-1 min-h-0">
+              <DispatchPanel
+                appointments={appointments}
+                clients={clients}
+                employees={employees}
+                employeeHours={employeeHoursState}
+                assignments={assignments}
+                selectedAppointmentId={selectedApptId}
+                onHoursSaved={handleHoursSaved}
+                canUseJobTracking={entitlement.canUseJobTracking}
+                timezone={timezone}
+                focusWorkedTimeReview={needsAttentionFocusSection === "worked_time_review"}
+              />
+            </div>
             </aside>
           </>
         )

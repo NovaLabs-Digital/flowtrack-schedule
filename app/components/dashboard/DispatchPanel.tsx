@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MapPin, Phone } from "lucide-react";
 import { Appointment, Client, Employee, EmployeeHours, AppointmentEmployeeAssignment } from "@/app/components/dashboard/types";
 import PayrollSummary from "@/app/components/dashboard/PayrollSummary";
@@ -111,6 +111,7 @@ export default function DispatchPanel({
   onHoursSaved,
   canUseJobTracking,
   timezone,
+  focusWorkedTimeReview,
 }: {
   appointments: Appointment[];
   clients: Client[];
@@ -129,6 +130,13 @@ export default function DispatchPanel({
   // counts below, and passed through to Income Projection/Weekly Worked
   // Hours for their own date-range bucketing.
   timezone: string;
+  // Needs Attention: true for exactly one render right after the owner
+  // clicks a worked-time-review issue for the currently selected
+  // appointment -- scrolls the Employee Worked Hours card (section 5,
+  // below) into view, since Income Projection and Weekly Worked Hours
+  // above it can otherwise push it below the fold. Optional/undefined
+  // everywhere else this panel is reached, which never scrolls anything.
+  focusWorkedTimeReview?: boolean;
 }) {
   const defaultMonday = mondayOfCurrentWeek(timezone);
   const [rangeStart, setRangeStart] = useState(toDateInputValue(defaultMonday));
@@ -164,6 +172,18 @@ export default function DispatchPanel({
   const selectedAppt = selectedAppointmentId
     ? appointments.find((a) => a.id === selectedAppointmentId) ?? null
     : null;
+
+  // Needs Attention: scrolls the Employee Worked Hours card (section 5
+  // below) into view when focusWorkedTimeReview is set for the currently
+  // selected appointment -- re-runs on selectedAppointmentId too, so
+  // navigating from one worked-time-review appointment straight to another
+  // (without focusWorkedTimeReview itself changing, were that ever
+  // possible) still scrolls to the new appointment's own card.
+  const workedHoursRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!focusWorkedTimeReview) return;
+    workedHoursRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [focusWorkedTimeReview, selectedAppointmentId]);
 
   const client = selectedAppt
     ? clients.find((c) => c.id === selectedAppt.client_id) ?? null
@@ -290,7 +310,7 @@ export default function DispatchPanel({
           E.7 -- Teresa may have valid tracked hours and no warning while
           Roxana, on the same job, still needs attention) instead of a
           single appointment-level card. */}
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">
+      <div ref={workedHoursRef} className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 shrink-0">
         <div className="text-sm font-semibold text-slate-900 mb-3">Employee Worked Hours</div>
         {selectedAppt && selectedAppt.status === "cancelled" ? (
           // Phase 5.7D-R19: hidden entirely for a cancelled appointment --
