@@ -27,6 +27,7 @@ import {
   LEFT_BAR_WIDTH_PX,
   LEFT_BAR_COLLAPSED_WIDTH_PX,
 } from "@/app/components/dashboard/useDashboardLayoutPrefs";
+import { useDashboardNavigationPrefs } from "@/app/components/dashboard/useDashboardNavigationPrefs";
 import { resolveCalendarNavigation } from "@/lib/calendarNavigation";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
@@ -40,7 +41,6 @@ import {
   EmployeeHours,
   AppointmentEmployeeAssignment,
   ViewMode,
-  CenterMode,
   SettingsSection,
 } from "@/app/components/dashboard/types";
 import type { EntitlementView } from "@/lib/entitlementView";
@@ -132,8 +132,13 @@ export default function DashboardShell({
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
   const [viewMode, setViewMode] = useState<ViewMode>("weekdays");
-  const [centerMode, setCenterMode] = useState<CenterMode>("schedule");
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("company");
+  // Persisted per (user, workspace) -- see useDashboardNavigationPrefs.ts's
+  // own doc comment. A hard refresh while in Settings -> Billing reopens
+  // Settings -> Billing instead of always landing back on the dashboard
+  // calendar; every existing setCenterMode/setSettingsSection call site
+  // below is unchanged, since this hook's setters have the same signature
+  // as the plain useState setters they replace.
+  const { centerMode, setCenterMode, settingsSection, setSettingsSection } = useDashboardNavigationPrefs(workspaceId, userId);
 
   const router = useRouter();
   const [modal, setModal] = useState<ModalState | null>(null);

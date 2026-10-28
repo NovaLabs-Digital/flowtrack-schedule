@@ -360,6 +360,13 @@ export const BILLING_STATUS_FILTERS: { value: BillingStatusFilter; label: string
   { value: "invoiced_unpaid", label: "Invoiced / Unpaid" },
   { value: "paid", label: "Paid" },
 ];
+export const DEFAULT_BILLING_STATUS_FILTER: BillingStatusFilter = "all";
+
+const BILLING_STATUS_FILTER_VALUES: readonly string[] = BILLING_STATUS_FILTERS.map((f) => f.value);
+
+export function isValidBillingStatusFilter(value: unknown): value is BillingStatusFilter {
+  return typeof value === "string" && BILLING_STATUS_FILTER_VALUES.includes(value);
+}
 
 function hasInvoiceNumber(row: CompletedJobRow): boolean {
   return !!row.billing?.invoice_number;

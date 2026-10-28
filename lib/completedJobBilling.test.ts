@@ -15,8 +15,10 @@ import {
   matchesClientSearch,
   sortCompletedJobRows,
   isValidBillingSortOrder,
+  isValidBillingStatusFilter,
   BILLING_SORT_ORDERS,
   DEFAULT_BILLING_SORT_ORDER,
+  DEFAULT_BILLING_STATUS_FILTER,
   type CompletedJobBilling,
   type CompletedJobRow,
 } from "./completedJobBilling.ts";
@@ -571,6 +573,23 @@ describe("isValidBillingSortOrder", () => {
     for (const bad of ["OLDEST_FIRST", "newest", "", null, undefined, 1, {}, ["oldest_first"]]) {
       assert.equal(isValidBillingSortOrder(bad), false, `expected ${JSON.stringify(bad)} to be invalid`);
     }
+  });
+});
+
+describe("isValidBillingStatusFilter", () => {
+  test("accepts exactly the four documented values", () => {
+    assert.equal(isValidBillingStatusFilter("all"), true);
+    assert.equal(isValidBillingStatusFilter("missing_invoice"), true);
+    assert.equal(isValidBillingStatusFilter("invoiced_unpaid"), true);
+    assert.equal(isValidBillingStatusFilter("paid"), true);
+  });
+  test("rejects anything else, including case variants, other strings, and non-strings", () => {
+    for (const bad of ["ALL", "unpaid", "", null, undefined, 1, {}, ["all"]]) {
+      assert.equal(isValidBillingStatusFilter(bad), false, `expected ${JSON.stringify(bad)} to be invalid`);
+    }
+  });
+  test("the default is \"all\", matching the shipped behavior before this preference existed", () => {
+    assert.equal(DEFAULT_BILLING_STATUS_FILTER, "all");
   });
 });
 

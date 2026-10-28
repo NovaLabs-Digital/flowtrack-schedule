@@ -9,12 +9,14 @@ import {
   BILLING_STATUS_FILTERS,
   BILLING_SORT_ORDERS,
   DEFAULT_BILLING_SORT_ORDER,
+  DEFAULT_BILLING_STATUS_FILTER,
   applyBillingStatusFilter,
   applyGroupedBillingUpdate,
   computeBillingSummary,
   matchesClientSearch,
   sortCompletedJobRows,
   isValidBillingSortOrder,
+  isValidBillingStatusFilter,
   type BillingStatusFilter,
   type BillingSortOrder,
   type CompletedJobRow,
@@ -64,40 +66,120 @@ function toDateInputValue(d: Date): string {
 
 type FetchState = { completed: CompletedJobRow[]; reviewNeeded: ReviewNeededRow[] } | null;
 
-// Service-date sort order preference: remembered per (user, workspace) on
-// this browser only -- same sft_... prefix and per-person+per-tenant
-// scoping convention as useDashboardLayoutPrefs.ts's localStorage key
-// (never read or written by any server route). Deliberately a plain
-// read/write pair rather than a reusable hook: this is a single enum
-// value with no clamping/viewport-reclamp concerns, so a small inline
-// hydration effect (below, matching IncomeProjection.tsx's established
-// pattern) is proportionate.
-function billingSortStorageKey(userId: string, workspaceId: string): string {
-  return `sft_billing_sort_order_v1_${userId}_${workspaceId}`;
+const BILLING_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Navigation/filter preferences: remembered per (user, workspace) on this
+// browser only -- same sft_... prefix and per-person+per-tenant scoping
+// convention as useDashboardLayoutPrefs.ts's localStorage key (never read
+// or written by any server route, and never a billing/invoice VALUE --
+// only which range/filter/sort/search/scroll the owner last chose). v1:
+// consolidates what used to be a standalone sort-order-only key
+// (sft_billing_sort_order_v1_...) plus four new fields into one object, so
+// a custom date range, status filter, sort, and client search all survive
+// a save, a remount (leaving and returning to the Billing tab), or a hard
+// refresh -- not just the sort order. The old standalone key is simply
+// orphaned (same precedent as useDashboardLayoutPrefs.ts's own v1 -> v2
+// migration): nothing reads it anymore, nothing explicitly clears it.
+type BillingPrefs = {
+  rangeStart: string;
+  rangeEnd: string;
+  statusFilter: BillingStatusFilter;
+  sortOrder: BillingSortOrder;
+  clientSearch: string;
+  // Settings scroll container's scrollTop, restored (clamped) once data has
+  // reloaded after a remount -- see the restore effect below. Best-effort
+  // ("where practical"): flushed opportunistically whenever any other field
+  // here is persisted, plus once on unmount, not on every scroll tick.
+  scrollTop: number;
+};
+
+function billingPrefsStorageKey(userId: string, workspaceId: string): string {
+  return `sft_billing_prefs_v1_${userId}_${workspaceId}`;
 }
 
-function readStoredSortOrder(userId: string, workspaceId: string): BillingSortOrder {
+// "This week" -- the same default the unbounded range used before this
+// preference existed, and still what a first-ever visit (or a browser with
+// no/unavailable storage) sees.
+function defaultBillingRange(timezone: string): { rangeStart: string; rangeEnd: string } {
+  const monday = mondayOfWeek(0, timezone);
+  return { rangeStart: toDateInputValue(monday), rangeEnd: toDateInputValue(addDays(monday, 6)) };
+}
+
+function readStoredBillingPrefs(userId: string, workspaceId: string, timezone: string): BillingPrefs {
+  const fallbackRange = defaultBillingRange(timezone);
+  const fallback: BillingPrefs = {
+    ...fallbackRange,
+    statusFilter: DEFAULT_BILLING_STATUS_FILTER,
+    sortOrder: DEFAULT_BILLING_SORT_ORDER,
+    clientSearch: "",
+    scrollTop: 0,
+  };
   try {
-    const raw = window.localStorage.getItem(billingSortStorageKey(userId, workspaceId));
-    // Any missing, corrupted, or otherwise invalid stored value falls back
-    // to the documented default -- never trusted verbatim, matching every
-    // other localStorage read in this app (see
+    const raw = window.localStorage.getItem(billingPrefsStorageKey(userId, workspaceId));
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return fallback;
+    const p = parsed as Record<string, unknown>;
+    // Every field is validated independently -- a corrupted or
+    // partially-invalid stored blob falls back field-by-field to the exact
+    // same default a first-ever visit sees, never trusted verbatim, same
+    // rule as every other localStorage read in this app (see
     // useDashboardLayoutPrefs.ts's own readStoredPrefs).
-    return isValidBillingSortOrder(raw) ? raw : DEFAULT_BILLING_SORT_ORDER;
+    return {
+      rangeStart: typeof p.rangeStart === "string" && BILLING_DATE_RE.test(p.rangeStart) ? p.rangeStart : fallback.rangeStart,
+      rangeEnd: typeof p.rangeEnd === "string" && BILLING_DATE_RE.test(p.rangeEnd) ? p.rangeEnd : fallback.rangeEnd,
+      statusFilter: isValidBillingStatusFilter(p.statusFilter) ? p.statusFilter : fallback.statusFilter,
+      sortOrder: isValidBillingSortOrder(p.sortOrder) ? p.sortOrder : fallback.sortOrder,
+      clientSearch: typeof p.clientSearch === "string" ? p.clientSearch : fallback.clientSearch,
+      scrollTop: typeof p.scrollTop === "number" && Number.isFinite(p.scrollTop) && p.scrollTop >= 0 ? p.scrollTop : 0,
+    };
   } catch {
     // Unavailable storage (e.g. Safari private mode throws on access) --
-    // fall back to the default exactly as if nothing had ever been saved.
-    return DEFAULT_BILLING_SORT_ORDER;
+    // fall back to the defaults exactly as if nothing had ever been saved.
+    return fallback;
   }
 }
 
-function writeStoredSortOrder(userId: string, workspaceId: string, order: BillingSortOrder) {
+function writeStoredBillingPrefs(userId: string, workspaceId: string, prefs: BillingPrefs) {
   try {
-    window.localStorage.setItem(billingSortStorageKey(userId, workspaceId), order);
+    window.localStorage.setItem(billingPrefsStorageKey(userId, workspaceId), JSON.stringify(prefs));
   } catch {
     // Quota exceeded or storage disabled -- the in-memory selection still
     // works for the rest of this session, it just won't be remembered.
   }
+}
+
+// Unconditional read-modify-write of just the scrollTop field, used only by
+// the unmount-flush below -- deliberately NOT a read of any in-memory
+// "current prefs" snapshot (which would be stale by the time an unmount
+// cleanup with an empty dependency array runs); re-reading storage here
+// instead means this can never clobber a range/filter/search change the
+// owner made after the component mounted.
+function writeStoredScrollTop(userId: string, workspaceId: string, scrollTop: number) {
+  try {
+    const key = billingPrefsStorageKey(userId, workspaceId);
+    const raw = window.localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : {};
+    window.localStorage.setItem(key, JSON.stringify({ ...parsed, scrollTop }));
+  } catch {
+    // Unavailable storage -- nothing to flush.
+  }
+}
+
+// Walks up from a node to the nearest ancestor that actually scrolls --
+// BillingPanel has no ref to DashboardSettingsArea's own scroll container
+// (a parent it doesn't own), so it finds it the same way a human eye would:
+// the first ancestor whose own overflow-y is auto/scroll. Returns null if
+// none is found (e.g. this component rendered outside that chrome, as in
+// tests) -- callers treat that as "nothing to restore/track," never a crash.
+function nearestScrollAncestor(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = window.getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+    node = node.parentElement;
+  }
+  return null;
 }
 
 export default function BillingPanel({
@@ -130,6 +212,13 @@ export default function BillingPanel({
   // (see SettingsPanel.tsx's own conditional render), so this never fights
   // the owner's own subsequent range edits.
   focusAppointmentId?: string | null;
+  // Explicitly selecting a target job may temporarily navigate to its own
+  // date range (and clear the status filter/client search, below) so that
+  // row is actually visible -- but this is a ONE-TIME seed, never written
+  // back as the owner's saved preference (see isDeepLinkRef and the
+  // persistence effect below): leaving this job and returning to ordinary
+  // Billing restores whatever custom range/filter/search the owner had
+  // saved before the deep link, unchanged.
   focusServiceDate?: string | null;
   // Needs Attention: called after a billing field save actually succeeds
   // (invoice number entered, paid/payment method changed) -- lets
@@ -139,37 +228,121 @@ export default function BillingPanel({
   // caller that doesn't need this) is unaffected by its absence.
   onBillingSaved?: () => void;
 }) {
+  // Captured once, at mount, same convention as every other "read only at
+  // mount" prop here (see focusServiceDate's own doc comment) -- a later
+  // change to focusServiceDate while already mounted is not a thing this
+  // component's own lifecycle produces (DashboardShell only ever sets it
+  // before switching centerMode to "settings", never after).
+  const isDeepLinkRef = useRef(!!focusServiceDate);
+
+  // Read once per mount, never re-read after that (storedPrefsRef's lazy
+  // init below). Safe to read localStorage synchronously here, UNLIKE most
+  // other reads in this app (see useDashboardLayoutPrefs.ts's "never read
+  // during the initial render, SSR has no window" rule): BillingPanel only
+  // ever mounts client-side, after DashboardShell's own navigation-
+  // preference hydration has already resolved centerMode/settingsSection to
+  // "settings"/"billing" -- it is never part of the server-rendered output
+  // or the very first client paint, so there is no pre-hydration window in
+  // which this read could create a mismatch. A post-mount-effect read
+  // instead (the pattern this component's own sort-order preference used
+  // before this fix) would cause a visible flash of "this week" before
+  // snapping to the saved range on every remount, which is exactly what
+  // "a custom date range must remain selected... refreshing" rules out --
+  // do not "fix" this back into an effect.
+  const storedPrefsRef = useRef<BillingPrefs | null>(null);
+  if (storedPrefsRef.current === null) {
+    storedPrefsRef.current = readStoredBillingPrefs(userId, workspaceId, timezone);
+  }
+  const stored = storedPrefsRef.current;
+
   const [rangeStart, setRangeStart] = useState(() =>
-    focusServiceDate ? toDateInputValue(mondayOfWeekContaining(focusServiceDate)) : toDateInputValue(mondayOfWeek(0, timezone))
+    focusServiceDate ? toDateInputValue(mondayOfWeekContaining(focusServiceDate)) : stored.rangeStart
   );
   const [rangeEnd, setRangeEnd] = useState(() =>
-    focusServiceDate ? toDateInputValue(addDays(mondayOfWeekContaining(focusServiceDate), 6)) : toDateInputValue(addDays(mondayOfWeek(0, timezone), 6))
+    focusServiceDate ? toDateInputValue(addDays(mondayOfWeekContaining(focusServiceDate), 6)) : stored.rangeEnd
   );
-  const [statusFilter, setStatusFilter] = useState<BillingStatusFilter>("all");
-  const [clientSearch, setClientSearch] = useState("");
+  // A deep link resets the status filter and client search to their
+  // defaults (never reads the saved ones) -- the owner's own saved filter
+  // could otherwise hide the exact job they were just sent here to review
+  // (e.g. a saved "Paid" filter would hide a newly-flagged missing-invoice
+  // job). Sort order is purely cosmetic (never hides a row), so it still
+  // reads from storage even on a deep link.
+  const [statusFilter, setStatusFilter] = useState<BillingStatusFilter>(() =>
+    isDeepLinkRef.current ? DEFAULT_BILLING_STATUS_FILTER : stored.statusFilter
+  );
+  const [clientSearch, setClientSearch] = useState(() => (isDeepLinkRef.current ? "" : stored.clientSearch));
+  const [sortOrder, setSortOrderState] = useState<BillingSortOrder>(stored.sortOrder);
   const [data, setData] = useState<FetchState>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [savingRows, setSavingRows] = useState<Record<string, boolean>>({});
-  // Starts at the documented default (matches the shipped behavior exactly
-  // -- see DEFAULT_BILLING_SORT_ORDER's own doc comment) and is replaced
-  // by any saved preference once the hydration effect below runs. Never
-  // read from localStorage during the initial render (SSR has no window),
-  // matching useDashboardLayoutPrefs.ts's own hydration-safe pattern.
-  const [sortOrder, setSortOrderState] = useState<BillingSortOrder>(DEFAULT_BILLING_SORT_ORDER);
+
+  // Persists range/filter/sort/search together, so every one of them
+  // survives a save, a remount, or a refresh -- see BillingPrefs' own doc
+  // comment. Skips exactly its first run when this mount was a deep link
+  // (isDeepLinkRef), so the temporarily-seeded range/filter/search is shown
+  // but never overwrites the owner's own saved preferences; any LATER
+  // owner-driven change (This Week/Last Week, editing a date field,
+  // changing a filter) persists normally from then on, same as an ordinary
+  // (non-deep-link) mount persists from its very first render.
+  const firstPersistRunRef = useRef(true);
+  const scrollTopRef = useRef(stored.scrollTop);
+  useEffect(() => {
+    if (firstPersistRunRef.current) {
+      firstPersistRunRef.current = false;
+      if (isDeepLinkRef.current) return;
+    }
+    writeStoredBillingPrefs(userId, workspaceId, {
+      rangeStart,
+      rangeEnd,
+      statusFilter,
+      sortOrder,
+      clientSearch,
+      scrollTop: scrollTopRef.current,
+    });
+  }, [userId, workspaceId, rangeStart, rangeEnd, statusFilter, sortOrder, clientSearch]);
+
+  // Tracks (but does not persist on every tick -- see scrollTopRef's own
+  // use in the effect above and writeStoredScrollTop's doc comment) the
+  // Settings scroll container's current position, and restores the saved
+  // one exactly once, clamped, right after this mount's first successful
+  // load -- "restore only after data/layout is ready; clamp it when
+  // results are shorter." nearestScrollAncestor finds that container
+  // without needing a ref from DashboardSettingsArea, which owns it.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const scrollAncestorRef = useRef<HTMLElement | null>(null);
+  const restoredScrollRef = useRef(false);
 
   useEffect(() => {
-    setSortOrderState(readStoredSortOrder(userId, workspaceId));
-    // Re-reads if userId or workspaceId itself changes, so each (user,
-    // workspace) pair gets its own independently-remembered preference,
-    // never a cross-user or cross-workspace leak.
-  }, [userId, workspaceId]);
+    const el = nearestScrollAncestor(rootRef.current);
+    scrollAncestorRef.current = el;
+    if (!el) return;
+    function onScroll() {
+      scrollTopRef.current = el!.scrollTop;
+    }
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      // Flush on unmount (leaving Settings -> Billing) -- the write-effect
+      // above only fires when a tracked field CHANGES, so without this the
+      // very last scroll position before navigating away could otherwise
+      // never make it to storage. Re-reads storage itself rather than
+      // reconstructing the full prefs object from this closure's (by-then
+      // possibly stale) values -- see writeStoredScrollTop's own comment.
+      writeStoredScrollTop(userId, workspaceId, scrollTopRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  function setSortOrder(order: BillingSortOrder) {
-    setSortOrderState(order);
-    writeStoredSortOrder(userId, workspaceId, order);
-  }
+  useEffect(() => {
+    if (loading || restoredScrollRef.current) return;
+    restoredScrollRef.current = true;
+    const el = scrollAncestorRef.current;
+    if (!el) return;
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.scrollTop = Math.min(stored.scrollTop, maxScrollTop);
+  }, [loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -284,7 +457,7 @@ export default function BillingPanel({
     // standalone centerMode rendered directly below TopBar). max-w-5xl
     // matches the width the 7-column table needs; every other Settings
     // section instead uses max-w-xl/max-w-4xl for narrower card content.
-    <div className="max-w-5xl">
+    <div className="max-w-5xl" ref={rootRef}>
       <div className="mb-3">
         <h1 className="text-lg font-semibold text-slate-900">Billing / Completed Jobs</h1>
         <p className="text-xs text-slate-500 mt-0.5">
@@ -316,7 +489,7 @@ export default function BillingPanel({
             <span className="whitespace-nowrap">Sort:</span>
             <select
               value={sortOrder}
-              onChange={(e) => setSortOrder(e.target.value as BillingSortOrder)}
+              onChange={(e) => setSortOrderState(e.target.value as BillingSortOrder)}
               aria-label="Sort by service date"
               className="rounded-lg border border-slate-300 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
             >

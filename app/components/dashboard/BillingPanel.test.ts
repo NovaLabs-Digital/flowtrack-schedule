@@ -641,6 +641,18 @@ function tableClientOrder(): string[] {
   return [...document.querySelectorAll("tbody tr td:nth-child(2)")].map((td) => td.textContent ?? "");
 }
 
+// The consolidated v1 navigation/filter preferences key (range, status
+// filter, sort, client search, scroll) -- see BillingPanel.tsx's own
+// BillingPrefs doc comment. Replaces the old standalone
+// sft_billing_sort_order_v1_... key, which nothing writes anymore.
+function billingPrefsKey(userId: string, workspaceId: string): string {
+  return `sft_billing_prefs_v1_${userId}_${workspaceId}`;
+}
+function readBillingPrefs(userId: string, workspaceId: string): Record<string, unknown> | null {
+  const raw = window.localStorage.getItem(billingPrefsKey(userId, workspaceId));
+  return raw ? JSON.parse(raw) : null;
+}
+
 describe("BillingPanel -- service-date sort order (Oldest first / Newest first)", () => {
   test("a clearly labelled Sort dropdown renders with exactly the two documented options, defaulting to Oldest first", async () => {
     responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
@@ -754,7 +766,7 @@ describe("BillingPanel -- sort order preference persistence (per user + workspac
     await screen.findByText("Aaron Ng");
     const u = userEvent.setup();
     await u.selectOptions(screen.getByRole("combobox", { name: "Sort by service date" }), "newest_first");
-    assert.equal(window.localStorage.getItem(`sft_billing_sort_order_v1_${USER_ID}_${WORKSPACE_ID}`), "newest_first");
+    assert.equal(readBillingPrefs(USER_ID, WORKSPACE_ID)?.sortOrder, "newest_first");
   });
 
   test("a later mount for the SAME user+workspace restores the saved preference, without the owner reselecting it", async () => {
@@ -811,7 +823,7 @@ describe("BillingPanel -- sort order preference persistence (per user + workspac
   });
 
   test("a corrupted/invalid stored value is ignored, falling back to the default rather than throwing or showing a blank selection", async () => {
-    window.localStorage.setItem(`sft_billing_sort_order_v1_${USER_ID}_${WORKSPACE_ID}`, "not-a-real-order");
+    window.localStorage.setItem(billingPrefsKey(USER_ID, WORKSPACE_ID), "not-valid-json{{{");
     responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
     renderPanel();
     await screen.findByText("Aaron Ng");
@@ -834,6 +846,148 @@ describe("BillingPanel -- sort order preference persistence (per user + workspac
     } finally {
       window.localStorage.getItem = realGetItem;
       window.localStorage.setItem = realSetItem;
+    }
+  });
+});
+
+describe("BillingPanel -- custom date range / filter / search persistence (per user + workspace, localStorage)", () => {
+  test("a custom date range persists across a remount (leaving and returning to the Billing tab)", async () => {
+    responses = [
+      json(200, { completed: [], reviewNeeded: [] }),
+      json(200, { completed: [], reviewNeeded: [] }),
+      json(200, { completed: [], reviewNeeded: [] }),
+    ];
+    const first = renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    const fromInput = document.querySelectorAll('input[type="date"]')[0] as HTMLInputElement;
+    fireEvent.change(fromInput, { target: { value: "2026-06-01" } });
+    await waitFor(() => assert.equal(calls.length, 2));
+    const toInput = document.querySelectorAll('input[type="date"]')[1] as HTMLInputElement;
+    fireEvent.change(toInput, { target: { value: "2026-06-30" } });
+    await waitFor(() => assert.equal(calls.length, 3));
+    first.unmount();
+
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 4));
+    assert.match(calls[3].url, /start=2026-06-01&end=2026-06-30/, "the remounted panel re-fetches the SAVED custom range, not \"this week\"");
+  });
+
+  test("status filter and client search also persist across a remount", async () => {
+    responses = [
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+    ];
+    const first = renderPanel();
+    await screen.findByText("Aaron Ng");
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "Simon" } });
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Filter by billing status" }), "paid");
+    first.unmount();
+
+    renderPanel();
+    await screen.findByText("Simon Aldercott");
+    assert.equal((screen.getByPlaceholderText("Search client name") as HTMLInputElement).value, "Simon");
+    assert.equal((screen.getByRole("combobox", { name: "Filter by billing status" }) as HTMLSelectElement).value, "paid");
+  });
+
+  test("a deep-link mount does not overwrite a previously saved custom range, but a subsequent This Week click while deep-linked does", async () => {
+    // First, an ordinary mount saves a custom June range.
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    const ordinary = renderPanel();
+    await waitFor(() => assert.equal(calls.length, 1));
+    fireEvent.change(document.querySelectorAll('input[type="date"]')[0], { target: { value: "2026-06-01" } });
+    await waitFor(() => assert.equal(calls.length, 2));
+    fireEvent.change(document.querySelectorAll('input[type="date"]')[1], { target: { value: "2026-06-30" } });
+    await waitFor(() => assert.equal(calls.length, 3));
+    ordinary.unmount();
+    assert.equal(readBillingPrefs(USER_ID, WORKSPACE_ID)?.rangeStart, "2026-06-01");
+
+    // A Needs Attention deep link mounts with its OWN target week -- this
+    // must be shown, but must not clobber the saved June range.
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    const deepLinked = renderPanel(true, { focusAppointmentId: "appt-x", focusServiceDate: "2026-08-12" });
+    await waitFor(() => assert.equal(calls.length, 4));
+    assert.match(calls[3].url, /start=2026-08-10/, "the deep link's own target week is shown");
+    assert.equal(readBillingPrefs(USER_ID, WORKSPACE_ID)?.rangeStart, "2026-06-01", "the saved June range is untouched by the deep-link mount itself");
+
+    // But an explicit owner action (This Week) WHILE deep-linked still
+    // persists normally from that point on.
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    await userEvent.setup().click(screen.getByRole("button", { name: "This Week" }));
+    await waitFor(() => assert.equal(calls.length, 5));
+    deepLinked.unmount();
+    assert.notEqual(readBillingPrefs(USER_ID, WORKSPACE_ID)?.rangeStart, "2026-06-01", "an explicit action during a deep-linked visit DOES overwrite the saved range");
+
+    // Leaving the deep link and returning to ordinary Billing restores the
+    // owner's original saved range (now "This Week", since that's what was
+    // explicitly clicked above -- proving the deep link itself never wrote
+    // anything, only the later explicit action did).
+    responses = [json(200, { completed: [], reviewNeeded: [] })];
+    renderPanel();
+    await waitFor(() => assert.equal(calls.length, 6));
+    assert.doesNotMatch(calls[5].url, /start=2026-06-01/);
+  });
+
+  test("switching between two client searches while reviewing a fixed custom range does not reset the range (multi-client review)", async () => {
+    responses = [
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+    ];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    fireEvent.change(document.querySelectorAll('input[type="date"]')[0], { target: { value: "2026-06-01" } });
+    await waitFor(() => assert.equal(calls.length, 2));
+    fireEvent.change(document.querySelectorAll('input[type="date"]')[1], { target: { value: "2026-06-30" } });
+    await waitFor(() => assert.equal(calls.length, 3));
+    await screen.findByText("Aaron Ng");
+
+    const search = screen.getByPlaceholderText("Search client name");
+    fireEvent.change(search, { target: { value: "Aaron" } });
+    assert.deepEqual(tableClientOrder(), ["Aaron Ng"]);
+    fireEvent.change(search, { target: { value: "Petra" } });
+    assert.deepEqual(tableClientOrder(), ["Petra Lindqvist"]);
+
+    assert.equal((document.querySelectorAll('input[type="date"]')[0] as HTMLInputElement).value, "2026-06-01");
+    assert.equal((document.querySelectorAll('input[type="date"]')[1] as HTMLInputElement).value, "2026-06-30");
+  });
+
+  test("saving a billing field does not reset the saved range or search", async () => {
+    responses = [
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+      json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] }),
+    ];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    fireEvent.change(document.querySelectorAll('input[type="date"]')[0], { target: { value: "2026-06-01" } });
+    await waitFor(() => assert.equal(calls.length, 2));
+    fireEvent.change(document.querySelectorAll('input[type="date"]')[1], { target: { value: "2026-06-30" } });
+    await waitFor(() => assert.equal(calls.length, 3));
+    await screen.findByText("Aaron Ng");
+    fireEvent.change(screen.getByPlaceholderText("Search client name"), { target: { value: "Aaron" } });
+
+    responses.push(json(200, { billing: { appointment_id: "appt-early", invoice_number: "INV-NEW", paid: false, payment_method: null } }));
+    const aaronRow = screen.getByText("Aaron Ng").closest("tr")!;
+    const aaronInput = aaronRow.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.change(aaronInput, { target: { value: "INV-NEW" } });
+    fireEvent.blur(aaronInput);
+    await waitFor(() => assert.equal(calls.filter((c) => c.method === "PATCH").length, 1));
+
+    assert.equal((document.querySelectorAll('input[type="date"]')[0] as HTMLInputElement).value, "2026-06-01");
+    assert.equal((screen.getByPlaceholderText("Search client name") as HTMLInputElement).value, "Aaron");
+  });
+
+  test("an unsaved invoice draft is never found in localStorage, under any key", async () => {
+    responses = [json(200, { completed: [ROW_EARLY, ROW_MID, ROW_LATE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Aaron Ng");
+    const aaronRow = screen.getByText("Aaron Ng").closest("tr")!;
+    const aaronInput = aaronRow.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.change(aaronInput, { target: { value: "UNSAVED-DRAFT-TEXT" } });
+    // Deliberately never blurred/saved.
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i)!;
+      assert.doesNotMatch(window.localStorage.getItem(key) ?? "", /UNSAVED-DRAFT-TEXT/);
     }
   });
 });

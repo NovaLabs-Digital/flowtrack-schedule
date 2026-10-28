@@ -212,6 +212,24 @@ describe("DashboardShell: layout state is independent of appointment/client sele
   });
 });
 
+describe("DashboardShell: centerMode/settingsSection are persisted (refresh reopens the same Settings section)", () => {
+  test("centerMode and settingsSection come from useDashboardNavigationPrefs, not a plain useState -- so a hard refresh while in Settings -> Billing reopens Settings -> Billing, not the dashboard calendar", () => {
+    assert.match(source, /import \{ useDashboardNavigationPrefs \} from "@\/app\/components\/dashboard\/useDashboardNavigationPrefs"/);
+    assert.match(
+      source,
+      /const \{ centerMode, setCenterMode, settingsSection, setSettingsSection \} = useDashboardNavigationPrefs\(workspaceId, userId\)/
+    );
+    assert.doesNotMatch(source, /useState<CenterMode>/, "the old plain useState for centerMode is gone, not left alongside the hook");
+    assert.doesNotMatch(source, /useState<SettingsSection>/, "the old plain useState for settingsSection is gone, not left alongside the hook");
+  });
+
+  test("handleToggleSettings' manual-open branch still forces settingsSection to \"company\" -- only the hard-refresh restore path resurrects \"billing\"", () => {
+    const toggleSettingsBody = source.slice(source.indexOf("function handleToggleSettings("), source.indexOf("const modalEl"));
+    const elseBranch = toggleSettingsBody.slice(toggleSettingsBody.indexOf("} else {"));
+    assert.match(elseBranch, /setSettingsSection\("company"\)/);
+  });
+});
+
 describe("DashboardShell: Needs Attention control -- placement and collapse behavior", () => {
   test("imports NeedsAttentionControl", () => {
     assert.match(source, /import NeedsAttentionControl from "@\/app\/components\/dashboard\/NeedsAttentionControl"/);
