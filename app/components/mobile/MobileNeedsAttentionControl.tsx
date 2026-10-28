@@ -109,7 +109,7 @@ export default function MobileNeedsAttentionControl({
         >
           <div className="px-3 py-2 border-b border-slate-100 text-[10px] text-slate-400">
             {rangeStart && rangeEnd
-              ? `Showing issues from ${formatMMDDYY(rangeStart)} to ${formatMMDDYY(rangeEnd)}.`
+              ? `Worked time needs review covers your full history, not just recent work. Failed-message checks cover ${formatMMDDYY(rangeStart)} to ${formatMMDDYY(rangeEnd)}.`
               : "Loading date range..."}
             <div className="mt-0.5">Billing review is available on desktop.</div>
           </div>

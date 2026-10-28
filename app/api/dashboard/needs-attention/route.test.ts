@@ -113,7 +113,7 @@ describe("GET /api/dashboard/needs-attention -- entitlement gate", () => {
   });
 });
 
-describe("GET /api/dashboard/needs-attention -- date range", () => {
+describe("GET /api/dashboard/needs-attention -- date range (failed-message window only -- see the \"unbounded history\" describe block below for items 1/2)", () => {
   test("rangeEnd is today and rangeStart is exactly NEEDS_ATTENTION_LOOKBACK_DAYS earlier, both returned in the response", async () => {
     resetFixtures({ ...ACTIVE, company_settings: [{ data: { timezone: "America/New_York" } }], appointments: [{ data: [] }] });
     sessionToReturn = OWNER_SESSION;
@@ -684,21 +684,43 @@ describe("GET /api/dashboard/needs-attention -- bounded DATABASE batches across 
     return { appts, assignments };
   }
 
+  // apptIds (1005 of them) now ALSO gets chunked (DEFAULT_ID_CHUNK_SIZE=300
+  // in lib/paginate.ts) for every .in()-filtered query -- ceil(1005/300) =
+  // 4 chunks, matching the id list's own order (appointments is built from
+  // the SAME two queued "appointments" pages, early then tail, so chunk 4
+  // is the only one that straddles early/tail). Each chunk's own response
+  // is short here (well under 1000 rows), so each chunk consumes exactly
+  // one queued fixture -- 4 total per .in()-filtered table, not 1.
+  function chunkBySize<T>(items: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+    return chunks;
+  }
+
   test("an appointment that only exists on the SECOND database page (rows 1000+) is still returned, and totalCount reflects the full count past 1000", async () => {
     const early = earlyAppointments(PAGE_SIZE); // exactly one full page
     const tail = tailAppointments(5); // the short, terminating page
+    const allAssignmentsInApptIdOrder = [...early.assignments, ...tail.assignments];
+    const assignmentChunks = chunkBySize(allAssignmentsInApptIdOrder, 300); // -> 4 chunks: 300,300,300,105
     resetFixtures({
       ...ACTIVE,
       company_settings: [{ data: { timezone: "America/New_York" } }],
       // Two queued responses for "appointments" -- the first is exactly
       // PAGE_SIZE rows (looks like a full page, so fetchAllPages must ask
       // for more), the second is the remaining 5 (a short page that ends
-      // the loop). A single-query regression would see only `early`.
+      // the loop). A single-query regression would see only `early`. This
+      // query has no .in() id filter (just the date window), so it is NOT
+      // chunked -- only ROW-COUNT paginated, 2 responses total.
       appointments: [{ data: early.appts }, { data: tail.appts }],
-      appointment_employees: [{ data: early.assignments }, { data: tail.assignments }],
-      appointment_employee_hours: [{ data: [] }],
-      completed_job_billing: [{ data: [] }],
-      messages_sent: [{ data: [] }],
+      // .in()-filtered queries: 4 chunk responses each (see chunkBySize
+      // above), matching apptIds' own 1005-id, 4-chunk split.
+      appointment_employees: assignmentChunks.map((chunk) => ({ data: chunk })),
+      appointment_employee_hours: assignmentChunks.map(() => ({ data: [] })),
+      completed_job_billing: assignmentChunks.map(() => ({ data: [] })),
+      // All 1005 appointments fall within the last 60 days of "now"
+      // (2026-08-20), so recentApptIds === apptIds here too -- messages_sent
+      // is chunked the same 4 ways.
+      messages_sent: assignmentChunks.map(() => ({ data: [] })),
       clients: [{ data: CLIENTS }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -720,10 +742,16 @@ describe("GET /api/dashboard/needs-attention -- bounded DATABASE batches across 
     const apptOrderCalls = currentFake.calls.filter((c) => c.table === "appointments" && c.method === "order");
     assert.ok(apptOrderCalls.some((c) => c.args[0] === "id"), "appointments must carry a deterministic id tiebreaker");
 
-    // Same two-batch proof for appointment_employees, which is keyed off
-    // the same apptIds and can independently exceed 1000 rows.
+    // appointment_employees is keyed off apptIds via the CHUNKED helper
+    // now (1005 ids -> 4 chunks of <=300), not the row-count pagination
+    // the appointments query above uses -- each chunk's own response here
+    // is short (well under 1000 rows), so each of the 4 chunks makes
+    // exactly one .range(0, 999) call, never a second page within a chunk.
     const assignRangeCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "range");
-    assert.deepEqual(assignRangeCalls.map((c) => c.args), [[0, 999], [1000, 1999]]);
+    assert.deepEqual(assignRangeCalls.map((c) => c.args), [[0, 999], [0, 999], [0, 999], [0, 999]]);
+    const assignInCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "in");
+    assert.equal(assignInCalls.length, 4, "the id list was chunked into 4 separate .in() calls, never one 1005-id filter");
+    assert.deepEqual((assignInCalls.map((c) => (c.args[1] as string[]).length)), [300, 300, 300, 105]);
   });
 
   test("a failed message that only exists on the SECOND messages_sent database page (rows 1000+) still flags its appointment", async () => {
@@ -786,5 +814,278 @@ describe("GET /api/dashboard/needs-attention -- grouping", () => {
       body.entries[0].issues.map((i: any) => i.kind).sort(),
       ["failed_message", "worked_time_review"]
     );
+  });
+});
+
+// Unbounded history (SFT scope change): worked-time review, needs-invoicing,
+// and payment-outstanding no longer age out at 60 days -- failed messages
+// alone keep that window. "Now" is frozen to 2026-08-20; January 2026 is
+// ~215 days earlier, well past the old 60-day cutoff.
+describe("GET /api/dashboard/needs-attention -- unbounded history for unresolved work/billing (regression)", () => {
+  const JANUARY_REVIEW_APPT = {
+    id: "appt-january-review", client_id: "client-1", service_type: "Lawn Mowing",
+    scheduled_for: "2026-01-15T13:00:00.000Z", scheduled_end: "2026-01-15T14:00:00.000Z",
+    duration_minutes: 60, status: "scheduled", price_cents: 8000,
+  };
+  const JANUARY_REVIEW_ASSIGNMENT = {
+    id: "ae-january-review", appointment_id: "appt-january-review", employee_id: "emp-1",
+    actual_started_at: null, actual_completed_at: null, job_notes: null, created_at: "x", updated_at: "x",
+  };
+  const JANUARY_INVOICE_APPT = {
+    id: "appt-january-invoice", client_id: "client-2", service_type: "Window Washing",
+    scheduled_for: "2026-01-16T13:00:00.000Z", scheduled_end: "2026-01-16T14:00:00.000Z",
+    duration_minutes: 60, status: "scheduled", price_cents: 12000,
+  };
+  const JANUARY_INVOICE_ASSIGNMENT = {
+    id: "ae-january-invoice", appointment_id: "appt-january-invoice", employee_id: "emp-1",
+    actual_started_at: "2026-01-16T13:00:00.000Z", actual_completed_at: "2026-01-16T14:00:00.000Z",
+    job_notes: null, created_at: "x", updated_at: "x",
+  };
+  const JANUARY_UNPAID_APPT = {
+    id: "appt-january-unpaid", client_id: "client-3", service_type: "Gutter Cleaning",
+    scheduled_for: "2026-01-17T13:00:00.000Z", scheduled_end: "2026-01-17T14:00:00.000Z",
+    duration_minutes: 60, status: "scheduled", price_cents: 9000,
+  };
+  const JANUARY_UNPAID_ASSIGNMENT = {
+    id: "ae-january-unpaid", appointment_id: "appt-january-unpaid", employee_id: "emp-1",
+    actual_started_at: "2026-01-17T13:00:00.000Z", actual_completed_at: "2026-01-17T14:00:00.000Z",
+    job_notes: null, created_at: "x", updated_at: "x",
+  };
+  const JANUARY_UNPAID_BILLING = {
+    id: "bill-january-unpaid", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-january-unpaid",
+    invoice_number: "INV-JAN", paid: false, payment_method: null, created_at: "x", updated_at: "x",
+  };
+  const JANUARY_PAID_APPT = {
+    id: "appt-january-paid", client_id: "client-1", service_type: "Regular Cleaning",
+    scheduled_for: "2026-01-18T13:00:00.000Z", scheduled_end: "2026-01-18T14:00:00.000Z",
+    duration_minutes: 60, status: "scheduled", price_cents: 9000,
+  };
+  const JANUARY_PAID_ASSIGNMENT = {
+    id: "ae-january-paid", appointment_id: "appt-january-paid", employee_id: "emp-1",
+    actual_started_at: "2026-01-18T13:00:00.000Z", actual_completed_at: "2026-01-18T14:00:00.000Z",
+    job_notes: null, created_at: "x", updated_at: "x",
+  };
+  const JANUARY_PAID_BILLING = {
+    id: "bill-january-paid", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-january-paid",
+    invoice_number: "INV-JAN-PAID", paid: true, payment_method: "zelle", created_at: "x", updated_at: "x",
+  };
+  const JANUARY_CANCELLED_APPT = {
+    id: "appt-january-cancelled", client_id: "client-1", service_type: "Regular Cleaning",
+    scheduled_for: "2026-01-19T13:00:00.000Z", scheduled_end: "2026-01-19T14:00:00.000Z",
+    duration_minutes: 60, status: "cancelled", price_cents: 9000,
+  };
+  const JANUARY_CANCELLED_ASSIGNMENT = {
+    id: "ae-january-cancelled", appointment_id: "appt-january-cancelled", employee_id: "emp-1",
+    actual_started_at: null, actual_completed_at: null, job_notes: null, created_at: "x", updated_at: "x",
+  };
+
+  test("a January appointment with unresolved worked time is flagged -- no rolling cutoff for worked_time_review", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_REVIEW_APPT] }],
+      appointment_employees: [{ data: [JANUARY_REVIEW_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 1);
+    assert.equal(body.entries[0].serviceDate, "2026-01-15", "the deep-link date is the job's own, not clamped to any window");
+    assert.deepEqual(body.entries[0].issues, [{ kind: "worked_time_review", label: "Worked time needs review" }]);
+  });
+
+  test("a January appointment with no invoice number is flagged -- no rolling cutoff for needs_invoicing", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_INVOICE_APPT] }],
+      appointment_employees: [{ data: [JANUARY_INVOICE_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 1);
+    assert.deepEqual(body.entries[0].issues, [{ kind: "needs_invoicing", label: "Needs invoice number" }]);
+  });
+
+  test("a January appointment invoiced but unpaid is flagged -- no rolling cutoff for payment_outstanding", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_UNPAID_APPT] }],
+      appointment_employees: [{ data: [JANUARY_UNPAID_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [JANUARY_UNPAID_BILLING] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 1);
+    assert.deepEqual(body.entries[0].issues, [{ kind: "payment_outstanding", label: "Payment outstanding" }]);
+  });
+
+  test("a January appointment that's PAID is excluded -- unbounded history never means ignoring resolution", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_PAID_APPT] }],
+      appointment_employees: [{ data: [JANUARY_PAID_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [JANUARY_PAID_BILLING] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 0);
+  });
+
+  test("a January CANCELLED appointment is excluded -- unbounded history never overrides the cancelled-exclusion rule", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_CANCELLED_APPT] }],
+      appointment_employees: [{ data: [JANUARY_CANCELLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 0);
+  });
+
+  // A January failed message must stay excluded (item 3 keeps its 60-day
+  // window) even though a January unresolved-work issue on the SAME
+  // appointment is now flagged -- proves the two scopes are independent at
+  // the route level, not just in lib/needsAttention.ts's own unit tests.
+  test("a January appointment's messages_sent is never even queried -- it falls outside recentApptIds, so item 3 can't see it regardless of what messages_sent would return", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_REVIEW_APPT, CLEAN_APPT] }],
+      appointment_employees: [{ data: [JANUARY_REVIEW_ASSIGNMENT, CLEAN_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [CLEAN_BILLING] }],
+      // Only appt-clean's (recent) failed message -- if the route ever
+      // queried messages_sent for the January appointment too, this single
+      // queued response would still be consumed either way, so the REAL
+      // proof is the asserted .in() call args below, not this fixture data.
+      messages_sent: [{ data: [{ appointment_id: "appt-clean", channel: "sms", provider_id: "failed" }] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req())).json();
+
+    const byId = new Map<string, any>(body.entries.map((e: any) => [e.appointmentId, e]));
+    assert.deepEqual(byId.get("appt-january-review").issues, [{ kind: "worked_time_review", label: "Worked time needs review" }]);
+    assert.deepEqual(byId.get("appt-clean").issues, [{ kind: "failed_message", label: "1 failed message" }]);
+
+    const msgInCall = currentFake.calls.find((c) => c.table === "messages_sent" && c.method === "in");
+    assert.ok(msgInCall, "messages_sent was queried (for the recent appointment)");
+    const queriedIds = msgInCall!.args[1] as string[];
+    assert.ok(queriedIds.includes("appt-clean"), "the recent appointment IS in the messages_sent query scope");
+    assert.ok(!queriedIds.includes("appt-january-review"), "the January appointment must NEVER be in the messages_sent query scope -- item 3 keeps its 60-day window");
+  });
+
+  test("mixed old and recent issues: totalCount reflects every distinct unresolved appointment regardless of age, and pagination slices across both", async () => {
+    const mixedFixtures = {
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_REVIEW_APPT, JANUARY_INVOICE_APPT, UNRESOLVED_APPT, COMPLETED_UNBILLED_APPT] }],
+      appointment_employees: [{ data: [JANUARY_REVIEW_ASSIGNMENT, JANUARY_INVOICE_ASSIGNMENT, UNRESOLVED_ASSIGNMENT, COMPLETED_UNBILLED_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    };
+    sessionToReturn = OWNER_SESSION;
+
+    resetFixtures(mixedFixtures);
+    const body = await (await GET(req("?limit=2&offset=0"))).json();
+    assert.equal(body.totalCount, 4, "all 4 distinct appointments count, 2 old (January) and 2 recent");
+    assert.equal(body.entries.length, 2, "the page itself is still bounded by limit");
+    assert.equal(body.hasMore, true);
+
+    // A fresh fake per request, same convention as the lifecycle tests
+    // above -- each real request re-fetches/re-derives everything from
+    // scratch server-side, so a second page is a second independent call,
+    // not a second read from the first call's already-exhausted fixtures.
+    resetFixtures(mixedFixtures);
+    const page2 = await (await GET(req("?limit=2&offset=2"))).json();
+    assert.equal(page2.entries.length, 2);
+    assert.equal(page2.hasMore, false);
+    // Oldest serviceDate first (January before August), same ordering rule
+    // as always -- unaffected by the scope change.
+    assert.deepEqual(
+      [...body.entries, ...page2.entries].map((e: any) => e.appointmentId),
+      ["appt-january-review", "appt-january-invoice", "appt-untracked", "appt-unbilled"]
+    );
+  });
+
+  test("cross-workspace isolation for an OLD (January) appointment: a tester session's appointments query is still scoped to the fixed demo workspace, never the real one", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: DEMO_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_REVIEW_APPT] }],
+      appointment_employees: [{ data: [JANUARY_REVIEW_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = TESTER_SESSION;
+    const body = await (await GET(req())).json();
+    assert.equal(body.entries.length, 1, "the January appointment is still surfaced -- age alone never excludes it");
+    const apptWorkspaceCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "workspace_id");
+    assert.deepEqual(apptWorkspaceCall?.args, ["workspace_id", DEMO_WORKSPACE_ID]);
+    const apptDemoCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "is_demo");
+    assert.deepEqual(apptDemoCall?.args, ["is_demo", true]);
+  });
+
+  // "Opening and resolving an older Billing item": the full lifecycle,
+  // anchored on a January date -- proves a job doesn't need to be recent
+  // for the owner to create its invoice, follow up on payment, and have it
+  // disappear from this list once resolved, exactly like a recent job
+  // already could.
+  test("opening and resolving an older Billing item: the full missing-invoice -> invoiced/unpaid -> paid lifecycle works identically for a January job", async () => {
+    const baseFixtures = {
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [JANUARY_INVOICE_APPT] }],
+      appointment_employees: [{ data: [JANUARY_INVOICE_ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      messages_sent: [{ data: [] }],
+      clients: [{ data: CLIENTS }],
+    };
+    sessionToReturn = OWNER_SESSION;
+
+    resetFixtures({ ...baseFixtures, completed_job_billing: [{ data: [] }] });
+    const stage1 = await (await GET(req())).json();
+    assert.deepEqual(stage1.entries[0].issues.map((i: any) => i.kind), ["needs_invoicing"]);
+    assert.equal(stage1.entries[0].serviceDate, "2026-01-16", "the deep-link date BillingPanel needs to open this exact row");
+    assert.equal(stage1.entries[0].appointmentId, "appt-january-invoice");
+
+    const invoicedUnpaid = {
+      id: "bill-january-lifecycle", workspace_id: REAL_WORKSPACE_ID, appointment_id: "appt-january-invoice",
+      invoice_number: "INV-JAN-LC", paid: false, payment_method: null, created_at: "x", updated_at: "x",
+    };
+    resetFixtures({ ...baseFixtures, completed_job_billing: [{ data: [invoicedUnpaid] }] });
+    const stage2 = await (await GET(req())).json();
+    assert.deepEqual(stage2.entries[0].issues.map((i: any) => i.kind), ["payment_outstanding"]);
+
+    const paid = { ...invoicedUnpaid, paid: true, payment_method: "zelle" };
+    resetFixtures({ ...baseFixtures, completed_job_billing: [{ data: [paid] }] });
+    const stage3 = await (await GET(req())).json();
+    assert.equal(stage3.entries.length, 0, "resolved -- the owner marked it paid, it drops off the list even though it's months old");
   });
 });

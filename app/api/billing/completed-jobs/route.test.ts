@@ -231,3 +231,71 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
     assert.deepEqual(apptCall?.args, ["workspace_id", DEMO_WORKSPACE_ID]);
   });
 });
+
+// Regression: an older Needs Attention item (no rolling-cutoff limit on its
+// age) can deep-link into this route with a date range the owner then
+// widens, and appointment_employees/completed_job_billing/clients were
+// previously single, unbounded .in() queries here -- a real row-limit-
+// truncation risk that could silently drop an older flagged job's own
+// billing/assignment data. Proves the fetchAllPagesChunkedIn fix actually
+// runs in bounded, chunked batches, not a single unbounded request.
+describe("GET /api/billing/completed-jobs -- bounded, chunked batches for appointment_employees/completed_job_billing/clients (regression)", () => {
+  const CHUNK_SIZE = 300; // lib/paginate.ts's DEFAULT_ID_CHUNK_SIZE
+
+  function manyAppointments(n: number) {
+    const appts = [];
+    const assignments = [];
+    const billing = [];
+    for (let i = 0; i < n; i++) {
+      const id = `appt-many-${i}`;
+      appts.push({
+        id, client_id: "client-shared", service_type: "Lawn Mowing",
+        scheduled_for: `2026-08-${String(10 + (i % 7)).padStart(2, "0")}T13:00:00.000Z`,
+        scheduled_end: `2026-08-${String(10 + (i % 7)).padStart(2, "0")}T14:00:00.000Z`,
+        duration_minutes: 60, status: "scheduled", price_cents: 8000,
+      });
+      assignments.push({
+        id: `ae-many-${i}`, appointment_id: id, employee_id: "emp-1",
+        actual_started_at: "2026-08-10T13:00:00.000Z", actual_completed_at: "2026-08-10T14:00:00.000Z",
+        job_notes: null, created_at: "x", updated_at: "x",
+      });
+      billing.push({
+        id: `bill-many-${i}`, workspace_id: REAL_WORKSPACE_ID, appointment_id: id, client_id: "client-shared",
+        invoice_number: `INV-${i}`, paid: true, payment_method: "zelle", created_at: "x", updated_at: "x",
+      });
+    }
+    return { appts, assignments, billing };
+  }
+
+  test("an apptIds list larger than one chunk (301 ids) is queried in TWO chunked batches, not one oversized .in() call", async () => {
+    const { appts, assignments, billing } = manyAppointments(CHUNK_SIZE + 1);
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: appts }],
+      // Two queued responses per table -- fetchAllPagesChunkedIn's first
+      // chunk (300 ids) gets the first, the second chunk (1 id) gets the
+      // second; each call only returns ITS OWN chunk's rows, proving the
+      // route actually issued two separate, correctly-scoped requests
+      // rather than one unbounded one.
+      appointment_employees: [{ data: assignments.slice(0, CHUNK_SIZE) }, { data: assignments.slice(CHUNK_SIZE) }],
+      completed_job_billing: [{ data: billing.slice(0, CHUNK_SIZE) }, { data: billing.slice(CHUNK_SIZE) }],
+      // fetchEmployeeHoursForAppointments is ALSO chunked now (lib/
+      // appointmentEmployees.ts) -- same 2-chunk split needs 2 responses.
+      appointment_employee_hours: [{ data: [] }, { data: [] }],
+      clients: [{ data: [{ id: "client-shared", name: "Shared Client", email: null, phone: null }] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req("start=2026-08-01&end=2026-08-31"))).json();
+
+    assert.equal(body.completed.length, CHUNK_SIZE + 1, "every appointment's billing row was actually fetched, including the one in the second chunk");
+
+    const assignCalls = currentFake.calls.filter((c) => c.table === "appointment_employees" && c.method === "in");
+    assert.equal(assignCalls.length, 2, "exactly two .in() calls -- one per chunk");
+    assert.equal((assignCalls[0].args[1] as string[]).length, CHUNK_SIZE);
+    assert.equal((assignCalls[1].args[1] as string[]).length, 1);
+
+    const billingCalls = currentFake.calls.filter((c) => c.table === "completed_job_billing" && c.method === "in");
+    assert.equal(billingCalls.length, 2);
+  });
+});

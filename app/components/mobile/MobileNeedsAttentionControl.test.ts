@@ -84,7 +84,8 @@ describe("MobileNeedsAttentionControl -- open/close", () => {
     await u.click(button);
     assert.equal(button.getAttribute("aria-expanded"), "true");
     await screen.findByText("Petra Lindqvist");
-    await screen.findByText(/Showing issues from 06\/22\/26 to 08\/20\/26/);
+    await screen.findByText(/full history/i);
+    await screen.findByText(/Failed-message checks cover 06\/22\/26 to 08\/20\/26/);
     await waitFor(() => assert.equal(calls.length, 2));
   });
 

@@ -144,7 +144,7 @@ export default function NeedsAttentionControl({
         >
           <div className="px-4 py-2 border-b border-slate-100 text-[11px] text-slate-400">
             {rangeStart && rangeEnd
-              ? `Showing issues from ${formatMMDDYY(rangeStart)} to ${formatMMDDYY(rangeEnd)}. Older unresolved work may still exist -- see Billing / Completed Jobs.`
+              ? `Needs invoice number, Payment outstanding, and Worked time needs review cover your full history, not just recent work. Failed-message checks cover ${formatMMDDYY(rangeStart)} to ${formatMMDDYY(rangeEnd)}.`
               : "Loading date range..."}
           </div>
           {loading && entries.length === 0 ? (

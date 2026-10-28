@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireCapability } from "@/lib/entitlementServer";
-import { fetchAllPages } from "@/lib/paginate";
+import { fetchAllPages, fetchAllPagesChunkedIn } from "@/lib/paginate";
 import { effectiveTimezone, zonedDateTimeToUTC } from "@/lib/timezone";
 import { buildCompletedJobRows, buildReviewNeededRows, type CompletedJobBilling, type BillableAppointment } from "@/lib/completedJobBilling";
 import { fetchEmployeeHoursForAppointments } from "@/lib/appointmentEmployees";
@@ -110,19 +110,37 @@ export async function GET(req: Request) {
       // lib/completedJobBilling.ts's and lib/payroll.ts's
       // isAppointmentBillingEligible doc comments. Fetched via the same
       // shared helper app/api/appointments/employee-hours/route.ts and
-      // manage-recurrence already use, bounded by this route's own date
-      // range (apptIds here is never the full all-time appointment list).
+      // manage-recurrence already use.
+      //
+      // Bounded in fixed-size batches AND chunked id lists via
+      // fetchAllPagesChunkedIn (lib/paginate.ts) -- this route's own date
+      // range is normally a single week (small), but an owner can widen it
+      // arbitrarily via the date inputs, and the Needs Attention control's
+      // own deep link (focusAppointmentId/focusServiceDate) now points at
+      // appointments with no rolling-cutoff limit on their age, so a busy,
+      // long-tenured workspace can still produce an apptIds/clientIds list
+      // large enough to risk an oversized `.in()` filter or a truncated
+      // (>1000-row) response from an unbounded query. Same fix as
+      // app/api/dashboard/needs-attention/route.ts's identical correction.
       const [assignRes, billingRes, hours] = await Promise.all([
-        supabaseAdmin
-          .from("appointment_employees")
-          .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, job_notes, created_at, updated_at")
-          .eq("workspace_id", workspaceId)
-          .in("appointment_id", apptIds),
-        supabaseAdmin
-          .from("completed_job_billing")
-          .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
-          .eq("workspace_id", workspaceId)
-          .in("appointment_id", apptIds),
+        fetchAllPagesChunkedIn<AppointmentEmployeeAssignment>(apptIds, async (chunkIds, from, to) =>
+          supabaseAdmin
+            .from("appointment_employees")
+            .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, job_notes, created_at, updated_at")
+            .eq("workspace_id", workspaceId)
+            .in("appointment_id", chunkIds)
+            .order("id", { ascending: true })
+            .range(from, to)
+        ),
+        fetchAllPagesChunkedIn<CompletedJobBilling>(apptIds, async (chunkIds, from, to) =>
+          supabaseAdmin
+            .from("completed_job_billing")
+            .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
+            .eq("workspace_id", workspaceId)
+            .in("appointment_id", chunkIds)
+            .order("id", { ascending: true })
+            .range(from, to)
+        ),
         fetchEmployeeHoursForAppointments(apptIds, workspaceId),
       ]);
       if (assignRes.error) throw assignRes.error;
@@ -132,12 +150,16 @@ export async function GET(req: Request) {
       employeeHours = hours;
 
       const clientIds = [...new Set(appointments.map((a) => a.client_id))];
-      const clientsRes = await supabaseAdmin
-        .from("clients")
-        .select("id, name, email, phone")
-        .eq("workspace_id", workspaceId)
-        .eq("is_demo", isTester)
-        .in("id", clientIds);
+      const clientsRes = await fetchAllPagesChunkedIn<Client>(clientIds, async (chunkIds, from, to) =>
+        supabaseAdmin
+          .from("clients")
+          .select("id, name, email, phone")
+          .eq("workspace_id", workspaceId)
+          .eq("is_demo", isTester)
+          .in("id", chunkIds)
+          .order("id", { ascending: true })
+          .range(from, to)
+      );
       if (clientsRes.error) throw clientsRes.error;
       clients = (clientsRes.data ?? []) as Client[];
     }

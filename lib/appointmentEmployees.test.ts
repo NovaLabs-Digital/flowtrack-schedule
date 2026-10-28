@@ -183,6 +183,27 @@ describe("fetchAssignments / fetchEmployeeHoursForAppointments -- workspace-scop
     assert.deepEqual(rows, []);
     assert.equal(currentFake.calls.length, 0);
   });
+
+  // Regression: a caller (e.g. app/api/dashboard/needs-attention/route.ts's
+  // now-unbounded-history categories) can pass far more than 300
+  // appointment ids -- this must fetch in chunked, bounded batches
+  // (fetchAllPagesChunkedIn), never one oversized .in() query.
+  test("fetchEmployeeHoursForAppointments chunks an id list larger than one chunk (301 ids) into two batches, merging both results", async () => {
+    const ids = Array.from({ length: 301 }, (_, i) => `appt-${i}`);
+    const rowsChunk1 = Array.from({ length: 300 }, (_, i) => ({
+      id: `h-${i}`, appointment_id: `appt-${i}`, employee_id: "emp-1", hours_worked: 2, note: null, created_at: "x", updated_at: "x",
+    }));
+    const rowsChunk2 = [
+      { id: "h-300", appointment_id: "appt-300", employee_id: "emp-1", hours_worked: 2, note: null, created_at: "x", updated_at: "x" },
+    ];
+    resetFixtures({ appointment_employee_hours: [{ data: rowsChunk1 }, { data: rowsChunk2 }] });
+    const rows = await fetchEmployeeHoursForAppointments(ids, "ws-1");
+    assert.equal(rows.length, 301, "both chunks' rows are merged, including the one in the second chunk");
+    const inCalls = currentFake.calls.filter((c) => c.table === "appointment_employee_hours" && c.method === "in");
+    assert.equal(inCalls.length, 2, "exactly two .in() calls -- one per chunk");
+    assert.equal((inCalls[0].args[1] as string[]).length, 300);
+    assert.equal((inCalls[1].args[1] as string[]).length, 1);
+  });
 });
 
 describe("insertAssignments", () => {

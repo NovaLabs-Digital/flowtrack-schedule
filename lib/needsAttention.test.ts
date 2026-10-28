@@ -17,8 +17,7 @@ import type { Client, AppointmentEmployeeAssignment, EmployeeHours } from "@/app
 mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-20T18:00:00.000Z").getTime() });
 
 const TZ = "America/New_York";
-const RANGE_END = "2026-08-20";
-const RANGE_START = "2026-06-21"; // 60 days before RANGE_END
+const RANGE_END = "2026-08-20"; // business-local "today" for this frozen clock
 
 function appt(overrides: Partial<BillableAppointment> = {}): BillableAppointment {
   return {
@@ -89,7 +88,6 @@ function baseArgs(overrides: Partial<Parameters<typeof buildNeedsAttentionEntrie
     billingByAppointmentId: new Map(),
     employeeHours: [] as EmployeeHours[],
     failedMessageCountsByAppointmentId: new Map<string, number>(),
-    rangeStart: RANGE_START,
     rangeEnd: RANGE_END,
     timezone: TZ,
     ...overrides,
@@ -495,26 +493,116 @@ describe("buildNeedsAttentionEntries -- sort order: oldest scheduledFor first", 
   });
 });
 
-describe("buildNeedsAttentionEntries -- date-range bounding", () => {
-  test("an appointment outside [rangeStart, rangeEnd] is excluded from both item 1 and item 2", () => {
-    const tooOld = appt({ id: "appt-too-old", status: "scheduled", scheduled_for: "2026-01-01T13:00:00.000Z", scheduled_end: "2026-01-01T14:00:00.000Z" });
-    const asg = assignment({ appointment_id: "appt-too-old" });
+describe("buildNeedsAttentionEntries -- unbounded history for items 1/2 (regression: an old appointment must not silently age out)", () => {
+  // Frozen "now" is 2026-08-20; January is well over 60 days before that
+  // (the OLD rolling cutoff this scope change removes for items 1/2).
+  const JANUARY = "2026-01-15T13:00:00.000Z";
+
+  test("a January appointment with unresolved worked time IS flagged -- no rolling cutoff for item 1", () => {
+    const a = appt({ id: "appt-january-review", status: "scheduled", scheduled_for: JANUARY, scheduled_end: "2026-01-15T14:00:00.000Z" });
+    const asg = assignment({ appointment_id: "appt-january-review" });
     const entries = buildNeedsAttentionEntries(baseArgs({
-      appointments: [tooOld], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]),
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]),
     }));
-    assert.equal(entries.length, 0, "excluded by isInDateRange inside buildReviewNeededRows/buildCompletedJobRows");
+    assert.equal(entries.length, 1);
+    assert.deepEqual(entries[0].issues, [{ kind: "worked_time_review", label: "Worked time needs review" }]);
   });
 
-  test("an appointment outside the range can still be flagged for item 3 if the CALLER already scoped failedMessageCountsByAppointmentId to the same range -- this function trusts its own appointments input, it does not re-check the range for item 3", () => {
+  test("a January appointment with no invoice number IS flagged -- no rolling cutoff for needs_invoicing", () => {
+    const a = appt({ id: "appt-january-invoice", status: "scheduled", scheduled_for: JANUARY, scheduled_end: "2026-01-15T14:00:00.000Z" });
+    const asg = assignment({
+      appointment_id: "appt-january-invoice",
+      actual_started_at: JANUARY, actual_completed_at: "2026-01-15T14:00:00.000Z",
+    });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]),
+    }));
+    assert.equal(entries.length, 1);
+    assert.deepEqual(entries[0].issues, [{ kind: "needs_invoicing", label: "Needs invoice number" }]);
+  });
+
+  test("a January appointment that's invoiced but unpaid IS flagged -- no rolling cutoff for payment_outstanding", () => {
+    const a = appt({ id: "appt-january-unpaid", status: "scheduled", scheduled_for: JANUARY, scheduled_end: "2026-01-15T14:00:00.000Z" });
+    const asg = assignment({
+      appointment_id: "appt-january-unpaid",
+      actual_started_at: JANUARY, actual_completed_at: "2026-01-15T14:00:00.000Z",
+    });
+    const b = billing({ appointment_id: "appt-january-unpaid", invoice_number: "INV-OLD", paid: false });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
+    }));
+    assert.equal(entries.length, 1);
+    assert.deepEqual(entries[0].issues, [{ kind: "payment_outstanding", label: "Payment outstanding" }]);
+  });
+
+  test("a January appointment that's PAID is still excluded -- unbounded history never means unresolved/ignoring resolution", () => {
+    const a = appt({ id: "appt-january-paid", status: "scheduled", scheduled_for: JANUARY, scheduled_end: "2026-01-15T14:00:00.000Z" });
+    const asg = assignment({
+      appointment_id: "appt-january-paid",
+      actual_started_at: JANUARY, actual_completed_at: "2026-01-15T14:00:00.000Z",
+    });
+    const b = billing({ appointment_id: "appt-january-paid", invoice_number: "INV-OLD2", paid: true, payment_method: "zelle" });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
+    }));
+    assert.equal(entries.length, 0);
+  });
+
+  test("a January CANCELLED appointment is still excluded from items 1/2 -- unbounded history never overrides the cancelled-exclusion rule", () => {
+    const a = appt({ id: "appt-january-cancelled", status: "cancelled", scheduled_for: JANUARY, scheduled_end: "2026-01-15T14:00:00.000Z" });
+    const asg = assignment({ appointment_id: "appt-january-cancelled" });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]),
+    }));
+    assert.equal(entries.length, 0);
+  });
+});
+
+describe("buildNeedsAttentionEntries -- future appointments are still excluded from items 1/2 (rangeEnd is the only bound left)", () => {
+  test("a future appointment with (hypothetically) already-resolved billing data is still excluded via rangeEnd, even though items 1/2 no longer have a lower bound", () => {
+    // Billing eligibility itself has no time dimension (see
+    // isAppointmentBillingEligible) -- rangeEnd is what excludes a future
+    // appointment for item 2, exactly as it already does for item 1 (see
+    // the "future (not yet elapsed) appointment" test above).
+    const future = appt({
+      id: "appt-future-billing", status: "scheduled",
+      scheduled_for: "2026-08-25T13:00:00.000Z", scheduled_end: "2026-08-25T14:00:00.000Z",
+    });
+    const asg = assignment({
+      appointment_id: "appt-future-billing",
+      actual_started_at: "2026-08-25T13:00:00.000Z", actual_completed_at: "2026-08-25T14:00:00.000Z",
+    });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [future], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]),
+    }));
+    assert.equal(entries.length, 0, "rangeEnd (2026-08-20) excludes an 2026-08-25 appointment regardless of its billing data");
+  });
+});
+
+describe("buildNeedsAttentionEntries -- item 3 keeps its own bounded scope, independent of items 1/2's unbounded history", () => {
+  test("an appointment can still be flagged for item 3 if the CALLER already scoped failedMessageCountsByAppointmentId to the 60-day window -- this function trusts its own appointments input, it does not re-check any range for item 3", () => {
     // Deliberately demonstrates that item 3's own range-safety is the
     // caller's responsibility (the API route only ever queries messages
-    // for appointments already fetched within range) -- this function
-    // itself only guards against an appointmentId with no matching
-    // appointment row at all (see the "unknown appointment" test above).
+    // for appointments already fetched within the 60-day window) -- this
+    // function itself only guards against an appointmentId with no
+    // matching appointment row at all (see the "unknown appointment" test
+    // above).
     const inRange = appt({ id: "appt-in-range", status: "scheduled" });
     const entries = buildNeedsAttentionEntries(baseArgs({
       appointments: [inRange], clients: [client()], failedMessageCountsByAppointmentId: new Map([["appt-in-range", 1]]),
     }));
     assert.equal(entries.length, 1);
+  });
+
+  test("a January failed-message count is NOT flagged here -- this function doesn't widen item 3's scope on its own; only the route's own 60-day-bounded failedMessageCountsByAppointmentId input controls that, and a route that (correctly) never includes a January appointment id in that map means this function never sees one to flag", () => {
+    // appointments (items 1/2) DOES include the January appointment (no
+    // rolling cutoff there), but failedMessageCountsByAppointmentId does
+    // NOT reference it -- exactly what the real route produces once an
+    // appointment falls outside its own 60-day messages_sent scoping.
+    const a = appt({ id: "appt-january-no-failed-msg", status: "cancelled", scheduled_for: "2026-01-15T13:00:00.000Z" });
+    const entries = buildNeedsAttentionEntries(baseArgs({
+      appointments: [a], clients: [client()], failedMessageCountsByAppointmentId: new Map(),
+    }));
+    assert.equal(entries.length, 0, "cancelled, and no issue of any kind applies");
   });
 });

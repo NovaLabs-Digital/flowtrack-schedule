@@ -1,9 +1,25 @@
 // "Needs attention" (desktop sidebar control + mobile equivalent):
-// aggregates three kinds of actionable items across a bounded recent
-// window, each backed by an EXISTING authoritative rule already used
-// elsewhere in this app -- this module invents no new eligibility/status
-// logic of its own, only the grouping/labeling needed to surface them
-// together in one place.
+// aggregates four kinds of actionable items, each backed by an EXISTING
+// authoritative rule already used elsewhere in this app -- this module
+// invents no new eligibility/status logic of its own, only the grouping/
+// labeling needed to surface them together in one place.
+//
+// SCOPE (two different windows, by design -- see each item below):
+//   - Worked-time review, needs-invoicing, and payment-outstanding (items
+//     1-2) have NO rolling cutoff: unresolved work and billing never ages
+//     out of this list just because it happened more than N days ago.
+//     Each is still bounded to the PAST only (never a future appointment)
+//     via rangeEnd (today, business-local) -- the one date bound these
+//     three still respect, reusing isInDateRange exactly as before, just
+//     with no lower bound.
+//   - Failed messages (item 3) RETAINS the rolling
+//     NEEDS_ATTENTION_LOOKBACK_DAYS-day window -- the caller (the API
+//     route) scopes failedMessageCountsByAppointmentId to that window
+//     before calling this function; this module does not re-derive or
+//     widen it. A message-send failure from a year ago is not something
+//     this control helps with the way an unresolved invoice is -- it's not
+//     actionable in the same sense (nothing to retry against an appointment
+//     that old), so it keeps its original bounded scope.
 //
 //   1. Worked-time review: buildReviewNeededRows (needsCompletionReview)
 //      below, from lib/completedJobBilling.ts -- the EXACT same "Past jobs
@@ -52,15 +68,24 @@ import { toDateInputValue } from "@/lib/payroll";
 import { toBusinessLocal } from "@/lib/timezone";
 import type { Client, AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 
-// How far back "Needs attention" looks for past unresolved work -- a
-// deliberately BOUNDED window, not all-time history (which would mean an
-// ever-growing, unbounded query and render as a workspace accumulates
-// years of appointments). An item older than this is not silently hidden:
-// the API route returns rangeStart/rangeEnd alongside the entries, and the
-// UI displays that span explicitly, so the owner always knows the real
-// scope of what's shown and can still find older unresolved work through
-// Billing / Completed Jobs (whose own date range is not bounded this way).
+// How far back the FAILED-MESSAGE check (item 3 only) looks -- items 1/2
+// (worked-time review, billing) have no rolling cutoff at all; see this
+// module's own header for why the two differ. The API route scopes
+// failedMessageCountsByAppointmentId to this window before this function
+// ever sees it.
 export const NEEDS_ATTENTION_LOOKBACK_DAYS = 60;
+
+// Lower bound passed to buildReviewNeededRows/buildCompletedJobRows for
+// items 1/2, standing in for "no lower bound" -- isInDateRange (lib/
+// completedJobBilling.ts) is a plain string comparison against a
+// "YYYY-MM-DD" value, so reusing it UNCHANGED with a sentinel this far in
+// the past (long before this application, or any realistic business, could
+// have a real appointment) is equivalent to having no lower bound at all,
+// without needing a second, parallel "unbounded" code path in either of
+// those two shared functions. The upper bound (rangeEnd, passed in by the
+// caller) is the only bound that still matters for these two -- it is what
+// excludes a future appointment, via the exact same existing check.
+const ALL_HISTORY_RANGE_START = "0001-01-01";
 
 export type NeedsAttentionIssueKind = "worked_time_review" | "needs_invoicing" | "payment_outstanding" | "failed_message";
 
@@ -101,22 +126,30 @@ export function buildNeedsAttentionEntries({
   billingByAppointmentId,
   employeeHours,
   failedMessageCountsByAppointmentId,
-  rangeStart,
   rangeEnd,
   timezone,
   includeInvoicing = true,
 }: {
-  // The full appointment set already scoped to [rangeStart, rangeEnd] --
-  // deliberately NOT pre-filtered to only billing-eligible or review-
-  // needed ones, since a failed-message issue (item 3) can apply to any
-  // appointment regardless of its billing/tracking state.
+  // The FULL past-appointment set (no rolling lower bound -- see this
+  // module's own header), already excluding any appointment later than
+  // rangeEnd and already excluding cancelled-at-fetch-time filtering the
+  // caller may apply elsewhere -- deliberately NOT pre-filtered to only
+  // billing-eligible or review-needed ones, since a failed-message issue
+  // (item 3) can apply to any appointment regardless of its billing/
+  // tracking state. Must include every appointment id
+  // failedMessageCountsByAppointmentId references (the caller's own
+  // 60-day-bounded set is always a subset of this one, since both share
+  // the same upper bound and this one has no lower bound).
   appointments: BillableAppointment[];
   clients: Client[];
   assignmentsByAppointmentId: Map<string, AppointmentEmployeeAssignment[]>;
   billingByAppointmentId: Map<string, CompletedJobBilling>;
   employeeHours: EmployeeHours[];
   failedMessageCountsByAppointmentId: Map<string, number>;
-  rangeStart: string;
+  // Business-local "today" ("YYYY-MM-DD") -- the only date bound items 1/2
+  // still respect (excludes a future appointment); item 3 is bounded
+  // separately by the caller, via which appointment ids even appear as
+  // keys in failedMessageCountsByAppointmentId.
   rangeEnd: string;
   timezone: string;
   // Destination-permission control, decided by the caller: gates BOTH
@@ -151,9 +184,11 @@ export function buildNeedsAttentionEntries({
 
   // 1. Worked-time review -- reuses buildReviewNeededRows verbatim; this
   // function's own cancelled/eligibility/billing-resolved checks decide
-  // membership, not anything re-derived here.
+  // membership, not anything re-derived here. ALL_HISTORY_RANGE_START (see
+  // this module's own header) means no rolling lower bound -- only rangeEnd
+  // (today) still excludes a future appointment.
   const reviewRows = buildReviewNeededRows({
-    appointments, clients, assignmentsByAppointmentId, employeeHours, rangeStart, rangeEnd, timezone,
+    appointments, clients, assignmentsByAppointmentId, employeeHours, rangeStart: ALL_HISTORY_RANGE_START, rangeEnd, timezone,
   });
   for (const row of reviewRows) {
     const appt = apptById.get(row.appointmentId);
@@ -170,7 +205,7 @@ export function buildNeedsAttentionEntries({
   // -- not merely filtered after the fact.
   if (includeInvoicing) {
     const completedRows = buildCompletedJobRows({
-      appointments, clients, assignmentsByAppointmentId, billingByAppointmentId, employeeHours, rangeStart, rangeEnd, timezone,
+      appointments, clients, assignmentsByAppointmentId, billingByAppointmentId, employeeHours, rangeStart: ALL_HISTORY_RANGE_START, rangeEnd, timezone,
     });
     const needsInvoicingRows = applyBillingStatusFilter(completedRows, "missing_invoice");
     for (const row of needsInvoicingRows) {

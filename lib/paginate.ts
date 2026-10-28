@@ -51,3 +51,52 @@ export async function fetchAllPages<T>(
 
   return { data: all, error: null };
 }
+
+// Default-sized chunk for a `.in(column, ids)` filter -- bounds the QUERY
+// SIZE (the filter's own id list), independent of fetchAllPages' pageSize
+// above (which bounds each response's ROW count). A single .in() filter
+// listing every id in a large array (e.g. every appointment across a
+// workspace's entire history, once a caller stops bounding that list by a
+// rolling date window) risks an oversized request regardless of how many
+// rows come back -- chunking the id list itself is the fix for that, not a
+// bigger page size. 300 UUIDs keeps the filter comfortably under common
+// proxy/server URL-length limits while still keeping the number of chunks
+// (and therefore round trips) reasonable for a busy, long-tenured
+// workspace.
+export const DEFAULT_ID_CHUNK_SIZE = 300;
+
+export function chunkArray<T>(items: T[], size: number = DEFAULT_ID_CHUNK_SIZE): T[][] {
+  if (items.length === 0) return [];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+// Combines chunkArray (bounds the .in() filter's own id-list size) with
+// fetchAllPages (bounds each chunk's own response row count) -- for a
+// query filtered by a potentially large list of ids, this is the complete
+// fix: neither the QUERY nor the RESPONSE can silently grow unbounded.
+// `runPageForChunk(chunkIds, from, to)` must run the exact same filtered
+// query for that one chunk's ids, varying only .range(from, to) -- same
+// deterministic-.order() contract fetchAllPages itself requires. An empty
+// `ids` array short-circuits to zero queries (matching every existing
+// "if (apptIds.length > 0)" guard already in this app, rather than issuing
+// a query with an empty .in() list). Fails closed on the first chunk (or
+// page within a chunk) that errors, exactly like fetchAllPages -- never
+// returns a partial dataset silently.
+export async function fetchAllPagesChunkedIn<T>(
+  ids: string[],
+  runPageForChunk: (chunkIds: string[], from: number, to: number) => Promise<PagedResult<T>>,
+  chunkSize: number = DEFAULT_ID_CHUNK_SIZE,
+  pageSize: number = DEFAULT_PAGE_SIZE
+): Promise<PagedResult<T>> {
+  const all: T[] = [];
+  for (const chunk of chunkArray(ids, chunkSize)) {
+    const { data, error } = await fetchAllPages<T>((from, to) => runPageForChunk(chunk, from, to), pageSize);
+    if (error) return { data: null, error };
+    all.push(...(data ?? []));
+  }
+  return { data: all, error: null };
+}

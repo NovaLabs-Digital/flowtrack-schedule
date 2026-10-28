@@ -121,7 +121,12 @@ describe("NeedsAttentionControl -- opening and closing", () => {
     await screen.findByText("No items need attention.");
   });
 
-  test("the dropdown discloses the date range it covers, formatted MM/DD/YY -- never the raw API \"YYYY-MM-DD\" string", async () => {
+  // Regression: unresolved work/billing no longer has a rolling cutoff --
+  // the scope explanation must say so explicitly, and must not read as if
+  // the WHOLE list (including worked-time-review/invoicing/payment) is
+  // still limited to the disclosed range, which now describes ONLY the
+  // failed-message check.
+  test("the dropdown explains that worked-time/invoicing/payment cover all history, and discloses the failed-message window formatted MM/DD/YY -- never the raw API \"YYYY-MM-DD\" string", async () => {
     responses = [
       json(200, { entries: [ENTRY_REVIEW], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
       json(200, { entries: [ENTRY_REVIEW], rangeStart: "2026-06-22", rangeEnd: "2026-08-20" }),
@@ -129,7 +134,9 @@ describe("NeedsAttentionControl -- opening and closing", () => {
     renderControl();
     const button = await screen.findByRole("button", { name: "Needs attention · 1" });
     await userEvent.setup().click(button);
-    await screen.findByText(/Showing issues from 06\/22\/26 to 08\/20\/26/);
+    await screen.findByText(/full history/i);
+    await screen.findByText(/Failed-message checks cover 06\/22\/26 to 08\/20\/26/);
+    assert.equal(screen.queryByText(/Showing issues from/), null, "the old wording implying the whole list shares one bounded range must be gone");
   });
 
   test("each entry's own service date is formatted MM/DD/YY too -- consistent with the date range above it", async () => {

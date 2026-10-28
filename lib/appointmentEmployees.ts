@@ -6,7 +6,7 @@
 // discard recorded work" removal safeguard are each defined exactly once
 // and can never drift between call sites.
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { fetchAllPages } from "@/lib/paginate";
+import { fetchAllPagesChunkedIn } from "@/lib/paginate";
 import type { AppointmentEmployeeAssignment, EmployeeHours } from "@/app/components/dashboard/types";
 
 // Block 2C-1 concurrency correction: mirrors lib/recurringSeries.ts's own
@@ -130,21 +130,22 @@ export async function fetchAssignments(appointmentId: string, workspaceId: strin
 // this file calls it directly (fetchAssignments below already returns
 // DB-ordered rows via its own .order() clauses).
 
-// Bounded in fixed-size batches via fetchAllPages (see that module's own
-// doc comment on the prior incident an unscoped query already caused in
-// this app) rather than one unbounded .in() query -- appointmentIds here
-// can be every appointment across a caller's own date window (e.g. the
-// needs-attention and billing/completed-jobs aggregations' 60-day lookback
-// over a busy, long-tenured workspace), which can grow past PostgREST's
-// default 1000-row response cap even though each individual call site's
-// own ID list is itself bounded.
+// Bounded in fixed-size batches AND chunked id lists via
+// fetchAllPagesChunkedIn (see lib/paginate.ts's own doc comments) rather
+// than one unbounded .in() query -- appointmentIds here can be every
+// appointment across a caller's own scope (e.g. the needs-attention
+// aggregation's unresolved-work/billing categories, which have no rolling
+// date cutoff at all over a busy, long-tenured workspace), which can grow
+// past both PostgREST's default 1000-row response cap AND a safe .in()
+// filter size, even though each individual call site previously assumed
+// its own ID list was small.
 export async function fetchEmployeeHoursForAppointments(appointmentIds: string[], workspaceId: string): Promise<EmployeeHours[]> {
   if (appointmentIds.length === 0) return [];
-  const { data, error } = await fetchAllPages<EmployeeHours>(async (from, to) =>
+  const { data, error } = await fetchAllPagesChunkedIn<EmployeeHours>(appointmentIds, async (chunkIds, from, to) =>
     supabaseAdmin
       .from("appointment_employee_hours")
       .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
-      .in("appointment_id", appointmentIds)
+      .in("appointment_id", chunkIds)
       .eq("workspace_id", workspaceId)
       .order("id", { ascending: true })
       .range(from, to)

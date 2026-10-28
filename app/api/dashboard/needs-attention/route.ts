@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { getSession, requireRole, assertWorkspace } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireCapability } from "@/lib/entitlementServer";
-import { fetchAllPages } from "@/lib/paginate";
+import { fetchAllPages, fetchAllPagesChunkedIn } from "@/lib/paginate";
 import { effectiveTimezone, zonedDateTimeToUTC, nowInBusinessTz } from "@/lib/timezone";
 import { toDateInputValue } from "@/lib/payroll";
 import { fetchEmployeeHoursForAppointments } from "@/lib/appointmentEmployees";
@@ -42,16 +42,34 @@ function addDays(d: Date, n: number): Date {
 // GET /api/dashboard/needs-attention
 //
 // "Needs attention" (desktop sidebar control + mobile equivalent): a
-// single bounded, workspace-scoped aggregation of three EXISTING
-// actionable-item rules -- see lib/needsAttention.ts's own header comment
-// for exactly which ones and why no new eligibility/status logic is
-// invented here. Bounded to the last NEEDS_ATTENTION_LOOKBACK_DAYS days
-// (never all-time history) for the same reason app/api/billing/completed-
-// jobs/route.ts is date-range-scoped rather than unscoped -- see
-// fetchAllPages' own doc comment on the prior incident an unbounded query
-// already caused in this app. rangeStart/rangeEnd are always returned
-// alongside the entries so the caller can disclose the real scope to the
-// owner, rather than silently hiding older unresolved work.
+// workspace-scoped aggregation of four EXISTING actionable-item rules --
+// see lib/needsAttention.ts's own header comment for exactly which ones
+// and why no new eligibility/status logic is invented here.
+//
+// TWO different scopes, by design (see lib/needsAttention.ts's own header
+// for the full reasoning):
+//   - Worked-time review, needs-invoicing, and payment-outstanding have NO
+//     rolling cutoff -- unresolved work/billing never silently ages out of
+//     this list. These are bounded only by `rangeEnd` (today, excludes a
+//     future appointment) -- never by a rolling lower bound.
+//   - Failed messages RETAIN the NEEDS_ATTENTION_LOOKBACK_DAYS-day window
+//     (`messagesRangeStart`/`rangeEnd` below) -- a message-send failure
+//     from a year ago isn't actionable the way an unresolved invoice is.
+//
+// rangeStart/rangeEnd in the JSON response describe ONLY the failed-message
+// window now (see the module-level doc comment above the response below) --
+// never implying the unresolved-work/billing categories share that same
+// cutoff.
+//
+// Row-count safety: the appointments query itself has no lower bound
+// anymore, so in a busy, long-tenured workspace it (and everything joined
+// against its ids below) can return far more rows than a single PostgREST
+// response allows, and the id lists used to join against it can themselves
+// grow past a safe `.in()` filter size -- both are handled explicitly
+// below (fetchAllPages for response row count, fetchAllPagesChunkedIn for
+// the `.in()` filter's own id-list size). See fetchAllPages' own doc
+// comment on the prior incident an unbounded, unbatched query already
+// caused in this app.
 export async function GET(req: Request) {
   try {
     const session = await getSession();
@@ -98,14 +116,22 @@ export async function GET(req: Request) {
     const todayLocal = nowInBusinessTz(timezone);
     todayLocal.setHours(0, 0, 0, 0);
     const rangeEnd = toDateInputValue(todayLocal);
-    const rangeStart = toDateInputValue(addDays(todayLocal, -NEEDS_ATTENTION_LOOKBACK_DAYS));
+    // Failed-message window only (item 3) -- items 1/2 no longer use a
+    // lower bound at all; see this file's own header and
+    // lib/needsAttention.ts's for why the two differ.
+    const messagesRangeStart = toDateInputValue(addDays(todayLocal, -NEEDS_ATTENTION_LOOKBACK_DAYS));
 
-    const lowerBound = zonedDateTimeToUTC(rangeStart, "00:00", timezone);
+    const messagesLowerBound = zonedDateTimeToUTC(messagesRangeStart, "00:00", timezone);
     const upperBoundExclusive = zonedDateTimeToUTC(toDateInputValue(addDays(todayLocal, 1)), "00:00", timezone);
-    if (!lowerBound.ok || !upperBoundExclusive.ok) {
+    if (!messagesLowerBound.ok || !upperBoundExclusive.ok) {
       return json({ error: "Invalid date range" }, 500);
     }
 
+    // No lower bound: every past (never future -- see upperBoundExclusive),
+    // non-future appointment in the workspace, regardless of age. This is
+    // the appointment set items 1/2 (unresolved work/billing) scan in full;
+    // item 3's own 60-day-bounded subset is derived from it below (never a
+    // second appointments query) via messagesRangeStart.
     const apptFields = "id, client_id, service_type, scheduled_for, scheduled_end, duration_minutes, status, price_cents";
     const apptsRes = await fetchAllPages<BillableAppointment>(async (from, to) =>
       supabaseAdmin
@@ -113,7 +139,6 @@ export async function GET(req: Request) {
         .select(apptFields)
         .eq("workspace_id", workspaceId)
         .eq("is_demo", isTester)
-        .gte("scheduled_for", lowerBound.iso)
         .lt("scheduled_for", upperBoundExclusive.iso)
         .order("scheduled_for", { ascending: true })
         .order("id", { ascending: true })
@@ -123,6 +148,16 @@ export async function GET(req: Request) {
     const appointments = (apptsRes.data ?? []) as BillableAppointment[];
     const apptIds = appointments.map((a) => a.id);
 
+    // Item 3's own 60-day-bounded subset, derived in-memory from the same
+    // already-fetched appointments -- never a second appointments query.
+    // Always a subset of apptIds (same upper bound, messagesRangeStart as
+    // the only additional lower bound), so every id referenced by
+    // failedMessageCounts below is guaranteed to have a matching
+    // appointment row for buildNeedsAttentionEntries to find.
+    const recentApptIds = appointments
+      .filter((a) => a.scheduled_for >= messagesLowerBound.iso)
+      .map((a) => a.id);
+
     let assignments: AppointmentEmployeeAssignment[] = [];
     let clients: Client[] = [];
     let billingRows: CompletedJobBilling[] = [];
@@ -130,33 +165,36 @@ export async function GET(req: Request) {
     let failedMessageCounts = new Map<string, number>();
 
     if (apptIds.length > 0) {
-      // Every one of these is keyed off apptIds -- itself already bounded by
-      // the 60-day window, but in a busy, long-tenured workspace apptIds
-      // can still hold more IDs than fit in one PostgREST response (default
-      // 1000 rows), and each of these tables can have several rows per
-      // appointment (employees assigned, messages sent). An unbounded
-      // single .in() query here would silently truncate rather than error
-      // -- same prior incident fetchAllPages's own doc comment describes
-      // for the unscoped dashboard appointments query -- so each is fetched
-      // in fixed-size batches, ordered by its own `id` as a deterministic
-      // tiebreaker (required by fetchAllPages' own contract: pages must
-      // come back in a stable order or they can skip/overlap rows).
+      // Every one of these is keyed off apptIds -- which, now that items
+      // 1/2 have no rolling date cutoff, can hold every appointment id a
+      // busy, long-tenured workspace has ever had. Two independent bounds
+      // are needed, not one: fetchAllPages alone bounds each response's ROW
+      // count (default 1000), but a `.in()` filter listing thousands of ids
+      // is ALSO an oversized QUERY regardless of how many rows come back --
+      // fetchAllPagesChunkedIn (lib/paginate.ts) covers both, chunking the
+      // id list itself and paginating each chunk's own response. Ordered by
+      // each table's own `id` as a deterministic tiebreaker (required by
+      // fetchAllPages' own contract: pages must come back in a stable order
+      // or they can skip/overlap rows). messages_sent is scoped to
+      // recentApptIds specifically, not the full apptIds -- that is what
+      // keeps the failed-message check on its own 60-day window while
+      // items 1/2 read from the full history.
       const [assignRes, billingRes, hours, messagesRes] = await Promise.all([
-        fetchAllPages<AppointmentEmployeeAssignment>(async (from, to) =>
+        fetchAllPagesChunkedIn<AppointmentEmployeeAssignment>(apptIds, async (chunkIds, from, to) =>
           supabaseAdmin
             .from("appointment_employees")
             .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, job_notes, created_at, updated_at")
             .eq("workspace_id", workspaceId)
-            .in("appointment_id", apptIds)
+            .in("appointment_id", chunkIds)
             .order("id", { ascending: true })
             .range(from, to)
         ),
-        fetchAllPages<CompletedJobBilling>(async (from, to) =>
+        fetchAllPagesChunkedIn<CompletedJobBilling>(apptIds, async (chunkIds, from, to) =>
           supabaseAdmin
             .from("completed_job_billing")
             .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
             .eq("workspace_id", workspaceId)
-            .in("appointment_id", apptIds)
+            .in("appointment_id", chunkIds)
             .order("id", { ascending: true })
             .range(from, to)
         ),
@@ -170,12 +208,12 @@ export async function GET(req: Request) {
         // still never learns what was sent or to whom; that detail stays
         // behind the appointment-scoped Message History route, reached
         // only after the owner navigates to a specific appointment.
-        fetchAllPages<MessageAttemptRow>(async (from, to) =>
+        fetchAllPagesChunkedIn<MessageAttemptRow>(recentApptIds, async (chunkIds, from, to) =>
           supabaseAdmin
             .from("messages_sent")
             .select("id, appointment_id, channel, kind, scheduled_for, provider_id, created_at")
             .eq("workspace_id", workspaceId)
-            .in("appointment_id", apptIds)
+            .in("appointment_id", chunkIds)
             .order("id", { ascending: true })
             .range(from, to)
         ),
@@ -190,13 +228,13 @@ export async function GET(req: Request) {
       failedMessageCounts = countUnresolvedFailedMessageGroupsByAppointment(messagesRes.data ?? []);
 
       const clientIds = [...new Set(appointments.map((a) => a.client_id))];
-      const clientsRes = await fetchAllPages<Client>(async (from, to) =>
+      const clientsRes = await fetchAllPagesChunkedIn<Client>(clientIds, async (chunkIds, from, to) =>
         supabaseAdmin
           .from("clients")
           .select("id, name, email, phone")
           .eq("workspace_id", workspaceId)
           .eq("is_demo", isTester)
-          .in("id", clientIds)
+          .in("id", chunkIds)
           .order("id", { ascending: true })
           .range(from, to)
       );
@@ -219,24 +257,29 @@ export async function GET(req: Request) {
       billingByAppointmentId,
       employeeHours,
       failedMessageCountsByAppointmentId: failedMessageCounts,
-      rangeStart,
       rangeEnd,
       timezone,
       includeInvoicing,
     });
 
-    // The 60-day lookback bounds the DATE range, not the ROW count -- a
-    // busy workspace can still have far more distinct appointments with an
-    // issue than belongs in one response. Paginated here, over the
-    // already-built (and already deduplicated/grouped) in-memory list;
-    // totalCount is the full count before slicing, independent of the page
-    // returned, so the collapsed button's own count is always accurate
-    // even before every page has been loaded.
+    // Items 1/2 have no rolling lower bound anymore -- in a busy,
+    // long-tenured workspace there can be far more distinct unresolved
+    // appointments than belongs in one response, independent of any date
+    // window. Paginated here, over the already-built (and already
+    // deduplicated/grouped) in-memory list; totalCount is the full count
+    // before slicing, independent of the page returned, so the collapsed
+    // button's own count is always accurate even before every page has
+    // been loaded.
     const totalCount = allEntries.length;
     const entries = allEntries.slice(offset, offset + limit);
     const hasMore = offset + entries.length < totalCount;
 
-    return json({ entries, totalCount, hasMore, rangeStart, rangeEnd, timezone });
+    // rangeStart/rangeEnd describe ONLY the failed-message window now (item
+    // 3) -- never implying items 1/2 (unresolved work/billing, no rolling
+    // cutoff) share that same scope. The client surfaces this distinction
+    // explicitly rather than reusing one caption for both (see
+    // NeedsAttentionControl.tsx/MobileNeedsAttentionControl.tsx).
+    return json({ entries, totalCount, hasMore, rangeStart: messagesRangeStart, rangeEnd, timezone });
   } catch (e: any) {
     console.error("NEEDS_ATTENTION_GET_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);
