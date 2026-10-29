@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { DEMO_ENTRY_EMAIL, DEMO_ENTRY_PASSWORD, isValidDemoEntry } from "@/lib/demoLocal/entryGate";
 
-const DEMO_EMAIL = "demo@scheduleflowtrack.com";
-const DEMO_PASSWORD = "Demo2026!";
-
+// The public demo runs entirely in the browser (/demo, see lib/demoLocal/).
+// "Enter the Experience" checks the published demo credentials against the
+// local entry gate only -- no network request, no call to the real login route, so no
+// real session or cookie is ever created from this flow.
 export default function TryDemoButton({
   className,
   children,
@@ -15,31 +17,15 @@ export default function TryDemoButton({
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  async function handleDemoLogin() {
+  function handleEnterDemo() {
     setError("");
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: DEMO_EMAIL, password: DEMO_PASSWORD }),
-      });
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        setError(data?.error || "Demo login failed.");
-        return;
-      }
-
-      router.push(data.redirect || "/dashboard");
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setLoading(false);
+    if (!isValidDemoEntry(DEMO_ENTRY_EMAIL, DEMO_ENTRY_PASSWORD)) {
+      setError("The demo could not be opened. Please try again.");
+      return;
     }
+    router.push("/demo");
   }
 
   return (
@@ -85,13 +71,17 @@ export default function TryDemoButton({
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Email</span>
-                <span className="font-medium text-slate-900">{DEMO_EMAIL}</span>
+                <span className="font-medium text-slate-900">{DEMO_ENTRY_EMAIL}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-500">Password</span>
-                <span className="font-medium text-slate-900">{DEMO_PASSWORD}</span>
+                <span className="font-medium text-slate-900">{DEMO_ENTRY_PASSWORD}</span>
               </div>
             </div>
+
+            <p className="mt-3 text-xs text-slate-500">
+              The demo runs entirely in your browser. No real account or sign-in is created.
+            </p>
 
             {error && (
               <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
@@ -101,11 +91,10 @@ export default function TryDemoButton({
 
             <button
               type="button"
-              onClick={handleDemoLogin}
-              disabled={loading}
+              onClick={handleEnterDemo}
               className="mt-4 w-full rounded-xl bg-[#0f172a] px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
             >
-              {loading ? "Signing in..." : "Enter the Experience"}
+              Enter the Experience
             </button>
           </div>
         </div>

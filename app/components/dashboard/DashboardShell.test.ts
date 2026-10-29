@@ -415,3 +415,17 @@ describe("DashboardShell: Needs Attention refresh triggers", () => {
     assert.match(block![0], /onBillingSaved=\{handleBillingSaved\}/);
   });
 });
+
+describe("DashboardShell: isLocalDemo (browser-local demo) pass-through", () => {
+  test("isLocalDemo is an optional prop destructured with a safe false default, and forwarded to DashboardSettingsArea", () => {
+    assert.match(source, /isLocalDemo\?:\s*boolean;/);
+    assert.match(source, /\n\s*isLocalDemo = false,\r?\n\}: \{/);
+    const block = desktopBlock.match(/<DashboardSettingsArea[\s\S]*?\/>/);
+    assert.ok(block);
+    assert.match(block![0], /isLocalDemo=\{isLocalDemo\}/);
+  });
+
+  test("the real server page never passes isLocalDemo (so it stays false there)", () => {
+    assert.doesNotMatch(pageSource, /isLocalDemo/);
+  });
+});

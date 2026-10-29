@@ -65,6 +65,7 @@ export default function DashboardShell({
   businessHours,
   workspaceId,
   userId,
+  isLocalDemo = false,
 }: {
   clients: Client[];
   appointments: Appointment[];
@@ -128,6 +129,11 @@ export default function DashboardShell({
   // or the literal "tester" for demo sessions (see app/dashboard/page.tsx).
   // Same UI-only, never-sent-to-a-server-route rule as workspaceId above.
   userId: string;
+  // Browser-local public demo (app/demo/page.tsx) only: passed straight
+  // through to DashboardSettingsArea, which then always shows the demo
+  // Settings sidebar (Staff/Services/Billing/Demo Controls). Omitted -- so
+  // false -- by the real server page (app/dashboard/page.tsx).
+  isLocalDemo?: boolean;
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
@@ -692,6 +698,7 @@ export default function DashboardShell({
           ) : (
             <DashboardSettingsArea
               isTester={isTester}
+              isLocalDemo={isLocalDemo}
               settingsSection={settingsSection}
               onSettingsSelect={handleSettingsSelect}
               onBack={() => {

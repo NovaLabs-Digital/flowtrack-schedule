@@ -38,3 +38,66 @@ describe("DashboardSettingsArea: owner-path Settings scroll container reserves i
     assert.doesNotMatch(restOfFile, /scrollbarGutter/, "the tester-only branches never render Billing, so they need no scrollbar-gutter fix");
   });
 });
+
+describe("DashboardSettingsArea: browser-local demo (isLocalDemo) carve-out", () => {
+  test("isLocalDemo is an optional prop defaulting to false, so the real dashboard (which never passes it) is unchanged", () => {
+    assert.match(source, /isLocalDemo\?:\s*boolean;/);
+    assert.match(source, /export default function DashboardSettingsArea\(\{\s*isTester,\s*isLocalDemo = false,/);
+  });
+
+  test("the owner path (!isTester) never references isLocalDemo or the demo-only panels", () => {
+    const ownerBlock = source.slice(source.indexOf("if (!isTester) {"), source.indexOf("const carveOutActive"));
+    assert.doesNotMatch(ownerBlock, /isLocalDemo|DemoControlsPanel|demoControlsOpen/);
+  });
+
+  test("the carve-out condition is isLocalDemo OR the original Employees/Services experience-step condition", () => {
+    assert.match(
+      source,
+      /const carveOutActive = isLocalDemo \|\| \(active && \(currentStep\?\.id === "employees" \|\| currentStep\?\.id === "services"\)\);/
+    );
+  });
+
+  test("Billing is only a valid carve-out section when isLocalDemo; otherwise the original staff fallback applies", () => {
+    assert.match(source, /settingsSection === "staff" \|\| settingsSection === "services" \|\| \(isLocalDemo && settingsSection === "billing"\)/);
+  });
+
+  test("the Billing and Demo Controls sidebar entries render only under isLocalDemo", () => {
+    const gated = source.slice(source.indexOf("{isLocalDemo && ("), source.indexOf("<div className=\"flex-1\" />"));
+    assert.match(gated, /onSettingsSelect\("billing"\)/);
+    assert.match(gated, />\s*Billing\s*</);
+    assert.match(gated, /setDemoControlsOpen\(true\)/);
+    assert.match(gated, />\s*Demo Controls\s*</);
+  });
+
+  test("the carve-out render path uses the real SettingsPanel section=\"billing\" with the already-threaded props, and DemoControlsPanel", () => {
+    const carveOut = source.slice(source.indexOf("if (carveOutActive) {"));
+    const panel = carveOut.match(/<SettingsPanel[\s\S]*?\/>/);
+    assert.ok(panel);
+    for (const p of [
+      'section="billing"',
+      "canMutateOperationalData={canMutateOperationalData}",
+      "isTrialing={isTrialing}",
+      "timezone={timezone}",
+      "workspaceId={workspaceId}",
+      "userId={userId}",
+      "billingFocusAppointmentId={billingFocusAppointmentId}",
+      "billingFocusServiceDate={billingFocusServiceDate}",
+      "onBillingSaved={onBillingSaved}",
+    ]) {
+      assert.ok(panel![0].includes(p), `SettingsPanel missing ${p}`);
+    }
+    assert.match(carveOut, /<DemoControlsPanel onBack=\{onBack\} \/>/);
+  });
+
+  test("Demo Controls is shown only when isLocalDemo AND selected (component-local, not a persisted SettingsSection)", () => {
+    assert.match(source, /const showDemoControls = isLocalDemo && demoControlsOpen;/);
+    assert.match(source, /useState\(false\)/);
+  });
+
+  test("the non-carve-out tester Demo Mode notice is untouched", () => {
+    const notice = source.slice(source.lastIndexOf("return ("));
+    assert.ok(notice.includes("Full settings management is available in owner accounts."));
+    assert.ok(notice.includes(">20<") && notice.includes(">38<"));
+    assert.doesNotMatch(notice, /isLocalDemo|DemoControlsPanel/);
+  });
+});
