@@ -60,6 +60,26 @@ export type DemoMessageSent = {
   simulated: true;
 };
 
+// company_settings-shaped row (singular, not a table -- see app/api/settings/
+// company/route.ts's own GET for the real shape this mirrors). business_hours
+// null means "not customized," same convention as the real column: the
+// GET /api/settings/company demo handler resolves it through the real
+// effectiveBusinessHours/effectiveTimezone helpers at request time, exactly
+// like the production route does.
+export type DemoCompanySettings = {
+  company_name: string;
+  phone: string;
+  email: string;
+  address: string;
+  city: string;
+  state: string;
+  zip: string;
+  booking_enabled: boolean;
+  notifications_enabled: boolean;
+  business_hours: unknown;
+  timezone: string;
+};
+
 export type DemoFixtureBundle = {
   sessionInitIso: string;
   clients: Client[];
@@ -70,6 +90,7 @@ export type DemoFixtureBundle = {
   assignments: AppointmentEmployeeAssignment[];
   completedJobBilling: CompletedJobBilling[];
   messagesSent: DemoMessageSent[];
+  companySettings: DemoCompanySettings;
 };
 
 // Honest placeholder provider_id for a simulated "successful" send.
@@ -100,7 +121,11 @@ const SERVICE_SEED = [
 ];
 
 // sinceDaysAgo replaces the seed script's absolute client_since literals.
-const CLIENT_SEED: { name: string; address: string; sinceDaysAgo: number; preferred?: string; referred_by?: string; status?: string; notes?: string }[] = [
+// archivedDaysAgo (only set on already-"inactive" rows below) gives
+// ArchivedClientsPanel a real, non-empty, populated list for the demo's
+// production-parity Settings -- see generate.test.ts's archived-clients
+// assertions and the two named rows below.
+const CLIENT_SEED: { name: string; address: string; sinceDaysAgo: number; preferred?: string; referred_by?: string; status?: string; notes?: string; archivedDaysAgo?: number }[] = [
   { name: "Jordan Whitfield", address: "118 Sunbeam Lane, Palmetto Cove, FL 32999", sinceDaysAgo: 960, preferred: "phone", notes: "Gate code 4471. Friendly golden retriever in back yard — keep gate latched." },
   { name: "Melissa Carter", address: "42 Harbor View Dr, Palmetto Cove, FL 32999", sinceDaysAgo: 1090, preferred: "email", notes: "Prefers text confirmation the morning of service." },
   { name: "Devon Marsh", address: "275 Maple Ridge Ct, Palmetto Cove, FL 32999", sinceDaysAgo: 640, preferred: "phone" },
@@ -113,11 +138,11 @@ const CLIENT_SEED: { name: string; address: string; sinceDaysAgo: number; prefer
   { name: "Renee Ashworth", address: "77 Bayview Ter, Palmetto Cove, FL 32999", sinceDaysAgo: 570, referred_by: "Grant Kim" },
   { name: "Corey Padilla", address: "340 Magnolia St, Palmetto Cove, FL 32999", sinceDaysAgo: 1580, notes: "Leave invoice under the mat." },
   { name: "Angela Winslow", address: "19 Tidewater Way, Palmetto Cove, FL 32999", sinceDaysAgo: 750 },
-  { name: "Felix Contreras", address: "512 Cypress Bend, Palmetto Cove, FL 32999", sinceDaysAgo: 1810, status: "inactive", notes: "Seasonal resident — only present Nov–Apr." },
+  { name: "Felix Contreras", address: "512 Cypress Bend, Palmetto Cove, FL 32999", sinceDaysAgo: 1810, status: "inactive", notes: "Seasonal resident — only present Nov–Apr.", archivedDaysAgo: 140 },
   { name: "Brianna Holt", address: "63 Lighthouse Rd, Palmetto Cove, FL 32999", sinceDaysAgo: 530, notes: "Gate code 6604." },
   { name: "Walter Ngata", address: "205 Sandpiper Ln, Palmetto Cove, FL 32999", sinceDaysAgo: 1340 },
   { name: "Tasha Reyes", address: "8 Osprey Cir, Palmetto Cove, FL 32999", sinceDaysAgo: 910, notes: "Friendly but vocal dog — will bark, that's normal." },
-  { name: "Douglas Fenwick", address: "450 Estuary Dr, Palmetto Cove, FL 32999", sinceDaysAgo: 2000, status: "inactive", notes: "On hold for remodeling — resume in spring." },
+  { name: "Douglas Fenwick", address: "450 Estuary Dr, Palmetto Cove, FL 32999", sinceDaysAgo: 2000, status: "inactive", notes: "On hold for remodeling — resume in spring.", archivedDaysAgo: 35 },
   { name: "Yvonne Castillo", address: "27 Marina Walk, Palmetto Cove, FL 32999", sinceDaysAgo: 600, notes: "Gate code 3315. Please close side gate fully." },
   { name: "Preston Aldridge", address: "611 Sunset Palm Dr, Palmetto Cove, FL 32999", sinceDaysAgo: 1130 },
   { name: "Camille Duvall", address: "132 Egret Cove, Palmetto Cove, FL 32999", sinceDaysAgo: 800, referred_by: "Yvonne Castillo", notes: "Prefers early morning appointments before 9am." },
@@ -196,7 +221,7 @@ export function generateDemoFixture(now: Date): DemoFixtureBundle {
     name: c.name,
     email: `${c.name.toLowerCase().replace(/[^a-z]+/g, ".")}@example.com`,
     phone: `(407) 555-01${String(20 + i).padStart(2, "0")}`,
-    archived_at: null,
+    archived_at: c.archivedDaysAgo != null ? dateOf(-c.archivedDaysAgo) : null,
     address: c.address,
     client_since: dateOf(-c.sinceDaysAgo),
     referred_by: c.referred_by ?? null,
@@ -481,5 +506,20 @@ export function generateDemoFixture(now: Date): DemoFixtureBundle {
     assignments,
     completedJobBilling,
     messagesSent,
+    companySettings: {
+      company_name: "Sunshine Property Services",
+      phone: "(407) 555-0100",
+      email: "office@sunshinepropertyservices.example.com",
+      address: "500 Harbor Pines Blvd",
+      city: "Palmetto Cove",
+      state: "FL",
+      zip: "32999",
+      // Off by default, matching a brand-new real workspace's own defaults
+      // (lib/notify.ts fails closed when notifications_enabled is unset).
+      booking_enabled: false,
+      notifications_enabled: false,
+      business_hours: null,
+      timezone: DEMO_TIMEZONE,
+    },
   };
 }

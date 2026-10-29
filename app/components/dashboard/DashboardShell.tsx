@@ -18,6 +18,7 @@ import OwnerBillingBanner from "@/app/components/dashboard/OwnerBillingBanner";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import ResizeHandle from "@/app/components/dashboard/ResizeHandle";
 import NeedsAttentionControl from "@/app/components/dashboard/NeedsAttentionControl";
+import DemoBannerControls from "@/app/components/dashboard/DemoBannerControls";
 import {
   useDashboardLayoutPrefs,
   MIN_SCHEDULE_HEIGHT_PCT,
@@ -534,8 +535,9 @@ export default function DashboardShell({
     <DemoExperienceProvider autoStart={isTester}>
     <div className="h-screen flex flex-col bg-slate-100 text-slate-900 overflow-hidden">
       {isTester && (
-        <div className="shrink-0 bg-amber-400 text-amber-950 text-center text-xs font-semibold py-1.5 px-4">
+        <div className="relative shrink-0 bg-amber-400 text-amber-950 text-center text-xs font-semibold py-1.5 px-4">
           Demo Mode — All information shown in Demo Mode is fictional and for testing only.
+          {isLocalDemo && <DemoBannerControls />}
         </div>
       )}
       <OwnerBillingBanner

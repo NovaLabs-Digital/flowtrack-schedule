@@ -22,59 +22,40 @@ import { fileURLToPath } from "node:url";
 
 const source = fs.readFileSync(fileURLToPath(new URL("./DashboardSettingsArea.tsx", import.meta.url)), "utf8");
 
-describe("DashboardSettingsArea: owner-path Settings scroll container reserves its scrollbar gutter", () => {
+describe("DashboardSettingsArea: owner-path (and isLocalDemo) Settings scroll container reserves its scrollbar gutter", () => {
   test("the flex-1 min-h-0 overflow-auto pt-8 div (Billing's own scrollable ancestor) carries scrollbarGutter: \"stable\"", () => {
     const block = source.match(/<div className="flex-1 min-h-0 overflow-auto pt-8"[^>]*>/);
     assert.ok(block, "the owner-path scroll container div is present");
     assert.match(block![0], /style=\{\{\s*scrollbarGutter:\s*"stable"\s*\}\}/, "overflow-auto itself is untouched -- this only reserves the scrollbar's gutter width, never hides overflow");
   });
 
-  test("this is the OWNER path specifically -- the tester/Demo Mode and interactive-carve-out branches are untouched (Billing is never reachable from either)", () => {
-    const ownerBlockStart = source.indexOf('if (!isTester) {');
+  test("this is the shared owner/isLocalDemo path specifically -- the tour-carve-out and tester Demo Mode notice branches are untouched (Billing is never reachable from either)", () => {
+    const ownerBlockStart = source.indexOf("if (!isTester || isLocalDemo) {");
     const ownerBlockEnd = source.indexOf("const carveOutActive");
     const ownerBlock = source.slice(ownerBlockStart, ownerBlockEnd);
     assert.match(ownerBlock, /scrollbarGutter/);
     const restOfFile = source.slice(ownerBlockEnd);
-    assert.doesNotMatch(restOfFile, /scrollbarGutter/, "the tester-only branches never render Billing, so they need no scrollbar-gutter fix");
+    assert.doesNotMatch(restOfFile, /scrollbarGutter/, "the tour-carve-out and tester-notice branches never render Billing, so they need no scrollbar-gutter fix");
   });
 });
 
-describe("DashboardSettingsArea: browser-local demo (isLocalDemo) carve-out", () => {
+describe("DashboardSettingsArea: isLocalDemo routes through the REAL owner Settings navigation, not a bespoke redesign", () => {
   test("isLocalDemo is an optional prop defaulting to false, so the real dashboard (which never passes it) is unchanged", () => {
     assert.match(source, /isLocalDemo\?:\s*boolean;/);
     assert.match(source, /export default function DashboardSettingsArea\(\{\s*isTester,\s*isLocalDemo = false,/);
   });
 
-  test("the owner path (!isTester) never references isLocalDemo or the demo-only panels", () => {
-    const ownerBlock = source.slice(source.indexOf("if (!isTester) {"), source.indexOf("const carveOutActive"));
-    assert.doesNotMatch(ownerBlock, /isLocalDemo|DemoControlsPanel|demoControlsOpen/);
+  test("the top-level condition is \"!isTester || isLocalDemo\" -- isLocalDemo takes the exact same branch as the real owner, not a parallel one", () => {
+    assert.match(source, /if \(!isTester \|\| isLocalDemo\) \{/);
   });
 
-  test("the carve-out condition is isLocalDemo OR the original Employees/Services experience-step condition", () => {
-    assert.match(
-      source,
-      /const carveOutActive = isLocalDemo \|\| \(active && \(currentStep\?\.id === "employees" \|\| currentStep\?\.id === "services"\)\);/
-    );
-  });
-
-  test("Billing is only a valid carve-out section when isLocalDemo; otherwise the original staff fallback applies", () => {
-    assert.match(source, /settingsSection === "staff" \|\| settingsSection === "services" \|\| \(isLocalDemo && settingsSection === "billing"\)/);
-  });
-
-  test("the Billing and Demo Controls sidebar entries render only under isLocalDemo", () => {
-    const gated = source.slice(source.indexOf("{isLocalDemo && ("), source.indexOf("<div className=\"flex-1\" />"));
-    assert.match(gated, /onSettingsSelect\("billing"\)/);
-    assert.match(gated, />\s*Billing\s*</);
-    assert.match(gated, /setDemoControlsOpen\(true\)/);
-    assert.match(gated, />\s*Demo Controls\s*</);
-  });
-
-  test("the carve-out render path uses the real SettingsPanel section=\"billing\" with the already-threaded props, and DemoControlsPanel", () => {
-    const carveOut = source.slice(source.indexOf("if (carveOutActive) {"));
-    const panel = carveOut.match(/<SettingsPanel[\s\S]*?\/>/);
-    assert.ok(panel);
+  test("that shared branch renders the real SettingsTabBar + SettingsPanel, unmodified", () => {
+    const block = source.slice(source.indexOf("if (!isTester || isLocalDemo) {"), source.indexOf("const carveOutActive"));
+    assert.match(block, /<SettingsTabBar activeSection=\{settingsSection\} onSelect=\{onSettingsSelect\} \/>/);
+    const panel = block.match(/<SettingsPanel[\s\S]*?\/>/);
+    assert.ok(panel, "SettingsPanel is rendered in the shared branch");
     for (const p of [
-      'section="billing"',
+      "section={settingsSection}",
       "canMutateOperationalData={canMutateOperationalData}",
       "isTrialing={isTrialing}",
       "timezone={timezone}",
@@ -86,12 +67,33 @@ describe("DashboardSettingsArea: browser-local demo (isLocalDemo) carve-out", ()
     ]) {
       assert.ok(panel![0].includes(p), `SettingsPanel missing ${p}`);
     }
-    assert.match(carveOut, /<DemoControlsPanel onBack=\{onBack\} \/>/);
   });
 
-  test("Demo Controls is shown only when isLocalDemo AND selected (component-local, not a persisted SettingsSection)", () => {
-    assert.match(source, /const showDemoControls = isLocalDemo && demoControlsOpen;/);
-    assert.match(source, /useState\(false\)/);
+  test("the carve-out condition is the original Employees/Services experience-step condition only -- isLocalDemo plays no part in it", () => {
+    assert.match(
+      source,
+      /const carveOutActive = active && \(currentStep\?\.id === "employees" \|\| currentStep\?\.id === "services"\);/
+    );
+  });
+
+  test("the carve-out's own section fallback is the original two-way staff/services ternary -- no billing case", () => {
+    assert.match(source, /const section = settingsSection === "staff" \|\| settingsSection === "services" \? settingsSection : "staff";/);
+  });
+
+  test("isLocalDemo never appears inside the carve-out or the tester Demo Mode notice branch -- only in the prop/doc comment and the shared top-level condition", () => {
+    const afterSharedBranch = source.slice(source.indexOf("const carveOutActive"));
+    assert.doesNotMatch(afterSharedBranch, /isLocalDemo/, "isLocalDemo must not appear anywhere after the shared owner/demo branch returns");
+  });
+
+  test("DemoControlsPanel/demoControlsOpen/showDemoControls are gone from this file entirely -- Demo Controls moved to the banner popover (DemoBannerControls)", () => {
+    assert.doesNotMatch(source, /DemoControlsPanel/);
+    assert.doesNotMatch(source, /demoControlsOpen|showDemoControls/);
+  });
+
+  test("the carve-out's own StaffPanel/ServicesPanel render is the original two-way branch, no billing/Demo Controls option", () => {
+    const carveOut = source.slice(source.indexOf("if (carveOutActive) {"), source.lastIndexOf("return (\n    <div className=\"flex-1 min-h-0 overflow-auto pt-2\">"));
+    assert.match(carveOut, /section === "staff"\s*\n\s*\? <StaffPanel isTester canMutateOperationalData=\{canMutateOperationalData\} \/>\s*\n\s*: <ServicesPanel isTester canMutateOperationalData=\{canMutateOperationalData\} \/>/);
+    assert.doesNotMatch(carveOut, /SettingsPanel/, "Billing is never reachable from the tour carve-out -- only from the real Settings path above");
   });
 
   test("the non-carve-out tester Demo Mode notice is untouched", () => {

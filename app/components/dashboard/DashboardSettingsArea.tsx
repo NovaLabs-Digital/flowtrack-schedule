@@ -1,20 +1,21 @@
 "use client";
 
-import { useState } from "react";
 import SettingsTabBar from "@/app/components/dashboard/SettingsTabBar";
 import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
 import StaffPanel from "@/app/components/dashboard/StaffPanel";
 import ServicesPanel from "@/app/components/dashboard/ServicesPanel";
-import DemoControlsPanel from "@/app/components/dashboard/DemoControlsPanel";
 import { useDemoExperienceContext } from "@/app/components/demo-experience/DemoExperienceProvider";
 import { SettingsSection } from "@/app/components/dashboard/types";
 
 type Props = {
   isTester: boolean;
-  // Browser-local public demo (app/demo/page.tsx) only: keeps the demo
-  // Settings sidebar permanently available (not just during the Employees/
-  // Services experience steps) and adds Billing + Demo Controls to it.
-  // Omitted (false) everywhere else, leaving every branch below unchanged.
+  // Browser-local public demo (app/demo/page.tsx) only: routes Settings
+  // through the exact same real owner path below (SettingsTabBar +
+  // SettingsPanel, every real section) instead of the tour-only carve-out
+  // or the tester "Demo Mode" notice -- the demo must look and behave like
+  // production, not a simplified redesign. Omitted (false) everywhere else,
+  // leaving every branch below byte-for-byte unchanged from before this
+  // prop existed.
   isLocalDemo?: boolean;
   settingsSection: SettingsSection;
   onSettingsSelect: (s: SettingsSection) => void;
@@ -50,13 +51,18 @@ type Props = {
   onBillingSaved?: () => void;
 };
 
-// Owner always gets the real, unrestricted Settings sidebar/panel — untouched
-// by anything below. For a tester session, Settings is normally replaced by
-// the Demo Mode notice; the one exception is while the Interactive Business
-// Experience is actively on the Employees or Services step, when the real
-// Staff/Services panels (already scoped to demo-only data and demo-only
-// writes at the API layer) become reachable so those two steps can be
-// genuinely interactive. Outside that window, it's the notice again.
+// Owner always gets the real, unrestricted Settings sidebar/panel --
+// untouched by anything below. The browser-local demo (isLocalDemo) takes
+// this EXACT same path too, with fictional data supplied through the demo
+// fetch adapter instead of a real session -- same navigation, same panels,
+// same spacing, never a simplified/redesigned interface. For a REAL
+// tester session (the old shared-backend demo, isLocalDemo false), Settings
+// is normally replaced by the Demo Mode notice; the one exception is while
+// the Interactive Business Experience is actively on the Employees or
+// Services step, when the real Staff/Services panels (already scoped to
+// demo-only data and demo-only writes at the API layer) become reachable so
+// those two steps can be genuinely interactive. Outside that window, it's
+// the notice again.
 export default function DashboardSettingsArea({
   isTester,
   isLocalDemo = false,
@@ -75,14 +81,8 @@ export default function DashboardSettingsArea({
   onBillingSaved,
 }: Props) {
   const { active, currentStep, restart } = useDemoExperienceContext();
-  // Local-demo-only sidebar entry. Deliberately component-local, NOT a new
-  // SettingsSection value: SettingsSection is persisted per (user,
-  // workspace) by useDashboardNavigationPrefs (with its own whitelist) and
-  // consumed by SettingsTabBar/SettingsPanel on the owner path -- a
-  // demo-only section has no business in either.
-  const [demoControlsOpen, setDemoControlsOpen] = useState(false);
 
-  if (!isTester) {
+  if (!isTester || isLocalDemo) {
     return (
       <div className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
@@ -109,7 +109,7 @@ export default function DashboardSettingsArea({
     );
   }
 
-  const carveOutActive = isLocalDemo || (active && (currentStep?.id === "employees" || currentStep?.id === "services"));
+  const carveOutActive = active && (currentStep?.id === "employees" || currentStep?.id === "services");
 
   // Phase 5.5E-E1F: StaffPanel/ServicesPanel now require canMutateOperationalData
   // as a prop, so this carve-out reuses the same value already threaded into
@@ -119,11 +119,7 @@ export default function DashboardSettingsArea({
   // through rather than hardcoded so the carve-out still degrades correctly
   // if that policy ever changes.
   if (carveOutActive) {
-    const section =
-      settingsSection === "staff" || settingsSection === "services" || (isLocalDemo && settingsSection === "billing")
-        ? settingsSection
-        : "staff";
-    const showDemoControls = isLocalDemo && demoControlsOpen;
+    const section = settingsSection === "staff" || settingsSection === "services" ? settingsSection : "staff";
     return (
       <div className="flex gap-3 flex-1 min-h-0 pt-2">
         <aside className="shrink-0 w-[200px]">
@@ -133,54 +129,23 @@ export default function DashboardSettingsArea({
             </div>
             <div className="px-3 grid grid-cols-1 gap-0.5">
               <button
-                onClick={() => {
-                  setDemoControlsOpen(false);
-                  onSettingsSelect("staff");
-                }}
+                onClick={() => onSettingsSelect("staff")}
                 className={[
                   "w-full rounded-lg px-3 py-2 text-sm text-left transition-colors",
-                  !showDemoControls && section === "staff" ? "bg-blue-600 text-white font-medium" : "text-slate-300 hover:bg-slate-700 hover:text-white",
+                  section === "staff" ? "bg-blue-600 text-white font-medium" : "text-slate-300 hover:bg-slate-700 hover:text-white",
                 ].join(" ")}
               >
                 Staff / Team
               </button>
               <button
-                onClick={() => {
-                  setDemoControlsOpen(false);
-                  onSettingsSelect("services");
-                }}
+                onClick={() => onSettingsSelect("services")}
                 className={[
                   "w-full rounded-lg px-3 py-2 text-sm text-left transition-colors",
-                  !showDemoControls && section === "services" ? "bg-blue-600 text-white font-medium" : "text-slate-300 hover:bg-slate-700 hover:text-white",
+                  section === "services" ? "bg-blue-600 text-white font-medium" : "text-slate-300 hover:bg-slate-700 hover:text-white",
                 ].join(" ")}
               >
                 Services
               </button>
-              {isLocalDemo && (
-                <>
-                  <button
-                    onClick={() => {
-                      setDemoControlsOpen(false);
-                      onSettingsSelect("billing");
-                    }}
-                    className={[
-                      "w-full rounded-lg px-3 py-2 text-sm text-left transition-colors",
-                      !showDemoControls && section === "billing" ? "bg-blue-600 text-white font-medium" : "text-slate-300 hover:bg-slate-700 hover:text-white",
-                    ].join(" ")}
-                  >
-                    Billing
-                  </button>
-                  <button
-                    onClick={() => setDemoControlsOpen(true)}
-                    className={[
-                      "w-full rounded-lg px-3 py-2 text-sm text-left transition-colors",
-                      showDemoControls ? "bg-blue-600 text-white font-medium" : "text-slate-300 hover:bg-slate-700 hover:text-white",
-                    ].join(" ")}
-                  >
-                    Demo Controls
-                  </button>
-                </>
-              )}
             </div>
             <div className="flex-1" />
             <div className="mx-3 border-t border-slate-600" />
@@ -195,21 +160,7 @@ export default function DashboardSettingsArea({
           </div>
         </aside>
         <main className="flex-1 min-w-0 max-w-3xl">
-          {showDemoControls ? (
-            <DemoControlsPanel onBack={onBack} />
-          ) : section === "billing" ? (
-            <SettingsPanel
-              section="billing"
-              canMutateOperationalData={canMutateOperationalData}
-              isTrialing={isTrialing}
-              timezone={timezone}
-              workspaceId={workspaceId}
-              userId={userId}
-              billingFocusAppointmentId={billingFocusAppointmentId}
-              billingFocusServiceDate={billingFocusServiceDate}
-              onBillingSaved={onBillingSaved}
-            />
-          ) : section === "staff"
+          {section === "staff"
             ? <StaffPanel isTester canMutateOperationalData={canMutateOperationalData} />
             : <ServicesPanel isTester canMutateOperationalData={canMutateOperationalData} />}
         </main>

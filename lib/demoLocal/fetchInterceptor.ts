@@ -27,10 +27,11 @@ import {
 import { buildNeedsAttentionEntries, NEEDS_ATTENTION_LOOKBACK_DAYS } from "@/lib/needsAttention";
 import { countUnresolvedFailedMessageGroupsByAppointment, type MessageAttemptRow } from "@/lib/messageStatus";
 import { generateFutureDatesSafe } from "@/lib/recurrence";
-import { nowInBusinessTz, zonedDateTimeToUTC } from "@/lib/timezone";
+import { nowInBusinessTz, zonedDateTimeToUTC, effectiveTimezone } from "@/lib/timezone";
 import { toDateInputValue } from "@/lib/payroll";
 import { isValidPriceCents } from "@/lib/money";
 import { validateTeamColorInput } from "@/lib/teamColor";
+import { effectiveBusinessHours } from "@/lib/businessHours";
 import { DEMO_LOCAL_WORKSPACE_ID, DEMO_TIMEZONE, type DemoFixtureBundle } from "@/lib/demoLocal/fixtures/generate";
 import { getSnapshot, notify, setSnapshot } from "@/lib/demoLocal/store";
 
@@ -431,6 +432,73 @@ function handleNeedsAttention(_req: Request, url: URL): Response {
 }
 
 // ---------------------------------------------------------------------
+// GET-only handlers for the real Settings panels (StaffPanel, ServicesPanel,
+// ArchivedClientsPanel, RecurringSeriesPanel, CompanyInfoPanel) -- added so
+// the demo's Settings (now the real SettingsTabBar/SettingsPanel, see
+// DashboardSettingsArea.tsx's isLocalDemo branch) shows real fictional data
+// to VIEW instead of a 404 error. Every MUTATING method on these same paths
+// (create/update/delete/archive/restore/activate/save) is deliberately left
+// unhandled this round -- it already falls through to the generic 404 below,
+// which every one of these panels' own error handling renders as "Not
+// available in this demo." inline, never a crash. Wiring those writes is
+// explicit Stage-2 scope, reviewed separately from this layout-parity round.
+// ---------------------------------------------------------------------
+
+// GET /api/employees -- app/api/employees/route.ts returns the bare array,
+// not wrapped in an envelope.
+function handleListEmployees(): Response {
+  return json(getSnapshot().employees);
+}
+
+// GET /api/services -- app/api/services/route.ts: { ok, services }.
+function handleListServices(): Response {
+  return json({ ok: true, services: getSnapshot().services });
+}
+
+// GET /api/clients/archived -- app/api/clients/archived/route.ts: { ok, clients },
+// filtered to archived_at != null.
+function handleListArchivedClients(): Response {
+  const clients = getSnapshot().clients.filter((c) => c.archived_at != null);
+  return json({ ok: true, clients });
+}
+
+// GET /api/recurring-series -- app/api/recurring-series/route.ts: { series }.
+// Deliberately always empty: the fixture has no recurring_series-table-shaped
+// registry rows (its "series" concept only lives as series_id/frequency_type
+// on already-active appointments). This renders RecurringSeriesPanel's own
+// genuine empty state -- the same screen a fully-migrated real workspace
+// shows -- which IS layout parity, not an error state. Populating a demo
+// review_required row plus its /activate write is explicit Stage 2 scope.
+function handleListRecurringSeries(): Response {
+  return json({ series: [] });
+}
+
+// GET /api/settings/company -- app/api/settings/company/route.ts: { ok, settings, status }.
+function handleGetCompanySettings(): Response {
+  const snap = getSnapshot();
+  const cs = snap.companySettings;
+  const settings = {
+    ...cs,
+    business_hours: effectiveBusinessHours(cs.business_hours),
+    timezone: effectiveTimezone(cs.timezone),
+  };
+  const activeStaff = snap.employees.filter((e) => e.active).length;
+  const status = {
+    // Deliberately hardcoded false, NEVER derived from process.env: the real
+    // route reads this deployment's actual Resend/Twilio configuration
+    // (!!process.env.RESEND_API_KEY etc.) -- echoing that here would leak
+    // this production deployment's real integration status to every
+    // anonymous demo visitor. No real integration is ever "connected" in
+    // the demo, full stop.
+    emailConfigured: false,
+    smsConfigured: false,
+    activeStaff,
+    totalStaff: snap.employees.length,
+  };
+  return json({ ok: true, settings, status });
+}
+
+// ---------------------------------------------------------------------
 // Route table
 // ---------------------------------------------------------------------
 // Exact pathname + method match (query strings are ignored for matching and
@@ -447,6 +515,11 @@ const ROUTES: Route[] = [
   // Simulated demo messages are not exposed through Message History in Stage 1.
   { method: "GET", path: "/api/appointments/messages", handler: () => json({ ok: true, messages: [], hasMore: false }) },
   { method: "GET", path: "/api/clients/messages", handler: () => json({ ok: true, messages: [], hasMore: false }) },
+  { method: "GET", path: "/api/employees", handler: handleListEmployees },
+  { method: "GET", path: "/api/services", handler: handleListServices },
+  { method: "GET", path: "/api/clients/archived", handler: handleListArchivedClients },
+  { method: "GET", path: "/api/recurring-series", handler: handleListRecurringSeries },
+  { method: "GET", path: "/api/settings/company", handler: handleGetCompanySettings },
 ];
 
 function findRoute(method: string, pathname: string): Route | undefined {

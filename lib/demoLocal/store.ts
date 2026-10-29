@@ -46,6 +46,12 @@ function isValidBundle(value: unknown): value is DemoFixtureBundle {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   if (typeof v.sessionInitIso !== "string") return false;
+  // companySettings is a singular object, not a table -- deliberately not
+  // added to TABLE_KEYS. A blob saved before this field existed (an older
+  // sessionStorage snapshot from before this change) must fail validation
+  // here and be regenerated fresh, rather than reaching a panel that then
+  // crashes on `undefined.company_name`.
+  if (!v.companySettings || typeof v.companySettings !== "object") return false;
   return TABLE_KEYS.every((k) => Array.isArray(v[k]));
 }
 

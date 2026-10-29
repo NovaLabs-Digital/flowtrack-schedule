@@ -428,4 +428,11 @@ describe("DashboardShell: isLocalDemo (browser-local demo) pass-through", () => 
   test("the real server page never passes isLocalDemo (so it stays false there)", () => {
     assert.doesNotMatch(pageSource, /isLocalDemo/);
   });
+
+  test("the Demo Mode banner gains DemoBannerControls only for isLocalDemo, never for the real tester-backend banner", () => {
+    assert.match(source, /import DemoBannerControls from "@\/app\/components\/dashboard\/DemoBannerControls";/);
+    const bannerBlock = desktopBlock.match(/\{isTester && \([\s\S]*?Demo Mode — All information shown[\s\S]*?\)\}/);
+    assert.ok(bannerBlock, "the Demo Mode banner block is present");
+    assert.match(bannerBlock![0], /\{isLocalDemo && <DemoBannerControls \/>\}/);
+  });
 });

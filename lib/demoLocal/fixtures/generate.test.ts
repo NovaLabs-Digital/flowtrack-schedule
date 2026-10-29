@@ -149,4 +149,24 @@ describe("generateDemoFixture", () => {
     }
     assert.equal(bundle.messagesSent.filter((m) => classifyMessageStatus(m.provider_id, m.channel).code === "failed").length, 1);
   });
+
+  test("companySettings: populated fictional company, off-by-default toggles, business_hours left to the effective fallback", () => {
+    const bundle = checkBundle(now);
+    assert.equal(bundle.companySettings.company_name, "Sunshine Property Services");
+    assert.equal(bundle.companySettings.booking_enabled, false);
+    assert.equal(bundle.companySettings.notifications_enabled, false);
+    assert.equal(bundle.companySettings.business_hours, null);
+    assert.equal(bundle.companySettings.timezone, DEMO_TIMEZONE);
+    assert.ok(bundle.companySettings.phone && bundle.companySettings.email && bundle.companySettings.address);
+  });
+
+  test("archived clients: exactly 2 named rows have a non-null archived_at; everyone else is still null", () => {
+    const bundle = checkBundle(now);
+    const archived = bundle.clients.filter((c) => c.archived_at != null);
+    assert.equal(archived.length, 2);
+    assert.deepEqual(archived.map((c) => c.name).sort(), ["Douglas Fenwick", "Felix Contreras"]);
+    for (const c of bundle.clients) {
+      if (c.name !== "Douglas Fenwick" && c.name !== "Felix Contreras") assert.equal(c.archived_at, null);
+    }
+  });
 });

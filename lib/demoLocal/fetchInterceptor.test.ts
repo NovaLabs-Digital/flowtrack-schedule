@@ -5,6 +5,7 @@ import { getSnapshot, setSnapshot } from "@/lib/demoLocal/store";
 import { installDemoFetchInterceptor } from "@/lib/demoLocal/fetchInterceptor";
 import { zonedDateValue } from "@/lib/timezone";
 import { addDays } from "@/lib/recurrence";
+import { effectiveBusinessHours } from "@/lib/businessHours";
 import { DEMO_TIMEZONE } from "@/lib/demoLocal/fixtures/generate";
 
 // Freeze the clock so "past/today/future" in the fixture and in the
@@ -189,5 +190,108 @@ describe("installDemoFetchInterceptor", () => {
     const res = await demoFetch("/_next/static/chunk.js");
     assert.equal(await res.text(), "passthrough");
     assert.equal(originalFetch.mock.callCount(), 1);
+  });
+});
+
+// Layout-parity correction: the real Settings panels (StaffPanel,
+// ServicesPanel, ArchivedClientsPanel, RecurringSeriesPanel, CompanyInfoPanel)
+// now render in the demo (see DashboardSettingsArea.tsx's isLocalDemo
+// branch), so they need real data to VIEW. Mutating methods on these same
+// paths stay deliberately unhandled this round -- proven by the regression
+// test at the end of this block.
+describe("installDemoFetchInterceptor -- Settings layout-parity GET handlers", () => {
+  test("GET /api/employees returns the bare fixture array (not wrapped)", async () => {
+    const { status, data } = await call("/api/employees");
+    assert.equal(status, 200);
+    assert.ok(Array.isArray(data));
+    assert.equal(data.length, getSnapshot().employees.length);
+    for (const row of data) {
+      assert.ok(typeof row.id === "string" && typeof row.name === "string" && typeof row.phone === "string" && typeof row.color === "string" && typeof row.active === "boolean");
+    }
+  });
+
+  test("GET /api/services returns { ok: true, services }", async () => {
+    const { status, data } = await call("/api/services");
+    assert.equal(status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.services.length, getSnapshot().services.length);
+    for (const row of data.services) {
+      assert.ok(
+        typeof row.id === "string" &&
+          typeof row.name === "string" &&
+          typeof row.description === "string" &&
+          typeof row.duration_minutes === "number" &&
+          typeof row.active === "boolean" &&
+          typeof row.color === "string" &&
+          typeof row.default_price_cents === "number"
+      );
+    }
+  });
+
+  test("GET /api/clients/archived returns { ok: true, clients } -- exactly the 2 fixture rows with archived_at set", async () => {
+    const { status, data } = await call("/api/clients/archived");
+    assert.equal(status, 200);
+    assert.equal(data.ok, true);
+    assert.equal(data.clients.length, 2);
+    const names = data.clients.map((c: { name: string }) => c.name).sort();
+    assert.deepEqual(names, ["Douglas Fenwick", "Felix Contreras"]);
+    for (const row of data.clients) assert.ok(row.archived_at != null);
+  });
+
+  test("GET /api/recurring-series returns { series: [] } -- deliberately always empty this round", async () => {
+    const { status, data } = await call("/api/recurring-series");
+    assert.equal(status, 200);
+    assert.deepEqual(data, { series: [] });
+  });
+
+  test("GET /api/settings/company returns { ok, settings, status } with hardcoded-false integration flags, never derived from env", async () => {
+    const previousResend = process.env.RESEND_API_KEY;
+    const previousResendFrom = process.env.RESEND_FROM_EMAIL;
+    const previousTwilioSid = process.env.TWILIO_ACCOUNT_SID;
+    // Prove the hardcode, not an accidentally-false env in this test process:
+    // set every real env var the production route reads, and confirm the
+    // demo handler STILL reports both as unconfigured.
+    process.env.RESEND_API_KEY = "re_test";
+    process.env.RESEND_FROM_EMAIL = "test@example.com";
+    process.env.TWILIO_ACCOUNT_SID = "AC_test";
+    try {
+      const { status, data } = await call("/api/settings/company");
+      assert.equal(status, 200);
+      assert.equal(data.ok, true);
+      assert.equal(data.settings.company_name, "Sunshine Property Services");
+      // The fixture's own companySettings.business_hours is null (not
+      // customized) -- the handler must resolve it through the real
+      // effectiveBusinessHours fallback, same as the production route.
+      assert.equal(getSnapshot().companySettings.business_hours, null);
+      assert.deepEqual(data.settings.business_hours, effectiveBusinessHours(null));
+      assert.equal(data.status.emailConfigured, false);
+      assert.equal(data.status.smsConfigured, false);
+      const snap = getSnapshot();
+      assert.equal(data.status.totalStaff, snap.employees.length);
+      assert.equal(data.status.activeStaff, snap.employees.filter((e) => e.active).length);
+    } finally {
+      process.env.RESEND_API_KEY = previousResend;
+      process.env.RESEND_FROM_EMAIL = previousResendFrom;
+      process.env.TWILIO_ACCOUNT_SID = previousTwilioSid;
+    }
+  });
+
+  test("every corresponding mutating method on these 5 paths still fails closed -- this round only wires GETs", async () => {
+    const errorSpy = mock.method(console, "error", () => {});
+    try {
+      for (const [path, method] of [
+        ["/api/employees", "POST"],
+        ["/api/services", "PATCH"],
+        ["/api/clients", "POST"],
+        ["/api/recurring-series/activate", "POST"],
+        ["/api/settings/company", "POST"],
+      ] as const) {
+        const { status, data } = await call(path, method, {});
+        assert.equal(status, 404, `${method} ${path} should still 404`);
+        assert.deepEqual(data, { error: "Not available in this demo." });
+      }
+    } finally {
+      errorSpy.mock.restore();
+    }
   });
 });
