@@ -216,19 +216,12 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
     assert.deepEqual(body.reviewNeeded, []);
   });
 
-  test("a tester session scopes to the demo workspace and is_demo=true, with zero subscriptions-table queries", async () => {
-    resetFixtures({
-      workspace_memberships: [],
-      company_settings: [{ data: { timezone: "America/New_York" } }],
-      appointments: [{ data: [] }],
-    });
+  test("a tester session is rejected -- Billing is owner-only", async () => {
+    resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await GET(req());
-    assert.equal(res.status, 200);
-    assert.equal(currentFake.calls.filter((c) => c.table === "subscriptions").length, 0);
-    assert.equal(currentFake.calls.filter((c) => c.table === "workspace_memberships").length, 0);
-    const apptCall = currentFake.calls.find((c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "workspace_id");
-    assert.deepEqual(apptCall?.args, ["workspace_id", DEMO_WORKSPACE_ID]);
+    assert.equal(res.status, 403);
+    assert.equal(currentFake.calls.length, 0);
   });
 });
 

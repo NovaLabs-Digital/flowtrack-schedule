@@ -150,14 +150,12 @@ describe("PATCH /api/billing/completed-jobs/update -- appointment lookup / compl
     assert.equal(res.status, 404);
   });
 
-  test("a tester session cannot touch a non-demo appointment -- 404, not a workspace-mismatch detail", async () => {
-    resetFixtures({
-      ...MEMBERSHIP,
-      appointments: [{ data: { ...COMPLETED_APPT_ROW, workspace_id: DEMO_WORKSPACE_ID, is_demo: false } }],
-    });
+  test("a tester session is rejected -- Billing is owner-only -- 403 before any appointment lookup", async () => {
+    resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await PATCH(req({ appointment_id: "appt-1", paid: false }));
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 403);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments").length, 0);
   });
 
   test("an appointment that is not yet completed (per isCompletedForBilling) is rejected with a clear 409", async () => {

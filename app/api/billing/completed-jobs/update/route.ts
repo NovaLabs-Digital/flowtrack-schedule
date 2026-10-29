@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
-import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireCapability } from "@/lib/entitlementServer";
 import { fetchAssignments, fetchEmployeeHoursForAppointments } from "@/lib/appointmentEmployees";
@@ -28,7 +28,7 @@ function json(data: any, status = 200) {
 export async function PATCH(req: Request) {
   try {
     const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
+    const deny = requireOwner(session);
     if (deny) return deny;
     assertWorkspace(session);
     const workspaceId = session.workspaceId;
