@@ -146,14 +146,15 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
     });
   }
 
-  test("exact trusted demo workspace permits editing with zero subscriptions-table queries (real short-circuit)", async () => {
-    resetFixtures({
-      appointments: [{ data: existingAppt({ is_demo: true }) }, { error: null }],
-    });
+  test("tester session (demo workspace) is denied with the role-denial 403 before any table lookup", async () => {
+    resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
-    assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.equal(body.error, "Unauthorized");
+    assert.equal(body.code, undefined);
+    assert.equal(currentFake.calls.length, 0);
   });
 
   const RESTRICTED_STATES: Array<[string, ReturnType<typeof subscriptionRow> | null]> = [
@@ -201,7 +202,7 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
     assert.equal(currentFake.calls.length, 0);
   });
 
-  test("tester session with a non-demo workspace fails closed with the generic session-integrity denial, not SUBSCRIPTION_RESTRICTED", async () => {
+  test("tester session with a non-demo workspace is denied by the role gate (403), not SUBSCRIPTION_RESTRICTED", async () => {
     resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: REAL_WORKSPACE_ID };
     const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
@@ -209,6 +210,7 @@ describe("PATCH /api/appointments/update -- entitlement gate", () => {
     const body = await res.json();
     assert.equal(body.error, "Unauthorized");
     assert.equal(body.code, undefined);
+    assert.equal(currentFake.calls.length, 0);
   });
 
   test("unauthenticated (role: none) receives the existing role-denial and cannot probe subscription status", async () => {
@@ -529,14 +531,14 @@ describe("existing appointment-editing business rules remain unchanged once enti
     assert.deepEqual(await res.json(), { error: "Appointment not found" });
   });
 
-  test("tester session accessing a non-demo appointment still 404s (existing tester-scoping rule)", async () => {
+  test("tester session targeting a non-demo appointment is denied (403) by the role gate before any appointment lookup", async () => {
     resetFixtures({
       appointments: [{ data: existingAppt({ is_demo: false }) }],
     });
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
-    assert.equal(res.status, 404);
-    assert.deepEqual(await res.json(), { error: "Appointment not found" });
+    assert.equal(res.status, 403);
+    assert.equal(currentFake.calls.length, 0);
   });
 
   test("assigning an employee outside the workspace still 404s, after entitlement passes", async () => {

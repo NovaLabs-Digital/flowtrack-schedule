@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, getCompanyIdentity, NotifyChannel } from "@/lib/notify";
 import { changeTemplates } from "@/lib/templates";
-import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { isValidPriceCents } from "@/lib/money";
 import {
@@ -70,7 +70,7 @@ function assignmentSyncErrorResponse(outcome: Exclude<AssignmentSyncOutcome, "sy
 export async function PATCH(req: Request) {
   try {
     const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
+    const deny = requireOwner(session);
     if (deny) return deny;
     assertWorkspace(session);
 

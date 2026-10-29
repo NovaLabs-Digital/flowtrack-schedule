@@ -144,16 +144,15 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
     });
   }
 
-  test("exact trusted demo workspace (tester) permits creation with zero subscriptions-table queries (real short-circuit)", async () => {
-    resetFixtures({
-      company_settings: [{ data: { timezone: null } }],
-      clients: [{ data: { id: "client-1" } }, { data: { name: "Demo Client", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
-    });
+  test("tester session (demo workspace) is denied with the flat 403 role-denial -- never treated as public, zero Supabase calls", async () => {
+    resetFixtures({});
     sessionToReturn = TESTER_SESSION;
     const res = await POST(req(authBody()));
-    assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true, appointmentId: "appt-demo-1", created: 1 });
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.equal(body.error, "Unauthorized");
+    assert.equal(body.code, undefined);
+    assert.equal(currentFake.calls.length, 0);
   });
 
   const RESTRICTED_STATES: Array<[string, ReturnType<typeof subscriptionRow> | null]> = [
@@ -199,7 +198,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
     assert.equal(currentFake.calls.length, 0);
   });
 
-  test("tester session with a non-demo workspace fails closed with the generic session-integrity denial, not SUBSCRIPTION_RESTRICTED", async () => {
+  test("tester session with a non-demo workspace is denied by the role gate (403), not SUBSCRIPTION_RESTRICTED", async () => {
     resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: REAL_WORKSPACE_ID };
     const res = await POST(req(authBody()));
@@ -207,7 +206,7 @@ describe("POST /api/appointments/create -- authenticated branch entitlement gate
     const body = await res.json();
     assert.equal(body.error, "Unauthorized");
     assert.equal(body.code, undefined);
-    assert.equal(currentFake.calls.length, 0, "the tester-workspace-mismatch guard fires before any subscriptions query");
+    assert.equal(currentFake.calls.length, 0, "the tester role-denial fires before any subscriptions query");
   });
 
   test("workspace_id spoofed in the request body has no effect -- entitlement is decided before the body is even parsed", async () => {
@@ -1200,16 +1199,12 @@ describe("Phase 5.5E-C: canSendNotifications gate on the post-mutation confirmat
     assert.equal(currentFake.calls.filter((c) => c.table === "messages_sent").length, 0);
   });
 
-  test("tester/demo creation never reaches a notification-capability check at all (existing !isTester short-circuit, zero subscriptions queries)", async () => {
-    resetFixtures({
-      company_settings: [{ data: { timezone: null } }],
-      clients: [{ data: { id: "client-1" } }, { data: { name: "Demo Client", email: null, phone: null, auto_email: false, auto_sms: false } }],
-      appointments: [...HAS_COLUMN_OK, { data: [{ id: "appt-demo-1" }] }],
-    });
+  test("tester session is denied (403) before any notification-capability check, zero Supabase calls, zero provider calls", async () => {
+    resetFixtures({});
     sessionToReturn = TESTER_SESSION;
-    const res = await POST(req(authBody()));
-    assert.equal(res.status, 200);
-    assert.equal(currentFake.calls.filter((c) => c.table === "subscriptions").length, 0);
+    const res = await POST(req(authBody({ notify_channel: "both" })));
+    assert.equal(res.status, 403);
+    assert.equal(currentFake.calls.length, 0);
     assert.equal(currentNotify.emailCalls.length, 0);
     assert.equal(currentNotify.smsCalls.length, 0);
   });

@@ -42,7 +42,7 @@ export async function POST(req: Request) {
   try {
     const session = await getSession();
     const isTester = session.role === "tester";
-    if (session.role !== "owner" && !isTester) {
+    if (session.role !== "owner") {
       return json({ error: "Unauthorized" }, 403);
     }
 
@@ -95,7 +95,7 @@ export async function PATCH(req: Request) {
   try {
     const session = await getSession();
     const isTester = session.role === "tester";
-    if (session.role !== "owner" && !isTester) {
+    if (session.role !== "owner") {
       return json({ error: "Unauthorized" }, 403);
     }
 
@@ -162,7 +162,7 @@ export async function PATCH(req: Request) {
 export async function DELETE(req: Request) {
   try {
     const session = await getSession();
-    if (session.role !== "owner" && session.role !== "tester") {
+    if (session.role !== "owner") {
       return json({ error: "Unauthorized" }, 403);
     }
 

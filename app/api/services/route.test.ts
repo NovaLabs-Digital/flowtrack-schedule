@@ -72,11 +72,13 @@ describe("POST /api/services -- entitlement gate", () => {
     assert.equal(res.status, 200);
   });
 
-  test("exact trusted demo workspace permits creation with zero subscriptions-table queries", async () => {
-    resetFixtures({ services: [{ error: null }] });
+  test("tester session (demo workspace) is denied with the role-denial 403 before any table lookup", async () => {
+    resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await POST(req("POST", { name: "Demo Service" }));
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
   });
 });
 
@@ -112,6 +114,15 @@ describe("PATCH /api/services -- entitlement gate", () => {
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
   });
+
+  test("tester session (demo workspace) is denied with the role-denial 403 before any table lookup", async () => {
+    resetFixtures({});
+    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+    const res = await PATCH(req("PATCH", { id: "svc-1", name: "New Name" }));
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
+  });
 });
 
 describe("DELETE /api/services -- entitlement gate", () => {
@@ -146,6 +157,27 @@ describe("DELETE /api/services -- entitlement gate", () => {
     const res = await DELETE(req("DELETE", { id: "svc-1", workspace_id: "attacker-ws" }));
     assert.equal(res.status, 403);
     assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
+  });
+
+  test("tester session (demo workspace) is denied with the role-denial 403 before any table lookup", async () => {
+    resetFixtures({});
+    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+    const res = await DELETE(req("DELETE", { id: "svc-1" }));
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
+  });
+
+  test("even an owner can never delete a real (non-demo) service -- 404, zero writes", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      services: [{ data: { is_demo: false } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await DELETE(req("DELETE", { id: "svc-1" }));
+    assert.equal(res.status, 404);
+    assert.deepEqual(writeCalls(currentFake.calls), []);
   });
 });
 

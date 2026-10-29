@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
 import { effectiveTimezone } from "@/lib/timezone";
 import type { NotifyChannel } from "@/lib/notify";
@@ -33,7 +33,7 @@ function json(data: unknown, status = 200) {
 export async function POST(req: Request) {
   try {
     const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
+    const deny = requireOwner(session);
     if (deny) return deny;
     assertWorkspace(session);
 

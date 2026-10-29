@@ -77,17 +77,16 @@ describe("PATCH /api/clients -- entitlement gate", () => {
     });
   }
 
-  test("exact trusted demo workspace permits the mutation with zero subscriptions-table queries (real short-circuit)", async () => {
-    resetFixtures({
-      // Deliberately no "subscriptions" fixture queued -- if the demo
-      // short-circuit didn't work, the first query would throw
-      // FAKE_SUPABASE_NO_QUEUED_RESPONSE and fail this test.
-      clients: [{ data: { is_demo: true } }, { error: null }],
-    });
+  test("tester session (demo workspace) is denied with the role-denial 403 before any table lookup", async () => {
+    // No fixtures queued -- any query at all would throw.
+    resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await PATCH(req("PATCH", { id: "client-1", name: "New Name" }));
-    assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.equal(body.code, undefined);
+    assert.equal(body.error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
   });
 
   const RESTRICTED_STATES: Array<[string, ReturnType<typeof subscriptionRow>]> = [
@@ -129,9 +128,9 @@ describe("PATCH /api/clients -- entitlement gate", () => {
     assert.deepEqual(writeCalls(currentFake.calls), []);
   });
 
-  test("tester session with a non-demo workspace fails closed with the generic auth response, not SUBSCRIPTION_RESTRICTED, before any subscriptions query", async () => {
-    // No "subscriptions" fixture queued -- the session-integrity guard must
-    // reject before ever querying, so an accidental query would throw.
+  test("tester session with a non-demo workspace is denied by the role gate (403), not SUBSCRIPTION_RESTRICTED, before any subscriptions query", async () => {
+    // No "subscriptions" fixture queued -- the role gate must reject before
+    // ever querying, so an accidental query would throw.
     resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: REAL_WORKSPACE_ID };
     const res = await PATCH(req("PATCH", { id: "client-1", name: "New Name" }));
@@ -244,6 +243,19 @@ describe("POST /api/clients (archive/restore) -- entitlement gate", () => {
     assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
     assert.deepEqual(writeCalls(currentFake.calls), []);
   });
+
+  for (const action of ["archive", "restore"]) {
+    test(`tester session (demo workspace) is denied ${action} with the role-denial 403 before any table lookup`, async () => {
+      resetFixtures({});
+      sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+      const res = await POST(req("POST", { id: "client-1", action }));
+      assert.equal(res.status, 403);
+      const body = await res.json();
+      assert.equal(body.code, undefined);
+      assert.equal(body.error, "Unauthorized");
+      assert.equal(currentFake.calls.length, 0);
+    });
+  }
 
   describe("security-order correction: missing-id validation runs AFTER auth/role/entitlement, never before", () => {
     test("missing id + no session -> the existing authentication-denial response, NOT a 400, zero Supabase calls", async () => {

@@ -160,15 +160,14 @@ describe("entitlement gate and role gate run before anything else", () => {
     });
   }
 
-  test("exact trusted demo workspace permits the mutation with zero subscriptions-table queries", async () => {
-    resetFixtures(
-      { appointments: [{ data: { id: "appt-1", client_id: "client-1", is_demo: true } }], company_settings: [{ data: { timezone: null } }] },
-      { apply_recurrence_change: [{ data: APPLIED }] }
-    );
+  test("a tester session (demo workspace) is denied with the role-denial 403 and touches nothing", async () => {
+    resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await POST(req(validBody()));
-    assert.equal(res.status, 200);
-    assert.equal(currentFake.calls.filter((c) => c.table === "subscriptions").length, 0);
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 
   const RESTRICTED: Array<[string, ReturnType<typeof subscriptionRow> | null]> = [
@@ -214,11 +213,12 @@ describe("entitlement gate and role gate run before anything else", () => {
     });
   }
 
-  test("a tester session on a non-demo workspace fails closed and never reaches the RPC", async () => {
+  test("a tester session on a non-demo workspace is denied by the role gate (403) and never reaches the RPC", async () => {
     resetFixtures({});
     sessionToReturn = { role: "tester", workspaceId: REAL_WORKSPACE_ID };
     const res = await POST(req(validBody()));
     assert.equal(res.status, 403);
+    assert.equal(currentFake.calls.length, 0);
     assert.equal(currentFake.rpcCalls.length, 0);
   });
 });
@@ -265,11 +265,12 @@ describe("validation happens after entitlement and before any RPC", () => {
     assert.equal(currentFake.rpcCalls.length, 0);
   });
 
-  test("a tester session cannot reach a non-demo appointment (404, no RPC)", async () => {
+  test("a tester session cannot reach a non-demo appointment (403 role gate before any lookup, no RPC)", async () => {
     resetFixtures({ appointments: [{ data: { id: "appt-1", client_id: "client-1", is_demo: false } }] });
     sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
     const res = await POST(req(validBody()));
-    assert.equal(res.status, 404);
+    assert.equal(res.status, 403);
+    assert.equal(currentFake.calls.length, 0);
     assert.equal(currentFake.rpcCalls.length, 0);
   });
 });

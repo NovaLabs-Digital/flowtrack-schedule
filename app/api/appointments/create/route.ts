@@ -39,7 +39,11 @@ export async function POST(req: Request) {
 
     // Employees have no legitimate reason to create appointments — same
     // flat-deny treatment as every other owner-facing mutation route.
-    if (isEmployee) {
+    // Tester sessions are denied too: the public demo is browser-local and
+    // no longer writes through this backend, so tester is read-only here.
+    // This check MUST stay before isPublic below -- a tester falling through
+    // to the public branch would resolve to REAL_WORKSPACE_ID.
+    if (isEmployee || isTester) {
       return json({ error: "Unauthorized" }, 403);
     }
 
@@ -48,9 +52,10 @@ export async function POST(req: Request) {
     const isPublic = !isOwner && !isTester;
 
     // Public booking resolves to the one fixed real workspace for now — see
-    // lib/workspace.ts. Owner/tester use their own session's workspace.
+    // lib/workspace.ts. Owner uses its own session's workspace (tester was
+    // already rejected above, so it can never reach this line).
     const workspaceId: string =
-      session.role === "owner" || session.role === "tester" ? session.workspaceId : REAL_WORKSPACE_ID;
+      session.role === "owner" ? session.workspaceId : REAL_WORKSPACE_ID;
 
     // Two distinct entitlement branches, each with its own capability and its
     // own trusted workspace-identity source — never a single gate over the

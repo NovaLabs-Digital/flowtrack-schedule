@@ -43,7 +43,7 @@ mock.module("@/lib/supabaseAdmin", {
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => sessionToReturn) });
 
 const { POST } = await import("./route.ts");
-const { REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
+const { REAL_WORKSPACE_ID, DEMO_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
 
 function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
   currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
@@ -133,6 +133,16 @@ describe("POST /api/recurring-series/activate is governed by canMutateOperationa
       p_expected_employee_ids: [],
       p_anchor_timezone: "America/New_York",
     });
+  });
+
+  test("a tester session (demo workspace) is denied with the role-denial 403 -- zero table reads, zero RPC calls", async () => {
+    resetFixtures({});
+    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+    const res = await POST(req({ series_id: "series-1", template_appointment_id: "appt-1" }));
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 
   test("failure injection: an RPC-call error returns 500 without leaking the raw error", async () => {

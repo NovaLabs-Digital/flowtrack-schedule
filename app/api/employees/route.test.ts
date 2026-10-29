@@ -171,6 +171,17 @@ describe("PATCH /api/employees -- entitlement gate", () => {
     assert.deepEqual(await res.json(), SUBSCRIPTION_RESTRICTED_BODY);
     assert.deepEqual(writeCalls(currentFake.calls), []);
   });
+
+  test("tester session (demo workspace) is denied with a plain 403 Unauthorized before any table lookup", async () => {
+    resetFixtures({});
+    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+    const res = await PATCH(req("PATCH", { id: "emp-1", name: "New Name" }));
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.equal(body.code, undefined);
+    assert.equal(body.error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
+  });
 });
 
 // Phase (migration 019): employees.email uniqueness is now workspace-scoped

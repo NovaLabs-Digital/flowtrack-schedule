@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail, sendSms, shouldSend, describeProviderError, recordMessageSent, getCompanyIdentity, NotifyChannel } from "@/lib/notify";
 import { cancelTemplates } from "@/lib/templates";
-import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { quarantineIfObservedActive, finalizeSeriesStopped, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
 import { isHistoricalAppointment, deriveAppointmentTrackingStatus } from "@/lib/payroll";
@@ -48,7 +48,7 @@ async function hasColumn(col: string): Promise<boolean> {
 export async function POST(req: Request) {
   try {
     const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
+    const deny = requireOwner(session);
     if (deny) return deny;
     assertWorkspace(session);
 

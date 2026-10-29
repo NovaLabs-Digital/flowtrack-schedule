@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { getSession, requireRole, assertWorkspace } from "@/lib/session";
+import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
 import { quarantineActiveSeriesForClient, finalizeStoppedSeriesByIds, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
 
@@ -23,7 +23,7 @@ export async function PATCH(req: Request) {
     const body = await req.json();
 
     const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
+    const deny = requireOwner(session);
     if (deny) return deny;
     assertWorkspace(session);
 
@@ -97,7 +97,7 @@ export async function POST(req: Request) {
     const action = (body.action || "").trim();
 
     const session = await getSession();
-    const deny = requireRole(session, ["owner", "tester"]);
+    const deny = requireOwner(session);
     if (deny) return deny;
     assertWorkspace(session);
 
