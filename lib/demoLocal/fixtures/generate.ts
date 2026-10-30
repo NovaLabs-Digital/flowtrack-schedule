@@ -27,7 +27,10 @@ import type {
   Service,
 } from "@/app/components/dashboard/types";
 import type { CompletedJobBilling, PaymentMethod } from "@/lib/completedJobBilling";
-import { effectiveTimezone, toBusinessLocal, zonedDateTimeToUTC, zonedDateValue } from "@/lib/timezone";
+// Type-only (erased at compile time): lib/recurringSeries.ts itself imports
+// the Supabase admin client and must never load in the browser.
+import type { RecurringSeriesRow } from "@/lib/recurringSeries";
+import { effectiveTimezone, toBusinessLocal, zonedDateTimeToUTC, zonedDateValue, zonedTimeValue } from "@/lib/timezone";
 import { addCalendarMonths, addDays } from "@/lib/recurrence";
 
 // Not a real workspace -- a plain local marker carried on rows whose real
@@ -66,30 +69,46 @@ export type DemoMessageSent = {
 // GET /api/settings/company demo handler resolves it through the real
 // effectiveBusinessHours/effectiveTimezone helpers at request time, exactly
 // like the production route does.
+// Text fields are nullable for the same reason the real columns are: the
+// real POST stores a blanked field as NULL, and the demo POST handler does
+// the same.
 export type DemoCompanySettings = {
-  company_name: string;
-  phone: string;
-  email: string;
-  address: string;
-  city: string;
-  state: string;
-  zip: string;
+  company_name: string | null;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
   booking_enabled: boolean;
   notifications_enabled: boolean;
   business_hours: unknown;
   timezone: string;
 };
 
+// recurring_series registry row (migrations/026 + 027a), exactly the
+// columns RECURRING_SERIES_COLUMNS selects. Its `id` IS the series_id its
+// appointments carry -- the same join the real GET /api/recurring-series uses.
+export type DemoRecurringSeriesRow = RecurringSeriesRow;
+
+// employees row as the real GET /api/employees selects it (id, name, phone,
+// color, active, email, position). The dashboard's Employee type has no
+// email; the real route returns it, so the demo row carries it too. There is
+// deliberately NO password field of any kind -- see the demo POST/PATCH
+// /api/employees handlers.
+export type DemoEmployee = Employee & { email?: string | null };
+
 export type DemoFixtureBundle = {
   sessionInitIso: string;
   clients: Client[];
   appointments: Appointment[];
-  employees: Employee[];
+  employees: DemoEmployee[];
   services: Service[];
   employeeHours: DemoEmployeeHours[];
   assignments: AppointmentEmployeeAssignment[];
   completedJobBilling: CompletedJobBilling[];
   messagesSent: DemoMessageSent[];
+  recurringSeries: DemoRecurringSeriesRow[];
   companySettings: DemoCompanySettings;
 };
 
@@ -409,9 +428,11 @@ export function generateDemoFixture(now: Date): DemoFixtureBundle {
     { client: 4, service: 1, baseOffset: -4, time: "13:00", employees: [2], frequency_type: "monthly", repeat_weeks: 1, repeat_months: 1, from: -3, to: 3 },
     { client: 8, service: 3, baseOffset: -6, time: "08:00", employees: [0, 2], frequency_type: "weekly", repeat_weeks: 4, repeat_months: null, from: -3, to: 3 },
   ];
+  const seriesAnchors: string[] = [];
   seriesDefs.forEach((def, sIdx) => {
     const seriesId = demoId(ID_KIND.series, sIdx + 1);
     const anchor = new Date(at(weekday(def.baseOffset), def.time));
+    seriesAnchors.push(anchor.toISOString());
     for (let k = def.from; k <= def.to; k++) {
       const start =
         def.frequency_type === "monthly"
@@ -496,6 +517,49 @@ export function generateDemoFixture(now: Date): DemoFixtureBundle {
 
   appointments.sort((a, b) => a.scheduled_for.localeCompare(b.scheduled_for) || a.id.localeCompare(b.id));
 
+  // ---- exactly ONE recurring_series registry row, review_required: a
+  // legacy series (no confirmed template yet) attached to an EXISTING
+  // generated series -- seriesDefs[1], Melissa Carter's every-2-weeks Window
+  // Washing. Its live future occurrences all agree (same service, price,
+  // duration, employee, weekday, local time), so the real consistency check
+  // passes for any template the owner picks. Anchor fields follow the same
+  // derivation insertQuarantinedSeries uses (zonedDateValue/zonedTimeValue
+  // of the series' first instant, in the workspace timezone).
+  const reviewDef = seriesDefs[1];
+  const reviewAnchorIso = seriesAnchors[1];
+  const reviewCreatedAt = notAfterNow(plusMinutes(reviewAnchorIso, -14 * 24 * 60));
+  const recurringSeries: DemoRecurringSeriesRow[] = [
+    {
+      id: demoId(ID_KIND.series, 2),
+      workspace_id: DEMO_LOCAL_WORKSPACE_ID,
+      status: "review_required",
+      client_id: clients[reviewDef.client].id,
+      // false, not true: the real activate route refuses any is_demo row
+      // outright ("Demo series cannot be activated.") -- a safeguard that
+      // protects the REAL shared demo workspace from being promoted into a
+      // live state. That workspace doesn't exist here at all, so the
+      // safeguard has nothing to protect in this local-only store; keeping
+      // is_demo true would just make this fixture row permanently
+      // unactivatable, defeating the Stage 2 "recurring-series viewing AND
+      // CHANGES" requirement. The real rule itself is untouched -- this is
+      // a fixture-data choice, not a weakened check.
+      is_demo: false,
+      template_appointment_id: null,
+      frequency_type: reviewDef.frequency_type,
+      repeat_weeks: reviewDef.repeat_weeks,
+      repeat_months: reviewDef.repeat_months,
+      anchor_local_date: zonedDateValue(reviewAnchorIso, tz),
+      anchor_local_time: zonedTimeValue(reviewAnchorIso, tz),
+      anchor_timezone: tz,
+      source: "legacy_backfill",
+      created_at: reviewCreatedAt,
+      updated_at: reviewCreatedAt,
+      stopped_at: null,
+      reviewed_at: null,
+      last_replenished_at: null,
+    },
+  ];
+
   return {
     sessionInitIso: nowIso,
     clients: [...clients].sort((a, b) => a.name.localeCompare(b.name)),
@@ -506,6 +570,7 @@ export function generateDemoFixture(now: Date): DemoFixtureBundle {
     assignments,
     completedJobBilling,
     messagesSent,
+    recurringSeries,
     companySettings: {
       company_name: "Sunshine Property Services",
       phone: "(407) 555-0100",

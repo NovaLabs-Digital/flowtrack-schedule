@@ -161,7 +161,14 @@ export default function DemoExperienceOverlay() {
               </button>
             </div>
             <div className="mt-3 text-center text-xs text-slate-400">
-              You can restart this Experience anytime from Demo Settings.
+              {/* Deliberately not naming a specific destination: the real
+                  tester backend's Restart Experience lives in its "Demo
+                  Mode" Settings card, while the browser-local demo's lives
+                  in the banner's Demo Controls popover (see
+                  DemoBannerControls.tsx) -- this component takes no props
+                  distinguishing the two, so a single generic sentence stays
+                  honest for both rather than naming only one. */}
+              You can restart this Experience anytime.
             </div>
           </>
         ) : (

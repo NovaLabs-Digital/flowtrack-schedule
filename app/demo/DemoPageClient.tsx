@@ -8,7 +8,7 @@
 import { useMemo, useSyncExternalStore } from "react";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 import { installDemoFetchInterceptor } from "@/lib/demoLocal/fetchInterceptor";
-import { getSnapshot, initStore, subscribe, type DemoFixtureBundle } from "@/lib/demoLocal/store";
+import { clearDemoSession, getSnapshot, initStore, subscribe, type DemoFixtureBundle } from "@/lib/demoLocal/store";
 import { DEMO_ENTITLEMENT } from "@/lib/demoLocal/fixtures/entitlement";
 import { DEMO_TIMEZONE } from "@/lib/demoLocal/fixtures/generate";
 import { effectiveBusinessHours } from "@/lib/businessHours";
@@ -45,6 +45,19 @@ function getServerSnapshot(): DemoFixtureBundle | null {
   return null;
 }
 
+// Demo-aware Sign Out: ends this tab's session (clearDemoSession -- cleared,
+// never regenerated, so a later "Try Live Demo" click starts fresh instead
+// of silently reopening what was just signed out of) and forces a FULL
+// reload to "/" rather than a client-side router.push. The fetch
+// interceptor's own self-uninstall (it checks window.location.pathname on
+// every call) already protects any client-side navigation away from /demo,
+// but a full reload here is belt-and-suspenders for the exact same reason
+// Reset Demo already uses one: no stale React state survives either way.
+function handleDemoSignOut(): void {
+  clearDemoSession();
+  window.location.assign("/");
+}
+
 export default function DemoPageClient() {
   const snapshot = useSyncExternalStore<DemoFixtureBundle | null>(subscribe, getSnapshot, getServerSnapshot);
 
@@ -73,6 +86,7 @@ export default function DemoPageClient() {
       workspaceId={LOCAL_DEMO_WORKSPACE_ID}
       userId={LOCAL_DEMO_USER_ID}
       isLocalDemo={true}
+      onSignOut={handleDemoSignOut}
     />
   );
 }

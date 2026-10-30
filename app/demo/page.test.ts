@@ -107,6 +107,7 @@ describe("app/demo/DemoPageClient.tsx: DashboardShell receives the full 13-prop 
     ["workspaceId", "LOCAL_DEMO_WORKSPACE_ID"],
     ["userId", "LOCAL_DEMO_USER_ID"],
     ["isLocalDemo", "true"],
+    ["onSignOut", "handleDemoSignOut"],
   ] as const) {
     test(`passes ${prop}={${value}}`, () => {
       assert.ok(block.includes(`${prop}={${value}}`), `missing ${prop}={${value}}`);
@@ -115,6 +116,14 @@ describe("app/demo/DemoPageClient.tsx: DashboardShell receives the full 13-prop 
 
   test("paidAppointmentIds is derived from paid completedJobBilling rows", () => {
     assert.match(source, /completedJobBilling\.filter\(\(r\) => r\.paid\)\.map\(\(r\) => r\.appointment_id\)/);
+  });
+
+  test("handleDemoSignOut clears the local session (never regenerating) and forces a full reload to \"/\", not a client-side router.push", () => {
+    assert.match(source, /import \{ clearDemoSession, getSnapshot, initStore, subscribe, type DemoFixtureBundle \} from "@\/lib\/demoLocal\/store";/);
+    const fnBlock = source.slice(source.indexOf("function handleDemoSignOut"), source.indexOf("function handleDemoSignOut") + 300);
+    assert.match(fnBlock, /clearDemoSession\(\);/);
+    assert.match(fnBlock, /window\.location\.assign\("\/"\);/);
+    assert.doesNotMatch(fnBlock, /router\.push/, "must be a full reload, not a client-side navigation -- a client-side nav would leave the patched fetch active past Sign Out");
   });
 
   test("defaults match the real page's no-settings fallbacks", () => {

@@ -31,8 +31,13 @@ describe("prop wiring: both render paths", () => {
   test("SettingsPanel forwards canMutateOperationalData to ServicesPanel (normal owner path)", () => {
     const idx = settingsPanelSource.indexOf('if (section === "services")');
     assert.notEqual(idx, -1);
-    const line = settingsPanelSource.slice(idx, idx + 120);
-    assert.match(line, /<ServicesPanel canMutateOperationalData=\{canMutateOperationalData\} \/>/);
+    const line = settingsPanelSource.slice(idx, idx + 150);
+    assert.match(line, /<ServicesPanel canMutateOperationalData=\{canMutateOperationalData\} isTester=\{isLocalDemo\} \/>/);
+  });
+
+  test("SettingsPanel forwards isTester={isLocalDemo} to ServicesPanel ONLY -- this is what reveals the real Delete action (gated on isTester) for the browser-local demo, since a real owner never reaches it via SettingsPanel otherwise; isLocalDemo defaults to false so the real owner path is unaffected", () => {
+    assert.match(settingsPanelSource, /isLocalDemo\?:\s*boolean;/);
+    assert.match(settingsPanelSource, /isLocalDemo = false,/);
   });
 
   test("DashboardSettingsArea's tester interactive-demo carve-out also passes canMutateOperationalData -- reusing its own existing prop, not a new parallel one", () => {

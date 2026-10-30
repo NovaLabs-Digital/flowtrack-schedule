@@ -419,7 +419,7 @@ describe("DashboardShell: Needs Attention refresh triggers", () => {
 describe("DashboardShell: isLocalDemo (browser-local demo) pass-through", () => {
   test("isLocalDemo is an optional prop destructured with a safe false default, and forwarded to DashboardSettingsArea", () => {
     assert.match(source, /isLocalDemo\?:\s*boolean;/);
-    assert.match(source, /\n\s*isLocalDemo = false,\r?\n\}: \{/);
+    assert.match(source, /\n\s*isLocalDemo = false,\r?\n/);
     const block = desktopBlock.match(/<DashboardSettingsArea[\s\S]*?\/>/);
     assert.ok(block);
     assert.match(block![0], /isLocalDemo=\{isLocalDemo\}/);
@@ -434,5 +434,41 @@ describe("DashboardShell: isLocalDemo (browser-local demo) pass-through", () => 
     const bannerBlock = desktopBlock.match(/\{isTester && \([\s\S]*?Demo Mode — All information shown[\s\S]*?\)\}/);
     assert.ok(bannerBlock, "the Demo Mode banner block is present");
     assert.match(bannerBlock![0], /\{isLocalDemo && <DemoBannerControls \/>\}/);
+  });
+
+  test("isLocalDemo IS also forwarded to MobileDashboard, not just DashboardSettingsArea -- a mobile demo visitor must not silently fall back to isLocalDemo=false", () => {
+    const block = mobileBlock.match(/<MobileDashboard[\s\S]*?\/>/);
+    assert.ok(block, "MobileDashboard is rendered on the mobile branch");
+    assert.match(block![0], /isLocalDemo=\{isLocalDemo\}/);
+  });
+
+  test("onSignOut is an optional override prop, used by the real DashboardSettingsArea call site, and forwarded to MobileDashboard too", () => {
+    assert.match(source, /onSignOut\?:\s*\(\)\s*=>\s*void;/);
+    assert.match(source, /onSignOut:\s*onSignOutOverride,/);
+    const desktopSettingsBlock = desktopBlock.match(/<DashboardSettingsArea[\s\S]*?\/>/);
+    assert.ok(desktopSettingsBlock);
+    assert.match(desktopSettingsBlock![0], /onSignOut=\{onSignOutOverride \?\? handleSignOut\}/);
+    const mobileShellBlock = mobileBlock.match(/<MobileDashboard[\s\S]*?\/>/);
+    assert.ok(mobileShellBlock);
+    assert.match(mobileShellBlock![0], /onSignOut=\{onSignOutOverride\}/);
+  });
+
+  test("isTrialing/workspaceId/userId are also forwarded to MobileDashboard -- needed so a mobile demo visitor's real SettingsPanel drill-down (via MobileSettings) has everything the desktop one already gets", () => {
+    const block = mobileBlock.match(/<MobileDashboard[\s\S]*?\/>/);
+    assert.ok(block);
+    for (const p of ["isTrialing={entitlement.isTrialing}", "workspaceId={workspaceId}", "userId={userId}"]) {
+      assert.ok(block![0].includes(p), `MobileDashboard call is missing ${p}`);
+    }
+  });
+
+  test("onSignOut is ALSO forwarded to LeftBar -- it has its own independent sign-out button, distinct from DashboardSettingsArea's and MobileDashboard's, found unwired via live verification", () => {
+    const leftBarBlock = desktopBlock.match(/<LeftBar[\s\S]*?\/>/);
+    assert.ok(leftBarBlock, "LeftBar is rendered on the desktop branch");
+    assert.match(leftBarBlock![0], /onSignOut=\{onSignOutOverride\}/);
+  });
+
+  test("the mobile branch is wrapped in DemoExperienceProvider, not just the desktop branch -- MobileDemoControls reuses DemoControlsPanel, which calls useDemoExperienceContext() and throws without a provider in the tree", () => {
+    assert.match(mobileBlock, /<DemoExperienceProvider[\s\S]*?<MobileDashboard/);
+    assert.match(mobileBlock, /<\/DemoExperienceProvider>\s*\n\s*\);/);
   });
 });

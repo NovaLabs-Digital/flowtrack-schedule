@@ -67,6 +67,7 @@ export default function DashboardShell({
   workspaceId,
   userId,
   isLocalDemo = false,
+  onSignOut: onSignOutOverride,
 }: {
   clients: Client[];
   appointments: Appointment[];
@@ -131,10 +132,18 @@ export default function DashboardShell({
   // Same UI-only, never-sent-to-a-server-route rule as workspaceId above.
   userId: string;
   // Browser-local public demo (app/demo/page.tsx) only: passed straight
-  // through to DashboardSettingsArea, which then always shows the demo
-  // Settings sidebar (Staff/Services/Billing/Demo Controls). Omitted -- so
-  // false -- by the real server page (app/dashboard/page.tsx).
+  // through to DashboardSettingsArea, which then routes Settings through
+  // the exact same real SettingsTabBar/SettingsPanel path the owner uses
+  // (see that file's own header comment) -- never a bespoke redesign.
+  // Omitted -- so false -- by the real server page (app/dashboard/page.tsx).
   isLocalDemo?: boolean;
+  // Override for the real handleSignOut below, used ONLY by app/demo/
+  // DemoPageClient.tsx so Sign Out can end the local session (clearDemoSession)
+  // and force a full reload instead of a real /api/auth/logout + client-side
+  // nav -- handleSignOut itself stays shared/unbranched for the real owner
+  // and shared-backend tester paths. Omitted everywhere else, so the real
+  // app's Sign Out button is completely unchanged.
+  onSignOut?: () => void;
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
@@ -506,7 +515,13 @@ export default function DashboardShell({
   // --- MOBILE LAYOUT (Mobile Admin v1 — see app/components/mobile/) ---
   if (isMobile) {
     return (
-      <>
+      // MobileDemoControls (inside MobileDashboard's amber banner) reuses
+      // DemoControlsPanel, which calls useDemoExperienceContext() -- this
+      // provider has to wrap the mobile tree too, not just desktop's,
+      // or tapping "Demo Controls" on mobile throws
+      // "useDemoExperienceContext must be used within a
+      // DemoExperienceProvider" (a real crash found via live verification).
+      <DemoExperienceProvider autoStart={false}>
         <MobileDashboard
           clients={clients}
           appointments={appointments}
@@ -518,15 +533,20 @@ export default function DashboardShell({
           onEditAppointment={handleEditAppointment}
           onClientUpdated={() => router.refresh()}
           isTester={isTester}
+          isLocalDemo={isLocalDemo}
+          onSignOut={onSignOutOverride}
           bannerVariant={entitlement.bannerVariant}
           recoveryAction={entitlement.recoveryAction}
           finalAccessDate={entitlement.finalAccessDate}
           readOnlyEndsAt={entitlement.readOnlyEndsAt}
           canMutateOperationalData={entitlement.canMutateOperationalData}
           timezone={timezone}
+          isTrialing={entitlement.isTrialing}
+          workspaceId={workspaceId}
+          userId={userId}
         />
         {modalEl}
-      </>
+      </DemoExperienceProvider>
     );
   }
 
@@ -570,6 +590,7 @@ export default function DashboardShell({
           onSelectClient={handleSelectClient}
           collapsed={leftCollapsed}
           onToggleCollapsed={toggleLeftCollapsed}
+          onSignOut={onSignOutOverride}
         />
       </aside>
 
@@ -707,7 +728,7 @@ export default function DashboardShell({
                 setCenterMode("schedule");
                 setNeedsAttentionRefreshToken((prev) => prev + 1);
               }}
-              onSignOut={handleSignOut}
+              onSignOut={onSignOutOverride ?? handleSignOut}
               signingOut={signingOut}
               canMutateOperationalData={entitlement.canMutateOperationalData}
               isTrialing={entitlement.isTrialing}
@@ -805,7 +826,7 @@ export default function DashboardShell({
         />
       )}
     </div>
-    {isTester && <MobileExperiencePreview />}
+    {isTester && <MobileExperiencePreview isLocalDemo={isLocalDemo} />}
     {isTester && <DemoExperienceOverlay />}
     </DemoExperienceProvider>
   );

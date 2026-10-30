@@ -18,6 +18,7 @@ export default function SettingsPanel({
   billingFocusAppointmentId,
   billingFocusServiceDate,
   onBillingSaved,
+  isLocalDemo = false,
 }: {
   section: SettingsSection;
   // Phase 5.5E-E1E forwarded this only to ArchivedClientsPanel. Phase
@@ -51,9 +52,20 @@ export default function SettingsPanel({
   // DashboardShell's needsAttentionRefreshToken -- the sidebar control's
   // issue labels/counts catch up without a full-page reload.
   onBillingSaved?: () => void;
+  // Browser-local public demo (app/demo/page.tsx) only: forwarded ONLY to
+  // ServicesPanel's own isTester prop (never to StaffPanel/CompanyInfoPanel/
+  // etc.) -- ServicesPanel's SOLE use of isTester is revealing its hard
+  // "Delete" action (every other panel either has no isTester-gated
+  // behavior, like StaffPanel, whose isTester HIDES the Add Employee button
+  // -- exactly the opposite of what the demo needs for its own Employees
+  // CRUD requirement, so isTester must never reach StaffPanel here). Real
+  // owners never pass this (default false), so ServicesPanel's real-owner
+  // behavior (Edit/Disable only, matching "a real service is deactivated,
+  // never deleted") is completely unchanged.
+  isLocalDemo?: boolean;
 }) {
   if (section === "company") return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} />;
-  if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} />;
+  if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} isTester={isLocalDemo} />;
   if (section === "staff") return <StaffPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "archived") return <ArchivedClientsPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "recurring") return <RecurringSeriesPanel canMutateOperationalData={canMutateOperationalData} />;

@@ -29,6 +29,9 @@ const TABLE_KEYS = [
   "assignments",
   "completedJobBilling",
   "messagesSent",
+  // Added in Stage 2: a sessionStorage blob saved before this table existed
+  // fails isValidBundle and is regenerated fresh, never half-loaded.
+  "recurringSeries",
 ] as const satisfies readonly (keyof DemoFixtureBundle)[];
 
 let state: DemoFixtureBundle | null = null;
@@ -122,6 +125,24 @@ export function resetStore(now: Date = new Date()): DemoFixtureBundle {
   state = generateDemoFixture(now);
   notify();
   return state;
+}
+
+// Demo "Sign Out": discards this tab's demo session entirely -- the saved
+// sessionStorage key AND the in-memory snapshot -- WITHOUT generating a new
+// fixture (unlike resetStore). The next getSnapshot() call, if any, lazily
+// starts a brand-new session via initStore(). Listeners are deliberately not
+// notified: a notified subscriber would immediately call getSnapshot() and
+// re-create the very session this just discarded.
+export function clearDemoSession(): void {
+  const s = storage();
+  if (s) {
+    try {
+      s.removeItem(DEMO_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+  state = null;
 }
 
 // ---- writes -------------------------------------------------------------

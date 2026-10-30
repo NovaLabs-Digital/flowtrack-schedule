@@ -326,3 +326,82 @@ describe("Needs Attention: equivalent mobile entry point (MobileNeedsAttentionCo
     assert.ok(controlIdx < dayStripIdx);
   });
 });
+
+// Stage 2: browser-local public demo (app/demo/page.tsx) parity -- mirrors
+// DashboardSettingsArea.test.ts's own "isLocalDemo is an optional prop
+// defaulting to false" convention for this exact same kind of threading,
+// applied here via SOURCE INSPECTION (this file's established convention,
+// not DashboardSettingsArea.test.ts's rendered one, since MobileDashboard.tsx
+// remains unloadable by this repo's test runner).
+describe("Stage 2: isLocalDemo threading (browser-local public demo)", () => {
+  test("Props declares isLocalDemo?: boolean, and the component destructures it with a default of false", () => {
+    assert.match(source, /isLocalDemo\?:\s*boolean;/);
+    const fnStart = source.indexOf("export default function MobileDashboard({");
+    const fnParamsEnd = source.indexOf("}: Props)", fnStart);
+    const params = source.slice(fnStart, fnParamsEnd);
+    assert.match(params, /^\s*isLocalDemo = false,$/m);
+  });
+
+  test("isLocalDemo is forwarded to MobileSettings alongside isTester", () => {
+    const idx = source.indexOf("<MobileSettings");
+    assert.notEqual(idx, -1);
+    const closeIdx = source.indexOf(">", idx);
+    const jsx = source.slice(idx, closeIdx);
+    assert.match(jsx, /isTester=\{isTester\}/);
+    assert.match(jsx, /isLocalDemo=\{isLocalDemo\}/);
+  });
+
+  test("onSignOut is an optional override prop, destructured, and forwarded to MobileSettings -- same pattern DashboardShell.tsx uses for its own DashboardSettingsArea/MobileDashboard call sites", () => {
+    assert.match(source, /onSignOut\?:\s*\(\)\s*=>\s*void;/);
+    const fnStart = source.indexOf("export default function MobileDashboard({");
+    const fnParamsEnd = source.indexOf("}: Props)", fnStart);
+    const params = source.slice(fnStart, fnParamsEnd);
+    assert.match(params, /^\s*onSignOut,$/m);
+    const idx = source.indexOf("<MobileSettings");
+    const closeIdx = source.indexOf(">", idx);
+    const jsx = source.slice(idx, closeIdx);
+    assert.match(jsx, /onSignOut=\{onSignOut\}/);
+  });
+
+  test("canMutateOperationalData/isTrialing/timezone/workspaceId/userId are forwarded to MobileSettings -- needed so isLocalDemo's real SettingsPanel drill-down has everything it needs, same values already threaded elsewhere in this file", () => {
+    for (const prop of ["isTrialing: boolean;", "workspaceId: string;", "userId: string;"]) {
+      assert.ok(source.includes(prop), `Props is missing: ${prop}`);
+    }
+    const idx = source.indexOf("<MobileSettings");
+    const closeIdx = source.indexOf(">", idx);
+    const jsx = source.slice(idx, closeIdx);
+    for (const p of [
+      "canMutateOperationalData={canMutateOperationalData}",
+      "isTrialing={isTrialing}",
+      "timezone={timezone}",
+      "workspaceId={workspaceId}",
+      "userId={userId}",
+    ]) {
+      assert.ok(jsx.includes(p), `MobileSettings call is missing ${p}`);
+    }
+  });
+
+  test("MobileDemoControls is imported and rendered inside the amber Demo Mode banner, gated on isLocalDemo -- mirrors DemoBannerControls.tsx's own isLocalDemo && <DemoBannerControls /> gating on desktop", () => {
+    assert.match(source, /import MobileDemoControls from "@\/app\/components\/mobile\/MobileDemoControls";/);
+    const bannerIdx = source.indexOf("{isTester && (");
+    assert.notEqual(bannerIdx, -1);
+    const bannerCloseIdx = source.indexOf("<OwnerBillingBanner", bannerIdx);
+    const bannerBlock = source.slice(bannerIdx, bannerCloseIdx);
+    assert.match(bannerBlock, /\{isLocalDemo && <MobileDemoControls \/>\}/);
+  });
+
+  test("the banner's own container gained 'relative' positioning (required for MobileDemoControls' absolutely-positioned trigger) but is otherwise unchanged", () => {
+    assert.ok(
+      source.includes(
+        'className="relative shrink-0 bg-amber-400 text-amber-950 text-center text-[11px] font-semibold py-1 px-3"'
+      )
+    );
+  });
+
+  test("isLocalDemo defaults to false, so every existing caller (none of which pass it) sees byte-for-byte unchanged behavior: MobileDemoControls never renders, and MobileSettings receives isLocalDemo={false}", () => {
+    // The gating expression itself only ever renders MobileDemoControls when
+    // isLocalDemo is truthy -- there is no second, ungated render path.
+    const matches = source.match(/<MobileDemoControls/g) ?? [];
+    assert.equal(matches.length, 1, "MobileDemoControls has exactly one call site, and it is gated");
+  });
+});

@@ -6,10 +6,22 @@ import { notifyDemoAction } from "./demoExperienceBus";
 
 // Renders the real Mobile Admin (MobileDashboard) inside a same-origin
 // iframe, framed like a phone, only during the mobile-experience tour step.
-// The iframe shares the tester's existing session cookie automatically
-// (same origin — no second login), so this is the actual mobile app, not a
-// shrunk-down copy of the desktop UI.
-export default function MobileExperiencePreview() {
+//
+// Real shared-backend tester session (isLocalDemo false, the default): the
+// iframe loads /dashboard, sharing the tester's existing session cookie
+// automatically (same origin — no second login) — unchanged behavior.
+//
+// Browser-local public demo (isLocalDemo true): there is no session cookie
+// at all (by design — see app/demo/page.tsx), so an iframe pointed at
+// /dashboard hits middleware.ts's auth gate and redirects to /login instead
+// of showing the mobile app — a real bug found live. The iframe loads /demo
+// instead, which needs no cookie; sessionStorage (where the fixture lives)
+// is shared with the parent tab for a same-origin, same-tab iframe, so the
+// iframe picks up the exact same fictional data already on screen, and its
+// own module-scope `installDemoFetchInterceptor()`/`initStore()` calls
+// (app/demo/DemoPageClient.tsx) run again in the iframe's own separate JS
+// realm, exactly as they do on first load of /demo itself.
+export default function MobileExperiencePreview({ isLocalDemo = false }: { isLocalDemo?: boolean }) {
   const { active, currentStep } = useDemoExperienceContext();
   const show = active && currentStep?.id === "mobile-experience";
 
@@ -39,7 +51,7 @@ export default function MobileExperiencePreview() {
         <div className="absolute left-1/2 top-0 -translate-x-1/2 w-28 h-5 bg-slate-900 rounded-b-2xl z-10" />
         <iframe
           key="mobile-preview-frame"
-          src="/dashboard"
+          src={isLocalDemo ? "/demo" : "/dashboard"}
           title="Mobile Admin preview"
           className="w-full h-full rounded-[2rem] bg-white"
           style={{ border: "none" }}

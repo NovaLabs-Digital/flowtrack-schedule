@@ -103,6 +103,7 @@ export default function DashboardSettingsArea({
             billingFocusAppointmentId={billingFocusAppointmentId}
             billingFocusServiceDate={billingFocusServiceDate}
             onBillingSaved={onBillingSaved}
+            isLocalDemo={isLocalDemo}
           />
         </div>
       </div>

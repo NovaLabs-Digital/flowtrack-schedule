@@ -64,6 +64,7 @@ describe("DashboardSettingsArea: isLocalDemo routes through the REAL owner Setti
       "billingFocusAppointmentId={billingFocusAppointmentId}",
       "billingFocusServiceDate={billingFocusServiceDate}",
       "onBillingSaved={onBillingSaved}",
+      "isLocalDemo={isLocalDemo}",
     ]) {
       assert.ok(panel![0].includes(p), `SettingsPanel missing ${p}`);
     }

@@ -104,6 +104,17 @@ describe("POST /api/employees -- entitlement gate", () => {
     assert.equal(body.error, "Unauthorized");
   });
 
+  test("tester session (demo workspace) is denied with a plain 403 Unauthorized before any table lookup", async () => {
+    resetFixtures({});
+    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+    const res = await POST(req("POST", { name: "Bob" }));
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.equal(body.code, undefined);
+    assert.equal(body.error, "Unauthorized");
+    assert.equal(currentFake.calls.length, 0);
+  });
+
   test("a spoofed workspace_id in the request body does not change which workspace's entitlement is checked", async () => {
     resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
     subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }] });

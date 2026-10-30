@@ -80,7 +80,7 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "employees",
     title: "Employees",
-    body: "Assign colors to employees so they're instantly recognizable throughout the schedule. Open Settings, then Staff / Team — edit an employee, choose a new color, and save to continue.",
+    body: "Assign colors to employees so they're instantly recognizable throughout the schedule. Open Settings, then Employees — edit an employee, choose a new color, and save to continue.",
     // Spotlights the whole edit form, not just the color swatch — the
     // required action also needs the Save Changes button clickable, which
     // sits outside the swatch's own small rect and would otherwise be

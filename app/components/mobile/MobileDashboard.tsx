@@ -11,6 +11,7 @@ import MobileAppointmentDetail from "@/app/components/mobile/MobileAppointmentDe
 import MobileClientDrawer from "@/app/components/mobile/MobileClientDrawer";
 import MobileClientsList from "@/app/components/mobile/MobileClientsList";
 import MobileSettings from "@/app/components/mobile/MobileSettings";
+import MobileDemoControls from "@/app/components/mobile/MobileDemoControls";
 import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBottomNav";
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 import MobileNeedsAttentionControl from "@/app/components/mobile/MobileNeedsAttentionControl";
@@ -40,6 +41,21 @@ type Props = {
   onEditAppointment: (apptId: string) => void;
   onClientUpdated: () => void;
   isTester: boolean;
+  // Browser-local public demo (app/demo/page.tsx) only: mirrors
+  // DashboardShell's own isLocalDemo prop (see its doc comment and
+  // DashboardSettingsArea.tsx's isLocalDemo branch for the desktop
+  // original). Forwarded to MobileSettings, which routes Settings through
+  // the exact same real owner path it already renders instead of the
+  // "not available in demo sessions" dead-end, and gates a Reset Demo
+  // trigger in the Demo Mode banner below. Omitted (false) everywhere
+  // else, leaving every existing MobileDashboard render (none of which
+  // pass this prop today) byte-for-byte unchanged.
+  isLocalDemo?: boolean;
+  // Override for MobileSettings' own real handleSignOut, used ONLY by
+  // app/demo/DemoPageClient.tsx (via DashboardShell's same-named prop) so
+  // Sign Out can end the local demo session and force a full reload instead
+  // of a real /api/auth/logout + client-side nav. Omitted everywhere else.
+  onSignOut?: () => void;
   // Phase 5.5D: the same two Phase 5.5B browser-safe fields OwnerBillingBanner
   // takes on desktop -- never the full EntitlementView, never a raw result.
   bannerVariant: OwnerBillingBannerProps["bannerVariant"];
@@ -57,6 +73,15 @@ type Props = {
   // down to MobileAppointmentCard/MobileAppointmentDetail/MobileSchedule.
   // Never the device's own ambient timezone.
   timezone: string;
+  // Browser-local public demo only: forwarded straight through to
+  // MobileSettings, which forwards it (isLocalDemo-gated, see there) to the
+  // real SettingsPanel the same way DashboardShell/DashboardSettingsArea do
+  // on desktop. Not consumed anywhere else in this file. Real callers (none
+  // of which pass these today) are unaffected -- isTrialing has no boolean
+  // default below because it's only ever read inside the isLocalDemo branch.
+  isTrialing: boolean;
+  workspaceId: string;
+  userId: string;
 };
 
 function addDays(d: Date, n: number) {
@@ -82,8 +107,10 @@ function scheduledMinutes(appt: Appointment, services: Service[]): number {
 // Mobile Admin v1 — full approved mockup: Today screen (Screen 1),
 // Appointment Detail (Screen 2), Client Quick Look drawer (Screen 3),
 // persistent bottom navigation (Screen 4) with Schedule (Agenda List),
-// Clients, and Settings tabs. Settings is a minimal placeholder for v1
-// (see MobileSettings.tsx).
+// Clients, and Settings tabs. Settings is a minimal, non-interactive
+// placeholder for a real owner (see MobileSettings.tsx's own header) --
+// the browser-local demo (isLocalDemo) is the one exception, reaching the
+// real SettingsPanel sections there.
 export default function MobileDashboard({
   clients,
   appointments,
@@ -95,12 +122,17 @@ export default function MobileDashboard({
   onEditAppointment,
   onClientUpdated,
   isTester,
+  isLocalDemo = false,
+  onSignOut,
   bannerVariant,
   recoveryAction,
   finalAccessDate,
   readOnlyEndsAt,
   canMutateOperationalData,
   timezone,
+  isTrialing,
+  workspaceId,
+  userId,
 }: Props) {
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
@@ -166,8 +198,9 @@ export default function MobileDashboard({
   return (
     <div className="h-[100dvh] flex flex-col bg-slate-100 text-slate-900 overflow-hidden safe-area-top">
       {isTester && (
-        <div className="shrink-0 bg-amber-400 text-amber-950 text-center text-[11px] font-semibold py-1 px-3">
+        <div className="relative shrink-0 bg-amber-400 text-amber-950 text-center text-[11px] font-semibold py-1 px-3">
           Demo Mode — fictional data, for testing only.
+          {isLocalDemo && <MobileDemoControls />}
         </div>
       )}
       <OwnerBillingBanner
@@ -345,7 +378,18 @@ export default function MobileDashboard({
               <MobileClientsList clients={clients} onSelectClient={setClientDrawerId} />
             )}
 
-            {activeTab === "settings" && <MobileSettings isTester={isTester} />}
+            {activeTab === "settings" && (
+              <MobileSettings
+                isTester={isTester}
+                isLocalDemo={isLocalDemo}
+                onSignOut={onSignOut}
+                canMutateOperationalData={canMutateOperationalData}
+                isTrialing={isTrialing}
+                timezone={timezone}
+                workspaceId={workspaceId}
+                userId={userId}
+              />
+            )}
           </>
         )}
       </div>

@@ -57,6 +57,7 @@ export default function LeftBar({
   onSelectClient,
   collapsed,
   onToggleCollapsed,
+  onSignOut,
 }: {
   viewMode: ViewMode;
   onChangeView: (m: ViewMode) => void;
@@ -73,6 +74,11 @@ export default function LeftBar({
   // only the client list's own content while staying full width.
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  // Overrides the default real-logout handler below (falls back to it when
+  // omitted, so every real caller is unaffected). The browser-local demo
+  // passes its own handler here to clear its session instead of calling the
+  // real /api/auth/logout route.
+  onSignOut?: () => void;
 }) {
   const router = useRouter();
   const [showArchived, setShowArchived] = useState(false);
@@ -259,10 +265,13 @@ export default function LeftBar({
           <span className={collapsed ? "sr-only" : ""}>Settings</span>
         </button>
         <button
-          onClick={async () => {
-            try { await fetch("/api/auth/logout", { method: "POST" }); } catch {}
-            router.push("/");
-          }}
+          onClick={
+            onSignOut ??
+            (async () => {
+              try { await fetch("/api/auth/logout", { method: "POST" }); } catch {}
+              router.push("/");
+            })
+          }
           title="Sign Out"
           aria-label="Sign Out"
           className={[
