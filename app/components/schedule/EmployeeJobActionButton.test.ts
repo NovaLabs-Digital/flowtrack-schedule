@@ -254,3 +254,41 @@ describe("projection integrity", () => {
     assert.equal(screen.getByRole("button", { name: "Complete Job" }).hasAttribute("disabled"), true);
   });
 });
+
+describe("Start is offered only on the scheduled business day", () => {
+  for (const [day, message] of [
+    ["before", "You can start this job on its scheduled day. Please contact the office if the date needs to change."],
+    ["after", "This job's scheduled day has passed, so it can no longer be started. Please contact the office to record your time."],
+  ] as const) {
+    test(`${day === "before" ? "a future" : "a past"} day: Start is disabled, explained, and never activates`, async () => {
+      let calls = 0;
+      render(React.createElement(EmployeeJobActionButton, { action: "start", loading: false, canUseJobTracking: true, scheduledDay: day, onActivate: () => calls++ }));
+      const button = screen.getByRole("button", { name: "Start Job" }) as HTMLButtonElement;
+      assert.equal(button.disabled, true);
+      const notice = document.getElementById(button.getAttribute("aria-describedby") ?? "");
+      assert.equal(notice?.textContent, message);
+      await userEvent.click(button);
+      assert.equal(calls, 0);
+    });
+
+    test(`${day === "before" ? "a future" : "a past"} day: an already-started job can still be completed (e.g. a forgotten clock-out after midnight)`, async () => {
+      let calls = 0;
+      render(React.createElement(EmployeeJobActionButton, { action: "complete", loading: false, canUseJobTracking: true, scheduledDay: day, onActivate: () => calls++ }));
+      const button = screen.getByRole("button", { name: "Complete Job" }) as HTMLButtonElement;
+      assert.equal(button.disabled, false);
+      assert.equal(button.getAttribute("aria-describedby"), null);
+      await userEvent.click(button);
+      assert.equal(calls, 1);
+    });
+  }
+
+  test("today (and the default): Start is enabled with no notice", async () => {
+    let calls = 0;
+    render(React.createElement(EmployeeJobActionButton, { action: "start", loading: false, canUseJobTracking: true, scheduledDay: "today", onActivate: () => calls++ }));
+    const button = screen.getByRole("button", { name: "Start Job" }) as HTMLButtonElement;
+    assert.equal(button.disabled, false);
+    assert.equal(button.getAttribute("aria-describedby"), null);
+    await userEvent.click(button);
+    assert.equal(calls, 1);
+  });
+});

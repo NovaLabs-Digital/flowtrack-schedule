@@ -14,6 +14,9 @@ import {
   zonedDateTimeToUTC,
   appointmentEndInstant,
   isPastAppointment,
+  scheduledDayStatus,
+  businessDayKey,
+  msUntilNextBusinessDay,
 } from "./timezone.ts";
 
 describe("TIMEZONE_OPTIONS", () => {
@@ -433,5 +436,48 @@ describe("isPastAppointment", () => {
     const farFuture = { scheduled_for: "2099-01-01T12:00:00.000Z", scheduled_end: "2099-01-01T13:00:00.000Z", status: "scheduled" };
     assert.equal(isPastAppointment(longAgo), true);
     assert.equal(isPastAppointment(farFuture), false);
+  });
+});
+
+describe("scheduledDayStatus -- employees may start only on the scheduled business day", () => {
+  test("New York midnight boundaries (EST, UTC-5)", () => {
+    const now = new Date("2026-11-04T04:30:00Z"); // Tue Nov 3, 11:30 PM in New York
+    const ny = "America/New_York";
+    assert.equal(scheduledDayStatus("2026-11-03T05:00:00Z", ny, now), "today", "12:00 AM today");
+    assert.equal(scheduledDayStatus("2026-11-04T04:59:00Z", ny, now), "today", "11:59 PM today");
+    assert.equal(scheduledDayStatus("2026-11-04T05:00:00Z", ny, now), "before", "12:00 AM tomorrow");
+    assert.equal(scheduledDayStatus("2026-11-03T04:59:00Z", ny, now), "after", "11:59 PM yesterday");
+  });
+
+  test("uses the business zone, not UTC: same business day across a UTC date change, and vice versa", () => {
+    // Honolulu (UTC-10): 10:00 PM local tonight is already tomorrow in UTC.
+    assert.equal(scheduledDayStatus("2026-11-04T08:00:00Z", "Pacific/Honolulu", new Date("2026-11-03T20:00:00Z")), "today");
+    // Kiritimati (UTC+14): 12:30 AM local tomorrow is still today in UTC.
+    assert.equal(scheduledDayStatus("2026-11-03T10:30:00Z", "Pacific/Kiritimati", new Date("2026-11-03T09:00:00Z")), "before");
+  });
+
+  test("days well in the past or future", () => {
+    const now = new Date("2026-11-03T15:00:00Z");
+    assert.equal(scheduledDayStatus("2026-10-20T15:00:00Z", "America/New_York", now), "after");
+    assert.equal(scheduledDayStatus("2026-12-01T15:00:00Z", "America/New_York", now), "before");
+  });
+});
+
+describe("businessDayKey / msUntilNextBusinessDay -- what keeps the employee screen on today", () => {
+  test("businessDayKey is today's date on the workspace clock, not UTC", () => {
+    const now = new Date("2026-11-04T04:30:00Z"); // Nov 4 in UTC
+    assert.equal(businessDayKey("America/New_York", now), "2026-11-03");
+    assert.equal(businessDayKey("Pacific/Honolulu", now), "2026-11-03");
+    assert.equal(businessDayKey("UTC", now), "2026-11-04");
+  });
+
+  test("msUntilNextBusinessDay counts to the next workspace midnight", () => {
+    assert.equal(msUntilNextBusinessDay("America/New_York", new Date("2026-11-04T04:30:00Z")), 30 * 60_000, "11:30 PM -> 30 minutes");
+    assert.equal(msUntilNextBusinessDay("America/New_York", new Date("2026-11-04T05:00:00Z")), 24 * 3_600_000, "exactly midnight -> the following midnight");
+  });
+
+  test("msUntilNextBusinessDay is DST-aware (Nov 1, 2026 is a 25-hour day in New York)", () => {
+    // 12:30 AM EDT on Nov 1 -> 12:00 AM EST on Nov 2 is 24.5 real hours.
+    assert.equal(msUntilNextBusinessDay("America/New_York", new Date("2026-11-01T04:30:00Z")), 24.5 * 3_600_000);
   });
 });

@@ -122,7 +122,7 @@ describe("Phase 5C: workspace-timezone-aware today/appointment display -- the sa
   });
 
   test("today/currentDay/dayAppts are resolved via nowInBusinessTz/toBusinessLocal with the explicit timezone prop -- never a bare new Date()/native getters on a raw new Date(iso)", () => {
-    assert.ok(source.includes('import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";'));
+    assert.ok(source.includes('import { nowInBusinessTz, scheduledDayStatus, toBusinessLocal } from "@/lib/timezone";'));
     assert.ok(source.includes("const today = nowInBusinessTz(timezone);"));
     assert.ok(source.includes("const d = toBusinessLocal(a.scheduled_for, timezone);"));
     assert.ok(!source.includes("const today = new Date();"));
@@ -424,5 +424,35 @@ describe("Phase 5E: job-tracking Started/Completed display uses the workspace's 
   test("no bare new Date(times.started)/new Date(times.completed) remains as the DISPLAY value (only as the raw-instant value)", () => {
     assert.ok(!source.includes("const startedAt = times?.started ? new Date(times.started) : null;"));
     assert.ok(!source.includes("const completedAt = times?.completed ? new Date(times.completed) : null;"));
+  });
+});
+
+describe("Start only on the scheduled business day -- employees can still browse every date", () => {
+  test("the job-action control receives the appointment's business-day status from the shared rule", () => {
+    assert.ok(source.includes("scheduledDay={scheduledDayStatus(a.scheduled_for, timezone)}"));
+    assert.ok(source.includes('import { nowInBusinessTz, scheduledDayStatus, toBusinessLocal } from "@/lib/timezone";'));
+    assert.ok(!source.includes("beforeScheduledDay"), "no device-local date comparison remains");
+  });
+
+  test("the screen re-renders when the business day changes (midnight or a waking tab), before 'today' is computed", () => {
+    assert.ok(source.includes('import { useBusinessDay } from "./useBusinessDay";'));
+    const hook = source.indexOf("useBusinessDay(timezone);");
+    assert.ok(hook > 0 && hook < source.indexOf("const today = nowInBusinessTz(timezone);"));
+  });
+
+  test("previous / Today / next day navigation is unconditional", () => {
+    for (const nav of ["setDayOffset((d) => d - 1)", "setDayOffset(0)", "setDayOffset((d) => d + 1)"]) {
+      const idx = source.indexOf(`onClick={() => ${nav}}`);
+      assert.ok(idx >= 0, `${nav} is wired to a button`);
+      assert.ok(!source.slice(Math.max(0, idx - 200), idx).includes("disabled"), `${nav} is never disabled`);
+    }
+  });
+
+  test("any day's appointments are listed (past, today, future) -- the day rule only affects Start, never what is shown", () => {
+    const start = source.indexOf("const dayAppts = appointments.filter(");
+    const body = source.slice(start, source.indexOf("});", start));
+    assert.ok(body.includes("return sameDay(d, currentDay);"));
+    assert.ok(!body.includes("scheduledDayStatus"));
+    assert.equal(source.split("scheduledDayStatus(").length - 1, 1, "used only for the job-action control");
   });
 });

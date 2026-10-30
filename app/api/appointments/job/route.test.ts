@@ -193,6 +193,9 @@ describe("outcome -> HTTP mapping (existing messages preserved)", () => {
     ["start ok", { outcome: "ok", actual_started_at: "T1" }, "start", 200, { ok: true, actual_started_at: "T1" }],
     ["complete ok (never started: both timestamps)", { outcome: "ok", actual_started_at: "T1", actual_completed_at: "T1" }, "complete", 200, { ok: true, actual_started_at: "T1", actual_completed_at: "T1" }],
     ["complete ok (already started: completion only)", { outcome: "ok", actual_completed_at: "T2" }, "complete", 200, { ok: true, actual_completed_at: "T2" }],
+    ["future day", { outcome: "appointment_not_due" }, "start", 409, { error: "You can start this job on its scheduled day. Please contact the office if the date needs to change.", code: "APPOINTMENT_NOT_DUE" }],
+    ["past day", { outcome: "appointment_day_passed" }, "start", 409, { error: "This job's scheduled day has passed, so it can no longer be started. Please contact the office to record your time.", code: "APPOINTMENT_DAY_PASSED" }],
+    ["complete without a start on another day is held to the same rule", { outcome: "appointment_day_passed" }, "complete", 409, { error: "This job's scheduled day has passed, so it can no longer be started. Please contact the office to record your time.", code: "APPOINTMENT_DAY_PASSED" }],
     ["start twice", { outcome: "already_started" }, "start", 400, { error: "Job already started" }],
     ["already completed", { outcome: "already_completed" }, "complete", 400, { error: "Job already completed" }],
     ["notes before start", { outcome: "not_started" }, "save_notes", 400, { error: "Job has not been started" }],
@@ -217,6 +220,15 @@ describe("outcome -> HTTP mapping (existing messages preserved)", () => {
     const body = await res.json();
     assert.equal(body.code, "APPOINTMENT_NOT_ACTIVE");
     assert.match(body.error, /cancelled or replaced/);
+  });
+
+  test("a wrong-day rejection makes exactly one RPC call and the route itself writes nothing", async () => {
+    resetFixtures(ACTIVE, [{ data: { outcome: "appointment_not_due" } }]);
+    sessionToReturn = EMPLOYEE_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", action: "start" }));
+    assert.equal(res.status, 409);
+    assert.deepEqual(currentFake.rpcCalls.map((c) => c.fn), ["record_job_action"]);
+    assert.deepEqual(writeCalls(currentFake.calls), []);
   });
 
   test("an RPC error is a 500, and nothing is reported as saved", async () => {

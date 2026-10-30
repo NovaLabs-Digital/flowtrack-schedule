@@ -87,6 +87,10 @@ export async function POST(req: Request) {
         return json({ error: "Job has not been started" }, 400);
       case "appointment_not_active":
         return json({ error: "This appointment was cancelled or replaced and can no longer be updated.", code: "APPOINTMENT_NOT_ACTIVE" }, 409);
+      case "appointment_not_due":
+        return json({ error: "You can start this job on its scheduled day. Please contact the office if the date needs to change.", code: "APPOINTMENT_NOT_DUE" }, 409);
+      case "appointment_day_passed":
+        return json({ error: "This job's scheduled day has passed, so it can no longer be started. Please contact the office to record your time.", code: "APPOINTMENT_DAY_PASSED" }, 409);
       case "invalid_input":
         return json({ error: "Invalid request" }, 400);
       default:

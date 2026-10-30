@@ -6,7 +6,8 @@ import { CalendarDays, MapPin, Phone } from "lucide-react";
 import { formatHoursAsDuration } from "@/lib/payroll";
 import type { EmployeeEntitlementView } from "@/lib/entitlementView";
 import EmployeeJobActionButton from "@/app/components/schedule/EmployeeJobActionButton";
-import { nowInBusinessTz, toBusinessLocal } from "@/lib/timezone";
+import { nowInBusinessTz, scheduledDayStatus, toBusinessLocal } from "@/lib/timezone";
+import { useBusinessDay } from "./useBusinessDay";
 
 type Appointment = {
   id: string;
@@ -167,6 +168,10 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
   // and each appointment's day in the EMPLOYEE's own device timezone,
   // which could disagree with the owner's dashboard the moment the two
   // devices weren't in the same zone.
+  // Re-renders this screen whenever the business day changes (midnight, or
+  // a sleeping tab waking up), so "today", the day list, and each Start
+  // button and its explanation never go stale without a manual refresh.
+  useBusinessDay(timezone);
   const today = nowInBusinessTz(timezone);
   today.setHours(0, 0, 0, 0);
   const currentDay = addDays(today, dayOffset);
@@ -568,6 +573,7 @@ export default function EmployeeSchedule({ employee, appointments, clients, serv
                       <EmployeeJobActionButton
                         action={!isStarted ? "start" : "complete"}
                         loading={loadingJob === a.id}
+                        scheduledDay={scheduledDayStatus(a.scheduled_for, timezone)}
                         canUseJobTracking={entitlement.canUseJobTracking}
                         onActivate={() => handleJobAction(a.id, !isStarted ? "start" : "complete")}
                       />

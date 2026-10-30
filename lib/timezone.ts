@@ -178,6 +178,31 @@ export function zonedDateValue(iso: string, tz: string): string {
   return DateTime.fromISO(iso).setZone(tz).toFormat("yyyy-MM-dd");
 }
 
+// Where an appointment's scheduled business day sits relative to today in
+// the workspace's own zone. Employees may START a job only when this is
+// "today" (early or late that day is fine); finishing work that was
+// already started is never limited by it. Mirrors migration 041's
+// record_job_action check, which enforces the same rule with the
+// database's own clock.
+export type ScheduledDayStatus = "before" | "today" | "after";
+
+export function scheduledDayStatus(scheduledForIso: string, tz: string, now: Date = new Date()): ScheduledDayStatus {
+  const today = businessDayKey(tz, now);
+  const day = zonedDateValue(scheduledForIso, tz);
+  return day > today ? "before" : day < today ? "after" : "today";
+}
+
+// Today's "YYYY-MM-DD" on the workspace's own wall clock.
+export function businessDayKey(tz: string, now: Date = new Date()): string {
+  return DateTime.fromJSDate(now).setZone(tz).toFormat("yyyy-MM-dd");
+}
+
+// Milliseconds from `now` until the workspace's next business midnight
+// (DST-aware: a 23- or 25-hour day is measured on the real clock).
+export function msUntilNextBusinessDay(tz: string, now: Date = new Date()): number {
+  return DateTime.fromJSDate(now).setZone(tz).plus({ days: 1 }).startOf("day").toMillis() - now.getTime();
+}
+
 // UTC instant -> the "HH:mm" (24-hour) the workspace's own wall clock shows
 // for it -- for populating a time form field on open/reopen.
 export function zonedTimeValue(iso: string, tz: string): string {

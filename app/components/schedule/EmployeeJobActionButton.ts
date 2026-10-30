@@ -24,12 +24,17 @@
 // component only decides whether to even attempt the request, and shows
 // neutral wording when it won't.
 import { createElement } from "react";
+import type { ScheduledDayStatus } from "@/lib/timezone";
 
 export type EmployeeJobAction = "start" | "complete";
 
 export type EmployeeJobActionButtonProps = {
   action: EmployeeJobAction;
   loading: boolean;
+  // Where the appointment's scheduled business day sits relative to today
+  // (lib/timezone.ts scheduledDayStatus). Start is offered only on that
+  // day; Complete (finishing work already started) is never limited by it.
+  scheduledDay?: ScheduledDayStatus;
   canUseJobTracking: boolean;
   onActivate: () => void;
 };
@@ -55,14 +60,23 @@ const COLOR_CLASSES: Record<EmployeeJobAction, string> = {
 // this is the one and only employee-facing string this phase introduces.
 const NEUTRAL_UNAVAILABLE_MESSAGE = "This action is temporarily unavailable. Please contact the office.";
 
+// Why Start is unavailable on any day other than the scheduled one. The
+// server (migration 041) enforces the same rule with its own clock.
+export const START_DAY_MESSAGE: Record<Exclude<ScheduledDayStatus, "today">, string> = {
+  before: "You can start this job on its scheduled day. Please contact the office if the date needs to change.",
+  after: "This job's scheduled day has passed, so it can no longer be started. Please contact the office to record your time.",
+};
+
 export default function EmployeeJobActionButton({
   action,
   loading,
+  scheduledDay = "today",
   canUseJobTracking,
   onActivate,
 }: EmployeeJobActionButtonProps) {
   const restricted = !canUseJobTracking;
-  const disabled = restricted || loading;
+  const wrongDay = action === "start" && scheduledDay !== "today";
+  const disabled = restricted || loading || wrongDay;
   const noticeId = `employee-job-action-notice-${action}`;
 
   function handleClick() {
@@ -88,16 +102,16 @@ export default function EmployeeJobActionButton({
         onClick: handleClick,
         disabled,
         "aria-disabled": disabled,
-        "aria-describedby": restricted ? noticeId : undefined,
+        "aria-describedby": restricted || wrongDay ? noticeId : undefined,
         className: `w-full rounded-lg px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50 transition-colors ${COLOR_CLASSES[action]}`,
       },
       loading ? LOADING_LABEL[action] : LABEL[action]
     ),
-    restricted &&
+    (restricted || wrongDay) &&
       createElement(
         "div",
         { id: noticeId, className: "text-xs text-slate-500 mt-1.5 text-center" },
-        NEUTRAL_UNAVAILABLE_MESSAGE
+        restricted ? NEUTRAL_UNAVAILABLE_MESSAGE : START_DAY_MESSAGE[scheduledDay as "before" | "after"]
       )
   );
 }
