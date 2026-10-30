@@ -164,7 +164,7 @@ export default function StaffPanel({
   const inactiveEmployees = employees.filter((e) => !e.active);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div data-tour="employees-area" className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-semibold text-slate-900">Staff / Team</div>

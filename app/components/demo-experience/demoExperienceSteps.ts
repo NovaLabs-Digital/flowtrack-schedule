@@ -13,6 +13,11 @@ export type DemoExperienceStep = {
   actionId?: string;
   // Overrides the default "Next" label for non-action steps.
   nextLabel?: string;
+  // A related action that does NOT complete this step (e.g. selecting an
+  // appointment that cannot be edited). The step stays put and shows
+  // rejectedHint so the visitor knows why and what to do instead.
+  rejectedActionId?: string;
+  rejectedHint?: string;
 };
 
 // Steps 0-6 (Welcome, Schedule, Appointment Details, Edit Service, Clients,
@@ -25,7 +30,9 @@ export type DemoExperienceStep = {
 // right-hand dispatch sidebar the tester is already looking at right after
 // selecting an appointment, so one combined, non-action step (view only,
 // like Welcome/Completion) explains them without lengthening the tour with
-// four near-identical "look at this card" steps.
+// four near-identical "look at this card" steps. It comes BEFORE
+// "appointment-details" so that clicking Edit leads straight into
+// "edit-service" with the editor staying open.
 export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "welcome",
@@ -38,18 +45,16 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "schedule",
     title: "Your Schedule",
-    body: "Click any existing appointment card in the highlighted calendar to continue. You do not need to create a new appointment yet. Each card opens the client, employee, service, and job details.",
-    targetSelector: '[data-tour="schedule-grid"]',
+    body: "Use Today, Prev, or Next to find an upcoming scheduled appointment. Click its card to view details. Edit works only on future appointments; completed, cancelled, and past appointments cannot be edited.",
+    // Today/Prev/Next stay inside the spotlight so the visitor can move to
+    // another day or week while looking for an editable appointment.
+    targetSelector: '[data-tour="schedule-nav"], [data-tour="schedule-grid"]',
     actionRequired: true,
+    // Reported only for appointments that pass isHistoricalAppointment
+    // (see DashboardShell's selectAppointment).
     actionId: "select-appointment",
-  },
-  {
-    id: "appointment-details",
-    title: "Appointment Details",
-    body: "Click Edit in the highlighted appointment details to continue. This is your control center for the job: client details, notes, messages, and changes.",
-    targetSelector: '[data-tour="appointment-detail"]',
-    actionRequired: true,
-    actionId: "click-edit-appointment",
+    rejectedActionId: "select-uneditable-appointment",
+    rejectedHint: "That appointment can't be edited. Edit works only on future appointments, not completed, cancelled, or past ones. Use Today, Prev, or Next to find an upcoming scheduled appointment.",
   },
   {
     id: "dispatch-insights",
@@ -57,6 +62,16 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     body: "This panel keeps you on top of the business at a glance. Projected Revenue estimates income and hours for your selected date range. Weekly Worked Hours and Employee Worked Hours track what your team has actually logged, backed by automatic Job Tracking as employees clock in and out.",
     targetSelector: '[data-tour="dispatch-sidebar"]',
     actionRequired: false,
+  },
+  {
+    id: "appointment-details",
+    title: "Appointment Details",
+    body: "Click the highlighted Edit button to change this appointment. Tip: double-clicking a scheduled appointment card also opens Edit.",
+    // The real Edit button, which AppointmentDetailPanel renders only for an
+    // editable appointment.
+    targetSelector: '[data-tour="appointment-edit"]',
+    actionRequired: true,
+    actionId: "click-edit-appointment",
   },
   {
     id: "edit-service",
@@ -80,19 +95,19 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "employees",
     title: "Employees",
-    body: "Assign colors to employees so they're instantly recognizable throughout the schedule. Open Settings, then Employees — edit an employee, choose a new color, and save to continue.",
-    // Spotlights the whole edit form, not just the color swatch — the
-    // required action also needs the Save Changes button clickable, which
-    // sits outside the swatch's own small rect and would otherwise be
-    // dimmed-and-blocked.
-    targetSelector: '[data-tour="employee-edit-form"]',
+    body: "Assign colors to employees so they're instantly recognizable throughout the schedule. Edit an employee, choose a new color, and save to continue.",
+    // The tour opens Settings → Employees for this step. Spotlights the
+    // whole Employees panel so each employee's Edit button, the edit form,
+    // and its Save Changes button are all visible and clickable.
+    targetSelector: '[data-tour="employees-area"]',
     actionRequired: true,
     actionId: "change-employee-color",
   },
   {
     id: "services",
     title: "Services",
-    body: "Services determine duration, default color, and description. In Settings → Services, create a new service, then delete it, to continue.",
+    body: "Services determine duration, default color, and description. Create a new service, then delete it, to continue.",
+    // The tour opens Settings → Services for this step.
     targetSelector: '[data-tour="services-area"]',
     actionRequired: true,
     actionId: "delete-service",

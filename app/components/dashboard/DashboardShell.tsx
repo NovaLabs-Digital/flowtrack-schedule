@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { RotateCcw, PanelRightClose, PanelRightOpen } from "lucide-react";
 import TopBar from "@/app/components/dashboard/TopBar";
@@ -33,7 +33,7 @@ import { resolveCalendarNavigation } from "@/lib/calendarNavigation";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
 import MobileExperiencePreview from "@/app/components/demo-experience/MobileExperiencePreview";
-import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
+import { notifyDemoAction, subscribeDemoStepEntered } from "@/app/components/demo-experience/demoExperienceBus";
 import {
   Client,
   Appointment,
@@ -306,7 +306,11 @@ export default function DashboardShell({
     const appt = appointments.find((a) => a.id === apptId);
     if (!appt) return;
     setSelectedClientId(appt.client_id);
-    notifyDemoAction("select-appointment");
+    // The guided tour only moves on to its Edit step for an appointment that
+    // can actually be edited -- the same isHistoricalAppointment rule that
+    // hides the Edit button and redirects editAppointment below.
+    const editable = !isHistoricalAppointment(appt, assignments.filter((a) => a.appointment_id === apptId));
+    notifyDemoAction(editable ? "select-appointment" : "select-uneditable-appointment");
   }
 
   // Needs Attention navigation (NeedsAttentionControl, right sidebar).
@@ -394,8 +398,92 @@ export default function DashboardShell({
     const client = clients.find((c) => c.id === appt.client_id);
     if (client) {
       setModal({ mode: "edit", appointment: appt, client });
+      // Reported here rather than by the detail panel's Edit button, so the
+      // schedule's double-click shortcut advances the guided tour too.
+      notifyDemoAction("click-edit-appointment");
     }
   }
+
+  // ---- Guided tour screens (desktop) ----
+  // Every tour step needs a particular screen (see demoExperienceSteps.ts).
+  // Whenever a step is entered -- forward, Back, Restart, or resumed after a
+  // refresh -- the tour announces it and this opens that screen, so the
+  // instructions never point at controls on another screen. Only view state
+  // changes here; fictional data is never touched (Reset Demo remains the
+  // one action that restores the original data).
+  function isEditableForTour(appt: Appointment) {
+    return !isHistoricalAppointment(appt, assignments.filter((a) => a.appointment_id === appt.id));
+  }
+
+  // Steps that need an appointment use an editable one: the current
+  // selection if it qualifies, otherwise the earliest editable appointment.
+  function editableAppointmentForTour(): Appointment | null {
+    const selected = appointments.find((a) => a.id === selectedApptId);
+    if (selected && isEditableForTour(selected)) return selected;
+    return appointments
+      .filter(isEditableForTour)
+      .sort((a, b) => new Date(a.scheduled_for).getTime() - new Date(b.scheduled_for).getTime())[0] ?? null;
+  }
+
+  function openTourScreen(stepId: string) {
+    if (isMobile) return;
+    setPendingMove(null);
+    setNeedsAttentionFocusSection(null);
+    setBillingFocus(null);
+    if (stepId === "employees" || stepId === "services") {
+      setModal(null);
+      setSettingsSection(stepId === "employees" ? "staff" : "services");
+      setCenterMode("settings");
+      return;
+    }
+    setCenterMode("schedule");
+    if (stepId === "welcome") {
+      setModal(null);
+      setViewMode("weekdays");
+      setWeekOffset(0);
+      setMonthOffset(0);
+      setSelectedApptId(null);
+      setSelectedClientId(null);
+    } else if (stepId === "schedule") {
+      setModal(null);
+      setSelectedApptId(null);
+    } else if (stepId === "appointment-details" || stepId === "dispatch-insights" || stepId === "edit-service") {
+      const appt = editableAppointmentForTour();
+      if (appt) {
+        const nav = resolveCalendarNavigation(appt.scheduled_for, viewMode, timezone);
+        setViewMode(nav.viewMode);
+        setWeekOffset(nav.weekOffset);
+        setMonthOffset(nav.monthOffset);
+        setSelectedApptId(appt.id);
+        setSelectedClientId(appt.client_id);
+      }
+      if (stepId === "dispatch-insights" && rightCollapsed) toggleRightCollapsed();
+      const client = appt ? clients.find((c) => c.id === appt.client_id) : undefined;
+      if (stepId !== "edit-service" || !appt || !client) {
+        setModal(null);
+      } else {
+        // Clicking Edit already opened this appointment's editor -- keep it
+        // (and anything typed so far); otherwise (Back, refresh) open it.
+        setModal((m) => (m?.mode === "edit" && m.appointment?.id === appt.id ? m : { mode: "edit", appointment: appt, client }));
+      }
+    } else {
+      // clients, add-appointment, mobile-experience, completion
+      setModal(null);
+      if (stepId === "clients") {
+        setClientsHidden(false);
+        if (leftCollapsed) toggleLeftCollapsed();
+      }
+    }
+  }
+
+  // Kept current in a layout effect: those run before the tour provider's
+  // (child) passive effect announces a step, so a step entered by the
+  // visitor's own click sees this render's selection, not the previous one.
+  const openTourScreenRef = useRef(openTourScreen);
+  useLayoutEffect(() => {
+    openTourScreenRef.current = openTourScreen;
+  });
+  useEffect(() => subscribeDemoStepEntered((stepId) => openTourScreenRef.current(stepId)), []);
 
   function handleSelectAppointment(apptId: string) {
     if (isMobile) {

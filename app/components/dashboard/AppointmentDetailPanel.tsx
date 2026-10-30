@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Appointment, AppointmentEmployeeAssignment, Client, Employee, EmployeeHours, Service } from "@/app/components/dashboard/types";
-import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { toBusinessLocal } from "@/lib/timezone";
 import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
@@ -214,7 +213,9 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
   }
 
   function handleEdit() {
-    notifyDemoAction("click-edit-appointment");
+    // The guided tour's "click-edit-appointment" action is reported by
+    // DashboardShell's shared editAppointment path, so this button and the
+    // schedule's double-click shortcut both advance the tour exactly once.
     onEdit();
   }
 
@@ -231,6 +232,7 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
           <button
             type="button"
             onClick={handleEdit}
+            data-tour="appointment-edit"
             className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
           >
             &#9998; Edit

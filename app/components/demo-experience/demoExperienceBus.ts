@@ -19,3 +19,21 @@ export function subscribeDemoAction(listener: Listener) {
     listeners.delete(listener);
   };
 }
+
+// The other direction: useDemoExperience announces each step it enters
+// (forward, Back, Restart, or resumed after a refresh) so the dashboard can
+// open the screen that step needs -- see DashboardShell's openTourScreen.
+type StepListener = (stepId: string) => void;
+
+const stepListeners = new Set<StepListener>();
+
+export function notifyDemoStepEntered(stepId: string) {
+  stepListeners.forEach((listener) => listener(stepId));
+}
+
+export function subscribeDemoStepEntered(listener: StepListener) {
+  stepListeners.add(listener);
+  return () => {
+    stepListeners.delete(listener);
+  };
+}

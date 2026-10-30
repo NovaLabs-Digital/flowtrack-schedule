@@ -155,8 +155,9 @@ export default function TopBar({
   return (
     <div className="shrink-0 bg-gradient-to-b from-slate-50 to-slate-100/80 border-b border-slate-200 px-4 py-3">
       <div className="flex items-center justify-between gap-4">
-        {/* Left: navigation controls */}
-        <div className="flex items-center gap-1.5">
+        {/* Left: navigation controls. data-tour="schedule-nav" keeps these
+            clickable inside the guided tour's appointment-selection step. */}
+        <div data-tour="schedule-nav" className="flex items-center gap-1.5">
           <button
             onClick={onGoToday}
             className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"

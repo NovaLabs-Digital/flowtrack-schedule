@@ -2,14 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { useDemoExperienceContext } from "./DemoExperienceProvider";
+import { backdropCells, type Box } from "./spotlightGeometry";
 
 const SPOTLIGHT_PADDING = 8;
 
 const APPOINTMENT_MODAL_SELECTOR = '[data-tour="appointment-modal"]';
 
 export default function DemoExperienceOverlay() {
-  const { active, currentStep, stepIndex, totalSteps, next, skip, restart } = useDemoExperienceContext();
-  const [rect, setRect] = useState<DOMRect | null>(null);
+  const { active, currentStep, hint, stepIndex, totalSteps, next, back, skip, restart } = useDemoExperienceContext();
+  // One rect per element matching the step's targetSelector (a selector
+  // list such as '[data-tour="a"], [data-tour="b"]' spotlights each).
+  const [rects, setRects] = useState<DOMRect[]>([]);
   // True whenever we should back off entirely (no backdrop, just a corner
   // card) rather than blocking the whole screen: either the AppointmentModal
   // is open and today's target lives outside it (e.g. the "+ Add
@@ -27,7 +30,7 @@ export default function DemoExperienceOverlay() {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!active || !currentStep?.targetSelector) {
-      setRect(null);
+      setRects([]);
       setFloating(false);
       return;
     }
@@ -35,11 +38,14 @@ export default function DemoExperienceOverlay() {
     const selector = currentStep.targetSelector;
 
     function measure() {
-      const el = document.querySelector(selector);
+      const els = Array.from(document.querySelectorAll(selector)).filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      });
       const modalEl = document.querySelector(APPOINTMENT_MODAL_SELECTOR);
-      setRect(el ? el.getBoundingClientRect() : null);
-      const modalHidesTarget = !!modalEl && !(el && modalEl.contains(el));
-      const targetNotYetReachable = !el;
+      setRects(els.map((el) => el.getBoundingClientRect()));
+      const modalHidesTarget = !!modalEl && !(els.length > 0 && els.every((el) => modalEl.contains(el)));
+      const targetNotYetReachable = els.length === 0;
       setFloating(modalHidesTarget || targetNotYetReachable);
     }
 
@@ -62,11 +68,21 @@ export default function DemoExperienceOverlay() {
   if (!active || !currentStep) return null;
 
   const isCompletion = currentStep.id === "completion";
-  const hasTarget = !!rect && !floating;
-  const top = hasTarget ? rect!.top - SPOTLIGHT_PADDING : 0;
-  const left = hasTarget ? rect!.left - SPOTLIGHT_PADDING : 0;
-  const width = hasTarget ? rect!.width + SPOTLIGHT_PADDING * 2 : 0;
-  const height = hasTarget ? rect!.height + SPOTLIGHT_PADDING * 2 : 0;
+  const hasTarget = rects.length > 0 && !floating;
+  const holes: Box[] = hasTarget
+    ? rects.map((r) => ({
+        top: r.top - SPOTLIGHT_PADDING,
+        left: r.left - SPOTLIGHT_PADDING,
+        width: r.width + SPOTLIGHT_PADDING * 2,
+        height: r.height + SPOTLIGHT_PADDING * 2,
+      }))
+    : [];
+  // The instruction card is positioned around the combined spotlight area
+  // so it never sits on top of any highlighted control.
+  const top = hasTarget ? Math.min(...holes.map((h) => h.top)) : 0;
+  const left = hasTarget ? Math.min(...holes.map((h) => h.left)) : 0;
+  const width = hasTarget ? Math.max(...holes.map((h) => h.left + h.width)) - left : 0;
+  const height = hasTarget ? Math.max(...holes.map((h) => h.top + h.height)) - top : 0;
 
   const CARD_WIDTH = 384; // matches max-w-sm
   const CARD_HEIGHT_ESTIMATE = 220;
@@ -105,14 +121,16 @@ export default function DemoExperienceOverlay() {
     <div className="fixed inset-0 z-[200] pointer-events-none" role="dialog" aria-live="polite">
       {!floating && (hasTarget ? (
         <>
-          <div className="fixed bg-black/60 pointer-events-auto" style={{ top: 0, left: 0, right: 0, height: Math.max(top, 0) }} />
-          <div className="fixed bg-black/60 pointer-events-auto" style={{ top: top + height, left: 0, right: 0, bottom: 0 }} />
-          <div className="fixed bg-black/60 pointer-events-auto" style={{ top, left: 0, width: Math.max(left, 0), height }} />
-          <div className="fixed bg-black/60 pointer-events-auto" style={{ top, left: left + width, right: 0, height }} />
-          <div
-            className="fixed rounded-xl ring-2 ring-blue-400 pointer-events-none"
-            style={{ top, left, width, height, boxShadow: "0 0 0 4px rgba(59,130,246,0.35)" }}
-          />
+          {backdropCells(holes, window.innerWidth, window.innerHeight).map((cell, i) => (
+            <div key={`dim-${i}`} className="fixed bg-black/60 pointer-events-auto" style={cell} />
+          ))}
+          {holes.map((hole, i) => (
+            <div
+              key={`ring-${i}`}
+              className="fixed rounded-xl ring-2 ring-blue-400 pointer-events-none"
+              style={{ ...hole, boxShadow: "0 0 0 4px rgba(59,130,246,0.35)" }}
+            />
+          ))}
         </>
       ) : (
         <div className="fixed inset-0 bg-black/60 pointer-events-auto" />
@@ -159,6 +177,13 @@ export default function DemoExperienceOverlay() {
               >
                 Continue Exploring
               </button>
+              <button
+                type="button"
+                onClick={back}
+                className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                ← Back
+              </button>
             </div>
             <div className="mt-3 text-center text-xs text-slate-400">
               {/* Deliberately not naming a specific destination: the real
@@ -177,13 +202,30 @@ export default function DemoExperienceOverlay() {
               Step {stepIndex + 1} of {totalSteps}
             </div>
             <div className="mt-1 text-base font-semibold text-slate-900">{currentStep.title}</div>
-            <div className="mt-2 text-sm text-slate-600">{currentStep.body}</div>
+            {/* A rejected-action hint replaces the body (it repeats what to
+                do next) so the card keeps its size and placement. */}
+            {hint ? (
+              <div role="status" className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                {hint}
+              </div>
+            ) : (
+              <div className="mt-2 text-sm text-slate-600">{currentStep.body}</div>
+            )}
 
             <div className="mt-4 flex items-center justify-between">
               <button type="button" onClick={restart} className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
                 Restart
               </button>
               <div className="flex items-center gap-2">
+                {stepIndex > 0 && (
+                  <button
+                    type="button"
+                    onClick={back}
+                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                  >
+                    ← Back
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={skip}
