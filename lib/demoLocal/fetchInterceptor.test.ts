@@ -208,7 +208,7 @@ describe("installDemoFetchInterceptor", () => {
   test("an unlisted /api/ path fails closed with 404 and never reaches the network", async () => {
     const errorSpy = mock.method(console, "error", () => {});
     try {
-      const { status, data } = await call("/api/appointments/delete", "POST", { id: "x" });
+      const { status, data } = await call("/api/not-a-demo-route", "POST", { id: "x" });
       assert.equal(status, 404);
       assert.deepEqual(data, { error: "Not available in this demo." });
       // A known path with the wrong method is also unhandled.
@@ -831,6 +831,46 @@ describe("clearDemoSession", () => {
     } finally {
       delete (globalThis as any).sessionStorage;
     }
+  });
+});
+
+describe("one-time demo appointment cancellation", () => {
+  test("create, cancel, and repeat cancellation retain history and never reach the server", async () => {
+    const snap = getSnapshot();
+    const created = await call("/api/appointments/create", "POST", {
+      client_id: snap.clients[0].id, service_type: "Window Washing",
+      scheduled_for: addDays(NOW, 4, TZ).toISOString(), duration_minutes: 90,
+      employee_ids: [snap.employees[0].id], price_cents: 12000,
+    });
+    const id = created.data.appointmentId;
+    const before = getSnapshot();
+    const result = await call("/api/appointments/delete", "POST", { appointment_id: id, mode: "single", notify_channel: "both" });
+    assert.equal(result.status, 200);
+    const after = getSnapshot();
+    assert.equal(after.appointments.length, before.appointments.length);
+    assert.equal(after.appointments.find(a => a.id === id)?.status, "cancelled");
+    assert.ok(after.appointments.find(a => a.id === id)?.cancelled_at);
+    assert.deepEqual(after.appointments.filter(a => a.id !== id), before.appointments.filter(a => a.id !== id));
+    assert.deepEqual(after.assignments, before.assignments);
+    assert.deepEqual(after.messagesSent, before.messagesSent);
+    assert.equal((await call("/api/appointments/delete", "POST", { appointment_id: id, mode: "single" })).status, 200);
+    assert.equal(originalFetch.mock.callCount(), 0);
+  });
+  test("unknown, invalid, recurring, and historical requests fail without mutations", async () => {
+    const before = getSnapshot();
+    const recurring = before.appointments.find(a => a.series_id)!;
+    const historical = before.appointments.find(a => !a.series_id && new Date(a.scheduled_for).getTime() < NOW.getTime() && a.status !== "cancelled")!;
+    assert.ok(recurring);
+    assert.ok(historical);
+    for (const [body, status] of [
+      [{ mode: "single" }, 400],
+      [{ appointment_id: "missing", mode: "single" }, 404],
+      [{ appointment_id: recurring.id, mode: "single" }, 400],
+      [{ appointment_id: historical.id, mode: "single" }, 400],
+      [{ appointment_id: historical.id, mode: "bad" }, 400],
+    ] as const) assert.equal((await call("/api/appointments/delete", "POST", body)).status, status);
+    assert.deepEqual(getSnapshot(), before);
+    assert.equal(originalFetch.mock.callCount(), 0);
   });
 });
 

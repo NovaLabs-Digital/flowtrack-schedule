@@ -38,7 +38,7 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "schedule",
     title: "Your Schedule",
-    body: "This is today's work schedule. Every appointment contains the client, employee, service, and important information.",
+    body: "Click any existing appointment card in the highlighted calendar to continue. You do not need to create a new appointment yet. Each card opens the client, employee, service, and job details.",
     targetSelector: '[data-tour="schedule-grid"]',
     actionRequired: true,
     actionId: "select-appointment",
@@ -46,7 +46,7 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "appointment-details",
     title: "Appointment Details",
-    body: "Every appointment is your control center. Call, message, edit, cancel, and view notes — all from one place.",
+    body: "Click Edit in the highlighted appointment details to continue. This is your control center for the job: client details, notes, messages, and changes.",
     targetSelector: '[data-tour="appointment-detail"]',
     actionRequired: true,
     actionId: "click-edit-appointment",

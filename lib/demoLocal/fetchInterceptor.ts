@@ -1260,8 +1260,35 @@ async function handleSaveCompanySettings(req: Request): Promise<Response> {
 // passed to the handler via `url`). Exact rather than prefix matching so
 // /api/billing/completed-jobs can never accidentally swallow
 // /api/billing/completed-jobs/update or any future sibling path.
+// One-time deletion follows the real UI's cancellation behavior: retain the
+// appointment and its history, mark it cancelled, and never send a message.
+async function handleDeleteAppointment(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => ({}));
+  const id = typeof body.appointment_id === "string" ? body.appointment_id.trim() : "";
+  if (!id) return json({ error: "Missing appointment_id" }, 400);
+  if (body.mode !== "single" && body.mode !== "future") return json({ error: "Invalid mode" }, 400);
+  const snap = getSnapshot();
+  const appt = snap.appointments.find((a) => a.id === id);
+  if (!appt) return json({ error: "Appointment not found" }, 404);
+  if (appt.series_id || (appt.frequency_type && appt.frequency_type !== "one_time")) {
+    return json({ error: "Recurring appointment cancellation is not available in this demo yet. Try a one-time appointment." }, 400);
+  }
+  // Never silently expand a one-time action to other jobs for this client.
+  if (body.mode !== "single") return json({ error: "Choose Only this appointment to cancel a one-time demo appointment." }, 400);
+  if (appt.status === "cancelled") return json({ ok: true });
+  const assignments = snap.assignments.filter((a) => a.appointment_id === id);
+  if (isHistoricalAppointment(appt, assignments)) {
+    return json({ error: "Choose a current or future one-time appointment. Historical cancellation corrections are not available in this demo yet." }, 400);
+  }
+  setSnapshot({ ...snap, appointments: snap.appointments.map((a) => a.id === id
+    ? { ...a, status: "cancelled", cancelled_at: new Date().toISOString() } : a) });
+  notify();
+  return json({ ok: true });
+}
+
 const ROUTES: Route[] = [
   { method: "POST", path: "/api/appointments/create", handler: handleCreateAppointment },
+  { method: "POST", path: "/api/appointments/delete", handler: handleDeleteAppointment },
   { method: "PATCH", path: "/api/appointments/update", handler: handleUpdateAppointment },
   { method: "GET", path: "/api/billing/completed-jobs", handler: handleCompletedJobs },
   { method: "PATCH", path: "/api/billing/completed-jobs/update", handler: handleBillingUpdate },
