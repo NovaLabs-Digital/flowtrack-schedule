@@ -24,9 +24,15 @@ describe("vercel.json -- cron configuration", () => {
 
   const config = JSON.parse(raw) as { crons: Array<{ path: string; schedule: string }> };
 
-  test("schedules exactly two crons: /api/cron/reminders and /api/cron/replenish-recurring-series", () => {
+  test("schedules exactly three crons: reminders, replenish-recurring-series, and demo-session-cleanup", () => {
     const paths = config.crons.map((c) => c.path);
-    assert.deepEqual(paths, ["/api/cron/reminders", "/api/cron/replenish-recurring-series"]);
+    assert.deepEqual(paths, ["/api/cron/reminders", "/api/cron/replenish-recurring-series", "/api/cron/demo-session-cleanup"]);
+  });
+
+  test("demo-session-cleanup runs once daily (sessions already end on their own when touched)", () => {
+    const cleanup = config.crons.find((c) => c.path === "/api/cron/demo-session-cleanup");
+    assert.ok(cleanup);
+    assert.match(cleanup!.schedule, /^\d{1,2} \d{1,2} \* \* \*$/);
   });
 
   test("does not schedule /api/cron/reconcile-subscriptions", () => {

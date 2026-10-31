@@ -433,13 +433,29 @@ describe("DashboardShell: isLocalDemo (browser-local demo) pass-through", () => 
     assert.match(source, /import DemoBannerControls from "@\/app\/components\/dashboard\/DemoBannerControls";/);
     const bannerBlock = desktopBlock.match(/\{isTester && \([\s\S]*?Demo Mode — All information shown[\s\S]*?\)\}/);
     assert.ok(bannerBlock, "the Demo Mode banner block is present");
-    assert.match(bannerBlock![0], /\{isLocalDemo && <DemoBannerControls \/>\}/);
+    // A Guided Demo Session (guidedSession) hides it: its Reset Demo would
+    // only touch this browser's local data, never the shared session.
+    assert.match(bannerBlock![0], /\{isLocalDemo && !guidedSession && <DemoBannerControls \/>\}/);
   });
 
   test("isLocalDemo IS also forwarded to MobileDashboard, not just DashboardSettingsArea -- a mobile demo visitor must not silently fall back to isLocalDemo=false", () => {
     const block = mobileBlock.match(/<MobileDashboard[\s\S]*?\/>/);
     assert.ok(block, "MobileDashboard is rendered on the mobile branch");
-    assert.match(block![0], /isLocalDemo=\{isLocalDemo\}/);
+    // Guided Demo Sessions are desktop-only in milestone 1, so only they opt out.
+    assert.match(block![0], /isLocalDemo=\{isLocalDemo && !guidedSession\}/);
+  });
+
+  test("guidedSession is optional (false everywhere else) and hides only the tour and the local Demo Controls", () => {
+    assert.match(source, /guidedSession\?: boolean;/);
+    assert.match(source, /guidedSession = false,/);
+    assert.match(source, /<DemoExperienceProvider autoStart=\{isTester && !guidedSession\}>/);
+    assert.match(source, /\{isTester && !guidedSession && <MobileExperiencePreview isLocalDemo=\{isLocalDemo\} \/>\}/);
+    assert.match(source, /\{isTester && !guidedSession && <DemoExperienceOverlay \/>\}/);
+  });
+
+  test("the Guided Demo Session control strip is docked right under the Demo Mode banner, never floating over the dashboard", () => {
+    assert.match(source, /sessionBar\?: React\.ReactNode;/);
+    assert.match(source, /<DemoBannerControls \/>\}\s*<\/div>\s*\)\}\s*\{sessionBar\}/);
   });
 
   test("onSignOut is an optional override prop, used by the real DashboardSettingsArea call site, and forwarded to MobileDashboard too", () => {

@@ -12,6 +12,7 @@ import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";
 import { zonedDateValue, zonedTimeValue, zonedDateTimeToUTC, toBusinessLocal } from "@/lib/timezone";
 import { formatTimestampMMDDYY } from "@/lib/dateDisplay";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via
 // aria-describedby by every capability-gated mutation button below, rather
@@ -223,6 +224,7 @@ type Props = {
 };
 
 export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, onHoursSaved, assignments, editing, prefill, canMutateOperationalData, canUseJobTracking, timezone }: Props) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const isEdit = !!editing;
 
   // Phase 5.7D-R18: this appointment's own assignment rows (edit mode
@@ -1349,7 +1351,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               currently visible, since it sits above all of them. */}
           {!canMutateOperationalData && (
             <div id={RESTRICTED_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              {RESTRICTED_WORDING}
+              {restrictedWording}
             </div>
           )}
 

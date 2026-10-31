@@ -52,7 +52,9 @@ describe("shared wording", () => {
   // Phase 5B: a fourth card (Time Zone) now shares this same approved
   // wording constant too -- 3 -> 4 render sites, one per governed card.
   test("all four notice blocks render the exact same wording constant, not divergent strings", () => {
-    const wordingMatches = source.match(/\{RESTRICTED_WORDING\}/g) ?? [];
+    // Rendered through useRestrictedWording (restrictedWording.ts).
+    assert.ok(source.includes("const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);"));
+    const wordingMatches = source.match(/\{restrictedWording\}/g) ?? [];
     assert.equal(wordingMatches.length, 4, "one render site per card notice (Company Information, Time Zone, Business Hours, Automation)");
   });
 });

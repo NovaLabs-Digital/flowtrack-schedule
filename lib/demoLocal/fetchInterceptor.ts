@@ -50,7 +50,30 @@ import {
   type DemoFixtureBundle,
   type DemoMessageSent,
 } from "@/lib/demoLocal/fixtures/generate";
-import { getSnapshot, notify, setSnapshot } from "@/lib/demoLocal/store";
+import * as browserStore from "@/lib/demoLocal/store";
+
+// The store every handler below reads and writes. The public browser-local
+// demo always uses the sessionStorage-backed store (store.ts). A Guided Demo
+// Session reuses the very same handlers against one session's dataset:
+// in the browser via installDemoFetchInterceptor({ store }), and on the
+// server via runDemoRoute (which serializes runs, see below).
+export type DemoStore = {
+  getSnapshot(): DemoFixtureBundle;
+  setSnapshot(next: DemoFixtureBundle): void;
+  notify(): void;
+};
+
+let activeStore: DemoStore = browserStore;
+
+function getSnapshot(): DemoFixtureBundle {
+  return activeStore.getSnapshot();
+}
+function setSnapshot(next: DemoFixtureBundle): void {
+  activeStore.setSnapshot(next);
+}
+function notify(): void {
+  activeStore.notify();
+}
 
 type Handler = (req: Request, url: URL) => Promise<Response> | Response;
 type Route = { method: string; path: string; handler: Handler };
@@ -1321,6 +1344,63 @@ function findRoute(method: string, pathname: string): Route | undefined {
 }
 
 // ---------------------------------------------------------------------
+// Guided Demo Session: the same handlers, run on the server
+// ---------------------------------------------------------------------
+
+// A change a session controller may apply: any handled non-GET demo route
+// except logout (leaving a session is not a data change).
+export function isDemoMutationRoute(method: string, pathname: string): boolean {
+  const m = method.toUpperCase();
+  const route = m === "GET" ? undefined : findRoute(m, pathname);
+  return !!route && route.path !== "/api/auth/logout";
+}
+
+export type DemoRouteResult = { status: number; data: unknown; bundle: DemoFixtureBundle };
+
+// Runs one demo route against a copy of `bundle` and returns the response
+// plus the resulting dataset. Server-only. Runs are serialized because the
+// handlers read the module-level activeStore across their single await
+// (reading the request body); serializing keeps two concurrent requests from
+// ever seeing each other's dataset. The handlers do no other I/O, so each
+// run takes milliseconds.
+let serverRunQueue: Promise<unknown> = Promise.resolve();
+
+export function runDemoRoute(
+  bundle: DemoFixtureBundle,
+  method: string,
+  pathWithQuery: string,
+  body: unknown
+): Promise<DemoRouteResult | null> {
+  const run = async (): Promise<DemoRouteResult | null> => {
+    const url = new URL(pathWithQuery, "http://demo-session.local");
+    const route = findRoute(method.toUpperCase(), url.pathname);
+    if (!route) return null;
+    let current: DemoFixtureBundle = structuredClone(bundle);
+    const previous = activeStore;
+    activeStore = {
+      getSnapshot: () => current,
+      setSnapshot: (next) => { current = next; },
+      notify: () => {},
+    };
+    try {
+      const req = new Request(url.href, {
+        method: method.toUpperCase(),
+        headers: { "content-type": "application/json" },
+        body: body === undefined || method.toUpperCase() === "GET" ? undefined : JSON.stringify(body),
+      });
+      const res = await route.handler(req, url);
+      const data = await res.json().catch(() => null);
+      return { status: res.status, data, bundle: current };
+    } finally {
+      activeStore = previous;
+    }
+  };
+  const result = serverRunQueue.then(run, run);
+  serverRunQueue = result.catch(() => undefined);
+  return result;
+}
+
+// ---------------------------------------------------------------------
 // Installation
 // ---------------------------------------------------------------------
 
@@ -1344,11 +1424,35 @@ function isDemoPath(pathname: string | undefined): boolean {
 // the same tab, e.g. via the Back button, reinstalls for real), and hands
 // that call -- and, the real fetch now being back, every later one -- to the
 // original fetch.
-export function installDemoFetchInterceptor(): void {
+//
+// Guided Demo Session mode (`session` given): reads (GET) are answered
+// locally from the session's synced dataset, every data change is handed
+// to `forwardMutation` (the session server applies it authoritatively),
+// and the session's own API (/api/demo-session/...) reaches the network.
+// Everything else is unchanged, including failing closed for any other
+// /api/ path.
+export type DemoSessionMode = {
+  store: DemoStore;
+  forwardMutation: (method: string, url: URL, body: unknown) => Promise<Response>;
+};
+
+const SESSION_API_PREFIX = "/api/demo-session/";
+
+async function readForwardedBody(input: RequestInfo | URL, init?: RequestInit): Promise<unknown> {
+  try {
+    const text = typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "";
+    return text ? JSON.parse(text) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function installDemoFetchInterceptor(session?: DemoSessionMode): void {
   if (typeof window === "undefined") return;
   const w = window as unknown as DemoWindow;
   if (w.__demoFetchInstalled) return;
   w.__demoFetchInstalled = true;
+  if (session) activeStore = session.store;
 
   const rawFetch: typeof fetch = w.fetch;
   const originalFetch: typeof fetch = rawFetch.bind(window);
@@ -1373,12 +1477,18 @@ export function installDemoFetchInterceptor(): void {
     if (url.origin !== origin || !url.pathname.startsWith("/api/")) {
       return originalFetch(input, init);
     }
+    if (session && url.pathname.startsWith(SESSION_API_PREFIX)) {
+      return originalFetch(input, init);
+    }
 
     const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
     const route = findRoute(method, url.pathname);
     if (!route) {
       console.error("DEMO_FETCH_UNHANDLED", url.href);
       return json({ error: "Not available in this demo." }, 404);
+    }
+    if (session && method !== "GET") {
+      return session.forwardMutation(method, url, await readForwardedBody(input, init));
     }
     try {
       const req = new Request(input instanceof Request ? new Request(url.href, input) : url.href, init);

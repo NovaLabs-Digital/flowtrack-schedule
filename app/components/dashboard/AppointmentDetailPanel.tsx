@@ -8,6 +8,7 @@ import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, resolveWorkedMinutes, isHistoricalAppointment, displayAppointmentStatus, isAppointmentPastDue, needsWorkedTimeReview, trackedMinutes, isOwnerReviewConfirmation } from "@/lib/payroll";
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { AppointmentMessageHistory } from "@/app/components/dashboard/MessageHistory";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1B: this panel's own restricted notice, distinct from
 // AppointmentModal's (appointment-modal-restricted-notice) -- both
@@ -84,6 +85,7 @@ type Props = {
 // Call/Text/Cancel pattern for parity with mobile, reusing the exact same
 // /api/appointments/delete endpoint — no new backend logic.
 export default function AppointmentDetailPanel({ appointment, client, employees, services, assignments, employeeHours, onEdit, onCancelled, canMutateOperationalData, timezone, focusMessageHistory }: Props) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
 
@@ -428,7 +430,7 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
           already cancelled, so nothing is ever gated then either. */}
       {!canMutateOperationalData && appointment.status !== "cancelled" && (
         <div id={RESTRICTED_NOTICE_ID} className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          {RESTRICTED_WORDING}
+          {restrictedWording}
         </div>
       )}
 

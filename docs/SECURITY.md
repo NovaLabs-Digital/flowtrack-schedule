@@ -101,6 +101,10 @@ Exists to power the Interactive Business Experience (a self-serve demo of the pr
 
 Every table that testers can touch carries an `is_demo` boolean. Tester-scoped queries always filter `.eq("is_demo", true)`; owner queries filter `.eq("is_demo", false)` or read unconditionally depending on the route. This is the single mechanism that keeps the public-facing demo experience from ever reading or writing real client data — it is enforced per-query, not by a separate database or schema.
 
+### Guided Demo Sessions
+
+A live, two-person session over a fresh **fictional** dataset (migration 042), never real business data. The host is only the owner whose `authUserId` equals `DEMO_HOST_AUTH_USER_ID`, with a current owner session (session epoch). The single visitor needs no account: a single-use, 30-minute invitation link issues a signed `sft_demo_visitor` cookie (scoped to `/api/demo-session`, expiring with the session; it can never be read as an `sft_session`). Every call is re-checked in the database under a row lock — identity, session expiry (2 hours), host presence, who controls the demo, the control generation (bumped on every change of control, so a previous controller's delayed request is refused), and the dataset version. Ending a session clears its dataset, invitation, and visitor name at once; a daily cron (`/api/cron/demo-session-cleanup`, `CRON_SECRET`) deletes ended sessions after 7 days.
+
 ### Owner-only routes
 
 Routes that touch identity, staff records, or settings (`/api/employees` writes, `/api/settings/company`, archived-client visibility, and all appointment/client mutation routes) require `role === "owner"` (or, where a demo carve-out is intended, `owner` or `tester`). See [API Security](#api-security) for the full Sprint 1 list.
@@ -188,6 +192,7 @@ Before Sprint 1, several routes assumed that if a caller wasn't a `tester`, it w
 | `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Server-side database access. The service role bypasses RLS by Supabase's design — see [Database Access & Row Level Security](#database-access--row-level-security) for how that interacts with this app's enforcement model. Used only for data access, never for session signing or credential verification. |
 | `SUPABASE_ANON_KEY` | Used only by the isolated, request-local client created for owner Supabase Auth verification (`auth.signInWithPassword`). Never used for database access — that's `supabaseAdmin`'s job. Not `NEXT_PUBLIC_`-prefixed because this client is created and used entirely server-side and is never bundled into browser code. |
 | `CRON_SECRET` | Authorizes the scheduled reminder-sending endpoint; compared with the same constant-time comparison used elsewhere in the auth path. |
+| `DEMO_HOST_AUTH_USER_ID` | Server-only. The Supabase Auth user id (the owner session's `authUserId`) of the one person allowed to host Guided Demo Sessions (Alberto). Unset or empty means nobody can host. Not a secret, but must never be `NEXT_PUBLIC_`-prefixed or read in browser code. |
 
 No example values are included here by design — see each variable's own configuration source for its actual value.
 

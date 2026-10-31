@@ -79,6 +79,7 @@ import type { EmployeeHours } from "@/app/components/dashboard/types";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { zonedTimeValue, zonedDateTimeToUTC } from "@/lib/timezone";
 import { trackedMinutes } from "@/lib/payroll";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Rendered next to the button/form whenever restricted, in both the
 // collapsed and expanded states -- so CapabilityGatedButton's
@@ -218,6 +219,7 @@ export default function AdjustWorkedTimeControl({
   needsReview = false,
   variant = "correction",
 }: AdjustWorkedTimeControlProps) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const isMissing = variant === "missing";
   // Self-contained (per DispatchPanel's now-removed EmployeeHoursSection
   // precedent) rather than a shared/global notice -- this control can appear
@@ -324,7 +326,7 @@ export default function AdjustWorkedTimeControl({
 
   const restrictedNotice = canCorrect
     ? null
-    : createElement("div", { id: noticeId, className: "text-[11px] text-slate-500 mt-0.5" }, RESTRICTED_WORDING);
+    : createElement("div", { id: noticeId, className: "text-[11px] text-slate-500 mt-0.5" }, restrictedWording);
 
   if (mode === "closed") {
     if (needsReview) {

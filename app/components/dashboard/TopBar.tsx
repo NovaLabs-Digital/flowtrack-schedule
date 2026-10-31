@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarDays } from "lucide-react";
 import { ViewMode } from "@/app/components/dashboard/types";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1C: this control's own restricted notice, distinct from every
 // other component's (appointment-modal-restricted-notice,
@@ -43,6 +44,7 @@ export default function TopBar({
   onChangeView?: (m: ViewMode) => void;
   canMutateOperationalData: boolean;
 }) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const router = useRouter();
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -211,7 +213,7 @@ export default function TopBar({
                 id={RESTRICTED_NOTICE_ID}
                 className="absolute top-full mt-1 left-0 z-50 w-56 rounded-xl border border-slate-200 bg-white shadow-lg px-3 py-2 text-xs text-slate-600"
               >
-                {RESTRICTED_WORDING}
+                {restrictedWording}
               </div>
             )}
           </div>

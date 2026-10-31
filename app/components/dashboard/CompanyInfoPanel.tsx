@@ -7,6 +7,7 @@ import CompanyStatusStrip from "@/app/components/dashboard/CompanyStatusStrip";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { WEEKDAY_KEYS, type WeekdayKey } from "@/lib/businessHours";
 import { TIMEZONE_OPTIONS } from "@/lib/timezone";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1F: two separate logical mutation-control areas in this
 // panel -- Company Information and Automation are independent cards with
@@ -89,6 +90,7 @@ export default function CompanyInfoPanel({
   // condition under which the Cancel Free Trial action below is offered.
   isTrialing: boolean;
 }) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status | null>(null);
 
@@ -517,7 +519,7 @@ export default function CompanyInfoPanel({
 
         {!canMutateOperationalData && (
           <div id={COMPANY_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            {RESTRICTED_WORDING}
+            {restrictedWording}
           </div>
         )}
 
@@ -585,7 +587,7 @@ export default function CompanyInfoPanel({
 
         {!canMutateOperationalData && (
           <div id={TZ_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            {RESTRICTED_WORDING}
+            {restrictedWording}
           </div>
         )}
 
@@ -699,7 +701,7 @@ export default function CompanyInfoPanel({
 
         {!canMutateOperationalData && (
           <div id={HOURS_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            {RESTRICTED_WORDING}
+            {restrictedWording}
           </div>
         )}
 
@@ -760,7 +762,7 @@ export default function CompanyInfoPanel({
 
         {!canMutateOperationalData && (
           <div id={AUTOMATION_NOTICE_ID} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            {RESTRICTED_WORDING}
+            {restrictedWording}
           </div>
         )}
 

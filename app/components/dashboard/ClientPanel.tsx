@@ -6,6 +6,7 @@ import { toBusinessLocal } from "@/lib/timezone";
 import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { ClientMessageHistory } from "@/app/components/dashboard/MessageHistory";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1E: this panel's own restricted notice, distinct from every
 // other component's -- shown once in the always-rendered header, referenced
@@ -139,6 +140,7 @@ export default function ClientPanel({
   // is submitted until the owner explicitly saves.
   onEditAppointment: (appointmentId: string) => void;
 }) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   // SFT cancellation-history fix: lets the owner find a cancelled
   // appointment specifically, rather than scrolling the (capped-at-6) Past
   // Services list hoping it's recent enough to be in that slice. Defaults
@@ -267,7 +269,7 @@ export default function ClientPanel({
         </div>
         {!canMutateOperationalData && (
           <div id={RESTRICTED_NOTICE_ID} className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            {RESTRICTED_WORDING}
+            {restrictedWording}
           </div>
         )}
       </div>

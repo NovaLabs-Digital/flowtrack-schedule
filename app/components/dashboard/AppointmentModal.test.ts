@@ -271,7 +271,10 @@ describe("the exact approved restricted wording is used, and it is the only owne
   test("the shared notice element renders RESTRICTED_WORDING under the approved id, shown only when restricted", () => {
     assert.ok(source.includes("{!canMutateOperationalData && ("));
     assert.ok(source.includes("id={RESTRICTED_NOTICE_ID}"));
-    assert.ok(source.includes("{RESTRICTED_WORDING}"));
+    // Rendered through useRestrictedWording (restrictedWording.ts): the approved
+    // wording everywhere except a Guided Demo Session's watch mode.
+    assert.ok(source.includes("const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);"));
+    assert.ok(source.includes("{restrictedWording}"));
   });
 
   test("the employee-facing wording ('This action is temporarily unavailable. Please contact the office.') is never used here -- owner and employee restriction copy are kept distinct", () => {

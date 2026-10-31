@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1x-style restricted notice, distinct from every other panel's
 // own id -- see CompanyInfoPanel/ArchivedClientsPanel for the established
@@ -79,6 +80,7 @@ function fmtCandidateLabel(c: Candidate): string {
 // Activate control is disabled for those rows rather than merely warned
 // about after the fact.
 export default function RecurringSeriesPanel({ canMutateOperationalData }: { canMutateOperationalData: boolean }) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const [series, setSeries] = useState<SeriesRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -164,7 +166,7 @@ export default function RecurringSeriesPanel({ canMutateOperationalData }: { can
 
       {!canMutateOperationalData && (
         <div id={RESTRICTED_NOTICE_ID} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          {RESTRICTED_WORDING}
+          {restrictedWording}
         </div>
       )}
 

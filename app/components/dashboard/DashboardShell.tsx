@@ -67,6 +67,8 @@ export default function DashboardShell({
   workspaceId,
   userId,
   isLocalDemo = false,
+  guidedSession = false,
+  sessionBar,
   onSignOut: onSignOutOverride,
 }: {
   clients: Client[];
@@ -137,6 +139,14 @@ export default function DashboardShell({
   // (see that file's own header comment) -- never a bespoke redesign.
   // Omitted -- so false -- by the real server page (app/dashboard/page.tsx).
   isLocalDemo?: boolean;
+  // Guided Demo Session (app/demo/session): the same fictional demo shared
+  // by a host and one visitor, its data owned by the session server. The
+  // guided tour and Demo Controls (whose Reset Demo only touches this
+  // browser's local data) are hidden. Omitted everywhere else.
+  guidedSession?: boolean;
+  // The Guided Demo Session control strip, docked under the Demo Mode
+  // banner (desktop) so it never covers the dashboard or its dialogs.
+  sessionBar?: React.ReactNode;
   // Override for the real handleSignOut below, used ONLY by app/demo/
   // DemoPageClient.tsx so Sign Out can end the local session (clearDemoSession)
   // and force a full reload instead of a real /api/auth/logout + client-side
@@ -621,7 +631,9 @@ export default function DashboardShell({
           onEditAppointment={handleEditAppointment}
           onClientUpdated={() => router.refresh()}
           isTester={isTester}
-          isLocalDemo={isLocalDemo}
+          // A Guided Demo Session is desktop-only in milestone 1; on a phone its
+          // Mobile Demo Controls (local Reset Demo) must not appear.
+          isLocalDemo={isLocalDemo && !guidedSession}
           onSignOut={onSignOutOverride}
           bannerVariant={entitlement.bannerVariant}
           recoveryAction={entitlement.recoveryAction}
@@ -640,14 +652,15 @@ export default function DashboardShell({
 
   // --- DESKTOP LAYOUT (unchanged, except the Demo Mode banner/settings restriction for tester sessions) ---
   return (
-    <DemoExperienceProvider autoStart={isTester}>
+    <DemoExperienceProvider autoStart={isTester && !guidedSession}>
     <div className="h-screen flex flex-col bg-slate-100 text-slate-900 overflow-hidden">
       {isTester && (
         <div className="relative shrink-0 bg-amber-400 text-amber-950 text-center text-xs font-semibold py-1.5 px-4">
           Demo Mode — All information shown in Demo Mode is fictional and for testing only.
-          {isLocalDemo && <DemoBannerControls />}
+          {isLocalDemo && !guidedSession && <DemoBannerControls />}
         </div>
       )}
+      {sessionBar}
       <OwnerBillingBanner
         bannerVariant={entitlement.bannerVariant}
         recoveryAction={entitlement.recoveryAction}
@@ -914,8 +927,8 @@ export default function DashboardShell({
         />
       )}
     </div>
-    {isTester && <MobileExperiencePreview isLocalDemo={isLocalDemo} />}
-    {isTester && <DemoExperienceOverlay />}
+    {isTester && !guidedSession && <MobileExperiencePreview isLocalDemo={isLocalDemo} />}
+    {isTester && !guidedSession && <DemoExperienceOverlay />}
     </DemoExperienceProvider>
   );
 }

@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/replenish-recurring-series",
       "schedule": "13 8 * * *"
+    },
+    {
+      "path": "/api/cron/demo-session-cleanup",
+      "schedule": "37 9 * * *"
     }
   ]
 }

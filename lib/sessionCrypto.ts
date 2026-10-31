@@ -264,3 +264,35 @@ export async function verifyEmployeeWorkspaceSelectionCookie(value: string): Pro
 
   return payload as EmployeeWorkspaceSelectionPayload;
 }
+
+// Guided Demo Session visitor cookie (sft_demo_visitor). Same signature
+// scheme as the cookies above, with its own `purpose`, so it can never be
+// mistaken for a login session (verifySessionCookie requires a role, which
+// this payload never has) and vice versa. A valid signature is only the
+// first check: every request also re-checks the visitor's id and epoch
+// against the live session row (migration 042).
+export type DemoVisitorPayload = {
+  purpose: "demo_visitor";
+  sessionId: string;
+  visitorId: string;
+  epoch: number;
+  exp: number;
+};
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function signDemoVisitorPayload(payload: DemoVisitorPayload): Promise<string> {
+  return signPayload(payload);
+}
+
+export async function verifyDemoVisitorCookie(value: string): Promise<DemoVisitorPayload | null> {
+  const decoded = await verifySignedValue(value);
+  if (!decoded || typeof decoded !== "object") return null;
+  const payload = decoded as Partial<DemoVisitorPayload>;
+  if (payload.purpose !== "demo_visitor") return null;
+  if (typeof payload.exp !== "number" || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  if (typeof payload.sessionId !== "string" || !UUID_PATTERN.test(payload.sessionId)) return null;
+  if (typeof payload.visitorId !== "string" || !UUID_PATTERN.test(payload.visitorId)) return null;
+  if (typeof payload.epoch !== "number" || !Number.isInteger(payload.epoch) || payload.epoch < 1) return null;
+  return payload as DemoVisitorPayload;
+}

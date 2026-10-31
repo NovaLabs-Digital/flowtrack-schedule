@@ -53,6 +53,13 @@ const EXEMPT: Record<string, string> = {
   "cron/reminders/route.ts": "authenticated by CRON_SECRET, not a user session of any kind (per-appointment workspace checks use requireCapabilityForWorkspace with a server-derived workspace id, not a session)",
   "cron/replenish-recurring-series/route.ts": "authenticated by CRON_SECRET, not a user session of any kind (Block 2C-2C)",
   "stripe/webhook/route.ts": "authenticated by Stripe's own signature verification, not a user session of any kind",
+  "cron/demo-session-cleanup/route.ts": "authenticated by CRON_SECRET, not a user session of any kind; touches only migration 042's fictional Guided Demo Session rows",
+  "demo-session/route.ts":
+    "Guided Demo Session host only, via requireDemoHost (lib/demoSession/server.ts): owner role + DEMO_HOST_AUTH_USER_ID + requireCurrentOwnerSession (asserted below); reads/writes only migration 042's fictional session data, never workspace data",
+  "demo-session/claim/route.ts":
+    "public by single-use invitation: no account or sft_session involved; creates only a fictional-demo visitor identity in migration 042's tables",
+  "demo-session/[id]/[action]/route.ts":
+    "host actions via requireDemoHost (owner role + DEMO_HOST_AUTH_USER_ID + requireCurrentOwnerSession, asserted below); visitor actions via the signed sft_demo_visitor invitation cookie; only migration 042's fictional session data, never workspace data",
   "auth/employee/select-workspace/route.ts":
     "pre-session: the second step of the multi-workspace employee login hand-off (see auth/login/route.ts), authenticated by the separate, structurally distinct sft_employee_workspace_pending challenge cookie -- it never reads sft_session, and is the route that mints an employee-scoped sft_session, so it cannot itself already hold a validated one; also structurally unreachable by an owner session since the challenge is only ever issued for the employee role",
 };
@@ -87,6 +94,17 @@ describe("Phase 5.7D-R4: exhaustive owner-route session_epoch coverage", () => {
   test("every exempted file still exists -- a stale exemption for a deleted/renamed route is itself a bug in this inventory", () => {
     for (const rel of Object.keys(EXEMPT)) {
       assert.ok(fs.existsSync(path.join(apiDir, rel)), `exempted file ${rel} no longer exists -- remove its exemption`);
+    }
+  });
+
+  test("the Guided Demo Session host exemptions still hold -- requireDemoHost checks the configured host id and the current owner session epoch", () => {
+    const server = fs.readFileSync(path.join(apiDir, "..", "..", "lib", "demoSession", "server.ts"), "utf8");
+    const fn = server.slice(server.indexOf("export async function requireDemoHost"), server.indexOf("export async function readDemoVisitor"));
+    assert.ok(fn.includes('session.role !== "owner"'));
+    assert.ok(fn.includes("session.authUserId !== hostId"));
+    assert.ok(fn.includes("requireCurrentOwnerSession(session)"));
+    for (const rel of ["demo-session/route.ts", "demo-session/[id]/[action]/route.ts"]) {
+      assert.ok(fs.readFileSync(path.join(apiDir, rel), "utf8").includes("requireDemoHost"), `${rel} uses requireDemoHost`);
     }
   });
 

@@ -6,6 +6,7 @@ import { Service } from "@/app/components/dashboard/types";
 import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienceBus";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { centsToInputValue, formatCents, parsePriceToCents } from "@/lib/money";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
 // Edit/Enable-Disable/Delete, and the Add/Edit form's Save submit are all
@@ -50,6 +51,7 @@ export default function ServicesPanel({
   isTester?: boolean;
   canMutateOperationalData: boolean;
 }) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -215,7 +217,7 @@ export default function ServicesPanel({
 
       {!canMutateOperationalData && (
         <div id={RESTRICTED_NOTICE_ID} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          {RESTRICTED_WORDING}
+          {restrictedWording}
         </div>
       )}
 

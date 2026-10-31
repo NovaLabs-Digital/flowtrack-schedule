@@ -17,6 +17,7 @@ import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 import MobileNeedsAttentionControl from "@/app/components/mobile/MobileNeedsAttentionControl";
 import OwnerBillingBanner, { OwnerBillingBannerProps } from "@/app/components/dashboard/OwnerBillingBanner";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
+import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
 // Phase 5.5E-E1C: this control's own restricted notice, distinct from every
 // other component's -- see TopBar.tsx for the matching desktop constant and
@@ -134,6 +135,7 @@ export default function MobileDashboard({
   workspaceId,
   userId,
 }: Props) {
+  const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const [activeTab, setActiveTab] = useState<MobileTabKey>("today");
   const [dayOffset, setDayOffset] = useState(0);
   const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
@@ -345,7 +347,7 @@ export default function MobileDashboard({
                       id={RESTRICTED_NOTICE_ID}
                       className="mb-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
                     >
-                      {RESTRICTED_WORDING}
+                      {restrictedWording}
                     </div>
                   )}
                   <CapabilityGatedButton
