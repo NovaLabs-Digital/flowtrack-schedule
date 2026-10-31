@@ -13,13 +13,13 @@
 // tab never carries another page's interceptor.
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
-import SessionControlBar from "@/app/components/demo-session/SessionControlBar";
+import SessionControlBar, { type PendingAction } from "@/app/components/demo-session/SessionControlBar";
 import { RestrictedWordingProvider } from "@/app/components/dashboard/restrictedWording";
 import { installDemoFetchInterceptor } from "@/lib/demoLocal/fetchInterceptor";
 import { DEMO_ENTITLEMENT } from "@/lib/demoLocal/fixtures/entitlement";
 import { DEMO_TIMEZONE } from "@/lib/demoLocal/fixtures/generate";
 import { effectiveBusinessHours } from "@/lib/businessHours";
-import { createDemoSessionClient, inviteStorageKey, WATCHING_MESSAGE, type DemoRole, type DemoSessionClient, type DemoSessionState } from "@/lib/demoSession/client";
+import { createDemoSessionClient, HOST_WATCHING_MESSAGE, inviteStorageKey, WATCHING_MESSAGE, type DemoRole, type DemoSessionClient, type DemoSessionState } from "@/lib/demoSession/client";
 import type { EntitlementView } from "@/lib/entitlementView";
 
 const SESSION_PATH = /^\/demo\/session\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
@@ -62,7 +62,7 @@ export default function SessionClient() {
     () => SERVER_STATE
   );
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<PendingAction | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -110,21 +110,27 @@ export default function SessionClient() {
 
   const session = state.session;
   const iControl = session.controller === ctx.role;
+  // Whoever is watching (the visitor, or the host after giving control)
+  // cannot touch the dashboard at all; the bar stays usable.
+  const watchingMessage = iControl ? null : ctx.role === "host" ? HOST_WATCHING_MESSAGE : WATCHING_MESSAGE;
 
-  async function run(action: () => Promise<{ status: number; data: Record<string, any> | null }>, failure: string) {
-    setBusy(true);
+  // Every host action shows that it is in progress on its own button, and
+  // always ends in a visible result: the new state, or a message saying it
+  // failed (including when the server never answers -- see REQUEST_TIMEOUT_MS).
+  async function run(kind: PendingAction, action: () => Promise<{ status: number; data: Record<string, any> | null }>, failure: string) {
+    setPending(kind);
     setMessage(null);
     try {
       const result = await action();
       if (result.status >= 400 && result.data?.outcome !== "ended") {
-        setMessage(result.data?.outcome === "visitor_unavailable" ? "Your visitor isn't connected right now." : failure);
+        setMessage(result.data?.outcome === "visitor_unavailable" ? "Your visitor isn't connected right now." : `${failure} Please try again.`);
       }
       return result;
-    } catch {
-      setMessage(failure);
+    } catch (e) {
+      setMessage(e instanceof Error && e.name === "AbortError" ? `${failure} The server didn't answer. Please try again.` : `${failure} Please check your connection and try again.`);
       return null;
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }
 
@@ -139,7 +145,7 @@ export default function SessionClient() {
   return (
     // While watching, every disabled change control explains the session
     // (not the account/billing wording the real app uses).
-    <RestrictedWordingProvider wording={iControl ? null : WATCHING_MESSAGE}>
+    <RestrictedWordingProvider wording={watchingMessage}>
       <DashboardShell
         clients={dataset.clients}
         appointments={dataset.appointments}
@@ -157,25 +163,26 @@ export default function SessionClient() {
         workspaceId={SESSION_PREFS_ID}
         userId={`${SESSION_PREFS_ID}-${ctx.role}`}
         onSignOut={leave}
+        watchingMessage={watchingMessage}
         sessionBar={
           <SessionControlBar
             role={ctx.role}
             session={session}
             offline={state.offline}
             inviteUrl={inviteUrl}
-            busy={busy}
+            pending={pending}
             message={message}
-            onGiveControl={() => void run(ctx.client.giveControl, "Couldn't give control. Please try again.")}
-            onTakeBackControl={() => void run(ctx.client.takeBackControl, "Couldn't take back control. Please try again.")}
+            onGiveControl={() => void run("give", ctx.client.giveControl, "Couldn't give control.")}
+            onTakeBackControl={() => void run("take", ctx.client.takeBackControl, "Couldn't take back control.")}
             onNewInvite={async () => {
-              const result = await run(ctx.client.newInvite, "Couldn't create a new link.");
+              const result = await run("invite", ctx.client.newInvite, "Couldn't create a new link.");
               const url = result?.data?.inviteUrl;
               if (typeof url === "string") {
                 setInviteUrl(url);
                 try { window.sessionStorage.setItem(inviteStorageKey(ctx.sessionId), url); } catch { /* not stored */ }
               }
             }}
-            onEndSession={() => void run(ctx.client.endSession, "Couldn't end the session. Please try again.")}
+            onEndSession={() => void run("end", ctx.client.endSession, "Couldn't end the session.")}
             onLeave={leave}
           />
         }

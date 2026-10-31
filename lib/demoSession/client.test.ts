@@ -153,3 +153,25 @@ describe("host actions", () => {
     ]);
   });
 });
+
+describe("requests that never answer", () => {
+  // A fetch that only settles when aborted, like a request stuck on the network.
+  const hangingFetch = () => ((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+  })) as unknown as typeof fetch;
+
+  test("a host action that gets no answer fails with AbortError after the time limit instead of waiting forever", async () => {
+    const client = createDemoSessionClient({ sessionId: SID, role: "host", fetchImpl: hangingFetch, requestTimeoutMs: 30 });
+    for (const action of [client.takeBackControl, client.endSession, client.giveControl]) {
+      const started = Date.now();
+      await assert.rejects(action(), (e: Error) => e.name === "AbortError");
+      assert.ok(Date.now() - started < 2000);
+    }
+  });
+
+  test("a sync that gets no answer marks the view offline, so polling carries on", async () => {
+    const client = createDemoSessionClient({ sessionId: SID, role: "host", fetchImpl: hangingFetch, requestTimeoutMs: 30 });
+    await client.syncNow();
+    assert.equal(client.getState().offline, true);
+  });
+});

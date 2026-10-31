@@ -6,6 +6,31 @@ person navigates independently; audio (milestone 2) and synchronized
 screens (milestone 3) come later. Security model: see
 [SECURITY.md › Guided Demo Sessions](SECURITY.md#guided-demo-sessions).
 
+## Watch-only mode
+
+Whoever is not in control is watching: the visitor at first, and the host
+after Give Control. While watching, the whole demo dashboard stays visible
+but takes no input: navigation, appointment cards, forms and dialogs,
+Settings, scrolling, dragging, and keyboard actions are all blocked, and a
+note reads "You're watching. The host can give you control." (the host sees
+"You're watching. Take Back Control to use the demo again."). The session
+bar is never blocked: the host can always Take Back Control or End Session,
+and the visitor can always Leave. Normal use returns the moment control
+does. The server still refuses every change from the person watching, so
+this is a convenience on top of the real rule, not the rule itself.
+
+**Limitation (milestone 1): screens are not shared.** Each person navigates
+on their own. Blocking the watcher does **not** make their screen follow the
+person in control: if the visitor opens Settings, the host does not see
+Settings, and the watcher sees whatever page they were on when control
+changed. Data changes do appear on both screens within about a second.
+Talk the visitor through what to open (or what you are showing) until
+screen mirroring arrives in milestone 3.
+
+Guided sessions are designed for desktop browsers. On a phone-sized screen
+the dashboard switches to the mobile layout, which has no session bar and no
+watch-only blocking (the server still refuses changes from the watcher).
+
 ## Configuration
 
 | Setting | Where | Value |

@@ -117,6 +117,8 @@ describe("restricted wording -- every component, and only the session provides a
     walk(path.join(root, "app"));
     assert.deepEqual(users, ["app/demo/session/[id]/SessionClient.tsx"]);
     const session = fs.readFileSync(path.join(root, "app/demo/session/[id]/SessionClient.tsx"), "utf8");
-    assert.ok(session.includes("<RestrictedWordingProvider wording={iControl ? null : WATCHING_MESSAGE}>"));
+    // No override while in control; the watcher's own wording otherwise.
+    assert.ok(session.includes('const watchingMessage = iControl ? null : ctx.role === "host" ? HOST_WATCHING_MESSAGE : WATCHING_MESSAGE;'));
+    assert.ok(session.includes("<RestrictedWordingProvider wording={watchingMessage}>"));
   });
 });

@@ -41,6 +41,8 @@ export type DemoSessionState = {
 };
 
 export const WATCHING_MESSAGE = "You're watching. The host can give you control.";
+// The host watches after giving control; they take it back from the bar.
+export const HOST_WATCHING_MESSAGE = "You're watching. Take Back Control to use the demo again.";
 export const ENDED_MESSAGE = "This Guided Demo Session has ended.";
 
 // Where the host page leaves the invitation link for the session page
@@ -55,14 +57,17 @@ type Options = {
   role: DemoRole;
   fetchImpl?: () => typeof fetch;
   newOpId?: () => string;
+  requestTimeoutMs?: number;
 };
+
+export const REQUEST_TIMEOUT_MS = 15_000;
 
 type ApiResult = { status: number; data: Record<string, any> | null };
 
 const respond = (status: number, data: unknown) =>
   new Response(JSON.stringify(data ?? null), { status, headers: { "content-type": "application/json" } });
 
-export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId }: Options) {
+export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, requestTimeoutMs = REQUEST_TIMEOUT_MS }: Options) {
   const getFetch = fetchImpl ?? (() => globalThis.fetch.bind(globalThis));
   const opId = newOpId ?? (() => crypto.randomUUID());
   let state: DemoSessionState = { status: "connecting", session: null, dataset: null, offline: false };
@@ -76,14 +81,24 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId }:
     emit();
   };
 
+  // A request that never answers fails after REQUEST_TIMEOUT_MS instead of
+  // leaving the page waiting forever (a stuck host action would otherwise
+  // keep the bar's buttons disabled with nothing on screen).
   async function call(action: string, body: Record<string, unknown>): Promise<ApiResult> {
-    const res = await getFetch()(`/api/demo-session/${sessionId}/${action}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ role, ...body }),
-    });
-    const data = await res.json().catch(() => null);
-    return { status: res.status, data };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    try {
+      const res = await getFetch()(`/api/demo-session/${sessionId}/${action}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ role, ...body }),
+        signal: controller.signal,
+      });
+      const data = await res.json().catch(() => null);
+      return { status: res.status, data };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // The version of the dataset this browser holds. Only ever advanced

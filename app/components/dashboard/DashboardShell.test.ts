@@ -458,6 +458,21 @@ describe("DashboardShell: isLocalDemo (browser-local demo) pass-through", () => 
     assert.match(source, /<DemoBannerControls \/>\}\s*<\/div>\s*\)\}\s*\{sessionBar\}/);
   });
 
+  test("watch-only mode wraps everything below the session bar -- dialogs included -- and nothing else", () => {
+    assert.match(source, /watchingMessage\?: string \| null;/);
+    // Omitted (the real app, the public demo): rendered exactly as before.
+    assert.match(source, /watchingMessage === undefined \? content : <WatchOnlyArea watchingMessage=\{watchingMessage\}>\{content\}<\/WatchOnlyArea>/);
+    // Starts right after the bar, so the bar itself is never blocked ...
+    assert.match(desktopBlock, /\{sessionBar\}\s*\{watchWrap\(<>\s*<OwnerBillingBanner/);
+    // ... and ends after the last dialog, so open dialogs are blocked too.
+    const wrapped = desktopBlock.slice(desktopBlock.indexOf("{watchWrap(<>"), desktopBlock.indexOf("</>)}"));
+    for (const part of ["<LeftBar", "<TopBar", "{modalEl}", "<MoveConfirmDialog", "<DashboardSettingsArea"]) {
+      assert.ok(wrapped.includes(part), `${part} is inside the watch-only area`);
+    }
+    // Desktop only: the mobile layout has no session bar to keep usable.
+    assert.doesNotMatch(mobileBlock, /watchWrap|WatchOnlyArea/);
+  });
+
   test("onSignOut is an optional override prop, used by the real DashboardSettingsArea call site, and forwarded to MobileDashboard too", () => {
     assert.match(source, /onSignOut\?:\s*\(\)\s*=>\s*void;/);
     assert.match(source, /onSignOut:\s*onSignOutOverride,/);

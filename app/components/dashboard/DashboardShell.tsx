@@ -32,6 +32,7 @@ import { useDashboardNavigationPrefs } from "@/app/components/dashboard/useDashb
 import { resolveCalendarNavigation } from "@/lib/calendarNavigation";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
+import WatchOnlyArea from "@/app/components/demo-session/WatchOnlyArea";
 import MobileExperiencePreview from "@/app/components/demo-experience/MobileExperiencePreview";
 import { notifyDemoAction, subscribeDemoStepEntered } from "@/app/components/demo-experience/demoExperienceBus";
 import {
@@ -69,6 +70,7 @@ export default function DashboardShell({
   isLocalDemo = false,
   guidedSession = false,
   sessionBar,
+  watchingMessage,
   onSignOut: onSignOutOverride,
 }: {
   clients: Client[];
@@ -147,6 +149,11 @@ export default function DashboardShell({
   // The Guided Demo Session control strip, docked under the Demo Mode
   // banner (desktop) so it never covers the dashboard or its dialogs.
   sessionBar?: React.ReactNode;
+  // Guided Demo Session watch-only mode (desktop): a message while this
+  // participant is watching (the dashboard below the session bar takes no
+  // input -- see WatchOnlyArea), null while they are in control. Omitted
+  // everywhere else, which leaves the layout exactly as it was.
+  watchingMessage?: string | null;
   // Override for the real handleSignOut below, used ONLY by app/demo/
   // DemoPageClient.tsx so Sign Out can end the local session (clearDemoSession)
   // and force a full reload instead of a real /api/auth/logout + client-side
@@ -651,6 +658,10 @@ export default function DashboardShell({
   }
 
   // --- DESKTOP LAYOUT (unchanged, except the Demo Mode banner/settings restriction for tester sessions) ---
+  // Everything below the session bar, dialogs included, is what a Guided
+  // Demo Session watcher cannot touch; without watchingMessage it renders as is.
+  const watchWrap = (content: React.ReactNode) =>
+    watchingMessage === undefined ? content : <WatchOnlyArea watchingMessage={watchingMessage}>{content}</WatchOnlyArea>;
   return (
     <DemoExperienceProvider autoStart={isTester && !guidedSession}>
     <div className="h-screen flex flex-col bg-slate-100 text-slate-900 overflow-hidden">
@@ -661,6 +672,7 @@ export default function DashboardShell({
         </div>
       )}
       {sessionBar}
+      {watchWrap(<>
       <OwnerBillingBanner
         bannerVariant={entitlement.bannerVariant}
         recoveryAction={entitlement.recoveryAction}
@@ -926,6 +938,7 @@ export default function DashboardShell({
           timezone={timezone}
         />
       )}
+      </>)}
     </div>
     {isTester && !guidedSession && <MobileExperiencePreview isLocalDemo={isLocalDemo} />}
     {isTester && !guidedSession && <DemoExperienceOverlay />}

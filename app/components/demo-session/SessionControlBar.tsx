@@ -8,13 +8,17 @@
 // decided by the server; this bar only asks and shows the answer.
 import { useEffect, useState } from "react";
 import type { DemoRole, DemoSessionView } from "@/lib/demoSession/client";
+import { SESSION_CONTROLS_ATTR } from "@/app/components/demo-session/WatchOnlyArea";
+
+// The host action waiting for the server, shown on its own button.
+export type PendingAction = "give" | "take" | "invite" | "end";
 
 type Props = {
   role: DemoRole;
   session: DemoSessionView;
   offline: boolean;
   inviteUrl: string | null;
-  busy: boolean;
+  pending: PendingAction | null;
   message: string | null;
   onGiveControl: () => void;
   onTakeBackControl: () => void;
@@ -28,7 +32,8 @@ function minutesLeft(expiresAt: string): number {
 }
 
 export default function SessionControlBar(props: Props) {
-  const { role, session, offline, inviteUrl, busy, message } = props;
+  const { role, session, offline, inviteUrl, pending, message } = props;
+  const busy = pending !== null;
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [copied, setCopied] = useState(false);
   const [, setTick] = useState(0);
@@ -61,10 +66,15 @@ export default function SessionControlBar(props: Props) {
   const button = "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50";
 
   return (
+    // Outside the watch-only area (see WatchOnlyArea). While watching it also
+    // rises above any open dialog (blocked then anyway), so Take Back
+    // Control, End Session, and Leave are never covered; while in control
+    // dialogs stay on top, so the bar never hides a dialog's own buttons.
     <div
       role="region"
       aria-label="Guided Demo Session controls"
-      className="shrink-0 border-b border-slate-200 bg-white px-4 py-2"
+      {...{ [SESSION_CONTROLS_ATTR]: "" }}
+      className={`${iControl ? "" : "relative z-[80] "}shrink-0 border-b border-slate-200 bg-white px-4 py-2`}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
@@ -81,7 +91,7 @@ export default function SessionControlBar(props: Props) {
               offline ? "Reconnecting…" : null,
             ].filter(Boolean).join(" · ")}
           </div>
-          {message && <div className="mt-1 text-xs text-amber-700">{message}</div>}
+          {message && <div role="alert" className="mt-1 text-xs text-amber-700">{message}</div>}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -96,7 +106,7 @@ export default function SessionControlBar(props: Props) {
                   is only offered while nobody is connected. */}
               {!session.visitor_online && (
                 <button type="button" disabled={busy} onClick={props.onNewInvite} className={`${button} border border-slate-300 text-slate-700 hover:bg-slate-50`}>
-                  New invite link
+                  {pending === "invite" ? "Creating link…" : "New invite link"}
                 </button>
               )}
               {session.controller === "host" ? (
@@ -106,17 +116,17 @@ export default function SessionControlBar(props: Props) {
                   onClick={props.onGiveControl}
                   className={`${button} bg-blue-600 text-white hover:bg-blue-700`}
                 >
-                  Give Control
+                  {pending === "give" ? "Giving control…" : "Give Control"}
                 </button>
               ) : (
                 <button type="button" disabled={busy} onClick={props.onTakeBackControl} className={`${button} bg-[#0f172a] text-white hover:bg-slate-800`}>
-                  Take Back Control
+                  {pending === "take" ? "Taking back…" : "Take Back Control"}
                 </button>
               )}
               {confirmEnd ? (
                 <>
                   <button type="button" disabled={busy} onClick={props.onEndSession} className={`${button} bg-rose-600 text-white hover:bg-rose-700`}>
-                    Yes, end session
+                    {pending === "end" ? "Ending…" : "Yes, end session"}
                   </button>
                   <button type="button" onClick={() => setConfirmEnd(false)} className={`${button} border border-slate-300 text-slate-700 hover:bg-slate-50`}>
                     Keep going
