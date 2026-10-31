@@ -45,6 +45,9 @@ export default function LandingPage() {
           Manage recurring appointments, employees, client details, worked hours, and customer communication from one simple schedule.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <Link href="/live-session" className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+            Request a Live Session
+          </Link>
           <Link
             href="/signup"
             className="rounded-lg bg-[var(--navy)] px-5 py-2.5 text-sm font-medium text-white hover:bg-[var(--navy-light)] transition-colors shadow-sm"
