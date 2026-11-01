@@ -41,8 +41,11 @@ export type DemoSessionState = {
 };
 
 export const WATCHING_MESSAGE = "You're watching. The host can give you control.";
-// The host watches after giving control; they take it back from the bar.
-export const HOST_WATCHING_MESSAGE = "You're watching. Take Back Control to use the demo again.";
+// A save refused because someone changed the same record after this edit
+// began. Nothing was saved; the form still holds what was typed.
+export const CONFLICT_MESSAGE =
+  "Someone else changed this while you were editing, so your changes weren't saved. They're still here: check the latest details, then save again to apply them.";
+export const BUSY_MESSAGE = "The demo is busy with other changes. Please try again.";
 export const ENDED_MESSAGE = "This Guided Demo Session has ended.";
 
 // Where the host page leaves the invitation link for the session page
@@ -162,25 +165,45 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
     notify: () => {},
   };
 
-  const forwardMutation: DemoSessionMode["forwardMutation"] = async (method, url, body) => {
+  // Where each open edit stands: its marker -> the dataset version its next
+  // save is based on. Starts at the version the edit began from; moves to
+  // the new version after a save (so further saves from the same form are
+  // not refused because of its own change) and to the latest version after
+  // a refused, conflicting save (so saving again is the person's informed
+  // decision after reading the conflict message -- never an automatic retry).
+  const editBases = new Map<string, number>();
+
+  function parseEdit(edit: string | null): { key: string; base: number } | null {
+    const m = edit?.match(/^([A-Za-z0-9-]{1,64}):(\d{1,15})$/);
+    return m ? { key: m[1], base: Number(m[2]) } : null;
+  }
+
+  const forwardMutation: DemoSessionMode["forwardMutation"] = async (method, url, body, edit) => {
     const id = opId();
+    const editStart = parseEdit(edit);
+    const baseVersion = () => (editStart ? editBases.get(editStart.key) ?? editStart.base : heldVersion ?? state.session?.state_version ?? 0);
+    const remember = (version: unknown) => {
+      if (editStart && typeof version === "number") editBases.set(editStart.key, version);
+    };
     const attempt = async (retriesLeft: number): Promise<Response> => {
       const s = state.session;
       if (state.status === "ended" || !s) return respond(410, { error: ENDED_MESSAGE });
-      if (s.controller !== role) return respond(403, { error: WATCHING_MESSAGE });
+      // The host can always edit; the guest only while the host allows it.
+      if (role === "visitor" && s.controller !== "visitor") return respond(403, { error: WATCHING_MESSAGE });
       let result: ApiResult;
       try {
         result = await call("op", {
           gen: s.control_gen,
-          baseVersion: heldVersion ?? s.state_version,
+          baseVersion: baseVersion(),
           opId: id,
           method,
           path: url.pathname + url.search,
           body,
         });
       } catch {
-        // The change may or may not have applied: catch up, then retry with
-        // the same op id (the server applies an op id at most once).
+        // The change may or may not have applied: catch up, then send the
+        // SAME request again (same op id and starting version), which the
+        // server applies at most once and checks for conflicts as before.
         await syncNow();
         if (retriesLeft > 0) return attempt(retriesLeft - 1);
         return respond(503, { error: "Connection lost. Please try again." });
@@ -189,17 +212,24 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
       switch (d.outcome) {
         case "ok":
           absorb(result);
+          remember(d.session?.state_version);
           return respond(d.status ?? 200, d.data);
         case "duplicate":
           await syncNow();
+          remember(state.session?.state_version);
           return respond(d.status ?? 200, d.data);
         case "refused":
           absorb(result);
           return respond(d.status ?? 400, d.data);
-        case "stale_version":
+        case "edit_conflict":
+          // Nothing was saved; the form keeps what was typed and shows why.
           absorb(result);
-          if (retriesLeft > 0) return attempt(retriesLeft - 1);
-          return respond(409, { error: "The demo just changed. Please try again." });
+          remember(d.session?.state_version);
+          return respond(409, { error: CONFLICT_MESSAGE, code: "edit_conflict" });
+        case "stale_version":
+          // The server kept losing races with other saves: report, never loop.
+          absorb(result);
+          return respond(409, { error: BUSY_MESSAGE });
         case "not_controller":
         case "stale_control":
           absorb(result);
@@ -225,6 +255,8 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
     store,
     forwardMutation,
     getState: () => state,
+    // The dataset version on screen: where a new edit starts from.
+    currentVersion: () => heldVersion ?? state.session?.state_version ?? null,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -243,8 +275,9 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
       if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onWake);
       if (typeof window !== "undefined") window.removeEventListener("focus", onWake);
     },
-    giveControl: () => hostAction("control", { to: "visitor" }),
-    takeBackControl: () => hostAction("control", { to: "host" }),
+    // Guest editing on/off; the host can always edit.
+    allowGuestControl: () => hostAction("control", { to: "visitor" }),
+    stopGuestControl: () => hostAction("control", { to: "host" }),
     newInvite: () => hostAction("invite"),
     endSession: () => hostAction("end"),
     async leave() {

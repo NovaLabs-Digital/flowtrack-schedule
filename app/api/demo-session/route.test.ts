@@ -319,9 +319,8 @@ describe("data changes", () => {
   });
 
   for (const [label, patch, outcome] of [
-    ["a watcher (not the controller)", { controller: "host" }, "not_controller"],
-    ["a previous control generation", { control_gen: 3 }, "stale_control"],
-    ["an out-of-date base version", { state_version: 6 }, "stale_version"],
+    ["a watching guest (guest control not allowed)", { controller: "host" }, "not_controller"],
+    ["a guest change made under an earlier permission (stopped since)", { control_gen: 3 }, "stale_control"],
   ] as const) {
     test(`${label} is refused with nothing applied`, async () => {
       reset({}, { demo_session_sync: [syncOk(patch)] });
@@ -332,6 +331,96 @@ describe("data changes", () => {
     });
   }
 
+  test("the host can always change data -- whether guest control is allowed or not, and whatever control_gen it last saw", async () => {
+    for (const controller of ["host", "visitor"]) {
+      sessionToReturn = OWNER;
+      reset(MEMBERSHIP_OK, {
+        demo_session_sync: [syncOk({ controller, control_gen: 7 })],
+        demo_session_apply: [{ data: { outcome: "ok", session: sessionView({ controller, state_version: 6 }), state: {} } }],
+      });
+      const res = await act(SID, "op", createChange({ role: "host", gen: 1 }));
+      assert.equal(res.status, 200, controller);
+      const args = currentFake.rpcCalls[1].args as { p_role: string; p_host: string | null; p_visitor: string | null };
+      assert.deepEqual([args.p_role, args.p_host, args.p_visitor], ["host", HOST, null]);
+    }
+  });
+
+  // Record-level conflicts: the change edits Angela's client record.
+  const clientId = bundle.clients[0].id;
+  const otherClientId = bundle.clients[1].id;
+  const editClient = (baseVersion: number) =>
+    createChange({ baseVersion, method: "PATCH", path: "/api/clients", body: { id: clientId, notes: "Gate code 1234" } });
+  const withVersions = (versions: Record<string, number>, patch: Record<string, unknown> = {}) =>
+    ({ data: { outcome: "ok", session: sessionView(patch), state: { ...bundle, recordVersions: versions } } });
+
+  test("a record changed by someone after the edit began: refused as an edit conflict, nothing applied", async () => {
+    reset({}, {
+      demo_session_sync: [withVersions({ [`clients:${clientId}`]: 4 })],
+      demo_session_find_op: [{ data: { outcome: "none", session: sessionView() } }],
+    });
+    const res = await act(SID, "op", editClient(3));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.outcome, "edit_conflict");
+    assert.deepEqual(body.conflicts, [`clients:${clientId}`]);
+    assert.ok(body.state, "the latest data comes back so the screen can show it");
+    assert.deepEqual(rpcNames(), ["demo_session_sync", "demo_session_find_op"]);
+  });
+
+  test("changes to OTHER records since the edit began do not conflict; the stored record versions are updated", async () => {
+    reset({}, {
+      demo_session_sync: [withVersions({ [`clients:${otherClientId}`]: 5, "companySettings": 5 })],
+      demo_session_apply: [{ data: { outcome: "ok", session: sessionView({ state_version: 6 }), state: {} } }],
+    });
+    const res = await act(SID, "op", editClient(1));
+    assert.equal(res.status, 200);
+    type Stored = { recordVersions: Record<string, number>; clients: Array<{ id: string; notes: string | null }> };
+    const args = currentFake.rpcCalls[1].args as { p_base_version: number; p_new_state: Stored };
+    assert.equal(args.p_base_version, 5, "applied against the version just read");
+    assert.deepEqual(args.p_new_state.recordVersions, { [`clients:${otherClientId}`]: 5, companySettings: 5, [`clients:${clientId}`]: 6 });
+    assert.equal(args.p_new_state.clients.find((c) => c.id === clientId)?.notes, "Gate code 1234");
+  });
+
+  test("the same record, unchanged since the edit began, is not a conflict", async () => {
+    reset({}, {
+      demo_session_sync: [withVersions({ [`clients:${clientId}`]: 3 })],
+      demo_session_apply: [{ data: { outcome: "ok", session: sessionView({ state_version: 6 }), state: {} } }],
+    });
+    assert.equal((await act(SID, "op", editClient(3))).status, 200);
+  });
+
+  test("a retry of a change that already applied gets its original result, not a conflict with itself", async () => {
+    reset({}, {
+      demo_session_sync: [withVersions({ [`clients:${clientId}`]: 6 }, { state_version: 6 })],
+      demo_session_find_op: [{ data: { outcome: "duplicate", response_status: 200, response: { ok: true }, session: sessionView({ state_version: 6 }) } }],
+    });
+    const body = await (await act(SID, "op", editClient(5))).json();
+    assert.deepEqual([body.outcome, body.status, body.data], ["duplicate", 200, { ok: true }]);
+  });
+
+  test("someone else saving between read and apply: checked again against the edit's own starting version", async () => {
+    // Their save touched another record: this change goes through on the second try.
+    reset({}, {
+      demo_session_sync: [withVersions({}), withVersions({ [`clients:${otherClientId}`]: 6 }, { state_version: 6 })],
+      demo_session_apply: [
+        { data: { outcome: "stale_version", session: sessionView({ state_version: 6 }) } },
+        { data: { outcome: "ok", session: sessionView({ state_version: 7 }), state: {} } },
+      ],
+    });
+    assert.equal((await act(SID, "op", editClient(5))).status, 200);
+    assert.equal((currentFake.rpcCalls[3].args as { p_base_version: number }).p_base_version, 6);
+    // Their save touched THIS record: an edit conflict, never an overwrite.
+    reset({}, {
+      demo_session_sync: [withVersions({}), withVersions({ [`clients:${clientId}`]: 6 }, { state_version: 6 })],
+      demo_session_apply: [{ data: { outcome: "stale_version", session: sessionView({ state_version: 6 }) } }],
+      demo_session_find_op: [{ data: { outcome: "none", session: sessionView() } }],
+    });
+    const raced = await act(SID, "op", editClient(5));
+    assert.equal(raced.status, 409);
+    assert.equal((await raced.json()).outcome, "edit_conflict");
+    assert.deepEqual(rpcNames(), ["demo_session_sync", "demo_session_apply", "demo_session_sync", "demo_session_find_op"]);
+  });
+
   test("the demo's own rules refusing the change: answered, nothing applied", async () => {
     reset({}, { demo_session_sync: [syncOk()] });
     const res = await act(SID, "op", createChange({ body: { client_id: "nope" } }));
@@ -341,7 +430,7 @@ describe("data changes", () => {
     assert.deepEqual(rpcNames(), ["demo_session_sync"]);
   });
 
-  test("an accepted change is computed by the demo handlers and applied with the caller's gen, base version and op id", async () => {
+  test("an accepted change is computed by the demo handlers and applied with the caller's gen, the version just read, and op id", async () => {
     reset({}, {
       demo_session_sync: [syncOk()],
       demo_session_apply: [{ data: { outcome: "ok", session: sessionView({ state_version: 6 }), state: { applied: true } } }],
@@ -382,7 +471,7 @@ describe("host session actions", () => {
     sessionToReturn = OWNER;
   });
 
-  test("give / take back control, new invitation, end -- each passes Alberto's id; a new invitation stores only a hash", async () => {
+  test("allow / stop guest control, new invitation, end -- each passes Alberto's id; a new invitation stores only a hash", async () => {
     reset(
       { workspace_memberships: [{ data: { workspace_id: "ws-1", session_epoch: 1 } }, { data: { workspace_id: "ws-1", session_epoch: 1 } }, { data: { workspace_id: "ws-1", session_epoch: 1 } }] },
       {

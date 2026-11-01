@@ -6,6 +6,7 @@ import { NotifyChoicePanel, NotifyChannel, preferredNotifyChannel } from "@/app/
 import { toBusinessLocal } from "@/lib/timezone";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
+import { useEditBase } from "@/app/components/dashboard/editBase";
 
 // Phase 5.5E-E1B: this dialog's own restricted notice, distinct from
 // AppointmentModal's (appointment-modal-restricted-notice) and
@@ -39,6 +40,8 @@ type Props = {
 
 export default function MoveConfirmDialog({ appointment, client, scheduledFor, scheduledEnd, onClose, onMoved, canMutateOperationalData, timezone }: Props) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase();
   // Dragging always changes date/time, so smart-default to the client's preferred
   // method (or "both") right away — the picker below still lets staff change it.
   const [notifyChannel, setNotifyChannel] = useState<NotifyChannel>(
@@ -69,7 +72,7 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
 
       const res = await fetch("/api/appointments/update", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));

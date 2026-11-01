@@ -13,6 +13,7 @@ import { buildTeamColorChoices, resolveTeamAccentColor } from "@/lib/teamColor";
 import { zonedDateValue, zonedTimeValue, zonedDateTimeToUTC, toBusinessLocal } from "@/lib/timezone";
 import { formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
+import { useEditBase } from "@/app/components/dashboard/editBase";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via
 // aria-describedby by every capability-gated mutation button below, rather
@@ -225,6 +226,8 @@ type Props = {
 
 export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, onHoursSaved, assignments, editing, prefill, canMutateOperationalData, canUseJobTracking, timezone }: Props) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase();
   const isEdit = !!editing;
 
   // Phase 5.7D-R18: this appointment's own assignment rows (edit mode
@@ -583,7 +586,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     try {
       const res = await fetch("/api/appointments/manage-recurrence", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({
           appointment_id: a.id,
           client_operation_id: getRecurrenceOperationId(signature),
@@ -671,7 +674,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
         }
         const res = await fetch("/api/appointments/create", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...editBase.headers() },
           body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => ({}));
@@ -700,7 +703,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
       if (hasPendingApptFieldChanges) {
         const res = await fetch("/api/appointments/update", {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...editBase.headers() },
           body: JSON.stringify({
             appointment_id: editing.appointment.id,
             service_type: form.service_type,
@@ -742,7 +745,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
     try {
       const res = await fetch("/api/appointments/delete", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({ appointment_id: editing.appointment.id, mode, notify_channel: cancelNotifyChannel }),
       });
       const data = await res.json().catch(() => ({}));

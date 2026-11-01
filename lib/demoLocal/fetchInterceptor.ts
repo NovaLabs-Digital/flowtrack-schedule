@@ -1433,8 +1433,22 @@ function isDemoPath(pathname: string | undefined): boolean {
 // /api/ path.
 export type DemoSessionMode = {
   store: DemoStore;
-  forwardMutation: (method: string, url: URL, body: unknown) => Promise<Response>;
+  // `edit`: the form's edit-start marker (EDIT_BASE_HEADER), if it sent one.
+  forwardMutation: (method: string, url: URL, body: unknown, edit: string | null) => Promise<Response>;
 };
+
+// Sent by edit forms in a Guided Demo Session (app/components/dashboard/
+// editBase.ts): which edit this save belongs to and the dataset version it
+// started from. Read only here, never sent anywhere.
+export const EDIT_BASE_HEADER = "x-demo-edit-base";
+
+function readEditHeader(input: RequestInfo | URL, init?: RequestInit): string | null {
+  try {
+    return new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get(EDIT_BASE_HEADER);
+  } catch {
+    return null;
+  }
+}
 
 const SESSION_API_PREFIX = "/api/demo-session/";
 
@@ -1488,7 +1502,7 @@ export function installDemoFetchInterceptor(session?: DemoSessionMode): void {
       return json({ error: "Not available in this demo." }, 404);
     }
     if (session && method !== "GET") {
-      return session.forwardMutation(method, url, await readForwardedBody(input, init));
+      return session.forwardMutation(method, url, await readForwardedBody(input, init), readEditHeader(input, init));
     }
     try {
       const req = new Request(input instanceof Request ? new Request(url.href, input) : url.href, init);

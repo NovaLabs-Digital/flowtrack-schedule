@@ -1,17 +1,17 @@
 "use client";
 
 // Control strip for a Guided Demo Session (docked under the Demo Mode banner
-// via DashboardShell's sessionBar slot, so it never covers the dashboard or
-// its dialogs): who is in control, the
-// visitor's presence, time left, and -- for the host -- Give Control, Take
-// Back Control, the invitation link, and End Session. Every action is
-// decided by the server; this bar only asks and shows the answer.
+// via DashboardShell's sessionBar slot): whether the guest may edit, the
+// guest's presence, time left, and -- for the host -- Allow / Stop Guest
+// Control, the invitation link, and End Session. The host can always edit;
+// guest editing is a permission. Every action is decided by the server;
+// this bar only asks and shows the answer.
 import { useEffect, useState } from "react";
 import type { DemoRole, DemoSessionView } from "@/lib/demoSession/client";
 import { SESSION_CONTROLS_ATTR } from "@/app/components/demo-session/WatchOnlyArea";
 
 // The host action waiting for the server, shown on its own button.
-export type PendingAction = "give" | "take" | "invite" | "end";
+export type PendingAction = "allow" | "stop" | "invite" | "end";
 
 type Props = {
   role: DemoRole;
@@ -20,8 +20,8 @@ type Props = {
   inviteUrl: string | null;
   pending: PendingAction | null;
   message: string | null;
-  onGiveControl: () => void;
-  onTakeBackControl: () => void;
+  onAllowGuestControl: () => void;
+  onStopGuestControl: () => void;
   onNewInvite: () => void;
   onEndSession: () => void;
   onLeave: () => void;
@@ -45,12 +45,13 @@ export default function SessionControlBar(props: Props) {
   }, []);
 
   const visitorName = session.visitor_display_name || "Visitor";
-  const iControl = session.controller === role;
-  const controlLabel = iControl
-    ? "You're in control"
-    : role === "host"
-      ? `${visitorName} is in control`
-      : "Watching — the host is in control";
+  const guestCanEdit = session.controller === "visitor";
+  const watching = role === "visitor" && !guestCanEdit;
+  const controlLabel = role === "host"
+    ? !session.visitor_joined
+      ? "You're in control"
+      : guestCanEdit ? `${visitorName} can edit with you` : `${visitorName} is watching`
+    : guestCanEdit ? "You can edit alongside the host" : "Watching — the host is in control";
 
   async function copyInvite() {
     if (!inviteUrl) return;
@@ -66,15 +67,15 @@ export default function SessionControlBar(props: Props) {
   const button = "rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50";
 
   return (
-    // Outside the watch-only area (see WatchOnlyArea). While watching it also
-    // rises above any open dialog (blocked then anyway), so Take Back
-    // Control, End Session, and Leave are never covered; while in control
-    // dialogs stay on top, so the bar never hides a dialog's own buttons.
+    // Outside the watch-only area (see WatchOnlyArea). While the guest is
+    // watching it also rises above any open dialog (blocked then anyway), so
+    // Leave is never covered; otherwise dialogs stay on top, so the bar never
+    // hides a dialog's own buttons.
     <div
       role="region"
       aria-label="Guided Demo Session controls"
       {...{ [SESSION_CONTROLS_ATTR]: "" }}
-      className={`${iControl ? "" : "relative z-[80] "}shrink-0 border-b border-slate-200 bg-white px-4 py-2`}
+      className={`${watching ? "relative z-[80] " : ""}shrink-0 border-b border-slate-200 bg-white px-4 py-2`}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
@@ -109,18 +110,18 @@ export default function SessionControlBar(props: Props) {
                   {pending === "invite" ? "Creating link…" : "New invite link"}
                 </button>
               )}
-              {session.controller === "host" ? (
+              {!guestCanEdit ? (
                 <button
                   type="button"
                   disabled={busy || !session.visitor_online}
-                  onClick={props.onGiveControl}
+                  onClick={props.onAllowGuestControl}
                   className={`${button} bg-blue-600 text-white hover:bg-blue-700`}
                 >
-                  {pending === "give" ? "Giving control…" : "Give Control"}
+                  {pending === "allow" ? "Allowing…" : "Allow Guest Control"}
                 </button>
               ) : (
-                <button type="button" disabled={busy} onClick={props.onTakeBackControl} className={`${button} bg-[#0f172a] text-white hover:bg-slate-800`}>
-                  {pending === "take" ? "Taking back…" : "Take Back Control"}
+                <button type="button" disabled={busy} onClick={props.onStopGuestControl} className={`${button} bg-[#0f172a] text-white hover:bg-slate-800`}>
+                  {pending === "stop" ? "Stopping…" : "Stop Guest Control"}
                 </button>
               )}
               {confirmEnd ? (

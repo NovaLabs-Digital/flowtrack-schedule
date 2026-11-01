@@ -1,42 +1,72 @@
 # Guided Demo Sessions — operations (milestone 1)
 
 Milestone 1 is a foundation: one host (Alberto) and one visitor share a fresh
-**fictional** demo dataset with server-enforced control ownership. Each
+**fictional** demo dataset with server-enforced permissions. Each
 person navigates independently; audio (milestone 2) and synchronized
 screens (milestone 3) come later. Security model: see
 [SECURITY.md › Guided Demo Sessions](SECURITY.md#guided-demo-sessions).
 
-## Watch-only mode
+## Permissions
 
-Whoever is not in control is watching: the visitor at first, and the host
-after Give Control. While watching, the whole demo dashboard stays visible
-but takes no input: navigation, appointment cards, forms and dialogs,
-Settings, scrolling, dragging, and keyboard actions are all blocked, and a
-note reads "You're watching. The host can give you control." (the host sees
-"You're watching. Take Back Control to use the demo again."). The session
-bar is never blocked: the host can always Take Back Control or End Session,
-and the visitor can always Leave. Normal use returns the moment control
-does. The server still refuses every change from the person watching, so
-this is a convenience on top of the real rule, not the rule itself.
+The host can **always** use the demo. The guest starts out watching:
+
+- **Allow Guest Control** lets the guest edit alongside the host. The host
+  keeps full use of the demo the whole time.
+- **Stop Guest Control** blocks the guest again at once. The server also
+  refuses any guest change that was already on its way when Stop was
+  clicked (migration 043), so a slow connection can't sneak one in.
+- **End Session** is always available to the host; **Leave** always to the
+  guest. If the guest's page stops checking in for about 20 seconds, guest
+  control turns off by itself; the host can allow it again.
+
+The host's bar says whether the guest is watching or can edit ("Dana is
+watching" / "Dana can edit with you"); the guest's bar says "Watching —
+the host is in control" or "You can edit alongside the host".
+
+## Watch-only mode (guest)
+
+While the guest is watching, the whole demo dashboard stays visible but
+takes no input: navigation, appointment cards, forms and dialogs, Settings,
+scrolling, dragging, and keyboard actions are all blocked, and a note reads
+"You're watching. The host can give you control." Leave is never blocked.
+The host is never placed behind this layer. Normal use returns the moment
+guest control is allowed. The server still refuses every change from a
+watching guest, so this is a convenience on top of the real rule.
+
+## Editing at the same time
+
+When both people can edit, the server makes sure nobody's work is silently
+undone:
+
+- Each edit remembers when it **began** (the form opened, or Edit was
+  clicked). If someone else changed the **same record** after that, the save
+  is refused with: "Someone else changed this while you were editing, so
+  your changes weren't saved. They're still here: check the latest details,
+  then save again to apply them." The form keeps what was typed; saving
+  again is a deliberate choice, never an automatic retry.
+- Changes to **other** records never conflict: the host can edit one
+  appointment while the guest edits a different client.
+- Two saves at the same instant are applied one after the other, each
+  checked against what the other just did.
 
 **Limitation (milestone 1): screens are not shared.** Each person navigates
 on their own. Blocking the watcher does **not** make their screen follow the
-person in control: if the visitor opens Settings, the host does not see
-Settings, and the watcher sees whatever page they were on when control
-changed. Data changes do appear on both screens within about a second.
+other person: if the guest opens Settings, the host does not see Settings,
+and a watching guest sees whatever page they were on. Data changes do appear on both screens within about a second.
 Talk the visitor through what to open (or what you are showing) until
 screen mirroring arrives in milestone 3.
 
 Guided sessions are designed for desktop browsers. On a phone-sized screen
 the dashboard switches to the mobile layout, which has no session bar and no
-watch-only blocking (the server still refuses changes from the watcher).
+watch-only blocking (the server still refuses changes from a watching guest).
 
 ## Configuration
 
 | Setting | Where | Value |
 |---|---|---|
 | `DEMO_HOST_AUTH_USER_ID` | Vercel environment (server-only) | Alberto's Supabase Auth user id (the owner session's `authUserId`). **Unset = feature off.** |
-| Migration 042 | Supabase SQL editor | `migrations/042_add_demo_sessions.sql` (separate approval) |
+| Migration 042 | Supabase SQL editor | `migrations/042_add_demo_sessions.sql` (applied 2026-10-31) |
+| Migration 043 | Supabase SQL editor | `migrations/043_guest_control_permissions.sql` (separate approval; checks: `test-db/043-preflight.sql`, `test-db/043-postflight.sql`) |
 | Cleanup cron | `vercel.json` | `/api/cron/demo-session-cleanup`, daily at `37 9 * * *` (09:37 UTC) |
 
 ## Safe release order
@@ -54,6 +84,13 @@ Every stage is safe on its own:
 If steps 2 and 3 happen in the other order, session routes answer a clear
 503 ("Guided Demo Sessions aren't set up yet.") instead of failing, and the
 cron still reports a no-op.
+
+**Guest permissions (migration 043): apply 043 first, then deploy the code.**
+043 only changes who the database accepts changes from; the code deployed
+before it only ever sends a change from the person holding control, which
+043 still accepts, so nothing changes until the new code arrives. Deployed
+the other way round, the new code would see the host's saves refused while
+guest control is on (safe, but confusing) until 043 is applied.
 
 ## Cron and the Vercel plan
 

@@ -7,6 +7,7 @@ import { formatMMDDYY, formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { ClientMessageHistory } from "@/app/components/dashboard/MessageHistory";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
+import { useEditBase } from "@/app/components/dashboard/editBase";
 
 // Phase 5.5E-E1E: this panel's own restricted notice, distinct from every
 // other component's -- shown once in the always-rendered header, referenced
@@ -141,6 +142,8 @@ export default function ClientPanel({
   onEditAppointment: (appointmentId: string) => void;
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase();
   // SFT cancellation-history fix: lets the owner find a cancelled
   // appointment specifically, rather than scrolling the (capped-at-6) Past
   // Services list hoping it's recent enough to be in that slice. Defaults
@@ -169,6 +172,7 @@ export default function ClientPanel({
     if (!canMutateOperationalData) return;
     if (!client) return;
     setForm(initForm(client));
+    editBase.begin();
     setEditing(true);
     setMessage(null);
   }
@@ -181,7 +185,7 @@ export default function ClientPanel({
     try {
       const res = await fetch("/api/clients", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({ id: client.id, ...form }),
       });
       const data = await res.json().catch(() => ({}));

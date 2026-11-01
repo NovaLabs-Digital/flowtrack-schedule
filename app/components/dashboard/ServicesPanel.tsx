@@ -7,6 +7,7 @@ import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienc
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { centsToInputValue, formatCents, parsePriceToCents } from "@/lib/money";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
+import { useEditBase } from "@/app/components/dashboard/editBase";
 
 // Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
 // Edit/Enable-Disable/Delete, and the Add/Edit form's Save submit are all
@@ -52,6 +53,8 @@ export default function ServicesPanel({
   canMutateOperationalData: boolean;
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase();
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -81,6 +84,7 @@ export default function ServicesPanel({
     // from ever opening for a restricted owner.
     if (!canMutateOperationalData) return;
     setEditingId(s.id);
+    editBase.begin();
     setShowAdd(false);
     setForm({
       name: s.name,
@@ -174,7 +178,7 @@ export default function ServicesPanel({
     try {
       const res = await fetch("/api/services", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({ id: s.id, active: !s.active }),
       });
       if (!res.ok) { setMessage({ type: "error", text: "Toggle failed." }); return; }

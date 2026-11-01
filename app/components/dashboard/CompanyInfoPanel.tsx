@@ -8,6 +8,7 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 import { WEEKDAY_KEYS, type WeekdayKey } from "@/lib/businessHours";
 import { TIMEZONE_OPTIONS } from "@/lib/timezone";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
+import { useEditBase } from "@/app/components/dashboard/editBase";
 
 // Phase 5.5E-E1F: two separate logical mutation-control areas in this
 // panel -- Company Information and Automation are independent cards with
@@ -91,6 +92,8 @@ export default function CompanyInfoPanel({
   isTrialing: boolean;
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase();
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status | null>(null);
 
@@ -257,6 +260,8 @@ export default function CompanyInfoPanel({
   }
 
   useEffect(() => { loadCompanySettings(); }, []);
+  // The settings form's edit begins when its values are (re)loaded or saved.
+  useEffect(() => { editBase.begin(); }, [saved, editBase]);
 
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
   const automationDirty = bookingEnabled !== bookingSaved || notificationsEnabled !== notificationsSaved;
@@ -292,7 +297,7 @@ export default function CompanyInfoPanel({
     try {
       const res = await fetch("/api/settings/company", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({ business_hours: businessHours }),
       });
       const data = await res.json().catch(() => ({}));
@@ -316,7 +321,7 @@ export default function CompanyInfoPanel({
     try {
       const res = await fetch("/api/settings/company", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({ timezone }),
       });
       const data = await res.json().catch(() => ({}));
@@ -343,7 +348,7 @@ export default function CompanyInfoPanel({
     try {
       const res = await fetch("/api/settings/company", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify(form),
       });
       const data = await res.json().catch(() => ({}));
@@ -373,7 +378,7 @@ export default function CompanyInfoPanel({
     try {
       const res = await fetch("/api/settings/company", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({ booking_enabled: bookingEnabled, notifications_enabled: notificationsEnabled }),
       });
       const data = await res.json().catch(() => ({}));

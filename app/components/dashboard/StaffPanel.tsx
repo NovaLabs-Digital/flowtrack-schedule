@@ -6,6 +6,7 @@ import { notifyDemoAction } from "@/app/components/demo-experience/demoExperienc
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import PasswordInput from "@/app/components/PasswordInput";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
+import { useEditBase } from "@/app/components/dashboard/editBase";
 
 // Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
 // Edit/Deactivate-Reactivate (active and inactive lists alike), and the
@@ -40,6 +41,8 @@ export default function StaffPanel({
   canMutateOperationalData: boolean;
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -74,6 +77,7 @@ export default function StaffPanel({
     // from ever opening for a restricted owner.
     if (!canMutateOperationalData) return;
     setEditingId(e.id);
+    editBase.begin();
     setShowAdd(false);
     const position = e.position ?? "";
     setForm({ name: e.name, phone: e.phone ?? "", email: (e as any).email ?? "", password: "", color: e.color, position });
@@ -140,7 +144,7 @@ export default function StaffPanel({
     try {
       const res = await fetch("/api/employees", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...editBase.headers() },
         body: JSON.stringify({ id: e.id, active: !e.active }),
       });
       if (!res.ok) { setMessage({ type: "error", text: "Toggle failed." }); return; }

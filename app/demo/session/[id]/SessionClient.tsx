@@ -2,7 +2,9 @@
 
 // Guided Demo Session page: the real Schedule FlowTrack dashboard on a
 // fictional dataset shared by the host and one visitor (milestone 1: shared
-// data and server-enforced control; each person navigates on their own).
+// data and server-enforced permissions; each person navigates on their own).
+// The host can always edit; the guest watches until the host allows guest
+// control, and edits alongside the host until it is stopped.
 //
 // The demo fetch interceptor is installed in session mode at MODULE SCOPE,
 // for the same reason as app/demo/DemoPageClient.tsx (child effects run
@@ -12,6 +14,7 @@
 // that lead here use full page loads, never client-side navigation, so this
 // tab never carries another page's interceptor.
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { EditBaseProvider } from "@/app/components/dashboard/editBase";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 import SessionControlBar, { type PendingAction } from "@/app/components/demo-session/SessionControlBar";
 import { RestrictedWordingProvider } from "@/app/components/dashboard/restrictedWording";
@@ -19,7 +22,7 @@ import { installDemoFetchInterceptor } from "@/lib/demoLocal/fetchInterceptor";
 import { DEMO_ENTITLEMENT } from "@/lib/demoLocal/fixtures/entitlement";
 import { DEMO_TIMEZONE } from "@/lib/demoLocal/fixtures/generate";
 import { effectiveBusinessHours } from "@/lib/businessHours";
-import { createDemoSessionClient, HOST_WATCHING_MESSAGE, inviteStorageKey, WATCHING_MESSAGE, type DemoRole, type DemoSessionClient, type DemoSessionState } from "@/lib/demoSession/client";
+import { createDemoSessionClient, inviteStorageKey, WATCHING_MESSAGE, type DemoRole, type DemoSessionClient, type DemoSessionState } from "@/lib/demoSession/client";
 import type { EntitlementView } from "@/lib/entitlementView";
 
 const SESSION_PATH = /^\/demo\/session\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
@@ -79,6 +82,8 @@ export default function SessionClient() {
     return () => ctx.client.stop();
   }, [ctx]);
 
+  // Edit forms read the version on screen when an edit begins (editBase.ts).
+  const editSource = useMemo(() => (ctx ? { currentVersion: ctx.client.currentVersion } : null), [ctx]);
   const dataset = state.dataset;
   const paidAppointmentIds = useMemo(
     () => (dataset ? dataset.completedJobBilling.filter((r) => r.paid).map((r) => r.appointment_id) : []),
@@ -109,10 +114,9 @@ export default function SessionClient() {
   if (!dataset || !state.session) return <div className="min-h-screen bg-slate-50" aria-busy="true" />;
 
   const session = state.session;
-  const iControl = session.controller === ctx.role;
-  // Whoever is watching (the visitor, or the host after giving control)
-  // cannot touch the dashboard at all; the bar stays usable.
-  const watchingMessage = iControl ? null : ctx.role === "host" ? HOST_WATCHING_MESSAGE : WATCHING_MESSAGE;
+  // The host is never blocked. The guest cannot touch the dashboard at all
+  // while watching; the bar (Leave) stays usable.
+  const watchingMessage = ctx.role === "visitor" && session.controller !== "visitor" ? WATCHING_MESSAGE : null;
 
   // Every host action shows that it is in progress on its own button, and
   // always ends in a visible result: the new state, or a message saying it
@@ -146,6 +150,7 @@ export default function SessionClient() {
     // While watching, every disabled change control explains the session
     // (not the account/billing wording the real app uses).
     <RestrictedWordingProvider wording={watchingMessage}>
+    <EditBaseProvider source={editSource!}>
       <DashboardShell
         clients={dataset.clients}
         appointments={dataset.appointments}
@@ -157,7 +162,7 @@ export default function SessionClient() {
         isTester={true}
         isLocalDemo={true}
         guidedSession={true}
-        entitlement={iControl ? DEMO_ENTITLEMENT : WATCH_ENTITLEMENT}
+        entitlement={watchingMessage ? WATCH_ENTITLEMENT : DEMO_ENTITLEMENT}
         timezone={DEMO_TIMEZONE}
         businessHours={BUSINESS_HOURS}
         workspaceId={SESSION_PREFS_ID}
@@ -172,8 +177,8 @@ export default function SessionClient() {
             inviteUrl={inviteUrl}
             pending={pending}
             message={message}
-            onGiveControl={() => void run("give", ctx.client.giveControl, "Couldn't give control.")}
-            onTakeBackControl={() => void run("take", ctx.client.takeBackControl, "Couldn't take back control.")}
+            onAllowGuestControl={() => void run("allow", ctx.client.allowGuestControl, "Couldn't allow guest control.")}
+            onStopGuestControl={() => void run("stop", ctx.client.stopGuestControl, "Couldn't stop guest control.")}
             onNewInvite={async () => {
               const result = await run("invite", ctx.client.newInvite, "Couldn't create a new link.");
               const url = result?.data?.inviteUrl;
@@ -187,6 +192,7 @@ export default function SessionClient() {
           />
         }
       />
+    </EditBaseProvider>
     </RestrictedWordingProvider>
   );
 }
