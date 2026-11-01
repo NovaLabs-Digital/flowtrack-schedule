@@ -29,6 +29,7 @@ import {
   LEFT_BAR_COLLAPSED_WIDTH_PX,
 } from "@/app/components/dashboard/useDashboardLayoutPrefs";
 import { useDashboardNavigationPrefs } from "@/app/components/dashboard/useDashboardNavigationPrefs";
+import { useSharedNav, useSharedScreen } from "@/app/components/dashboard/sharedScreen";
 import { resolveCalendarNavigation } from "@/lib/calendarNavigation";
 import { DemoExperienceProvider } from "@/app/components/demo-experience/DemoExperienceProvider";
 import DemoExperienceOverlay from "@/app/components/demo-experience/DemoExperienceOverlay";
@@ -52,6 +53,7 @@ import type { BusinessHours } from "@/lib/businessHours";
 type ModalState =
   | { mode: "create"; prefillDate?: string; prefillTime?: string }
   | { mode: "edit"; appointment: Appointment; client: Client };
+type PendingMove = { appointment: Appointment; client: Client; scheduledFor: string; scheduledEnd: string | null };
 
 export default function DashboardShell({
   clients,
@@ -164,32 +166,70 @@ export default function DashboardShell({
 }) {
   const isMobile = useIsMobile();
   const isPhoneLandscape = useMediaQuery("(max-height: 440px) and (orientation: landscape)");
-  const [viewMode, setViewMode] = useState<ViewMode>("weekdays");
+  const [localViewMode, setLocalViewMode] = useState<ViewMode>("weekdays");
   // Persisted per (user, workspace) -- see useDashboardNavigationPrefs.ts's
   // own doc comment. A hard refresh while in Settings -> Billing reopens
   // Settings -> Billing instead of always landing back on the dashboard
   // calendar; every existing setCenterMode/setSettingsSection call site
   // below is unchanged, since this hook's setters have the same signature
   // as the plain useState setters they replace.
-  const { centerMode, setCenterMode, settingsSection, setSettingsSection } = useDashboardNavigationPrefs(workspaceId, userId);
+  const navPrefs = useDashboardNavigationPrefs(workspaceId, userId);
+  const sharedScreen = useSharedScreen();
 
   const router = useRouter();
-  const [modal, setModal] = useState<ModalState | null>(null);
+  const [localModal, setLocalModal] = useState<ModalState | null>(null);
   const [signingOut, setSigningOut] = useState(false);
-  const [weekOffset, setWeekOffset] = useState(0);
+  const [localWeekOffset, setLocalWeekOffset] = useState(0);
   // Phase 3: months relative to the current calendar month, for Month view
   // only -- deliberately a separate counter from weekOffset (see TopBar's
   // handlePrev/handleNext), never mixed into the same week-based
   // arithmetic. Switching views never resets or synchronizes either
   // counter against the other (see onChangeView below), matching the
   // approved "no complicated cross-view state synchronization" scope.
-  const [monthOffset, setMonthOffset] = useState(0);
+  const [localMonthOffset, setLocalMonthOffset] = useState(0);
   const [clientsHidden, setClientsHidden] = useState(false);
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
-  const [selectedApptId, setSelectedApptId] = useState<string | null>(null);
-  const [pendingMove, setPendingMove] = useState<
-    { appointment: Appointment; client: Client; scheduledFor: string; scheduledEnd: string | null } | null
-  >(null);
+  const [localSelectedClientId, setLocalSelectedClientId] = useState<string | null>(null);
+  const [localSelectedApptId, setLocalSelectedApptId] = useState<string | null>(null);
+  const [localPendingMove, setLocalPendingMove] = useState<PendingMove | null>(null);
+
+  // In a Guided Demo Session this navigation is the SHARED screen both
+  // participants follow (sharedScreen.ts); everywhere else it is exactly the
+  // local state above -- same names, same setter signatures.
+  const {
+    viewMode, setViewMode, weekOffset, setWeekOffset, monthOffset, setMonthOffset,
+    centerMode, setCenterMode, settingsSection, setSettingsSection,
+    selectedClientId, setSelectedClientId, selectedApptId, setSelectedApptId,
+    modal, setModal, pendingMove, setPendingMove,
+  } = useSharedNav<ModalState, PendingMove>(
+    {
+      viewMode: localViewMode, setViewMode: setLocalViewMode,
+      weekOffset: localWeekOffset, setWeekOffset: setLocalWeekOffset,
+      monthOffset: localMonthOffset, setMonthOffset: setLocalMonthOffset,
+      centerMode: navPrefs.centerMode, setCenterMode: navPrefs.setCenterMode,
+      settingsSection: navPrefs.settingsSection, setSettingsSection: navPrefs.setSettingsSection,
+      selectedClientId: localSelectedClientId, setSelectedClientId: setLocalSelectedClientId,
+      selectedApptId: localSelectedApptId, setSelectedApptId: setLocalSelectedApptId,
+      modal: localModal, setModal: setLocalModal,
+      pendingMove: localPendingMove, setPendingMove: setLocalPendingMove,
+    },
+    {
+      toModal: (d) => {
+        if (d?.kind === "create") return { mode: "create", prefillDate: d.prefillDate, prefillTime: d.prefillTime };
+        if (d?.kind !== "edit") return null;
+        const appointment = appointments.find((a) => a.id === d.appointmentId);
+        const client = appointment && clients.find((c) => c.id === appointment.client_id);
+        return appointment && client ? { mode: "edit", appointment, client } : null;
+      },
+      fromModal: (m, id) => (m.mode === "create" ? { id, kind: "create", prefillDate: m.prefillDate, prefillTime: m.prefillTime } : { id, kind: "edit", appointmentId: m.appointment.id }),
+      toMove: (d) => {
+        if (d?.kind !== "move") return null;
+        const appointment = appointments.find((a) => a.id === d.appointmentId);
+        const client = appointment && clients.find((c) => c.id === appointment.client_id);
+        return appointment && client ? { appointment, client, scheduledFor: d.scheduledFor, scheduledEnd: d.scheduledEnd } : null;
+      },
+      fromMove: (m, id) => ({ id, kind: "move", appointmentId: m.appointment.id, scheduledFor: m.scheduledFor, scheduledEnd: m.scheduledEnd }),
+    }
+  );
 
   // Needs Attention (NeedsAttentionControl, right sidebar): a billing-issue
   // deep-link target, cleared whenever the owner navigates Settings
@@ -771,6 +811,8 @@ export default function DashboardShell({
                     timezone={timezone}
                     businessHours={businessHours}
                     paidAppointmentIds={paidAppointmentIds}
+                    sharedScrollMinutes={sharedScreen?.view?.scroll && sharedScreen.view.scroll.by !== sharedScreen.role ? sharedScreen.view.scroll.minutes : null}
+                    onSharedScroll={sharedScreen?.canAct ? (minutes) => void sharedScreen.dispatch({ type: "scroll", minutes }) : undefined}
                   />
                 )}
               </div>

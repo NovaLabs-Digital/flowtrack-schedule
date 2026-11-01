@@ -184,7 +184,7 @@ describe("deployed before migration 042 is applied", () => {
     sessionToReturn = OWNER;
     reset(
       { workspace_memberships: [{ data: { workspace_id: "ws-1", session_epoch: 1 } }, { data: { workspace_id: "ws-1", session_epoch: 1 } }] },
-      { demo_session_current: [missing, missing], demo_session_claim: [missing], demo_session_sync: [missing] }
+      { demo_session_current: [missing, missing], demo_session_claim: [missing], demo_session_sync_cursor: [missing], demo_session_sync: [missing] }
     );
     for (const res of [await current(), await create(post("http://localhost/api/demo-session", {}))]) {
       assert.equal(res.status, 503);
@@ -281,16 +281,45 @@ describe("per-session actions: identity", () => {
 
   test("the visitor's identity (id + epoch from the cookie) is what reaches the database", async () => {
     cookieJar.set("sft_demo_visitor", await visitorCookie(SID, 3));
-    reset({}, { demo_session_sync: [{ data: { outcome: "ok", session: sessionView(), state: null } }] });
+    reset({}, { demo_session_sync_cursor: [{ data: { outcome: "ok", session: sessionView(), state: null } }] });
     const res = await act(SID, "sync", { role: "visitor", since: 5, p_visitor: "forged", p_epoch: 99 });
     assert.equal(res.status, 200);
-    assert.deepEqual(currentFake.rpcCalls[0].args, { p_session_id: SID, p_role: "visitor", p_host: null, p_visitor: VISITOR, p_epoch: 3, p_since: 5 });
+    assert.deepEqual(currentFake.rpcCalls[0].args, { p_session_id: SID, p_role: "visitor", p_host: null, p_visitor: VISITOR, p_epoch: 3, p_since: 5, p_cursor: null });
   });
 
   test("an ended session answers 410 to sync", async () => {
     cookieJar.set("sft_demo_visitor", await visitorCookie());
-    reset({}, { demo_session_sync: [{ data: { outcome: "ended", session: sessionView({ status: "ended" }) } }] });
+    reset({}, { demo_session_sync_cursor: [{ data: { outcome: "ended", session: sessionView({ status: "ended" }) } }] });
     assert.equal((await act(SID, "sync", { role: "visitor", since: null })).status, 410);
+  });
+
+  test("the check-in carries a validated cursor; anything malformed is dropped (never stored)", async () => {
+    cookieJar.set("sft_demo_visitor", await visitorCookie());
+    const ok = { data: { outcome: "ok", session: sessionView(), state: null } };
+    reset({}, { demo_session_sync_cursor: [ok, ok, ok, ok] });
+    await act(SID, "sync", { role: "visitor", since: null, cursor: { anchor: "schedule-grid", x: 0.25, y: 0.123456 } });
+    await act(SID, "sync", { role: "visitor", since: null, cursor: { anchor: "<script>", x: 0.5, y: 0.5 } });
+    await act(SID, "sync", { role: "visitor", since: null, cursor: { anchor: "schedule-grid", x: 2, y: 0.5 } });
+    await act(SID, "sync", { role: "visitor", since: null, cursor: "nope" });
+    assert.deepEqual(currentFake.rpcCalls.map((c) => (c.args as { p_cursor: unknown }).p_cursor), [{ anchor: "schedule-grid", x: 0.25, y: 0.1235 }, null, null, null]);
+  });
+
+  test("before migration 044 the check-in falls back to the plain one (no cursor, no shared screen)", async () => {
+    cookieJar.set("sft_demo_visitor", await visitorCookie());
+    const missing = { error: { code: "PGRST202", message: "Could not find the function public.demo_session_sync_cursor" } };
+    reset({}, { demo_session_sync_cursor: [missing], demo_session_sync: [{ data: { outcome: "ok", session: sessionView(), state: null } }] });
+    assert.equal((await act(SID, "sync", { role: "visitor", since: null })).status, 200);
+    assert.deepEqual(rpcNames(), ["demo_session_sync_cursor", "demo_session_sync"]);
+  });
+
+  test("the shared view is only sent when the browser doesn't already have that version", async () => {
+    cookieJar.set("sft_demo_visitor", await visitorCookie());
+    const withView = { data: { outcome: "ok", session: sessionView({ view: { nav: {} }, view_version: 4 }), state: null } };
+    reset({}, { demo_session_sync_cursor: [withView, withView] });
+    const same = await (await act(SID, "sync", { role: "visitor", since: null, viewSince: 4 })).json();
+    assert.equal("view" in same.session, false);
+    const older = await (await act(SID, "sync", { role: "visitor", since: null, viewSince: 3 })).json();
+    assert.deepEqual(older.session.view, { nav: {} });
   });
 });
 

@@ -6,6 +6,7 @@ import StaffPanel from "@/app/components/dashboard/StaffPanel";
 import ServicesPanel from "@/app/components/dashboard/ServicesPanel";
 import { useDemoExperienceContext } from "@/app/components/demo-experience/DemoExperienceProvider";
 import { SettingsSection } from "@/app/components/dashboard/types";
+import { useSharedPanelScroll } from "@/app/components/dashboard/sharedScreen";
 
 type Props = {
   isTester: boolean;
@@ -81,6 +82,8 @@ export default function DashboardSettingsArea({
   onBillingSaved,
 }: Props) {
   const { active, currentStep, restart } = useDemoExperienceContext();
+  // Guided Demo Sessions: both people see the same place in the section.
+  const settingsScrollRef = useSharedPanelScroll("settings", settingsSection);
 
   if (!isTester || isLocalDemo) {
     return (
@@ -92,7 +95,7 @@ export default function DashboardSettingsArea({
             can never again toggle the scrollbar and shift everything left/
             right -- see BillingPanel.tsx's own layout-shift fix for the
             specific trigger this was written for. */}
-        <div className="flex-1 min-h-0 overflow-auto pt-8" style={{ scrollbarGutter: "stable" }}>
+        <div className="flex-1 min-h-0 overflow-auto pt-8" ref={settingsScrollRef} style={{ scrollbarGutter: "stable" }}>
           <SettingsPanel
             section={settingsSection}
             canMutateOperationalData={canMutateOperationalData}

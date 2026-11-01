@@ -14,6 +14,8 @@ import { zonedDateValue, zonedTimeValue, zonedDateTimeToUTC, toBusinessLocal } f
 import { formatTimestampMMDDYY } from "@/lib/dateDisplay";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 import { useEditBase } from "@/app/components/dashboard/editBase";
+import { useSharedDraft, useSharedPanelScroll } from "@/app/components/dashboard/sharedScreen";
+import SharedEditNotice from "@/app/components/demo-session/SharedEditNotice";
 
 // Phase 5.5E-E1A: shown once per modal instance, referenced via
 // aria-describedby by every capability-gated mutation button below, rather
@@ -227,7 +229,9 @@ type Props = {
 export default function AppointmentModal({ onClose, onSaved, clients, appointments, services, employees, employeeHours, onHoursSaved, assignments, editing, prefill, canMutateOperationalData, canUseJobTracking, timezone }: Props) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   // Save requests carry when this edit began (Guided Demo Sessions only).
-  const editBase = useEditBase();
+  // Guided Demo Sessions: this form's draft is shared on both screens.
+  const sharedKey = editing ? `appointment:${editing.appointment.id}` : "appointment:new";
+  const editBase = useEditBase(sharedKey);
   const isEdit = !!editing;
 
   // Phase 5.7D-R18: this appointment's own assignment rows (edit mode
@@ -358,6 +362,22 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
   const [manageFreq, setManageFreq] = useState<string>(editing?.appointment.frequency_type ?? "one_time");
   const [manageWeeks, setManageWeeks] = useState<number>(editing?.appointment.repeat_weeks ?? 1);
   const [manageMonths, setManageMonths] = useState<number>(editing?.appointment.repeat_months ?? 1);
+  // One active editor (the person who opened the form); the other follows
+  // read-only. Saving uses the draft's original edit version (editBase).
+  // Guided Demo Sessions: the follower sees the editor's place in the form.
+  const panelScrollRef = useSharedPanelScroll("dialog", sharedKey);
+  const sharedDraft = useSharedDraft({
+    key: sharedKey,
+    label: editing ? "the appointment form" : "the new appointment form",
+    anchor: {},
+    fields: { clientMode, selectedClientId, newClient, selectedEmployeeIds, teamColor, form, priceTouched, notifyChannel, notifyTouched, cancelNotifyChannel, showManageRecurrence, manageFreq, manageWeeks, manageMonths },
+    apply: (d) => {
+      setClientMode(d.clientMode); setSelectedClientId(d.selectedClientId); setNewClient(d.newClient);
+      setSelectedEmployeeIds(d.selectedEmployeeIds); setTeamColor(d.teamColor); setForm(d.form); setPriceTouched(d.priceTouched);
+      setNotifyChannel(d.notifyChannel); setNotifyTouched(d.notifyTouched); setCancelNotifyChannel(d.cancelNotifyChannel);
+      setShowManageRecurrence(d.showManageRecurrence); setManageFreq(d.manageFreq); setManageWeeks(d.manageWeeks); setManageMonths(d.manageMonths);
+    },
+  });
   // Coordinated-save fix (recurrence changes silently dropped on save): a
   // pending recurrence change is detected from manageFreq/manageWeeks/
   // manageMonths against the appointment's CURRENTLY PERSISTED values --
@@ -761,13 +781,15 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
   return (
     <div data-tour="appointment-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 sm:px-0">
-      <div className="w-full max-w-lg rounded-2xl border bg-white p-5 sm:p-6 shadow-lg max-h-[90vh] overflow-auto">
+      <div ref={panelScrollRef} className="w-full max-w-lg rounded-2xl border bg-white p-5 sm:p-6 shadow-lg max-h-[90vh] overflow-auto">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">{isEdit ? "Edit Appointment" : "New Appointment"}</div>
           <button onClick={onClose} className="rounded-lg border px-2 py-1 text-xs hover:bg-slate-50">Close</button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+        <SharedEditNotice draft={sharedDraft} />
+        <form onSubmit={handleSubmit} className="mt-4">
+        <fieldset disabled={sharedDraft.readOnly} className="m-0 min-w-0 space-y-3 border-0 p-0">
           {/* Client */}
           {isEdit ? (
             <div>
@@ -1508,6 +1530,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
               </div>
             </div>
           )}
+        </fieldset>
         </form>
       </div>
     </div>

@@ -25,6 +25,9 @@ type Props = {
   onNewInvite: () => void;
   onEndSession: () => void;
   onLeave: () => void;
+  // A shared-screen navigation waiting on someone's unsaved input
+  // (lib/demoSession/sharedView.ts): shown on both screens until resolved.
+  pendingRequest?: { text: string; actions: Array<{ label: string; onClick: () => void }> } | null;
 };
 
 function minutesLeft(expiresAt: string): number {
@@ -68,14 +71,15 @@ export default function SessionControlBar(props: Props) {
 
   return (
     // Outside the watch-only area (see WatchOnlyArea). While the guest is
-    // watching it also rises above any open dialog (blocked then anyway), so
-    // Leave is never covered; otherwise dialogs stay on top, so the bar never
-    // hides a dialog's own buttons.
+    // watching -- or a shared-screen request is waiting on someone's unsaved
+    // input -- it also rises above any open dialog, so Leave and the request's
+    // choices are never covered; otherwise dialogs stay on top, so the bar
+    // never hides a dialog's own buttons.
     <div
       role="region"
       aria-label="Guided Demo Session controls"
       {...{ [SESSION_CONTROLS_ATTR]: "" }}
-      className={`${watching ? "relative z-[80] " : ""}shrink-0 border-b border-slate-200 bg-white px-4 py-2`}
+      className={`${watching || props.pendingRequest ? "relative z-[80] " : ""}shrink-0 border-b border-slate-200 bg-white px-4 py-2`}
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
@@ -147,6 +151,16 @@ export default function SessionControlBar(props: Props) {
           )}
         </div>
       </div>
+      {props.pendingRequest && (
+        <div role="alert" data-pending-request="" className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <span className="min-w-0 flex-1">{props.pendingRequest.text}</span>
+          {props.pendingRequest.actions.map((a) => (
+            <button key={a.label} type="button" onClick={a.onClick} className={`${button} border border-amber-300 bg-white text-amber-900 hover:bg-amber-100`}>
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

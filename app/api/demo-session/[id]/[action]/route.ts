@@ -1,7 +1,8 @@
 // POST /api/demo-session/[id]/[action] -- everything a participant does in a
 // live Guided Demo Session:
 //
-//   sync     both   poll: presence + session state (+ dataset when newer)
+//   sync     both   poll: presence + session state (+ dataset / shared view when newer)
+//   view     both   change the shared screen (the host always; the guest while allowed)
 //   op       both   apply one data change (the host always; the guest while allowed)
 //   control  host   allow guest editing / stop it (the host can always edit)
 //   invite   host   issue a new invitation (revokes the previous visitor)
@@ -20,7 +21,9 @@ export const runtime = "nodejs";
 
 import { isDemoMutationRoute, runDemoRoute } from "@/lib/demoLocal/fetchInterceptor";
 import { changedRecords, conflictingRecords, splitDataset, withRecordVersions, type SessionDataset } from "@/lib/demoSession/recordVersions";
+import { isViewOp, reduceView, type Role, type SharedView } from "@/lib/demoSession/sharedView";
 import {
+  DemoRpcError,
   demoRpc,
   errorResponse,
   guidedDemoEnabled,
@@ -36,6 +39,10 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_APPLY_ATTEMPTS = 3;
+const MAX_VIEW_ATTEMPTS = 5;
+const MAX_VIEW_OP_BYTES = 64 * 1024;
+// A "since" no dataset version reaches: the session without its dataset.
+const NO_DATASET = Number.MAX_SAFE_INTEGER;
 
 type Params = { params: Promise<{ id: string; action: string }> };
 
@@ -56,6 +63,8 @@ export async function POST(req: Request, { params }: Params) {
         return await sync(id, body);
       case "op":
         return await op(id, body);
+      case "view":
+        return await view(id, body);
       case "control":
         return await control(id, body);
       case "invite":
@@ -77,9 +86,75 @@ async function sync(id: string, body: Record<string, unknown>) {
   if ("response" in who) return who.response;
   const since = body.since === null || body.since === undefined ? null : body.since;
   if (since !== null && !isWholeNumber(since)) return json({ error: "Invalid request" }, 400);
-  const result = await demoRpc("demo_session_sync", { p_session_id: id, ...who.caller, p_since: since });
+  const result = await syncWithCursor(id, who.caller, since, cursorFrom(body.cursor));
   if (result.outcome !== "ok") return json({ outcome: result.outcome, session: result.session ?? null }, statusForOutcome(result.outcome));
-  return json({ outcome: "ok", session: result.session, state: result.state ?? null });
+  return json({ outcome: "ok", session: withoutUnchangedView(result.session, body.viewSince), state: result.state ?? null });
+}
+
+// The check-in with this person's cursor (migration 044). Before 044 is
+// applied it falls back to the plain check-in: sessions keep working, just
+// without shared screens or cursors, until the migration is in place.
+async function syncWithCursor(id: string, caller: DemoCaller, since: unknown, cursor: ReturnType<typeof cursorFrom>) {
+  try {
+    return await demoRpc("demo_session_sync_cursor", { p_session_id: id, ...caller, p_since: since, p_cursor: cursor });
+  } catch (e) {
+    if (e instanceof DemoRpcError && e.notInstalled) return demoRpc("demo_session_sync", { p_session_id: id, ...caller, p_since: since });
+    throw e;
+  }
+}
+
+// A pointer position: which part of the screen (a short name) and where in
+// it, as fractions -- so it lands in the same place at any window size.
+function cursorFrom(value: unknown): { anchor: string; x: number; y: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const { anchor, x, y } = value as Record<string, unknown>;
+  const fraction = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
+  if (typeof anchor !== "string" || !/^[a-z0-9-]{1,40}$/.test(anchor) || !fraction(x) || !fraction(y)) return null;
+  return { anchor, x: Math.round(x * 10000) / 10000, y: Math.round(y * 10000) / 10000 };
+}
+
+// The shared view is only sent to a browser that doesn't have this version.
+function withoutUnchangedView(session: Record<string, unknown> | null | undefined, viewSince: unknown) {
+  if (!session || !isWholeNumber(viewSince) || session.view_version !== viewSince) return session ?? null;
+  const rest = { ...session };
+  delete rest.view;
+  return rest;
+}
+
+// One change to the shared screen, computed by lib/demoSession/sharedView.ts
+// from the latest stored view and stored by compare-and-swap (retried
+// against whatever another change just stored), so every change is applied
+// in one order on the server.
+async function view(id: string, body: Record<string, unknown>) {
+  const who = await resolveCaller(id, body.role);
+  if ("response" in who) return who.response;
+  const { gen, op } = body;
+  if (!isWholeNumber(gen) || !isViewOp(op) || JSON.stringify(op).length > MAX_VIEW_OP_BYTES) {
+    return json({ error: "Invalid request" }, 400);
+  }
+  for (let attempt = 1; ; attempt++) {
+    const current = await demoRpc("demo_session_sync", { p_session_id: id, ...who.caller, p_since: NO_DATASET });
+    if (current.outcome !== "ok" || !current.session) {
+      return json({ outcome: current.outcome, session: current.session ?? null }, statusForOutcome(current.outcome));
+    }
+    const denied = permission(who.caller, current.session, gen);
+    if (denied) return json({ outcome: denied, session: current.session }, 409);
+    const role = who.caller.p_role as Role;
+    const result = reduceView((current.session.view ?? null) as SharedView | null, op, role);
+    if (result.outcome === "noop" || result.outcome === "superseded" || result.outcome === "denied") {
+      return json({ outcome: result.outcome, reason: result.reason ?? null, session: current.session }, result.outcome === "denied" ? 409 : 200);
+    }
+    const stored = await demoRpc("demo_session_put_view", {
+      p_session_id: id,
+      ...who.caller,
+      p_gen: gen,
+      p_base_view_version: current.session.view_version,
+      p_view: result.view,
+    });
+    if (stored.outcome === "ok") return json({ outcome: result.outcome, session: stored.session });
+    if (stored.outcome === "stale_view" && attempt < MAX_VIEW_ATTEMPTS) continue;
+    return json({ outcome: stored.outcome, session: stored.session ?? null }, statusForOutcome(stored.outcome));
+  }
 }
 
 async function op(id: string, body: Record<string, unknown>) {

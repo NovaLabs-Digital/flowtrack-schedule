@@ -215,10 +215,11 @@ describe("DashboardShell: layout state is independent of appointment/client sele
 describe("DashboardShell: centerMode/settingsSection are persisted (refresh reopens the same Settings section)", () => {
   test("centerMode and settingsSection come from useDashboardNavigationPrefs, not a plain useState -- so a hard refresh while in Settings -> Billing reopens Settings -> Billing, not the dashboard calendar", () => {
     assert.match(source, /import \{ useDashboardNavigationPrefs \} from "@\/app\/components\/dashboard\/useDashboardNavigationPrefs"/);
-    assert.match(
-      source,
-      /const \{ centerMode, setCenterMode, settingsSection, setSettingsSection \} = useDashboardNavigationPrefs\(workspaceId, userId\)/
-    );
+    // The persisted values feed useSharedNav, which returns them unchanged
+    // outside a Guided Demo Session (the shared screen replaces them inside one).
+    assert.match(source, /const navPrefs = useDashboardNavigationPrefs\(workspaceId, userId\);/);
+    assert.match(source, /centerMode: navPrefs\.centerMode, setCenterMode: navPrefs\.setCenterMode,/);
+    assert.match(source, /settingsSection: navPrefs\.settingsSection, setSettingsSection: navPrefs\.setSettingsSection,/);
     assert.doesNotMatch(source, /useState<CenterMode>/, "the old plain useState for centerMode is gone, not left alongside the hook");
     assert.doesNotMatch(source, /useState<SettingsSection>/, "the old plain useState for settingsSection is gone, not left alongside the hook");
   });

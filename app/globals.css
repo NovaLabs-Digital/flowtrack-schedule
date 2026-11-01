@@ -80,3 +80,9 @@ body {
     border-color: rgba(var(--svc-r), var(--svc-g), var(--svc-b), 0.85);
   }
 }
+
+/* Guided Demo Sessions: the field the other person is editing (sharedScreen.ts). */
+[data-shared-focus] {
+  outline: 2px solid #7c3aed;
+  outline-offset: 2px;
+}

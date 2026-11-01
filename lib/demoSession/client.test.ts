@@ -4,6 +4,7 @@
 // after a stale version, watch-only and ended states).
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { closesEditor, defaultNav, offsetsFor, reduceView, type Role, type SharedView, type ShellNav, type ViewOp } from "./sharedView.ts";
 import { changedRecords, conflictingRecords, splitDataset, withRecordVersions, RECORD_VERSIONS_KEY, type SessionDataset } from "./recordVersions.ts";
 import type { DemoFixtureBundle } from "@/lib/demoLocal/fixtures/generate";
 import { createDemoSessionClient, WATCHING_MESSAGE, ENDED_MESSAGE, CONFLICT_MESSAGE, BUSY_MESSAGE, type DemoSessionView } from "./client.ts";
@@ -314,5 +315,226 @@ describe("record versions: splitDataset / withRecordVersions", () => {
   });
   test("a dataset from before record versions existed starts with none", () => {
     assert.deepEqual(splitDataset(base() as SessionDataset).versions, {});
+  });
+});
+
+// ---------------------------------------------------------------------
+// Shared screen (lib/demoSession/sharedView.ts)
+// ---------------------------------------------------------------------
+describe("shared view: navigation and ordering", () => {
+  const start = () => reduceView(null, { type: "init", nav: defaultNav("2026-11-02") }, "host").view!;
+  const nav = (v: SharedView, patch: Partial<ShellNav>): ShellNav => ({ ...v.nav, ...patch });
+
+  test("only the host starts the shared view; starting twice changes nothing", () => {
+    assert.equal(reduceView(null, { type: "init", nav: defaultNav("2026-11-02") }, "visitor").outcome, "denied");
+    const v = start();
+    assert.equal(v.navVersion, 1);
+    assert.equal(reduceView(v, { type: "init", nav: defaultNav("2026-11-03") }, "host").outcome, "noop");
+  });
+
+  test("navigation replaces the whole block (date, selection, dialog together) and is numbered in order", () => {
+    const v = start();
+    const r = reduceView(v, { type: "nav", nav: nav(v, { mode: "month", monthOffset: 1, clientId: "c1" }), baseNavVersion: 1 }, "host");
+    assert.equal(r.outcome, "ok");
+    assert.deepEqual([r.view!.navVersion, r.view!.navBy, r.view!.nav.mode, r.view!.nav.clientId], [2, "host", "month", "c1"]);
+  });
+
+  test("host priority: a guest move based on a view the host has since changed is refused", () => {
+    const v1 = start();
+    const v2 = reduceView(v1, { type: "nav", nav: nav(v1, { weekOffset: 1 }), baseNavVersion: 1 }, "host").view!;
+    const late = reduceView(v2, { type: "nav", nav: nav(v1, { weekOffset: -1 }), baseNavVersion: 1 }, "visitor");
+    assert.equal(late.outcome, "superseded");
+    assert.equal(late.view!.nav.weekOffset, 1, "the host's view stands");
+    // A guest move that HAS seen the host's latest change applies.
+    assert.equal(reduceView(v2, { type: "nav", nav: nav(v2, { weekOffset: 2 }), baseNavVersion: 2 }, "visitor").outcome, "ok");
+  });
+
+  test("the host's move always applies, even over a guest move it hadn't seen", () => {
+    const v1 = start();
+    const v2 = reduceView(v1, { type: "nav", nav: nav(v1, { weekOffset: 3 }), baseNavVersion: 1 }, "visitor").view!;
+    const r = reduceView(v2, { type: "nav", nav: nav(v1, { center: "settings" }), baseNavVersion: 1 }, "host");
+    assert.equal(r.outcome, "ok");
+    assert.deepEqual([r.view!.nav.center, r.view!.nav.weekOffset], ["settings", 0], "the whole block is the host's -- never a mix");
+  });
+
+  test("calendar position is kept across midnight: the same week from the next day's point of view", () => {
+    const n = { ...defaultNav("2026-11-01"), weekOffset: 1, monthOffset: 0 }; // Sunday; next week = week of Nov 2
+    assert.deepEqual(offsetsFor(n, "2026-11-01"), { weekOffset: 1, monthOffset: 0 });
+    assert.deepEqual(offsetsFor(n, "2026-11-02"), { weekOffset: 0, monthOffset: 0 }, "Monday: the same week is now this week");
+    assert.deepEqual(offsetsFor({ ...n, monthOffset: 1 }, "2026-12-01"), { weekOffset: -4, monthOffset: 0 });
+  });
+
+  test("scroll positions are validated and recorded with who scrolled", () => {
+    const v = start();
+    assert.deepEqual(reduceView(v, { type: "scroll", minutes: 510.4 }, "visitor").view!.scroll, { minutes: 510, by: "visitor" });
+    assert.equal(reduceView(v, { type: "scroll", minutes: -5 }, "host").outcome, "denied");
+    assert.equal(reduceView(v, { type: "scroll", minutes: Number.NaN }, "host").outcome, "denied");
+  });
+});
+
+describe("shared view: one active editor and unsaved input", () => {
+  const start = () => reduceView(null, { type: "init", nav: defaultNav("2026-11-02") }, "host").view!;
+  const open = (v: SharedView, by: Role, appointmentId = "a1") =>
+    reduceView(v, { type: "nav", nav: { ...v.nav, dialog: { id: `d-${appointmentId}`, kind: "edit", appointmentId } }, baseNavVersion: v.navVersion, label: "Appointment" }, by).view!;
+  const seed = (v: SharedView, by: Role, fields: unknown, base = 5, key = "appointment:a1") =>
+    reduceView(v, { type: "claim", key, base, initial: { notes: "" }, fields, anchor: {}, label: "Appointment" }, by);
+  const draft = (v: SharedView, by: Role, fields: unknown) => reduceView(v, { type: "draft", key: v.editor!.key, epoch: v.editor!.epoch, fields }, by);
+
+  test("opening a form reserves its editor for the opener; only they can seed it; the other follows", () => {
+    const v = open(start(), "visitor");
+    assert.deepEqual([v.editor!.key, v.editor!.role, v.editor!.fields], ["appointment:a1", "visitor", null]);
+    assert.equal(seed(v, "host", { notes: "x" }).outcome, "denied", "the follower cannot type over the opener");
+    const seeded = seed(v, "visitor", { notes: "" }).view!;
+    assert.deepEqual([seeded.editor!.base, seeded.editor!.dirty], [5, false]);
+  });
+
+  test("only the active editor changes the draft; a request from before a takeover is refused", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }).view!;
+    v = draft(v, "visitor", { notes: "Gate" }).view!;
+    assert.equal(v.editor!.dirty, true);
+    assert.equal(draft(v, "host", { notes: "nope" }).outcome, "denied");
+    const oldEpoch = v.editor!.epoch;
+    v = reduceView(v, { type: "takeover", key: "appointment:a1" }, "host").view!;
+    assert.equal(reduceView(v, { type: "draft", key: "appointment:a1", epoch: oldEpoch, fields: { notes: "late" } }, "visitor").outcome, "denied");
+  });
+
+  test("host takeover keeps the guest's draft AND the original edit version; the guest can't take over a host who is typing", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }, 5).view!;
+    v = draft(v, "visitor", { notes: "Guest typing" }).view!;
+    v = reduceView(v, { type: "takeover", key: "appointment:a1" }, "host").view!;
+    assert.deepEqual([v.editor!.role, v.editor!.fields, v.editor!.base, v.editor!.dirty], ["host", { notes: "Guest typing" }, 5, true]);
+    assert.equal(reduceView(v, { type: "takeover", key: "appointment:a1" }, "visitor").outcome, "denied");
+  });
+
+  test("navigation that would close a form with unsaved input becomes a pending request -- nothing is closed or lost", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }).view!;
+    v = draft(v, "visitor", { notes: "Unsaved" }).view!;
+    const r = reduceView(v, { type: "nav", nav: { ...v.nav, dialog: null, center: "settings" }, baseNavVersion: v.navVersion, label: "Settings" }, "host");
+    assert.equal(r.outcome, "pending");
+    assert.equal(r.view!.nav.dialog?.kind, "edit", "still open");
+    assert.deepEqual(r.view!.editor!.fields, { notes: "Unsaved" });
+    assert.deepEqual([r.view!.pending!.by, r.view!.pending!.label], ["host", "Settings"]);
+  });
+
+  test("navigation that keeps the form open is not held up (e.g. moving the calendar behind it)", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }).view!;
+    v = draft(v, "visitor", { notes: "Unsaved" }).view!;
+    assert.equal(reduceView(v, { type: "nav", nav: { ...v.nav, weekOffset: 1 }, baseNavVersion: v.navVersion }, "host").outcome, "ok");
+  });
+
+  test("resolving a pending request: keep editing, discard (owner only), or the host continues and parks the draft", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }, 5).view!;
+    v = draft(v, "visitor", { notes: "Unsaved" }).view!;
+    const pend = reduceView(v, { type: "nav", nav: { ...v.nav, dialog: null }, baseNavVersion: v.navVersion }, "host").view!;
+    const id = pend.pending!.id;
+    assert.equal(reduceView(pend, { type: "resolve", pendingId: id, decision: "keep" }, "visitor").view!.pending, null);
+    assert.equal(reduceView(pend, { type: "resolve", pendingId: id, decision: "discard" }, "host").outcome, "denied", "the host can't throw away the guest's draft");
+    const discarded = reduceView(pend, { type: "resolve", pendingId: id, decision: "discard" }, "visitor").view!;
+    assert.deepEqual([discarded.nav.dialog, discarded.editor], [null, null]);
+    const parked = reduceView(pend, { type: "resolve", pendingId: id, decision: "continue_keep_draft" }, "host").view!;
+    assert.equal(parked.nav.dialog, null);
+    assert.deepEqual(parked.parked["appointment:a1"].fields, { notes: "Unsaved" });
+    assert.equal(reduceView(pend, { type: "resolve", pendingId: id, decision: "continue_keep_draft" }, "visitor").outcome, "denied");
+  });
+
+  test("reopening that record's form restores the parked draft with its ORIGINAL edit version", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }, 5).view!;
+    v = draft(v, "visitor", { notes: "Unsaved" }).view!;
+    const pend = reduceView(v, { type: "nav", nav: { ...v.nav, dialog: null }, baseNavVersion: v.navVersion }, "host").view!;
+    let back = reduceView(pend, { type: "resolve", pendingId: pend.pending!.id, decision: "continue_keep_draft" }, "host").view!;
+    back = open(back, "host");
+    const restored = seed(back, "host", { notes: "" }, 9).view!; // 9 = the version now on screen
+    assert.deepEqual([restored.editor!.fields, restored.editor!.base, restored.editor!.dirty], [{ notes: "Unsaved" }, 5, true]);
+    assert.deepEqual(restored.parked, {});
+  });
+
+  test("saving or cancelling (release) lets a waiting navigation go ahead", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }).view!;
+    v = draft(v, "visitor", { notes: "Unsaved" }).view!;
+    const pend = reduceView(v, { type: "nav", nav: { ...v.nav, dialog: null, center: "settings" }, baseNavVersion: v.navVersion }, "host").view!;
+    const after = reduceView(pend, { type: "release", key: "appointment:a1" }, "visitor").view!;
+    assert.deepEqual([after.nav.center, after.nav.dialog, after.editor, after.pending], ["settings", null, null, null]);
+  });
+
+  test("an always-open form is claimed by whoever types first; the other person's claim is refused, not merged", () => {
+    const v = start();
+    const claim = (by: Role, notes: string) => reduceView(v, { type: "claim", key: "company", base: 3, initial: { name: "A" }, fields: { name: notes }, anchor: { center: "settings" }, label: "Company details" }, by);
+    const host = claim("host", "B").view!;
+    assert.deepEqual([host.editor!.role, host.editor!.dirty], ["host", true]);
+    assert.equal(reduceView(host, { type: "claim", key: "company", base: 3, initial: { name: "A" }, fields: { name: "C" }, anchor: {}, label: "" }, "visitor").outcome, "denied");
+  });
+
+  test("an explicit conflict acknowledgement (rebase) is the only thing that moves the edit version", () => {
+    let v = seed(open(start(), "visitor"), "visitor", { notes: "" }, 5).view!;
+    v = draft(v, "visitor", { notes: "x" }).view!;
+    assert.equal(v.editor!.base, 5, "typing never changes it");
+    v = reduceView(v, { type: "rebase", key: "appointment:a1", epoch: v.editor!.epoch, base: 8 }, "visitor").view!;
+    assert.equal(v.editor!.base, 8);
+    assert.equal(reduceView(v, { type: "rebase", key: "appointment:a1", epoch: v.editor!.epoch, base: 9 }, "host").outcome, "denied");
+  });
+
+  test("closesEditor compares only the values the form depends on", () => {
+    const e = { anchor: { "dialog.id": "d1", "ui.clientEdit": "c1" } } as unknown as Parameters<typeof closesEditor>[0];
+    const base = { ...defaultNav("2026-11-02"), dialog: { id: "d1", kind: "edit" as const, appointmentId: "a1" }, ui: { clientEdit: "c1" } };
+    assert.equal(closesEditor(e, { ...base, weekOffset: 4 }), false);
+    assert.equal(closesEditor(e, { ...base, ui: { clientEdit: null } }), true);
+    assert.equal(closesEditor(e, { ...base, dialog: null }), true);
+  });
+});
+
+describe("shared view: in-place edit forms", () => {
+  const start = () => reduceView(null, { type: "init", nav: defaultNav("2026-11-02") }, "host").view!;
+  test("an in-place form lives somewhere: leaving that place closes it (or asks first if it has unsaved input)", () => {
+    let v = start();
+    v = reduceView(v, { type: "nav", nav: { ...v.nav, clientId: "c1", ui: { clientEdit: "c1" } }, baseNavVersion: v.navVersion }, "visitor").view!;
+    assert.deepEqual(v.editor!.anchor, { "ui.clientEdit": "c1", center: "schedule", clientId: "c1" });
+    v = reduceView(v, { type: "claim", key: "ui:clientEdit:c1", base: 4, initial: { notes: "" }, fields: { notes: "" }, anchor: {}, label: "Angela's details" }, "visitor").view!;
+    // Clean: moving to Settings just closes it -- flag included.
+    const clean = reduceView(v, { type: "nav", nav: { ...v.nav, center: "settings" }, baseNavVersion: v.navVersion }, "host").view!;
+    assert.deepEqual([clean.editor, clean.nav.ui.clientEdit], [null, null]);
+    // Unsaved: the same move waits for a decision.
+    v = reduceView(v, { type: "draft", key: "ui:clientEdit:c1", epoch: v.editor!.epoch, fields: { notes: "Gate" } }, "visitor").view!;
+    assert.equal(reduceView(v, { type: "nav", nav: { ...v.nav, center: "settings" }, baseNavVersion: v.navVersion }, "host").outcome, "pending");
+  });
+
+  test("the host continuing parks the draft AND closes the form; reopening it restores the draft and its original edit version", () => {
+    let v = start();
+    v = reduceView(v, { type: "nav", nav: { ...v.nav, clientId: "c1", ui: { clientEdit: "c1" } }, baseNavVersion: v.navVersion }, "visitor").view!;
+    v = reduceView(v, { type: "claim", key: "ui:clientEdit:c1", base: 4, initial: { notes: "" }, fields: { notes: "" }, anchor: {}, label: "Angela's details" }, "visitor").view!;
+    v = reduceView(v, { type: "draft", key: "ui:clientEdit:c1", epoch: v.editor!.epoch, fields: { notes: "Gate" } }, "visitor").view!;
+    v = reduceView(v, { type: "nav", nav: { ...v.nav, center: "settings" }, baseNavVersion: v.navVersion }, "host").view!;
+    v = reduceView(v, { type: "resolve", pendingId: v.pending!.id, decision: "continue_keep_draft" }, "host").view!;
+    assert.deepEqual([v.nav.center, v.nav.ui.clientEdit, v.editor], ["settings", null, null]);
+    v = reduceView(v, { type: "nav", nav: { ...v.nav, center: "schedule", ui: { clientEdit: "c1" } }, baseNavVersion: v.navVersion }, "visitor").view!;
+    v = reduceView(v, { type: "claim", key: "ui:clientEdit:c1", base: 9, initial: { notes: "" }, fields: { notes: "" }, anchor: {}, label: "Angela's details" }, "visitor").view!;
+    assert.deepEqual([v.editor!.fields, v.editor!.base, v.editor!.dirty], [{ notes: "Gate" }, 4, true]);
+  });
+});
+
+describe("shared view: scrolling inside panels", () => {
+  const start = () => reduceView(null, { type: "init", nav: defaultNav("2026-11-02") }, "host").view!;
+  const panel = (scope = "company", over: Record<string, unknown> = {}) =>
+    ({ type: "panel", key: "settings", scope, path: [0, 3, 1], frac: 0.25, ratio: 0.5, focus: [0, 3, 1, 2], ...over }) as ViewOp;
+
+  test("a panel position is stored per panel, with its scope and who moved it", () => {
+    const v = reduceView(start(), panel(), "host").view!;
+    assert.deepEqual(v.panels!.settings, { scope: "company", path: [0, 3, 1], frac: 0.25, ratio: 0.5, focus: [0, 3, 1, 2], by: "host" });
+    const v2 = reduceView(v, { ...panel("appointment:a1"), key: "dialog" } as ViewOp, "visitor").view!;
+    assert.deepEqual(Object.keys(v2.panels!).sort(), ["dialog", "settings"]);
+  });
+
+  test("malformed positions are refused", () => {
+    const v = start();
+    for (const bad of [{ key: "Bad Key" }, { frac: 2 }, { ratio: -1 }, { path: [1.5] }, { path: Array(31).fill(0) }, { focus: "x" }, { scope: "x".repeat(81) }]) {
+      assert.equal(reduceView(v, panel("company", bad), "host").outcome, "denied", JSON.stringify(bad));
+    }
+  });
+
+  test("while someone is editing, only the editor moves panels for both", () => {
+    let v = start();
+    v = reduceView(v, { type: "nav", nav: { ...v.nav, dialog: { id: "d1", kind: "edit", appointmentId: "a1" } }, baseNavVersion: v.navVersion }, "visitor").view!;
+    v = reduceView(v, { type: "claim", key: "appointment:a1", base: 3, initial: {}, fields: {}, anchor: {}, label: "the appointment form" }, "visitor").view!;
+    assert.equal(reduceView(v, { ...panel("appointment:a1"), key: "dialog" } as ViewOp, "host").outcome, "denied");
+    assert.equal(reduceView(v, { ...panel("appointment:a1"), key: "dialog" } as ViewOp, "visitor").outcome, "ok");
   });
 });

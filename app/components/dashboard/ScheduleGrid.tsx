@@ -227,6 +227,8 @@ export default function ScheduleGrid({
   timezone,
   businessHours,
   paidAppointmentIds,
+  sharedScrollMinutes,
+  onSharedScroll,
 }: {
   viewMode: ViewMode;
   clients: Client[];
@@ -263,6 +265,12 @@ export default function ScheduleGrid({
   // truth for this grid's visible hour range (startHour/endHour below).
   // Never a second, independent schedule-range configuration.
   businessHours: BusinessHours;
+  // Guided Demo Session shared screen only (omitted everywhere else): the
+  // time of day at the top of the calendar to show (set by the other
+  // participant), and where to report this participant's own scrolling.
+  // A time of day, not pixels, so it lines up at any window size.
+  sharedScrollMinutes?: number | null;
+  onSharedScroll?: (minutes: number) => void;
 }) {
   // Scrolls the selected appointment's own card into view whenever the
   // selection (or the visible week/view) changes -- most relevant when the
@@ -325,6 +333,34 @@ export default function ScheduleGrid({
   // it's the correct, already-computed input for the expansion.
   const apptMinuteRanges = apptsInView.map((a) => apptMinuteRange(a, timezone, durationFor));
   const { startHour, endHour } = computeGridHourBounds(businessHours, dateStrs, timezone, apptMinuteRanges);
+
+  // Shared calendar scroll (Guided Demo Sessions): follow the other person's
+  // time-of-day; report our own (throttled), never echoing a programmatic scroll.
+  const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+  const applyingScroll = useRef(false);
+  const lastScrollReport = useRef(0);
+  useEffect(() => {
+    const box = scrollBoxRef.current;
+    if (!box || sharedScrollMinutes == null) return;
+    const target = Math.max(0, ((sharedScrollMinutes - startHour * 60) / 60) * CELL_PX);
+    if (Math.abs(box.scrollTop - target) < 4) return;
+    applyingScroll.current = true;
+    box.scrollTop = target;
+    requestAnimationFrame(() => { applyingScroll.current = false; });
+  }, [sharedScrollMinutes, startHour]);
+  const trailingScroll = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function handleGridScroll() {
+    const box = scrollBoxRef.current;
+    if (!box || !onSharedScroll || applyingScroll.current) return;
+    const report = () => onSharedScroll(startHour * 60 + (box.scrollTop / CELL_PX) * 60);
+    // At most every 250ms while scrolling, plus once where it comes to rest.
+    if (trailingScroll.current) clearTimeout(trailingScroll.current);
+    trailingScroll.current = setTimeout(report, 260);
+    const now = Date.now();
+    if (now - lastScrollReport.current < 250) return;
+    lastScrollReport.current = now;
+    report();
+  }
   const totalHours = endHour - startHour + 1;
   const hours = Array.from({ length: totalHours }, (_, i) => startHour + i);
 
@@ -436,7 +472,7 @@ export default function ScheduleGrid({
       </div>
 
       {/* Grid */}
-      <div className="flex-1 overflow-auto min-h-0">
+      <div ref={scrollBoxRef} onScroll={onSharedScroll ? handleGridScroll : undefined} className="flex-1 overflow-auto min-h-0">
         <div className="min-w-[700px]">
           {/* Day header row */}
           <div

@@ -109,6 +109,11 @@ export type DemoSessionView = {
   visitor_online: boolean;
   visitor_display_name: string | null;
   host_online: boolean;
+  // Migration 044: the shared screen and fresh cursors (absent before it).
+  view?: unknown;
+  view_version?: number;
+  host_cursor?: unknown;
+  visitor_cursor?: unknown;
 };
 export type DemoRpcResult = {
   outcome: string;

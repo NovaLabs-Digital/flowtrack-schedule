@@ -615,13 +615,18 @@ describe("Phase 5.7C: notifications_enabled fails closed before the stored value
   });
 
   test("every call site that ever assigns notificationsEnabled/notificationsSaved derives from loaded server data or the live in-memory state -- never a literal true", () => {
-    // setNotificationsEnabled is called exactly once in the whole file:
-    // inside loadCompanySettings' if (s) branch, from Boolean(s.notifications_enabled).
+    // setNotificationsEnabled is called exactly twice in the whole file:
+    // inside loadCompanySettings' if (s) branch, from Boolean(s.notifications_enabled),
+    // and in the Guided Demo Session shared draft's apply, which copies the
+    // OTHER participant's live in-memory value (itself loaded the same
+    // fail-closed way) -- never a literal true.
     // (Counting the literal call, rather than a capturing regex, avoids
     // breaking on Boolean(...)'s own nested parenthesis.)
     const enabledCallCount = (source.match(/setNotificationsEnabled\(/g) ?? []).length;
-    assert.equal(enabledCallCount, 1, "setNotificationsEnabled must be called exactly once in the whole file");
+    assert.equal(enabledCallCount, 2, "setNotificationsEnabled must be called exactly twice in the whole file");
     assert.ok(source.includes("setNotificationsEnabled(Boolean(s.notifications_enabled));"));
+    assert.ok(source.includes("setNotificationsEnabled(d.notificationsEnabled);"));
+    assert.ok(!/setNotificationsEnabled\(\s*true\s*\)/.test(source), "setNotificationsEnabled must never be called with a literal true");
 
     // setNotificationsSaved is called twice: once in the same load branch
     // (Boolean(s.notifications_enabled), identical to the above), and once

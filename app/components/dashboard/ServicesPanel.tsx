@@ -8,6 +8,8 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 import { centsToInputValue, formatCents, parsePriceToCents } from "@/lib/money";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 import { useEditBase } from "@/app/components/dashboard/editBase";
+import { useSharedDraft, useSharedFlag } from "@/app/components/dashboard/sharedScreen";
+import SharedEditNotice from "@/app/components/demo-session/SharedEditNotice";
 
 // Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
 // Edit/Enable-Disable/Delete, and the Add/Edit form's Save submit are all
@@ -54,14 +56,20 @@ export default function ServicesPanel({
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   // Save requests carry when this edit began (Guided Demo Sessions only).
-  const editBase = useEditBase();
+  // Which form is open: a record id, "new", or none -- shared on both
+  // screens in a Guided Demo Session (sharedScreen.ts), local otherwise.
+  const [localFormFor, setLocalFormFor] = useState<string | null>(null);
+  const [formFor, setFormFor] = useSharedFlag("serviceForm", localFormFor, setLocalFormFor);
+  const sharedKey = formFor ? `ui:serviceForm:${formFor}` : null;
+  const editBase = useEditBase(sharedKey);
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+  const editingId = formFor && formFor !== "new" ? formFor : null;
+  const showAdd = formFor === "new";
   const [form, setForm] = useState<EditForm>(EMPTY_FORM);
+  const sharedDraft = useSharedDraft({ key: sharedKey, label: editingId ? "the service form" : "the new service form", anchor: {}, fields: form, apply: setForm });
   const [saving, setSaving] = useState(false);
 
   function loadServices() {
@@ -83,9 +91,8 @@ export default function ServicesPanel({
     // anything -- this guard additionally prevents the edit form itself
     // from ever opening for a restricted owner.
     if (!canMutateOperationalData) return;
-    setEditingId(s.id);
+    setFormFor(s.id);
     editBase.begin();
-    setShowAdd(false);
     setForm({
       name: s.name,
       description: s.description ?? "",
@@ -97,15 +104,13 @@ export default function ServicesPanel({
 
   function startAdd() {
     if (!canMutateOperationalData) return;
-    setEditingId(null);
-    setShowAdd(true);
+    setFormFor("new");
     setForm(EMPTY_FORM);
     setMessage(null);
   }
 
   function cancelForm() {
-    setEditingId(null);
-    setShowAdd(false);
+    setFormFor(null);
     setForm(EMPTY_FORM);
   }
 
@@ -246,7 +251,10 @@ export default function ServicesPanel({
 
       {/* Add / Edit form */}
       {(showAdd || editingId) && (
+        <>
+        <SharedEditNotice draft={sharedDraft} />
         <form onSubmit={handleSave} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3 max-w-xl">
+        <fieldset disabled={sharedDraft.readOnly} className="m-0 min-w-0 space-y-3 border-0 p-0">
           <div className="text-xs font-semibold text-slate-700">
             {editingId ? "Edit Service" : "New Service"}
           </div>
@@ -320,7 +328,9 @@ export default function ServicesPanel({
               Cancel
             </button>
           </div>
+        </fieldset>
         </form>
+        </>
       )}
 
       {/* Table header */}

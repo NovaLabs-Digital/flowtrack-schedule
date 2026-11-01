@@ -7,6 +7,8 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 import PasswordInput from "@/app/components/PasswordInput";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 import { useEditBase } from "@/app/components/dashboard/editBase";
+import { useSharedDraft, useSharedFlag } from "@/app/components/dashboard/sharedScreen";
+import SharedEditNotice from "@/app/components/demo-session/SharedEditNotice";
 
 // Phase 5.5E-E1F: one shared notice for this whole panel -- Add, per-row
 // Edit/Deactivate-Reactivate (active and inactive lists alike), and the
@@ -42,14 +44,20 @@ export default function StaffPanel({
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   // Save requests carry when this edit began (Guided Demo Sessions only).
-  const editBase = useEditBase();
+  // Which form is open: a record id, "new", or none -- shared on both
+  // screens in a Guided Demo Session (sharedScreen.ts), local otherwise.
+  const [localFormFor, setLocalFormFor] = useState<string | null>(null);
+  const [formFor, setFormFor] = useSharedFlag("staffForm", localFormFor, setLocalFormFor);
+  const sharedKey = formFor ? `ui:staffForm:${formFor}` : null;
+  const editBase = useEditBase(sharedKey);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
+  const editingId = formFor && formFor !== "new" ? formFor : null;
+  const showAdd = formFor === "new";
   const [form, setForm] = useState<EditForm>(EMPTY_FORM);
+  const sharedDraft = useSharedDraft({ key: sharedKey, label: editingId ? "the staff member form" : "the new staff member form", anchor: {}, fields: form, apply: setForm });
   const [originalColor, setOriginalColor] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // Tracked separately from form.position because a not-yet-typed custom
@@ -76,9 +84,8 @@ export default function StaffPanel({
     // anything -- this guard additionally prevents the edit form itself
     // from ever opening for a restricted owner.
     if (!canMutateOperationalData) return;
-    setEditingId(e.id);
+    setFormFor(e.id);
     editBase.begin();
-    setShowAdd(false);
     const position = e.position ?? "";
     setForm({ name: e.name, phone: e.phone ?? "", email: (e as any).email ?? "", password: "", color: e.color, position });
     setOriginalColor(e.color);
@@ -88,16 +95,14 @@ export default function StaffPanel({
 
   function startAdd() {
     if (!canMutateOperationalData) return;
-    setEditingId(null);
-    setShowAdd(true);
+    setFormFor("new");
     setForm(EMPTY_FORM);
     setShowCustomPosition(false);
     setMessage(null);
   }
 
   function cancelForm() {
-    setEditingId(null);
-    setShowAdd(false);
+    setFormFor(null);
     setForm(EMPTY_FORM);
     setOriginalColor(null);
     setShowCustomPosition(false);
@@ -215,7 +220,10 @@ export default function StaffPanel({
 
       {/* Add / Edit form */}
       {(showAdd || editingId) && (
+        <>
+        <SharedEditNotice draft={sharedDraft} />
         <form data-tour="employee-edit-form" onSubmit={handleSave} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3 max-w-xl">
+        <fieldset disabled={sharedDraft.readOnly} className="m-0 min-w-0 space-y-3 border-0 p-0">
           <div className="text-xs font-semibold text-slate-700">
             {editingId ? "Edit Employee" : "New Employee"}
           </div>
@@ -329,7 +337,9 @@ export default function StaffPanel({
               Cancel
             </button>
           </div>
+        </fieldset>
         </form>
+        </>
       )}
 
       {/* Table header */}

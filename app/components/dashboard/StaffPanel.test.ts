@@ -44,18 +44,18 @@ describe("prop wiring: both render paths", () => {
 });
 
 describe("mutation-entry guards: startAdd, startEdit", () => {
-  test("startAdd guards on canMutateOperationalData as its first statement, before setShowAdd(true)", () => {
+  test("startAdd guards on canMutateOperationalData as its first statement, before the add form opens (setFormFor(\"new\"))", () => {
     const fnStart = source.indexOf("function startAdd()");
     assert.notEqual(fnStart, -1);
     const braceIdx = source.indexOf("{", fnStart);
     const firstLine = source.slice(braceIdx + 1, braceIdx + 100).split("\n").map((l) => l.trim()).find((l) => l.length > 0);
     assert.equal(firstLine, "if (!canMutateOperationalData) return;");
     const guardIdx = source.indexOf("if (!canMutateOperationalData) return;", fnStart);
-    const openIdx = source.indexOf("setShowAdd(true);", fnStart);
+    const openIdx = source.indexOf('setFormFor("new");', fnStart);
     assert.ok(guardIdx < openIdx);
   });
 
-  test("startEdit guards on canMutateOperationalData as its first statement, before setEditingId -- the edit form (including the password field) must never open while restricted", () => {
+  test("startEdit guards on canMutateOperationalData as its first statement, before the edit form opens (setFormFor(id)) -- the edit form (including the password field) must never open while restricted", () => {
     const fnStart = source.indexOf("function startEdit(e: Employee)");
     assert.notEqual(fnStart, -1);
     const braceIdx = source.indexOf("{", fnStart);
@@ -63,7 +63,7 @@ describe("mutation-entry guards: startAdd, startEdit", () => {
     const firstNonCommentNonBlank = afterBrace.split("\n").map((l) => l.trim()).find((l) => l.length > 0 && !l.startsWith("//"));
     assert.equal(firstNonCommentNonBlank, "if (!canMutateOperationalData) return;");
     const guardIdx = source.indexOf("if (!canMutateOperationalData) return;", fnStart);
-    const openIdx = source.indexOf("setEditingId(e.id);", fnStart);
+    const openIdx = source.indexOf("setFormFor(e.id);", fnStart);
     assert.ok(guardIdx < openIdx);
   });
 });

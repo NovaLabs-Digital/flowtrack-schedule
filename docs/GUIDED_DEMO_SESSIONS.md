@@ -1,9 +1,9 @@
 # Guided Demo Sessions — operations (milestone 1)
 
-Milestone 1 is a foundation: one host (Alberto) and one visitor share a fresh
-**fictional** demo dataset with server-enforced permissions. Each
-person navigates independently; audio (milestone 2) and synchronized
-screens (milestone 3) come later. Security model: see
+One host (Alberto) and one visitor share a fresh **fictional** demo dataset
+with server-enforced permissions, on one **shared screen** with each
+other's labelled cursor. Audio and pushed (instant) updates come later.
+Security model: see
 [SECURITY.md › Guided Demo Sessions](SECURITY.md#guided-demo-sessions).
 
 ## Permissions
@@ -49,12 +49,58 @@ undone:
 - Two saves at the same instant are applied one after the other, each
   checked against what the other just did.
 
-**Limitation (milestone 1): screens are not shared.** Each person navigates
-on their own. Blocking the watcher does **not** make their screen follow the
-other person: if the guest opens Settings, the host does not see Settings,
-and a watching guest sees whatever page they were on. Data changes do appear on both screens within about a second.
-Talk the visitor through what to open (or what you are showing) until
-screen mirroring arrives in milestone 3.
+## Shared screen
+
+Both people follow one screen (migration 044): calendar mode and date,
+selected client and appointment, Settings section, the open dialog or edit
+form and the draft inside it, and scrolling -- the calendar, open dialogs,
+Settings, and the client details form. Panel sizes, the session bar, and
+(later) chat stay each person's own. Menus, history filters, and similar
+small view toggles inside panels are not shared.
+
+- **Who moves the screen.** The host always; the guest while guest control
+  is allowed. A watching guest's screen follows but can't change it.
+- **Order.** The server applies changes one at a time in a single order.
+  Calendar date, selection, and dialog change together as one block, so two
+  people clicking at once can never produce a mixed-up view. If the guest
+  acts on a view the host has just changed, the host's change wins and the
+  guest's screen shows it.
+- **One person types at a time.** Whoever opens a form is its editor; the
+  other person sees their typing appear, read-only, with "… is editing
+  this." The host can always **Take over editing**; an allowed guest can
+  **Start editing** when the host isn't typing. The draft carries over --
+  nothing typed is lost -- and so does its original edit version, so the
+  conflict protection above still applies.
+- **Unsaved input is never thrown away silently.** If someone tries to move
+  the screen while a form holds unsaved changes, the move waits and both
+  screens show it in the session bar ("… wants to open Settings, but you
+  have unsaved changes in …"). The person editing chooses **Keep editing**
+  or **Discard my changes and continue** (or saves). The host may instead
+  **Continue and keep the guest's draft**: the screen moves on and the
+  draft is set aside, then comes back when that form is opened again.
+- **Joining and reconnecting** open straight to the current shared screen,
+  including an open form and its draft.
+- **Following someone's place in a form.** While someone is editing, the
+  other person's dialog or Settings panel scrolls with theirs, and the
+  field they're in is outlined and kept in view. This comes back after a
+  reload too.
+- **Window sizes.** The calendar is shared by time of day at the top, not
+  pixels; dialogs and Settings by which part of the form is at the top; and
+  cursors by position within the part of the screen they're over -- so all
+  line up on different desktop window sizes. Below 768 px
+  wide the page asks the person to widen their window instead of showing a
+  screen that can't match.
+- **Cursors.** Your cursor appears on the other screen with your name. The
+  host's is always shown; the guest's only while guest control is allowed.
+  Cursors never block clicks and disappear about 5 seconds after their owner
+  disconnects. **Cursor movement is not instant: it currently trails the
+  real pointer by roughly 1–2 seconds**, because positions travel with the
+  once-a-second check-in and glide between reports.
+- **Speed (estimates, not guarantees).** Your own screen changes at once.
+  The other screen follows on the next once-a-second check-in -- typically
+  about 0.5–2 seconds behind -- and cursors glide between check-ins, so
+  they trail the real pointer by about 1–2 seconds. Pushed updates (a later
+  milestone) would bring this close to instant.
 
 Guided sessions are designed for desktop browsers. On a phone-sized screen
 the dashboard switches to the mobile layout, which has no session bar and no
@@ -66,7 +112,8 @@ watch-only blocking (the server still refuses changes from a watching guest).
 |---|---|---|
 | `DEMO_HOST_AUTH_USER_ID` | Vercel environment (server-only) | Alberto's Supabase Auth user id (the owner session's `authUserId`). **Unset = feature off.** |
 | Migration 042 | Supabase SQL editor | `migrations/042_add_demo_sessions.sql` (applied 2026-10-31) |
-| Migration 043 | Supabase SQL editor | `migrations/043_guest_control_permissions.sql` (separate approval; checks: `test-db/043-preflight.sql`, `test-db/043-postflight.sql`) |
+| Migration 043 | Supabase SQL editor | `migrations/043_guest_control_permissions.sql` (applied 2026-11-01) |
+| Migration 044 | Supabase SQL editor | `migrations/044_shared_session_view.sql` (separate approval; checks: `test-db/044-preflight.sql`, `test-db/044-postflight.sql`) |
 | Cleanup cron | `vercel.json` | `/api/cron/demo-session-cleanup`, daily at `37 9 * * *` (09:37 UTC) |
 
 ## Safe release order
@@ -92,6 +139,12 @@ before it only ever sends a change from the person holding control, which
 the other way round, the new code would see the host's saves refused while
 guest control is on (safe, but confusing) until 043 is applied.
 
+**Shared screen and cursors (migration 044): apply 044 first, then deploy
+the code.** 044 only adds columns and functions the earlier code never
+uses. Deployed the other way round, sessions still work (the check-in falls
+back to the pre-044 one) but screens aren't shared and there are no cursors
+until 044 is applied.
+
 ## Cron and the Vercel plan
 
 Vercel's documentation (Cron Jobs › usage and pricing, July 2026): Hobby
@@ -112,8 +165,13 @@ Milestone 1 synchronizes by polling:
   per data change or control action.
 - Each call is one Vercel function invocation and one small Supabase
   function call (a row lock and a presence update).
-- A sync answer is under 1 KB; the dataset (~80 KB) is only sent to a
-  browser when it changed.
+- A sync answer is under 1 KB; the dataset (~80 KB) and the shared screen
+  are only sent to a browser when they changed. Cursor positions ride along
+  on the same check-in (no extra calls).
+- Shared-screen changes (navigation, form typing at most every 0.3 s,
+  calendar scrolling at most every 0.25 s) are one extra call each while
+  someone is actively doing them -- an estimate of a few hundred calls per
+  session hour on top of the check-ins.
 
 | | Sync calls |
 |---|---|

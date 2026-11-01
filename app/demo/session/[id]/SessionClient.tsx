@@ -6,6 +6,12 @@
 // The host can always edit; the guest watches until the host allows guest
 // control, and edits alongside the host until it is stopped.
 //
+// Both participants follow ONE shared screen (lib/demoSession/sharedView.ts,
+// app/components/dashboard/sharedScreen.ts): calendar mode and date,
+// selection, Settings section, the open dialog or edit form and its draft,
+// and the calendar's scroll position -- plus each other's labelled cursor.
+// The session bar stays each person's own.
+//
 // The demo fetch interceptor is installed in session mode at MODULE SCOPE,
 // for the same reason as app/demo/DemoPageClient.tsx (child effects run
 // before parent effects, so an effect-based install could let early
@@ -15,6 +21,11 @@
 // tab never carries another page's interceptor.
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { EditBaseProvider } from "@/app/components/dashboard/editBase";
+import { SharedScreenProvider, type SharedScreen } from "@/app/components/dashboard/sharedScreen";
+import SharedCursor, { CURSOR_ROOT_ANCHOR, useCursorReporter } from "@/app/components/demo-session/SharedCursors";
+import useIsMobile from "@/app/components/dashboard/useIsMobile";
+import { businessDayKey } from "@/lib/timezone";
+import type { SessionCursor } from "@/lib/demoSession/client";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 import SessionControlBar, { type PendingAction } from "@/app/components/demo-session/SessionControlBar";
 import { RestrictedWordingProvider } from "@/app/components/dashboard/restrictedWording";
@@ -48,7 +59,7 @@ if (typeof window !== "undefined" && !globalThis.__guidedDemoSession) {
   }
 }
 
-const SERVER_STATE: DemoSessionState = { status: "connecting", session: null, dataset: null, offline: false };
+const SERVER_STATE: DemoSessionState = { status: "connecting", session: null, dataset: null, offline: false, view: null };
 const noopSubscribe = () => () => {};
 
 const getHydrated = () => true;
@@ -84,6 +95,33 @@ export default function SessionClient() {
 
   // Edit forms read the version on screen when an edit begins (editBase.ts).
   const editSource = useMemo(() => (ctx ? { currentVersion: ctx.client.currentVersion } : null), [ctx]);
+
+  // The shared screen this page provides to the dashboard.
+  const today = businessDayKey(DEMO_TIMEZONE);
+  const controller = state.session?.controller;
+  const guestName = state.session?.visitor_display_name || "Your guest";
+  const sharedScreen = useMemo<SharedScreen | null>(() => {
+    if (!ctx || !state.session) return null;
+    return {
+      role: ctx.role,
+      view: state.view,
+      canAct: ctx.role === "host" || controller === "visitor",
+      today,
+      otherName: ctx.role === "host" ? guestName : "The host",
+      dispatch: ctx.client.dispatchView,
+      serverNavVersion: ctx.client.serverNavVersion,
+      currentVersion: ctx.client.currentVersion,
+    };
+  }, [ctx, state.view, state.session, controller, today, guestName]);
+
+  // Desktop only: below 768px the dashboard switches to its phone layout,
+  // which can't show the shared screen.
+  const isMobile = useIsMobile();
+
+  // Labelled cursors: the host's is always shared; the guest's only while
+  // guest control is allowed (the server enforces this too).
+  const shareCursor = !!ctx && state.status === "live" && !isMobile && (ctx.role === "host" || controller === "visitor");
+  useCursorReporter(shareCursor, (cursor: SessionCursor | null) => ctx?.client.setCursor(cursor));
   const dataset = state.dataset;
   const paidAppointmentIds = useMemo(
     () => (dataset ? dataset.completedJobBilling.filter((r) => r.paid).map((r) => r.appointment_id) : []),
@@ -112,6 +150,14 @@ export default function SessionClient() {
     );
   }
   if (!dataset || !state.session) return <div className="min-h-screen bg-slate-50" aria-busy="true" />;
+  if (isMobile) {
+    return (
+      <Notice
+        title="Please widen your window"
+        body="Guided Demo Sessions need a window at least 768 pixels wide, so both people see the same screen."
+      />
+    );
+  }
 
   const session = state.session;
   // The host is never blocked. The guest cannot touch the dashboard at all
@@ -149,7 +195,9 @@ export default function SessionClient() {
   return (
     // While watching, every disabled change control explains the session
     // (not the account/billing wording the real app uses).
+    <SharedScreenProvider value={sharedScreen!}>
     <RestrictedWordingProvider wording={watchingMessage}>
+    <div data-tour={CURSOR_ROOT_ANCHOR} className="h-screen">
     <EditBaseProvider source={editSource!}>
       <DashboardShell
         clients={dataset.clients}
@@ -189,12 +237,55 @@ export default function SessionClient() {
             }}
             onEndSession={() => void run("end", ctx.client.endSession, "Couldn't end the session.")}
             onLeave={leave}
+            pendingRequest={pendingRequest(state.view, ctx.role, ctx.role === "host" ? guestName : "The host", (decision) => {
+              const id = state.view?.pending?.id;
+              if (id) void ctx.client.dispatchView({ type: "resolve", pendingId: id, decision });
+            })}
           />
         }
       />
     </EditBaseProvider>
+    </div>
     </RestrictedWordingProvider>
+    <SharedCursor
+      cursor={((ctx.role === "host" ? session.visitor_cursor : session.host_cursor) ?? null) as SessionCursor | null}
+      label={ctx.role === "host" ? guestName : "Host"}
+      color={ctx.role === "host" ? "#7c3aed" : "#0f766e"}
+    />
+    </SharedScreenProvider>
   );
+}
+
+// A navigation waiting on someone's unsaved input, explained the same way on
+// both screens, with the choices this person has.
+function pendingRequest(
+  view: DemoSessionState["view"],
+  role: DemoRole,
+  other: string,
+  resolve: (decision: "keep" | "discard" | "continue_keep_draft") => void
+) {
+  const p = view?.pending;
+  if (!p) return null;
+  const ownerIsMe = view?.editor?.role === role;
+  const iAsked = p.by === role;
+  const form = view?.editor?.label || "an open form";
+  const want = p.label || "move on";
+  if (ownerIsMe) {
+    return {
+      text: `${iAsked ? "You asked" : `${other} wants`} to ${want}, but you have unsaved changes in ${form}.`,
+      actions: [
+        { label: "Keep editing", onClick: () => resolve("keep") },
+        { label: "Discard my changes and continue", onClick: () => resolve("discard") },
+      ],
+    };
+  }
+  const actions = [] as Array<{ label: string; onClick: () => void }>;
+  if (iAsked) actions.push({ label: "Cancel my request", onClick: () => resolve("keep") });
+  if (role === "host") actions.push({ label: `Continue and keep ${other}'s draft`, onClick: () => resolve("continue_keep_draft") });
+  return {
+    text: `${iAsked ? "You asked" : `${other} asked`} to ${want}. ${other} has unsaved changes in ${form}; waiting for them to save or discard.`,
+    actions,
+  };
 }
 
 function Notice({ title, body, link }: { title: string; body: string; link?: { href: string; label: string } }) {

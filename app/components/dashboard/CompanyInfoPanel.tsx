@@ -9,6 +9,8 @@ import { WEEKDAY_KEYS, type WeekdayKey } from "@/lib/businessHours";
 import { TIMEZONE_OPTIONS } from "@/lib/timezone";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 import { useEditBase } from "@/app/components/dashboard/editBase";
+import { useSharedDraft } from "@/app/components/dashboard/sharedScreen";
+import SharedEditNotice from "@/app/components/demo-session/SharedEditNotice";
 
 // Phase 5.5E-E1F: two separate logical mutation-control areas in this
 // panel -- Company Information and Automation are independent cards with
@@ -93,7 +95,9 @@ export default function CompanyInfoPanel({
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   // Save requests carry when this edit began (Guided Demo Sessions only).
-  const editBase = useEditBase();
+  // Guided Demo Sessions: these settings are one shared draft (sharedScreen.ts),
+  // claimed by whoever changes something first.
+  const editBase = useEditBase("company");
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<Status | null>(null);
 
@@ -195,6 +199,14 @@ export default function CompanyInfoPanel({
   // here has no observable effect until Phases 5C-5E.
   const [timezone, setTimezone] = useState<string>("America/New_York");
   const [timezoneSaved, setTimezoneSaved] = useState<string>("America/New_York");
+  const sharedDraft = useSharedDraft({
+    key: loading ? null : "company",
+    label: "the company settings",
+    anchor: { center: "settings", section: "company" },
+    fields: { form, bookingEnabled, notificationsEnabled, businessHours, timezone },
+    clean: { form: saved, bookingEnabled: bookingSaved, notificationsEnabled: notificationsSaved, businessHours: businessHoursSaved, timezone: timezoneSaved },
+    apply: (d) => { setForm(d.form); setBookingEnabled(d.bookingEnabled); setNotificationsEnabled(d.notificationsEnabled); setBusinessHours(d.businessHours); setTimezone(d.timezone); },
+  });
   const [tzSaving, setTzSaving] = useState(false);
   const [tzMsg, setTzMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -406,6 +418,8 @@ export default function CompanyInfoPanel({
 
   return (
     <div className="space-y-5 max-w-4xl relative">
+      <SharedEditNotice draft={sharedDraft} />
+      <fieldset disabled={sharedDraft.readOnly} className="m-0 min-w-0 space-y-5 border-0 p-0">
       {status && (
         <CompanyStatusStrip
           emailConfigured={status.emailConfigured}
@@ -934,6 +948,7 @@ export default function CompanyInfoPanel({
           </div>
         )}
       </SettingsCard>
+      </fieldset>
     </div>
   );
 }

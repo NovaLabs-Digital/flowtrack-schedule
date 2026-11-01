@@ -8,6 +8,8 @@ import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedBut
 import { ClientMessageHistory } from "@/app/components/dashboard/MessageHistory";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 import { useEditBase } from "@/app/components/dashboard/editBase";
+import { useSharedDraft, useSharedFlag, useSharedPanelScroll } from "@/app/components/dashboard/sharedScreen";
+import SharedEditNotice from "@/app/components/demo-session/SharedEditNotice";
 
 // Phase 5.5E-E1E: this panel's own restricted notice, distinct from every
 // other component's -- shown once in the always-rendered header, referenced
@@ -142,8 +144,6 @@ export default function ClientPanel({
   onEditAppointment: (appointmentId: string) => void;
 }) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
-  // Save requests carry when this edit began (Guided Demo Sessions only).
-  const editBase = useEditBase();
   // SFT cancellation-history fix: lets the owner find a cancelled
   // appointment specifically, rather than scrolling the (capped-at-6) Past
   // Services list hoping it's recent enough to be in that slice. Defaults
@@ -158,8 +158,18 @@ export default function ClientPanel({
   // all. The Cancelled filter is deliberately never capped by this (or any
   // other) limit -- see historyAppts below.
   const [showAllPast, setShowAllPast] = useState(false);
-  const [editing, setEditing] = useState(false);
+  // Whether this client's details form is open -- shared on both screens in a
+  // Guided Demo Session (sharedScreen.ts), local otherwise.
+  const [localEditingFor, setLocalEditingFor] = useState<string | null>(null);
+  const [editingFor, setEditingFor] = useSharedFlag("clientEdit", localEditingFor, setLocalEditingFor);
+  const editing = !!client && editingFor === client.id;
+  const setEditing = (on: boolean) => setEditingFor(on && client ? client.id : null);
   const [form, setForm] = useState<EditForm>(initForm(client ?? {} as Client));
+  const sharedKey = editing && client ? `ui:clientEdit:${client.id}` : null;
+  const sharedDraft = useSharedDraft({ key: sharedKey, label: `${client?.name ?? "the client"}'s details`, anchor: {}, fields: form, apply: setForm });
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase(sharedKey);
+  const editScrollRef = useSharedPanelScroll("client-edit", sharedKey);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -280,7 +290,9 @@ export default function ClientPanel({
 
       {/* Edit form - replaces the 5-column workspace when active */}
       {editing && client ? (
-        <div className="flex-1 overflow-auto p-5">
+        <div ref={editScrollRef} className="flex-1 overflow-auto p-5">
+          <SharedEditNotice draft={sharedDraft} />
+          <fieldset disabled={sharedDraft.readOnly} className="m-0 min-w-0 border-0 p-0">
           <div className="max-w-2xl space-y-3">
             <div className="text-xs font-semibold text-slate-700">Edit Client</div>
             <div className="grid grid-cols-3 gap-3">
@@ -346,6 +358,7 @@ export default function ClientPanel({
               <button onClick={() => { setEditing(false); setMessage(null); }} className="rounded-lg border border-slate-300 px-4 py-1.5 text-xs text-slate-700 hover:bg-slate-50">Cancel</button>
             </div>
           </div>
+          </fieldset>
         </div>
       ) : (
         /* 5-column workspace */

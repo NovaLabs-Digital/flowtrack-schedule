@@ -81,6 +81,8 @@ import { zonedTimeValue, zonedDateTimeToUTC } from "@/lib/timezone";
 import { trackedMinutes } from "@/lib/payroll";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 import { useEditBase } from "@/app/components/dashboard/editBase";
+import { useSharedDraft, useSharedFlag } from "@/app/components/dashboard/sharedScreen";
+import SharedEditNotice from "@/app/components/demo-session/SharedEditNotice";
 
 // Rendered next to the button/form whenever restricted, in both the
 // collapsed and expanded states -- so CapabilityGatedButton's
@@ -221,8 +223,6 @@ export default function AdjustWorkedTimeControl({
   variant = "correction",
 }: AdjustWorkedTimeControlProps) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
-  // Save requests carry when this edit began (Guided Demo Sessions only).
-  const editBase = useEditBase();
   const isMissing = variant === "missing";
   // Self-contained (per DispatchPanel's now-removed EmployeeHoursSection
   // precedent) rather than a shared/global notice -- this control can appear
@@ -240,10 +240,28 @@ export default function AdjustWorkedTimeControl({
   // there simply isn't one yet). "keep" -- the Reason-only form (the
   // tracked time is right, confirm it as-is; never reachable in variant
   // "missing").
-  const [mode, setMode] = useState<"closed" | "correct" | "keep">(isMissing ? "correct" : "closed");
+  type Mode = "closed" | "correct" | "keep";
+  const [localMode, setLocalMode] = useState<Mode>(isMissing ? "correct" : "closed");
+  // Guided Demo Sessions: which form is open is shared on both screens
+  // (sharedScreen.ts); the "missing" variant is always open.
+  const flagName = `adjust-${appointmentId}-${employeeId}`;
+  const [sharedMode, setSharedMode] = useSharedFlag(flagName, localMode === "closed" ? null : localMode, (v) => setLocalMode((v ?? "closed") as Mode));
+  const mode: Mode = isMissing ? localMode : ((sharedMode ?? "closed") as Mode);
+  const setMode = (m: Mode) => (isMissing ? setLocalMode(m) : setSharedMode(m === "closed" ? null : m));
   const [clockIn, setClockIn] = useState(initialClockIn);
   const [clockOut, setClockOut] = useState(initialClockOut);
   const [reason, setReason] = useState("");
+  const sharedKey = isMissing ? `worked:${appointmentId}:${employeeId}` : mode !== "closed" ? `ui:${flagName}:${mode}` : null;
+  const sharedDraft = useSharedDraft({
+    key: sharedKey,
+    label: "the worked-time form",
+    anchor: isMissing ? { apptId: appointmentId } : {},
+    fields: { clockIn, clockOut, reason },
+    clean: isMissing ? { clockIn: initialClockIn, clockOut: initialClockOut, reason: "" } : undefined,
+    apply: (d) => { setClockIn(d.clockIn); setClockOut(d.clockOut); setReason(d.reason); },
+  });
+  // Save requests carry when this edit began (Guided Demo Sessions only).
+  const editBase = useEditBase(sharedKey);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -396,6 +414,7 @@ export default function AdjustWorkedTimeControl({
     return createElement(
       "div",
       { className: "rounded-lg border border-slate-200 bg-white px-2 py-2 space-y-1.5 mt-1" },
+      createElement(SharedEditNotice, { draft: sharedDraft }),
       restrictedNotice,
       field(
         "Reason",
@@ -442,6 +461,7 @@ export default function AdjustWorkedTimeControl({
   return createElement(
     "div",
     { className: "rounded-lg border border-slate-200 bg-white px-2 py-2 space-y-1.5 mt-1" },
+    createElement(SharedEditNotice, { draft: sharedDraft }),
     restrictedNotice,
     field(
       "Clock-in",
