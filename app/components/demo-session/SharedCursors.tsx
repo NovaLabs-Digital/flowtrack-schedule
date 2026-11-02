@@ -16,8 +16,10 @@ const ANCHOR_ATTR = "data-tour";
 
 // The nearest named area around the pointer whose name is UNIQUE on the page
 // (a name used by several elements, e.g. one per card, can't be found again
-// reliably on the other screen), else the whole dashboard.
+// reliably on the other screen), else the whole dashboard. Over the session
+// chat (local to each browser, not part of the shared screen): none.
 export function anchorFor(target: Element | null): HTMLElement | null {
+  if (target?.closest("[data-session-chat]")) return null;
   for (let el = target?.closest<HTMLElement>(`[${ANCHOR_ATTR}]`) ?? null; el; el = el.parentElement?.closest<HTMLElement>(`[${ANCHOR_ATTR}]`) ?? null) {
     const name = el.getAttribute(ANCHOR_ATTR) ?? "";
     if (/^[a-z0-9-]{1,40}$/.test(name) && document.querySelectorAll(`[${ANCHOR_ATTR}="${name}"]`).length === 1) return el;

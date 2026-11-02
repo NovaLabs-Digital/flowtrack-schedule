@@ -12,6 +12,7 @@
 import type { DemoFixtureBundle } from "@/lib/demoLocal/fixtures/generate";
 import type { DemoSessionMode, DemoStore } from "@/lib/demoLocal/fetchInterceptor";
 import { editMarkerKey, reduceView, type SharedView, type ViewOp, type ViewOutcome } from "@/lib/demoSession/sharedView";
+import { cleanChatText } from "@/lib/demoSession/chat";
 
 export type DemoRole = "host" | "visitor";
 
@@ -41,6 +42,19 @@ export type DemoSessionView = {
 
 export type DemoSessionStatus = "connecting" | "live" | "ended" | "unauthorized";
 
+// Session chat (migration 046). Kept in this page's memory only -- never in
+// browser storage. A message being sent, or one that failed, stays in
+// outgoing with its text until it is confirmed (Retry resends it under the
+// same clientId, so it can never arrive twice).
+export type ChatMessage = { id: number; role: DemoRole; name: string; body: string; at: string; clientId: string };
+export type ChatOutgoing = { clientId: string; text: string; status: "sending" | "failed"; error: string | null };
+export type ChatState = {
+  // null until the first check-in; false = chat isn't installed yet (before migration 046).
+  available: boolean | null;
+  messages: ChatMessage[];
+  outgoing: ChatOutgoing[];
+};
+
 export type DemoSessionState = {
   status: DemoSessionStatus;
   session: DemoSessionView | null;
@@ -50,6 +64,7 @@ export type DemoSessionState = {
   // The shared screen both participants follow (lib/demoSession/sharedView.ts):
   // the server's latest, with this browser's own unconfirmed changes on top.
   view: SharedView | null;
+  chat: ChatState;
 };
 
 export const WATCHING_MESSAGE = "You're watching. The host can give you control.";
@@ -85,7 +100,14 @@ const respond = (status: number, data: unknown) =>
 export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, requestTimeoutMs = REQUEST_TIMEOUT_MS }: Options) {
   const getFetch = fetchImpl ?? (() => globalThis.fetch.bind(globalThis));
   const opId = newOpId ?? (() => crypto.randomUUID());
-  let state: DemoSessionState = { status: "connecting", session: null, dataset: null, offline: false, view: null };
+  let state: DemoSessionState = {
+    status: "connecting",
+    session: null,
+    dataset: null,
+    offline: false,
+    view: null,
+    chat: { available: null, messages: [], outgoing: [] },
+  };
   const listeners = new Set<() => void>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let running = false;
@@ -186,11 +208,53 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
     });
   }
 
+  // Chat: the conversation generation and the last message held. A new
+  // generation (the conversation was cleared) drops every cached message and
+  // reads again from the start; more = true asks for the next batch at once.
+  let chatGen: number | null = null;
+  let chatSince: number | null = null;
+  let chatMore = false;
+
+  function mergeChat(chat: ChatState, incoming: ChatMessage[]): ChatState {
+    if (incoming.length === 0) return chat;
+    const byId = new Map(chat.messages.map((m) => [m.id, m]));
+    for (const m of incoming) byId.set(m.id, m);
+    const messages = [...byId.values()].sort((a, b) => a.id - b.id);
+    const confirmed = new Set(incoming.map((m) => m.clientId));
+    return { ...chat, messages, outgoing: chat.outgoing.filter((o) => !confirmed.has(o.clientId)) };
+  }
+
+  function absorbChat(raw: unknown): ChatState {
+    if (raw === null) return { ...state.chat, available: false };
+    const c = raw as { gen?: unknown; messages?: unknown; more?: unknown };
+    if (typeof c.gen !== "number" || !Array.isArray(c.messages)) return state.chat;
+    let chat: ChatState = { ...state.chat, available: true };
+    if (c.gen !== chatGen) {
+      chat = { ...chat, messages: [] };
+      chatSince = null;
+      chatGen = c.gen;
+    }
+    const incoming = c.messages as ChatMessage[];
+    chat = mergeChat(chat, incoming);
+    for (const m of incoming) if (chatSince === null || m.id > chatSince) chatSince = m.id;
+    chatMore = c.more === true;
+    return chat;
+  }
+
   // Applies a server answer: session view, outcome, and (when sent) dataset.
   function absorb(result: ApiResult) {
     const d = result.data ?? {};
     if (d.outcome === "ended" || d.session?.status === "ended") {
-      update({ status: "ended", session: d.session ?? state.session, offline: false });
+      // Ended: nothing more can be sent and the conversation is gone.
+      chatGen = null;
+      chatSince = null;
+      chatMore = false;
+      update({
+        status: "ended",
+        session: d.session ?? state.session,
+        offline: false,
+        chat: { available: state.chat.available, messages: [], outgoing: [] },
+      });
       return;
     }
     if (d.outcome === "unauthorized" || (result.status === 403 && !d.session)) {
@@ -208,6 +272,7 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
       patch.dataset = d.state as DemoFixtureBundle;
       heldVersion = d.session.state_version;
     }
+    if ("chat" in d) patch.chat = absorbChat(d.chat);
     if (state.status === "connecting" && (patch.dataset ?? state.dataset) && (patch.session ?? state.session)) {
       patch.status = "live";
     }
@@ -217,10 +282,82 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
   async function syncNow(): Promise<void> {
     if (state.status === "ended" || state.status === "unauthorized") return;
     try {
-      absorb(await call("sync", { since: heldVersion, viewSince: serverView ? serverViewVersion : null, cursor: myCursor }));
+      // A long conversation arrives in batches (at most 200 per answer):
+      // keep asking until everything is held.
+      for (let round = 0; round < 5; round++) {
+        absorb(await call("sync", { since: heldVersion, viewSince: serverView ? serverViewVersion : null, cursor: myCursor, chatGen, chatSince }));
+        if (!chatMore || state.status !== "live") break;
+      }
     } catch {
       update({ offline: true });
     }
+  }
+
+  function chatError(status: number, outcome: unknown): string {
+    if (outcome === "rate_limited" || status === 429) return "Not sent: you're sending messages too quickly. Wait a few seconds and press Retry.";
+    if (outcome === "chat_full") return "Not sent: this chat has reached its 300-message limit.";
+    if (outcome === "ended" || status === 410) return "Not sent: the session has ended.";
+    if (outcome === "invalid_input") return "Not sent: messages must be 1 to 500 characters.";
+    if (outcome === "chat_unavailable") return "Not sent: chat isn't available yet.";
+    return "Not sent. Your message is kept -- press Retry.";
+  }
+
+  function markFailed(clientId: string, error: string) {
+    update({
+      chat: {
+        ...state.chat,
+        outgoing: state.chat.outgoing.map((o) => (o.clientId === clientId ? { ...o, status: "failed", error } : o)),
+      },
+    });
+  }
+
+  async function deliver(clientId: string, text: string): Promise<boolean> {
+    try {
+      const result = await call("chat", { clientId, text });
+      const d = result.data ?? {};
+      if (result.status === 200 && d.outcome === "ok" && d.message) {
+        let chat = state.chat;
+        if (typeof d.chatGen === "number" && d.chatGen === chatGen) chat = mergeChat(chat, [d.message as ChatMessage]);
+        update({ chat: { ...chat, outgoing: chat.outgoing.filter((o) => o.clientId !== clientId) } });
+        return true;
+      }
+      markFailed(clientId, chatError(result.status, d.outcome));
+      if (d.outcome === "ended") absorb({ status: result.status, data: { outcome: "ended" } });
+      return false;
+    } catch {
+      markFailed(clientId, "Not sent: no connection. Your message is kept -- press Retry.");
+      return false;
+    }
+  }
+
+  // Sends a chat message. Returns false (sending nothing) for empty or
+  // over-long text, or when chat can't send; otherwise the message waits in
+  // outgoing until it is confirmed.
+  function sendChat(text: string): boolean {
+    const clean = cleanChatText(text);
+    if (clean === null || state.status !== "live" || state.chat.available !== true) return false;
+    const clientId = opId();
+    update({ chat: { ...state.chat, outgoing: [...state.chat.outgoing, { clientId, text: clean, status: "sending", error: null }] } });
+    void deliver(clientId, clean);
+    return true;
+  }
+
+  // Resends a failed message under the same clientId (never a duplicate).
+  function retryChat(clientId: string) {
+    const o = state.chat.outgoing.find((x) => x.clientId === clientId);
+    if (!o || o.status !== "failed" || state.status !== "live") return;
+    update({
+      chat: { ...state.chat, outgoing: state.chat.outgoing.map((x) => (x.clientId === clientId ? { ...x, status: "sending", error: null } : x)) },
+    });
+    void deliver(clientId, o.text);
+  }
+
+  // Takes a failed message back; its text is returned for editing.
+  function discardChat(clientId: string): string | null {
+    const o = state.chat.outgoing.find((x) => x.clientId === clientId && x.status === "failed");
+    if (!o) return null;
+    update({ chat: { ...state.chat, outgoing: state.chat.outgoing.filter((x) => x.clientId !== clientId) } });
+    return o.text;
   }
 
   function schedule() {
@@ -349,6 +486,9 @@ export function createDemoSessionClient({ sessionId, role, fetchImpl, newOpId, r
     // The dataset version on screen: where a new edit starts from.
     currentVersion: () => heldVersion ?? state.session?.state_version ?? null,
     dispatchView,
+    sendChat,
+    retryChat,
+    discardChat,
     setCursor(cursor: SessionCursor | null) {
       myCursor = cursor;
     },

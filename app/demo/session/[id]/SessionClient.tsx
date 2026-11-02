@@ -28,6 +28,7 @@ import { businessDayKey } from "@/lib/timezone";
 import type { SessionCursor } from "@/lib/demoSession/client";
 import DashboardShell from "@/app/components/dashboard/DashboardShell";
 import SessionControlBar, { type PendingAction } from "@/app/components/demo-session/SessionControlBar";
+import SessionChat from "@/app/components/demo-session/SessionChat";
 import { RestrictedWordingProvider } from "@/app/components/dashboard/restrictedWording";
 import { installDemoFetchInterceptor } from "@/lib/demoLocal/fetchInterceptor";
 import { DEMO_ENTITLEMENT } from "@/lib/demoLocal/fixtures/entitlement";
@@ -59,7 +60,14 @@ if (typeof window !== "undefined" && !globalThis.__guidedDemoSession) {
   }
 }
 
-const SERVER_STATE: DemoSessionState = { status: "connecting", session: null, dataset: null, offline: false, view: null };
+const SERVER_STATE: DemoSessionState = {
+  status: "connecting",
+  session: null,
+  dataset: null,
+  offline: false,
+  view: null,
+  chat: { available: null, messages: [], outgoing: [] },
+};
 const noopSubscribe = () => () => {};
 
 const getHydrated = () => true;
@@ -251,6 +259,17 @@ export default function SessionClient() {
       cursor={((ctx.role === "host" ? session.visitor_cursor : session.host_cursor) ?? null) as SessionCursor | null}
       label={ctx.role === "host" ? guestName : "Host"}
       color={ctx.role === "host" ? "#7c3aed" : "#0f766e"}
+    />
+    {/* Chat: outside the cursor anchor area and the watch-only area, so it
+        is usable while watching and never part of the shared screen. */}
+    <SessionChat
+      role={ctx.role}
+      chat={state.chat}
+      // An ended session shows the ended notice instead of this page.
+      ended={false}
+      onSend={ctx.client.sendChat}
+      onRetry={ctx.client.retryChat}
+      onDiscard={ctx.client.discardChat}
     />
     </SharedScreenProvider>
   );

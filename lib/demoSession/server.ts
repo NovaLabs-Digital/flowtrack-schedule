@@ -115,6 +115,9 @@ export type DemoSessionView = {
   host_cursor?: unknown;
   visitor_cursor?: unknown;
 };
+// Migration 046: the chat part of a check-in.
+export type DemoChatMessage = { id: number; role: DemoRole; name: string; body: string; at: string; clientId: string };
+export type DemoChatSync = { gen: number; messages: DemoChatMessage[]; more: boolean };
 export type DemoRpcResult = {
   outcome: string;
   session?: DemoSessionView;
@@ -123,6 +126,10 @@ export type DemoRpcResult = {
   result_version?: number;
   response_status?: number;
   response?: unknown;
+  chat?: DemoChatSync;
+  message?: DemoChatMessage;
+  duplicate?: boolean;
+  chat_gen?: number;
 };
 
 // Database errors from a migration-042 function. `notInstalled` is true when
@@ -170,6 +177,7 @@ export function statusForOutcome(outcome: string): number {
     case "ended": return 410;
     case "invalid_input": return 400;
     case "invite_unavailable": return 404;
+    case "rate_limited": return 429;
     default: return 409;
   }
 }

@@ -204,7 +204,7 @@ describe("deployed before migration 042 is applied", () => {
     sessionToReturn = OWNER;
     reset(
       { workspace_memberships: [{ data: { workspace_id: "ws-1", session_epoch: 1 } }, { data: { workspace_id: "ws-1", session_epoch: 1 } }] },
-      { demo_session_current: [missing, missing], demo_session_claim: [missing], demo_session_sync_cursor: [missing], demo_session_sync: [missing] }
+      { demo_session_current: [missing, missing], demo_session_claim: [missing], demo_session_sync_chat: [missing], demo_session_sync_cursor: [missing], demo_session_sync: [missing] }
     );
     for (const res of [await current(), await create(post("http://localhost/api/demo-session", {}))]) {
       assert.equal(res.status, 503);
@@ -301,22 +301,22 @@ describe("per-session actions: identity", () => {
 
   test("the visitor's identity (id + epoch from the cookie) is what reaches the database", async () => {
     cookieJar.set("sft_demo_visitor", await visitorCookie(SID, 3));
-    reset({}, { demo_session_sync_cursor: [{ data: { outcome: "ok", session: sessionView(), state: null } }] });
+    reset({}, { demo_session_sync_chat: [{ data: { outcome: "ok", session: sessionView(), state: null, chat: { gen: 0, messages: [], more: false } } }] });
     const res = await act(SID, "sync", { role: "visitor", since: 5, p_visitor: "forged", p_epoch: 99 });
     assert.equal(res.status, 200);
-    assert.deepEqual(currentFake.rpcCalls[0].args, { p_session_id: SID, p_role: "visitor", p_host: null, p_visitor: VISITOR, p_epoch: 3, p_since: 5, p_cursor: null });
+    assert.deepEqual(currentFake.rpcCalls[0].args, { p_session_id: SID, p_role: "visitor", p_host: null, p_visitor: VISITOR, p_epoch: 3, p_since: 5, p_cursor: null, p_chat_gen: null, p_chat_since: null });
   });
 
   test("an ended session answers 410 to sync", async () => {
     cookieJar.set("sft_demo_visitor", await visitorCookie());
-    reset({}, { demo_session_sync_cursor: [{ data: { outcome: "ended", session: sessionView({ status: "ended" }) } }] });
+    reset({}, { demo_session_sync_chat: [{ data: { outcome: "ended", session: sessionView({ status: "ended" }) } }] });
     assert.equal((await act(SID, "sync", { role: "visitor", since: null })).status, 410);
   });
 
   test("the check-in carries a validated cursor; anything malformed is dropped (never stored)", async () => {
     cookieJar.set("sft_demo_visitor", await visitorCookie());
     const ok = { data: { outcome: "ok", session: sessionView(), state: null } };
-    reset({}, { demo_session_sync_cursor: [ok, ok, ok, ok] });
+    reset({}, { demo_session_sync_chat: [ok, ok, ok, ok] });
     await act(SID, "sync", { role: "visitor", since: null, cursor: { anchor: "schedule-grid", x: 0.25, y: 0.123456 } });
     await act(SID, "sync", { role: "visitor", since: null, cursor: { anchor: "<script>", x: 0.5, y: 0.5 } });
     await act(SID, "sync", { role: "visitor", since: null, cursor: { anchor: "schedule-grid", x: 2, y: 0.5 } });
@@ -327,15 +327,16 @@ describe("per-session actions: identity", () => {
   test("before migration 044 the check-in falls back to the plain one (no cursor, no shared screen)", async () => {
     cookieJar.set("sft_demo_visitor", await visitorCookie());
     const missing = { error: { code: "PGRST202", message: "Could not find the function public.demo_session_sync_cursor" } };
-    reset({}, { demo_session_sync_cursor: [missing], demo_session_sync: [{ data: { outcome: "ok", session: sessionView(), state: null } }] });
+    const missingChat = { error: { code: "PGRST202", message: "Could not find the function public.demo_session_sync_chat" } };
+    reset({}, { demo_session_sync_chat: [missingChat], demo_session_sync_cursor: [missing], demo_session_sync: [{ data: { outcome: "ok", session: sessionView(), state: null } }] });
     assert.equal((await act(SID, "sync", { role: "visitor", since: null })).status, 200);
-    assert.deepEqual(rpcNames(), ["demo_session_sync_cursor", "demo_session_sync"]);
+    assert.deepEqual(rpcNames(), ["demo_session_sync_chat", "demo_session_sync_cursor", "demo_session_sync"]);
   });
 
   test("the shared view is only sent when the browser doesn't already have that version", async () => {
     cookieJar.set("sft_demo_visitor", await visitorCookie());
     const withView = { data: { outcome: "ok", session: sessionView({ view: { nav: {} }, view_version: 4 }), state: null } };
-    reset({}, { demo_session_sync_cursor: [withView, withView] });
+    reset({}, { demo_session_sync_chat: [withView, withView] });
     const same = await (await act(SID, "sync", { role: "visitor", since: null, viewSince: 4 })).json();
     assert.equal("view" in same.session, false);
     const older = await (await act(SID, "sync", { role: "visitor", since: null, viewSince: 3 })).json();
@@ -566,5 +567,79 @@ describe("cleanup cron and isolation", () => {
       for (const m of src.matchAll(/demoRpc\("([a-z_]+)"/g)) assert.match(m[1], /^demo_session_/);
       assert.ok(!/lib\/(notify|stripe|completedJobBilling|appointmentEmployees|recurringSeries)\b/.test(src), "no real business modules");
     }
+  });
+});
+
+// ---------- session chat (migration 046) ----------
+describe("session chat", () => {
+  const CID = "7d1f2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
+  const msg = { id: 1, role: "visitor", name: "Dana", body: "hi", at: "2026-11-01T12:00:00Z", clientId: CID };
+  const asGuest = async () => cookieJar.set("sft_demo_visitor", await visitorCookie());
+
+  test("the check-in sends the chat generation and cursor and returns new messages", async () => {
+    await asGuest();
+    reset({}, { demo_session_sync_chat: [{ data: { outcome: "ok", session: sessionView(), state: null, chat: { gen: 3, messages: [msg], more: false } } }] });
+    const res = await act(SID, "sync", { role: "visitor", since: 5, chatGen: 3, chatSince: 0 });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).chat, { gen: 3, messages: [msg], more: false });
+    const args = currentFake.rpcCalls[0].args as Record<string, unknown>;
+    assert.deepEqual([args.p_chat_gen, args.p_chat_since, args.p_visitor], [3, 0, VISITOR]);
+  });
+
+  test("before 046 the check-in still works, with chat: null (unavailable)", async () => {
+    await asGuest();
+    const missing = { error: { code: "PGRST202", message: "Could not find the function public.demo_session_sync_chat" } };
+    reset({}, { demo_session_sync_chat: [missing], demo_session_sync_cursor: [{ data: { outcome: "ok", session: sessionView(), state: null } }] });
+    const res = await act(SID, "sync", { role: "visitor", since: 5 });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).chat, null);
+    assert.deepEqual(rpcNames(), ["demo_session_sync_chat", "demo_session_sync_cursor"]);
+  });
+
+  test("malformed chat cursors are refused", async () => {
+    await asGuest();
+    assert.equal((await act(SID, "sync", { role: "visitor", chatSince: -1 })).status, 400);
+    assert.equal((await act(SID, "sync", { role: "visitor", chatGen: "x" })).status, 400);
+  });
+
+  test("a watch-only guest can send; text is cleaned to plain text; identity comes from the cookie", async () => {
+    await asGuest();
+    reset({}, { demo_session_post_message: [{ data: { outcome: "ok", duplicate: false, message: msg, chat_gen: 3 } }] });
+    const res = await act(SID, "chat", { role: "visitor", clientId: CID, text: "  hi\u0000\u0007 there\r\nline two  " });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { outcome: "ok", message: msg, duplicate: false, chatGen: 3 });
+    const args = currentFake.rpcCalls[0].args as Record<string, unknown>;
+    assert.deepEqual([args.p_body, args.p_client_msg_id, args.p_visitor, args.p_epoch], ["hi there\nline two", CID, VISITOR, 1]);
+  });
+
+  test("empty, over-long, or unidentified messages never reach the database", async () => {
+    await asGuest();
+    for (const body of [{ clientId: CID, text: "   " }, { clientId: CID, text: "x".repeat(501) }, { clientId: "nope", text: "hi" }, { clientId: CID }]) {
+      assert.equal((await act(SID, "chat", { role: "visitor", ...body })).status, 400, JSON.stringify(body).slice(0, 60));
+    }
+    assert.deepEqual(rpcNames(), []);
+  });
+
+  test("no visitor cookie, or someone who isn't the host: refused before the database", async () => {
+    assert.equal((await act(SID, "chat", { role: "visitor", clientId: CID, text: "hi" })).status, 403);
+    sessionToReturn = { ...OWNER, authUserId: "11111111-2222-4333-8444-555555555555" };
+    assert.equal((await act(SID, "chat", { role: "host", clientId: CID, text: "hi" })).status, 403);
+    assert.deepEqual(rpcNames(), []);
+  });
+
+  test("database refusals map to clear statuses: rate limited 429, full 409, ended 410, not a participant 403", async () => {
+    await asGuest();
+    for (const [outcome, status] of [["rate_limited", 429], ["chat_full", 409], ["ended", 410], ["unauthorized", 403]] as const) {
+      reset({}, { demo_session_post_message: [{ data: { outcome } }] });
+      const res = await act(SID, "chat", { role: "visitor", clientId: CID, text: "hi" });
+      assert.deepEqual([res.status, (await res.json()).outcome], [status, outcome]);
+    }
+  });
+
+  test("before 046: a clear 'chat unavailable' (503)", async () => {
+    await asGuest();
+    reset({}, { demo_session_post_message: [{ error: { code: "PGRST202", message: "missing" } }] });
+    const res = await act(SID, "chat", { role: "visitor", clientId: CID, text: "hi" });
+    assert.deepEqual([res.status, (await res.json()).outcome], [503, "chat_unavailable"]);
   });
 });

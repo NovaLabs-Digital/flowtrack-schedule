@@ -35,6 +35,7 @@ import {
   statusForOutcome,
   type DemoCaller,
 } from "@/lib/demoSession/server";
+import { cleanChatText } from "@/lib/demoSession/chat";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_BODY_BYTES = 256 * 1024;
@@ -73,6 +74,8 @@ export async function POST(req: Request, { params }: Params) {
         return await end(id);
       case "leave":
         return await leave(id);
+      case "chat":
+        return await chat(id, body);
       default:
         return json({ error: "Not found" }, 404);
     }
@@ -86,9 +89,45 @@ async function sync(id: string, body: Record<string, unknown>) {
   if ("response" in who) return who.response;
   const since = body.since === null || body.since === undefined ? null : body.since;
   if (since !== null && !isWholeNumber(since)) return json({ error: "Invalid request" }, 400);
-  const result = await syncWithCursor(id, who.caller, since, cursorFrom(body.cursor));
+  const chatGen = body.chatGen === null || body.chatGen === undefined ? null : body.chatGen;
+  const chatSince = body.chatSince === null || body.chatSince === undefined ? null : body.chatSince;
+  if ((chatGen !== null && !isWholeNumber(chatGen)) || (chatSince !== null && !isWholeNumber(chatSince))) return json({ error: "Invalid request" }, 400);
+  const result = await syncWithChat(id, who.caller, since, cursorFrom(body.cursor), chatGen, chatSince);
   if (result.outcome !== "ok") return json({ outcome: result.outcome, session: result.session ?? null }, statusForOutcome(result.outcome));
-  return json({ outcome: "ok", session: withoutUnchangedView(result.session, body.viewSince), state: result.state ?? null });
+  // chat: null = chat isn't installed yet (before migration 046).
+  return json({ outcome: "ok", session: withoutUnchangedView(result.session, body.viewSince), state: result.state ?? null, chat: result.chat ?? null });
+}
+
+// Migration 046's check-in (044's plus new chat messages); before 046 is
+// applied, the 044 check-in without chat.
+async function syncWithChat(id: string, caller: DemoCaller, since: unknown, cursor: ReturnType<typeof cursorFrom>, chatGen: unknown, chatSince: unknown) {
+  try {
+    return await demoRpc("demo_session_sync_chat", { p_session_id: id, ...caller, p_since: since, p_cursor: cursor, p_chat_gen: chatGen, p_chat_since: chatSince });
+  } catch (e) {
+    if (e instanceof DemoRpcError && e.notInstalled) return syncWithCursor(id, caller, since, cursor);
+    throw e;
+  }
+}
+
+// Session chat (migration 046): plain text from the host or the current
+// guest, whether or not the guest has dashboard control. Length, rate, the
+// session being live, and duplicates (same clientId = the same message) are
+// all enforced in the database under the session lock.
+async function chat(id: string, body: Record<string, unknown>) {
+  const who = await resolveCaller(id, body.role);
+  if ("response" in who) return who.response;
+  const clientId = typeof body.clientId === "string" ? body.clientId : "";
+  const text = cleanChatText(body.text);
+  if (!UUID.test(clientId) || text === null) return json({ outcome: "invalid_input" }, 400);
+  let result;
+  try {
+    result = await demoRpc("demo_session_post_message", { p_session_id: id, ...who.caller, p_client_msg_id: clientId, p_body: text });
+  } catch (e) {
+    if (e instanceof DemoRpcError && e.notInstalled) return json({ outcome: "chat_unavailable" }, 503);
+    throw e;
+  }
+  if (result.outcome !== "ok") return json({ outcome: result.outcome }, statusForOutcome(result.outcome));
+  return json({ outcome: "ok", message: result.message, duplicate: result.duplicate === true, chatGen: result.chat_gen ?? null });
 }
 
 // The check-in with this person's cursor (migration 044). Before 044 is

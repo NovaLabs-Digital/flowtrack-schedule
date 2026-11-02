@@ -87,7 +87,9 @@ export default function LeftBar({
   const displayClients = showArchived ? clients : activeClients;
 
   return (
-    <div className="flex flex-col h-full bg-[#0f172a] rounded-2xl text-white">
+    // data-keep-clear: the Guided Demo Session chat card never covers the
+    // main navigation (SessionChat.tsx).
+    <div className="flex flex-col h-full bg-[#0f172a] rounded-2xl text-white" data-keep-clear>
       {/* Logo + collapse/expand toggle */}
       <div className="px-4 pt-5 pb-4">
         <div className={["flex items-center", collapsed ? "flex-col gap-2" : "justify-between gap-3"].join(" ")}>

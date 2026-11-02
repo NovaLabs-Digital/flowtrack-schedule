@@ -781,7 +781,7 @@ export default function AppointmentModal({ onClose, onSaved, clients, appointmen
 
   return (
     <div data-tour="appointment-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 sm:px-0">
-      <div ref={panelScrollRef} className="w-full max-w-lg rounded-2xl border bg-white p-5 sm:p-6 shadow-lg max-h-[90vh] overflow-auto">
+      <div ref={panelScrollRef} className="w-full max-w-lg rounded-2xl border bg-white p-5 sm:p-6 shadow-lg max-h-[90vh] overflow-auto" data-keep-clear>
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">{isEdit ? "Edit Appointment" : "New Appointment"}</div>
           <button onClick={onClose} className="rounded-lg border px-2 py-1 text-xs hover:bg-slate-50">Close</button>

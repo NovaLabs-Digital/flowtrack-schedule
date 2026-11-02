@@ -102,6 +102,52 @@ small view toggles inside panels are not shared.
   they trail the real pointer by about 1–2 seconds. Pushed updates (a later
   milestone) would bring this close to instant.
 
+## Chat
+
+A small floating chat card lets the host and the guest message each other
+for the whole live session -- including while the guest is watch-only
+(chat never depends on dashboard control).
+
+- **Opens automatically** when the host's session page starts and when the
+  guest joins. Drag it by its header; **Minimize** shrinks it to a Chat
+  button with an unread count; click to reopen.
+- **Local to each browser:** its position is remembered in that browser
+  only. It is not part of the shared screen, shared fields, or cursors:
+  typing and scrolling in the chat are never sent to the other screen, and
+  the pointer over the chat isn't shown as a cursor.
+- **Keeps clear of controls:** it starts in the bottom-right corner and
+  never covers the session bar, the main navigation on the left, or an
+  open dialog. If its place would, it moves to a free corner, or shrinks to
+  a compact size beside the dialog; only if even that doesn't fit does it
+  minimize until there is room -- so Save, Close, and the session controls
+  always stay clickable. (While any dialog is open, the dialog's own
+  backdrop covers the host's session bar, as before the chat existed; close
+  the dialog to use the bar.)
+- **Messages** are plain text (no attachments, voice, links, or HTML),
+  1-500 characters, labelled with the sender (Alberto or the guest's name)
+  and the time. They arrive on the once-a-second check-in, so they appear on
+  the other screen in **about 1–2 seconds** -- not instantly.
+- **Limits (server-enforced):** 5 messages per 10 seconds per person, 300
+  per conversation; a retried send never arrives twice.
+- **A failed send** keeps its text in the chat with a clear message and a
+  **Retry** (or **Edit**) button.
+- **Reload/reconnect:** messages are kept for the live session and come back
+  after a reload. They are held only in the page's memory and the session's
+  database row -- never in browser storage.
+- **Clearing:** End Session, expiry, or the host leaving deletes the
+  conversation at once (both screens clear). A replacement guest -- someone
+  joining after an earlier guest or a new invitation -- starts with an empty
+  chat; the first guest still sees anything the host wrote before they
+  joined.
+
+**Known issues (pre-existing, on the follow-up list):**
+
+- If a browser blocks site storage entirely (reading local storage throws),
+  the whole site fails to load -- the public `/demo` included, chat or
+  not. The chat itself handles storage failures; other components don't yet.
+- While any dialog is open, the dialog's backdrop covers the host's session
+  bar; close the dialog to use End Session or the other bar controls.
+
 Guided sessions are designed for desktop browsers. On a phone-sized screen
 the dashboard switches to the mobile layout, which has no session bar and no
 watch-only blocking (the server still refuses changes from a watching guest).
@@ -113,7 +159,8 @@ watch-only blocking (the server still refuses changes from a watching guest).
 | `DEMO_HOST_AUTH_USER_ID` | Vercel environment (server-only) | Alberto's Supabase Auth user id (the owner session's `authUserId`). **Unset = feature off.** |
 | Migration 042 | Supabase SQL editor | `migrations/042_add_demo_sessions.sql` (applied 2026-10-31) |
 | Migration 043 | Supabase SQL editor | `migrations/043_guest_control_permissions.sql` (applied 2026-11-01) |
-| Migration 044 | Supabase SQL editor | `migrations/044_shared_session_view.sql` (separate approval; checks: `test-db/044-preflight.sql`, `test-db/044-postflight.sql`) |
+| Migration 044 | Supabase SQL editor | `migrations/044_shared_session_view.sql` (applied 2026-11-01) |
+| Migration 046 | Supabase SQL editor | `migrations/046_session_chat.sql` (separate approval; checks: `test-db/046-preflight.sql`, `test-db/046-postflight.sql`) |
 | Cleanup cron | `vercel.json` | `/api/cron/demo-session-cleanup`, daily at `37 9 * * *` (09:37 UTC) |
 
 ## Safe release order
@@ -144,6 +191,13 @@ the code.** 044 only adds columns and functions the earlier code never
 uses. Deployed the other way round, sessions still work (the check-in falls
 back to the pre-044 one) but screens aren't shared and there are no cursors
 until 044 is applied.
+
+**Chat (migration 046): apply 046 first, then deploy the code.** 046 adds a
+table, a column, and new functions, and extends demo_session_close and
+demo_session_claim without changing their results, so the code deployed
+before it keeps working (verified against the deployed code). Deployed the
+other way round, sessions still work and the chat card says "Chat isn't
+available yet" until 046 is applied.
 
 ## Cron and the Vercel plan
 

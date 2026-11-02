@@ -538,3 +538,127 @@ describe("shared view: scrolling inside panels", () => {
     assert.equal(reduceView(v, { ...panel("appointment:a1"), key: "dialog" } as ViewOp, "visitor").outcome, "ok");
   });
 });
+
+// ---------- session chat (migration 046) ----------
+describe("session chat", () => {
+  const msg = (id: number, role: "host" | "visitor" = "host", clientId = `c${id}`) => ({ id, role, name: role === "host" ? "Alberto" : "Dana", body: `m${id}`, at: "2026-11-01T12:00:00Z", clientId });
+  const chatReply = (gen: number, messages: ReturnType<typeof msg>[], more = false) => ({ body: { outcome: "ok", session: view(), state: null, chat: { gen, messages, more } } });
+
+  test("messages arrive on the check-in; the cursor and generation are sent back", async () => {
+    const { client, sent } = await connected("visitor", [chatReply(1, [msg(1), msg(2, "visitor")]), chatReply(1, [msg(3)])]);
+    await client.syncNow();
+    assert.deepEqual(client.getState().chat.messages.map((m) => m.id), [1, 2]);
+    assert.equal(client.getState().chat.available, true);
+    await client.syncNow();
+    assert.deepEqual([sent[2].body.chatGen, sent[2].body.chatSince], [1, 2]);
+    assert.deepEqual(client.getState().chat.messages.map((m) => m.id), [1, 2, 3]);
+  });
+
+  test("a long conversation is fetched batch after batch in one check-in (nothing lost past 200)", async () => {
+    const first = Array.from({ length: 200 }, (_, i) => msg(i + 1));
+    const rest = Array.from({ length: 100 }, (_, i) => msg(i + 201));
+    const { client, sent } = await connected("host", [chatReply(1, first, true), chatReply(1, rest, false)]);
+    await client.syncNow();
+    assert.equal(client.getState().chat.messages.length, 300);
+    assert.deepEqual([sent[2].body.chatGen, sent[2].body.chatSince], [1, 200]);
+  });
+
+  test("a cleared conversation (new generation) drops every cached message and reads from the start", async () => {
+    const { client, sent } = await connected("host", [chatReply(1, [msg(1), msg(2)]), chatReply(2, [])]);
+    await client.syncNow();
+    await client.syncNow();
+    assert.deepEqual(client.getState().chat.messages, []);
+    await client.syncNow().catch(() => {});
+    assert.deepEqual([sent[3]?.body.chatGen, sent[3]?.body.chatSince], [2, null]);
+  });
+
+  test("before migration 046 chat is reported unavailable and sending does nothing", async () => {
+    const { client, sent } = await connected("host", [{ body: { outcome: "ok", session: view(), state: null, chat: null } }]);
+    await client.syncNow();
+    assert.equal(client.getState().chat.available, false);
+    assert.equal(client.sendChat("hello"), false);
+    assert.equal(sent.filter((s) => s.action === "chat").length, 0);
+  });
+
+  test("sending: shown as sending, confirmed by the server answer", async () => {
+    const { client, sent } = await connected("visitor", [chatReply(1, []), { body: { outcome: "ok", message: msg(5, "visitor", "op-1"), duplicate: false, chatGen: 1 } }]);
+    await client.syncNow();
+    assert.equal(client.sendChat("  hello  "), true);
+    assert.deepEqual(client.getState().chat.outgoing.map((o) => [o.text, o.status]), [["hello", "sending"]]);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(sent.at(-1)!.body, { role: "visitor", clientId: "op-1", text: "hello" });
+    assert.deepEqual(client.getState().chat.outgoing, []);
+    assert.deepEqual(client.getState().chat.messages.map((m) => m.id), [5]);
+  });
+
+  test("a failed send keeps the text with a clear message; Retry resends under the same id", async () => {
+    const { client, sent } = await connected("visitor", [
+      chatReply(1, []),
+      "network-error",
+      { status: 429, body: { outcome: "rate_limited" } },
+      { body: { outcome: "ok", message: msg(7, "visitor", "op-1"), duplicate: true, chatGen: 1 } },
+    ]);
+    await client.syncNow();
+    client.sendChat("are you there?");
+    await new Promise((r) => setTimeout(r, 0));
+    let o = client.getState().chat.outgoing[0];
+    assert.deepEqual([o.text, o.status], ["are you there?", "failed"]);
+    assert.match(o.error!, /no connection.*kept.*Retry/);
+    client.retryChat("op-1");
+    await new Promise((r) => setTimeout(r, 0));
+    o = client.getState().chat.outgoing[0];
+    assert.match(o.error!, /too quickly/);
+    client.retryChat("op-1");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepEqual(client.getState().chat.outgoing, []);
+    assert.deepEqual(sent.filter((s) => s.action === "chat").map((s) => s.body.clientId), ["op-1", "op-1", "op-1"]);
+  });
+
+  test("a send whose answer was lost is confirmed by the next check-in -- never shown twice", async () => {
+    const { client } = await connected("visitor", [chatReply(1, []), "network-error", chatReply(1, [msg(9, "visitor", "op-1")])]);
+    await client.syncNow();
+    client.sendChat("hi");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(client.getState().chat.outgoing[0].status, "failed");
+    await client.syncNow();
+    assert.deepEqual(client.getState().chat.outgoing, []);
+    assert.equal(client.getState().chat.messages.length, 1);
+  });
+
+  test("Edit takes a failed message back for editing", async () => {
+    const { client } = await connected("visitor", [chatReply(1, []), "network-error"]);
+    await client.syncNow();
+    client.sendChat("draft text");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(client.discardChat("op-1"), "draft text");
+    assert.deepEqual(client.getState().chat.outgoing, []);
+  });
+
+  test("empty or over-long text is never sent", async () => {
+    const { client, sent } = await connected("visitor", [chatReply(1, [])]);
+    await client.syncNow();
+    assert.equal(client.sendChat("   "), false);
+    assert.equal(client.sendChat("x".repeat(501)), false);
+    assert.equal(sent.filter((s) => s.action === "chat").length, 0);
+  });
+
+  test("when the session ends, messages and unsent text are cleared and nothing more can be sent", async () => {
+    const { client } = await connected("visitor", [chatReply(1, [msg(1)]), { status: 410, body: { outcome: "ended", session: view({ status: "ended", end_reason: "host_ended" }) } }]);
+    await client.syncNow();
+    await client.syncNow();
+    assert.equal(client.getState().status, "ended");
+    assert.deepEqual([client.getState().chat.messages, client.getState().chat.outgoing], [[], []]);
+    assert.equal(client.sendChat("hello?"), false);
+  });
+
+  test("chat never touches browser storage", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./client.ts", import.meta.url), "utf8");
+    const card = readFileSync(new URL("../../app/components/demo-session/SessionChat.tsx", import.meta.url), "utf8");
+    assert.ok(!/localStorage|sessionStorage|indexedDB/.test(src), "the client keeps chat in memory only");
+    // The card stores only its position.
+    const keys = [...card.matchAll(/localStorage\.(\w+)\((\w+)\(/g)].map((m) => `${m[1]}:${m[2]}`);
+    assert.deepEqual(keys.sort(), ["getItem:positionKey", "setItem:positionKey"]);
+    assert.ok(!/sessionStorage|indexedDB/.test(card));
+  });
+});

@@ -40,7 +40,9 @@ export default function WatchOnlyArea({ watchingMessage, children }: Props) {
     if (!watching) return;
     const blockKey = (e: KeyboardEvent) => {
       const target = e.target instanceof Element ? e.target : null;
-      if (target?.closest(`[${SESSION_CONTROLS_ATTR}]`) || passesThrough(e)) return;
+      // The session bar and the session chat (SessionChat.tsx's
+      // data-session-chat) stay usable while watching.
+      if (target?.closest(`[${SESSION_CONTROLS_ATTR}], [data-session-chat]`) || passesThrough(e)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
     };

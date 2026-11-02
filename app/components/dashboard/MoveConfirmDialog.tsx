@@ -91,7 +91,7 @@ export default function MoveConfirmDialog({ appointment, client, scheduledFor, s
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-sm rounded-2xl border bg-white p-5 shadow-lg">
+      <div className="w-full max-w-sm rounded-2xl border bg-white p-5 shadow-lg" data-keep-clear>
         <div className="text-sm font-semibold text-slate-900">Move Appointment</div>
         <div className="text-sm text-slate-700 mt-2">
           Move {appointment.service_type} for {client.name}?
