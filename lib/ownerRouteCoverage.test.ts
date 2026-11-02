@@ -36,7 +36,8 @@ const ROUTE_FILES = findRouteFiles(apiDir).map((f) => path.relative(apiDir, f).r
 // longer holds, remove it from this list; the test above will then fail
 // until the route is properly gated.
 const EXEMPT: Record<string, string> = {
-  "auth/login/route.ts": "pre-session: this route ESTABLISHES a session (or an MFA hand-off), it never consumes one",
+  "auth/login/route.ts":
+    "pre-session: this route ESTABLISHES a session (an MFA hand-off, or -- migration 045 -- a password-only owner session only when that owner turned two-step sign-in off and has no authenticator), it never consumes one",
   "auth/logout/route.ts": "clears the sft_session cookie unconditionally for any role; reads no business data",
   "auth/logout-all/route.ts":
     "the session_epoch-bump action itself, gated by requireOwner() alone; bumping is safe even from an already-stale session, since it can only move the epoch forward, never restore access",
@@ -44,6 +45,8 @@ const EXEMPT: Record<string, string> = {
   "auth/signup/confirm/route.ts": "pre-session: this is the email-confirmation exchange itself, still aal1 at most",
   "auth/signup/resend/route.ts": "pre-session: re-triggers Supabase's own confirmation email for an unconfirmed account, no Auth session exists at any point",
   "auth/mfa/enroll/route.ts": "pre-session: uses the separate, structurally distinct sft_mfa_pending mechanism, never sft_session",
+  "auth/mfa/recover/route.ts":
+    "pre-session: the lost-authenticator step of sign-in (migration 045), authenticated by the sft_mfa_pending hand-off from a correct password plus the password again and an unused recovery code; never reads or mints sft_session",
   "auth/mfa/verify/route.ts": "pre-session: uses the separate, structurally distinct sft_mfa_pending mechanism, never sft_session -- and is the ONE route that mints sft_session, so it cannot itself already hold a validated one",
   "appointments/cancel/route.ts": "fully public, unguessable-token-based (cancel_token match) -- no session of any kind, owner or otherwise",
   "appointments/job/route.ts": "employee-only: session.role !== \"employee\" is rejected before any data read; never reachable by an owner session",

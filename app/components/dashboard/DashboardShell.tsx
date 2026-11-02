@@ -15,6 +15,7 @@ import AppointmentModal from "@/app/components/dashboard/AppointmentModal";
 import MoveConfirmDialog from "@/app/components/dashboard/MoveConfirmDialog";
 import MobileDashboard from "@/app/components/mobile/MobileDashboard";
 import OwnerBillingBanner from "@/app/components/dashboard/OwnerBillingBanner";
+import RecoveryCodesReminder from "@/app/components/dashboard/RecoveryCodesReminder";
 import useIsMobile, { useMediaQuery } from "@/app/components/dashboard/useIsMobile";
 import ResizeHandle from "@/app/components/dashboard/ResizeHandle";
 import NeedsAttentionControl from "@/app/components/dashboard/NeedsAttentionControl";
@@ -720,6 +721,15 @@ export default function DashboardShell({
         readOnlyEndsAt={entitlement.readOnlyEndsAt}
         timezone={timezone}
       />
+      {!isTester && !isLocalDemo && !guidedSession && (
+        <RecoveryCodesReminder
+          userId={userId}
+          onOpen={() => {
+            setSettingsSection("company");
+            setCenterMode("settings");
+          }}
+        />
+      )}
       <div className="flex-1 min-h-0 flex">
       {/* Left bar — full height, never moves. Collapses to a narrow icon
           strip (LeftBar.tsx owns its own collapsed rendering and toggle
@@ -893,6 +903,7 @@ export default function DashboardShell({
               billingFocusAppointmentId={billingFocus?.appointmentId}
               billingFocusServiceDate={billingFocus?.serviceDate}
               onBillingSaved={handleBillingSaved}
+              showSignInSecurity={!isTester && !isLocalDemo && !guidedSession}
             />
           )}
         </div>

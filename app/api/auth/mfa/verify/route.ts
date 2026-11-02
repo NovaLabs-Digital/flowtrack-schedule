@@ -4,12 +4,33 @@ import { NextResponse } from "next/server";
 import { createScopedAuthClient } from "@/lib/supabaseAuthClient";
 import { getMfaPendingToken, clearMfaPendingCookie, createOwnerSessionCookieValue, setOwnerSessionCookie } from "@/lib/session";
 import { getPendingMfaChallenge, recordFailedMfaAttempt, consumePendingMfaChallenge, MFA_MAX_ATTEMPTS } from "@/lib/mfaPending";
-import { findOwnerMembership } from "@/lib/signupProvisioning";
+import { findOwnerMembership, bumpSessionEpoch } from "@/lib/signupProvisioning";
+import { finishOwnerSecurity, lockOwnerSecurity, unlockOwnerSecurity, removeAllAuthenticators } from "@/lib/ownerSecurityStore";
+import { generateRecoveryCodes, lockHolderFor, SECURITY_LOCK_SECONDS } from "@/lib/ownerSecurity";
+import { sendAccountSecurityEmail, TWO_STEP_OFF_EMAIL } from "@/lib/securityEmail";
 import { checkAndRecordRateLimit } from "@/lib/durableRateLimit";
 
 const GENERIC_ERROR = "Invalid code. Please try again.";
 const EXPIRED_ERROR = "Your session has expired. Please sign in again.";
 const LOCKED_ERROR = "Too many attempts. Please sign in again.";
+const CODES_NOT_SAVED =
+  "Two-step sign-in is on and sign-in will ask for a code, but your recovery codes couldn't be created. Create them in Settings > Sign-in Security.";
+
+// Migration 045: completes a security change (setting, recovery codes, and
+// signing out every other device, in one transaction). null = nothing was
+// changed (the lock was lost, or the database failed) -- never thrown, so
+// each caller decides what is still true and says so.
+async function finishChange(authUserId: string, holder: string, required: boolean | null, codeHashes: string[] | null) {
+  try {
+    const epoch = await finishOwnerSecurity(authUserId, holder, required, codeHashes);
+    if (epoch === null) await unlockOwnerSecurity(authUserId, holder).catch(() => {});
+    return epoch;
+  } catch {
+    console.error("OWNER_SECURITY_FINISH_FAILED");
+    await unlockOwnerSecurity(authUserId, holder).catch(() => {});
+    return null;
+  }
+}
 
 function clientIpFor(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for");
@@ -133,21 +154,101 @@ export async function POST(req: Request) {
     // row, so the Auth identity and the workspace it's granted access to
     // can never drift apart (Phase 5.7D-R2 audit: "workspace membership
     // and MFA identity must refer to the same Auth user").
-    const membership = await findOwnerMembership(consumed.authUserId);
+    //
+    // Migration 045: what this verification completes (consumed.purpose).
+    // Every branch either finishes its whole change or reports exactly what
+    // is still true; none leaves sign-in weaker than before after an error.
+    const authUserId = consumed.authUserId;
+    const holder = lockHolderFor(token);
+    const purpose = consumed.purpose ?? "login";
+    let recoveryCodes: string[] | undefined;
+    let notice: string | undefined;
+    let failure: { status: number; error: string } | undefined;
+
+    if (purpose === "enable" || (purpose === "login" && (consumed.enrolled || consumed.recovered))) {
+      // A new authenticator was just verified (turning two-step on, a first
+      // setup, or setup after recovery): two-step on, new recovery codes,
+      // every other device signed out. The authenticator is already
+      // verified, so if saving fails sign-in still asks for a code; other
+      // devices are still signed out separately.
+      if (purpose === "enable" && !consumed.enrolled) {
+        return NextResponse.json({ error: GENERIC_ERROR }, { status: 400 });
+      }
+      const fresh = generateRecoveryCodes();
+      if ((await finishChange(authUserId, holder, true, fresh.hashes)) !== null) {
+        recoveryCodes = fresh.codes;
+      } else {
+        notice = CODES_NOT_SAVED;
+        await bumpSessionEpoch(authUserId).catch(() => console.error("OWNER_SECURITY_EPOCH_BUMP_FAILED"));
+      }
+    } else if (purpose === "disable") {
+      // Three steps, ordered so that a failure at any point leaves sign-in
+      // at least as strict as before AND the owner able to get back in:
+      //   1. setting off (signs out other devices); recovery codes KEPT.
+      //      Fails -> nothing changed.
+      //   2. the authenticator removed, still under the change lock. Fails
+      //      -> it still exists, so sign-in still asks for its code, the
+      //      recovery codes still work, the lock is released, and turning
+      //      off can be retried at once.
+      //   3. recovery codes cleared. Fails -> they are left over but unused
+      //      by sign-in (two-step is off, no authenticator); turning on
+      //      again replaces them.
+      if ((await finishChange(authUserId, holder, false, null)) === null) {
+        const res = NextResponse.json({ error: "Two-step sign-in is still on. Nothing was changed. Please try again." }, { status: 409 });
+        clearMfaPendingCookie(res);
+        return res;
+      }
+      let removed = false;
+      try {
+        if (await lockOwnerSecurity(authUserId, holder, SECURITY_LOCK_SECONDS)) {
+          await removeAllAuthenticators(authUserId);
+          removed = true;
+        }
+      } catch {
+        console.error("OWNER_TWO_STEP_OFF_FACTOR_REMOVAL_FAILED");
+      }
+      if (removed) {
+        if ((await finishChange(authUserId, holder, null, [])) === null) console.error("OWNER_TWO_STEP_OFF_CODES_LEFT_OVER");
+        await sendAccountSecurityEmail(authUserId, TWO_STEP_OFF_EMAIL.subject, TWO_STEP_OFF_EMAIL.text);
+      } else {
+        await unlockOwnerSecurity(authUserId, holder).catch(() => {});
+        failure = {
+          status: 500,
+          error:
+            "Two-step sign-in is still on because your authenticator couldn't be removed. Sign-in still asks for a code and your recovery codes still work. Please try again.",
+        };
+      }
+    } else if (purpose === "codes") {
+      // Only offered while an authenticator exists, so the setting is also
+      // (re)affirmed on -- this repairs a turn-on whose save failed.
+      const fresh = generateRecoveryCodes();
+      if ((await finishChange(authUserId, holder, true, fresh.hashes)) === null) {
+        const res = NextResponse.json({ error: "New recovery codes couldn't be created. Your existing codes still work. Please try again." }, { status: 409 });
+        clearMfaPendingCookie(res);
+        return res;
+      }
+      recoveryCodes = fresh.codes;
+    }
+
+    const membership = await findOwnerMembership(authUserId);
     if (!membership) {
       console.error("MFA_VERIFY_MEMBERSHIP_MISSING");
       return NextResponse.json({ error: "Unable to complete sign-in. Please try again." }, { status: 500 });
     }
 
-    const trusted = body.trustDevice === true;
+    // This device stays signed in (with the session epoch read after any
+    // change above); "keep me signed in" applies only to signing in.
+    const trusted = purpose === "login" && body.trustDevice === true;
     const sessionValue = await createOwnerSessionCookieValue({
       workspaceId: membership.workspaceId,
-      authUserId: consumed.authUserId,
+      authUserId,
       sessionEpoch: membership.sessionEpoch,
       trusted,
     });
 
-    const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
+    const res = failure
+      ? NextResponse.json({ error: failure.error }, { status: failure.status })
+      : NextResponse.json({ ok: true, redirect: "/dashboard", ...(recoveryCodes ? { recoveryCodes } : {}), ...(notice ? { notice } : {}) });
     setOwnerSessionCookie(res, sessionValue, trusted);
     clearMfaPendingCookie(res);
     return res;

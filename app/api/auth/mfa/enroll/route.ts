@@ -3,9 +3,12 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { createScopedAuthClient } from "@/lib/supabaseAuthClient";
 import { getMfaPendingToken } from "@/lib/session";
-import { getPendingMfaChallenge, setPendingMfaFactorId } from "@/lib/mfaPending";
+import { getPendingMfaChallenge, setPendingEnrolled } from "@/lib/mfaPending";
+import { getOwnerSecurityState, lockOwnerSecurity } from "@/lib/ownerSecurityStore";
+import { lockHolderFor, SECURITY_LOCK_SECONDS } from "@/lib/ownerSecurity";
 
 const GENERIC_ERROR = "Unable to start MFA setup. Please sign in again.";
+const BUSY_ERROR = "Another sign-in security change is in progress. Please try again in a few minutes.";
 
 // GET — begins TOTP enrollment for the identity behind the current
 // sft_mfa_pending cookie. Returns Supabase's own QR code (SVG data URI)
@@ -25,13 +28,39 @@ export async function GET() {
     }
 
     const client = await createScopedAuthClient(challenge.supabaseAccessToken, challenge.supabaseRefreshToken);
+
+    // Migration 045: setting up an authenticator is allowed only
+    //   * while signing in with none set up -- and, if this identity has had
+    //     recovery codes, only after one was accepted (so a password alone
+    //     can never set up a new authenticator for it); or
+    //   * when a signed-in owner (password re-entered) turns two-step on.
+    // Never in a turn-off or new-codes flow. Unknown state: refused.
+    if (challenge.purpose !== "login" && challenge.purpose !== "enable") {
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 400 });
+    }
+    const { data: factorsData, error: factorsErr } = await client.auth.mfa.listFactors();
+    if (factorsErr) throw factorsErr;
+    const verified = (factorsData?.totp ?? []).filter((f) => f.status === "verified").length;
+    const security = await getOwnerSecurityState(challenge.authUserId);
+    const allowed =
+      verified === 0 &&
+      (challenge.purpose === "enable" ? !security.required : security.codesTotal === 0 || challenge.recovered);
+    if (!allowed) {
+      return NextResponse.json({ error: GENERIC_ERROR }, { status: 400 });
+    }
+    // One security change at a time per identity (held until verify
+    // finishes it, or it expires).
+    if (!(await lockOwnerSecurity(challenge.authUserId, lockHolderFor(token), SECURITY_LOCK_SECONDS))) {
+      return NextResponse.json({ error: BUSY_ERROR }, { status: 409 });
+    }
+
     const { data, error } = await client.auth.mfa.enroll({ factorType: "totp" });
     if (error || !data) {
       console.error("MFA_ENROLL_ERROR");
       return NextResponse.json({ error: GENERIC_ERROR }, { status: 500 });
     }
 
-    await setPendingMfaFactorId(token, data.id);
+    await setPendingEnrolled(token, data.id);
 
     // qr_code is Supabase's own SVG data URI; secret is the manual-entry
     // fallback. Neither is written to any table, log line, or persisted

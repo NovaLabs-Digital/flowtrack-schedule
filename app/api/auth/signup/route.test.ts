@@ -63,6 +63,11 @@ mock.module("@/lib/mfaFlow", {
     },
   },
 });
+// Migration 045: the identity's two-step setting -- on, no recovery codes
+// (a new owner's default).
+mock.module("@/lib/ownerSecurityStore", {
+  namedExports: { getOwnerSecurityState: async () => ({ required: true, codesTotal: 0, codesUnused: 0 }) },
+});
 
 const { POST } = await import("./route.ts");
 

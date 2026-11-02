@@ -50,6 +50,7 @@ type Props = {
   // Needs Attention refresh: passed straight through to SettingsPanel,
   // which forwards it only to BillingPanel's own onBillingSaved prop.
   onBillingSaved?: () => void;
+  showSignInSecurity?: boolean;
 };
 
 // Owner always gets the real, unrestricted Settings sidebar/panel --
@@ -77,6 +78,7 @@ export default function DashboardSettingsArea({
   timezone,
   workspaceId,
   userId,
+  showSignInSecurity = false,
   billingFocusAppointmentId,
   billingFocusServiceDate,
   onBillingSaved,
@@ -107,6 +109,7 @@ export default function DashboardSettingsArea({
             billingFocusServiceDate={billingFocusServiceDate}
             onBillingSaved={onBillingSaved}
             isLocalDemo={isLocalDemo}
+            showSignInSecurity={showSignInSecurity}
           />
         </div>
       </div>

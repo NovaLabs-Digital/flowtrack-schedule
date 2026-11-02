@@ -50,7 +50,7 @@ const { signDemoVisitorPayload, verifyDemoVisitorCookie, verifySessionCookie, si
 const { generateDemoFixture, DEMO_TIMEZONE } = await import("../../../lib/demoLocal/fixtures/generate.ts");
 const { addDays } = await import("../../../lib/recurrence.ts");
 
-const OWNER = { role: "owner", workspaceId: "ws-1", authUserId: HOST, sessionEpoch: 1 };
+const OWNER = { role: "owner", workspaceId: "ws-1", authUserId: HOST, sessionEpoch: 1, mfa: true };
 const MEMBERSHIP_OK = { workspace_memberships: [{ data: { workspace_id: "ws-1", session_epoch: 1 } }] };
 
 function reset(tables: Record<string, FakeSupabaseFixture[]> = {}, rpc: Record<string, FakeSupabaseFixture[]> = {}) {
@@ -106,6 +106,26 @@ describe("only Alberto may host (DEMO_HOST_AUTH_USER_ID + current owner session)
     }
     assert.deepEqual(rpcNames(), []);
     assert.deepEqual(currentFake.calls, []);
+  });
+
+  // Migration 045: two-step sign-in is optional for every owner, the host
+  // included -- hosting still needs the configured identity and a current,
+  // valid owner session.
+  test("Alberto signed in with password only (two-step off): may host", async () => {
+    reset(MEMBERSHIP_OK, {
+      owner_security_state: [{ data: { required: false, codes_total: 0, codes_unused: 0 } }],
+      demo_session_current: [{ data: { outcome: "none" } }],
+      demo_session_create: [{ data: { outcome: "ok", session: sessionView({ controller: "host", control_gen: 1 }) } }],
+    });
+    sessionToReturn = { ...OWNER, mfa: false };
+    assert.equal((await create(post("http://localhost/api/demo-session", {}))).status, 200);
+  });
+
+  test("a password-only session after two-step was turned back on: 403, no session created", async () => {
+    reset(MEMBERSHIP_OK, { owner_security_state: [{ data: { required: true, codes_total: 10, codes_unused: 10 } }] });
+    sessionToReturn = { ...OWNER, mfa: false };
+    assert.equal((await create(post("http://localhost/api/demo-session", {}))).status, 403);
+    assert.deepEqual(rpcNames(), ["owner_security_state"]);
   });
 
   test("Alberto with a revoked (stale epoch) owner session: 403, no session created", async () => {

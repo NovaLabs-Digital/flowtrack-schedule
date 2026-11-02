@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import SettingsCard, { DirtyHint, PreviewPill } from "@/app/components/dashboard/SettingsCard";
+import SignInSecurityCard from "@/app/components/dashboard/SignInSecurityCard";
 import SettingsToggle from "@/app/components/dashboard/SettingsToggle";
 import CompanyStatusStrip from "@/app/components/dashboard/CompanyStatusStrip";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
@@ -86,8 +87,11 @@ function initials(name: string): string {
 export default function CompanyInfoPanel({
   canMutateOperationalData,
   isTrialing,
+  showSignInSecurity = false,
 }: {
   canMutateOperationalData: boolean;
+  // Real signed-in owners only (never a demo): Settings > Sign-in Security.
+  showSignInSecurity?: boolean;
   // Phase 5.6D: true only for a plain trialing subscription with no
   // cancellation already scheduled -- see lib/entitlementView.ts. The one
   // condition under which the Cancel Free Trial action below is offered.
@@ -949,6 +953,8 @@ export default function CompanyInfoPanel({
         )}
       </SettingsCard>
       </fieldset>
+      {/* Outside the fieldset: an owner can always manage how they sign in. */}
+      {showSignInSecurity && <SignInSecurityCard />}
     </div>
   );
 }

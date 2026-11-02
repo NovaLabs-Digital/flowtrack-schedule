@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import RecoveryCodesNotice from "@/app/components/RecoveryCodesNotice";
 
 export default function MfaEnrollPage() {
   const router = useRouter();
@@ -13,6 +14,9 @@ export default function MfaEnrollPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [verifying, setVerifying] = useState(false);
+  // After verification: new recovery codes to save, or a notice to read,
+  // before continuing.
+  const [done, setDone] = useState<{ codes?: string[]; notice?: string; destination: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/auth/mfa/enroll")
@@ -29,6 +33,19 @@ export default function MfaEnrollPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Migration 045: ?purpose=enable marks turning two-step sign-in on from
+  // Settings (rather than signing in): Cancel returns to the dashboard and
+  // releases the change instead of leaving it to expire.
+  const [securityChange, setSecurityChange] = useState(false);
+  useEffect(() => {
+    // Read after mount (no useSearchParams Suspense boundary on this page).
+    setSecurityChange(new URLSearchParams(window.location.search).get("purpose") !== null);
+  }, []);
+  async function cancelChange() {
+    await fetch("/api/auth/security", { method: "DELETE" }).catch(() => {});
+    window.location.assign("/dashboard");
+  }
+
   async function handleVerify(e: React.FormEvent) {
     e.preventDefault();
     setError("");
@@ -42,6 +59,10 @@ export default function MfaEnrollPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data?.error || "Invalid code. Please try again.");
+        return;
+      }
+      if (Array.isArray(data.recoveryCodes) || data.notice) {
+        setDone({ codes: data.recoveryCodes, notice: data.notice, destination: data.redirect || "/dashboard" });
         return;
       }
       router.push(data.redirect || "/dashboard");
@@ -66,9 +87,24 @@ export default function MfaEnrollPage() {
       <div className="flex-1 flex items-center justify-center px-6 py-16">
         <div className="w-full max-w-sm">
           <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
+            {done?.codes ? (
+              <RecoveryCodesNotice codes={done.codes} destination={done.destination} />
+            ) : done?.notice ? (
+              <div>
+                <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{done.notice}</div>
+                <button
+                  type="button"
+                  onClick={() => window.location.assign(done.destination)}
+                  className="w-full rounded-xl bg-[#0f172a] px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 transition-colors"
+                >
+                  Continue
+                </button>
+              </div>
+            ) : (
+            <>
             <div className="text-center mb-6">
               <h1 className="text-lg font-semibold text-slate-900">Set up two-step verification</h1>
-              <p className="mt-1 text-xs text-slate-500">Owners are required to set this up once, right now.</p>
+              <p className="mt-1 text-xs text-slate-500">You&apos;ll enter a code from your phone each time you sign in.</p>
             </div>
 
             <details className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
@@ -155,11 +191,19 @@ export default function MfaEnrollPage() {
             <p className="mt-6 text-center text-[11px] text-slate-400">
               This two-step verification setup applies to business owners only — it does not apply to employees.
             </p>
+            </>
+            )}
           </div>
           <div className="mt-6 text-center text-xs text-slate-500">
-            <Link href="/login" className="hover:text-slate-700 transition-colors">
-              Back to sign in
-            </Link>
+            {securityChange ? (
+              <button type="button" onClick={cancelChange} className="hover:text-slate-700 transition-colors">
+                Cancel
+              </button>
+            ) : (
+              <Link href="/login" className="hover:text-slate-700 transition-colors">
+                Back to sign in
+              </Link>
+            )}
           </div>
         </div>
       </div>

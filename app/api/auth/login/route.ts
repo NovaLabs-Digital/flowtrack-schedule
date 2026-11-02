@@ -4,7 +4,16 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { createOwnerAuthClient } from "@/lib/supabaseAuthClient";
-import { createSessionCookieValue, SESSION_MAX_AGE_SECONDS, setMfaPendingCookie, setEmployeeWorkspaceSelectionCookie } from "@/lib/session";
+import {
+  createSessionCookieValue,
+  createOwnerSessionCookieValue,
+  setOwnerSessionCookie,
+  SESSION_MAX_AGE_SECONDS,
+  setMfaPendingCookie,
+  setEmployeeWorkspaceSelectionCookie,
+} from "@/lib/session";
+import { getOwnerSecurityState } from "@/lib/ownerSecurityStore";
+import type { OwnerSecurityState } from "@/lib/ownerSecurity";
 import { beginMfaFlow } from "@/lib/mfaFlow";
 import { safeEqual } from "@/lib/safeEqual";
 import { checkAndRecordRateLimit, clearRateLimit } from "@/lib/durableRateLimit";
@@ -248,7 +257,9 @@ export async function POST(req: Request) {
 
     // Owner login, step 1 of 2 (Phase 5.7D — mandatory MFA). Password
     // verification alone is only aal1; sft_session is NEVER issued from
-    // this branch. Supabase Auth remains the sole credential verifier (the
+    // this branch -- except, since migration 045, a password-only session
+    // for an owner who turned two-step sign-in off and has no authenticator
+    // (see below). Supabase Auth remains the sole credential verifier (the
     // workspace is always resolved from workspace_memberships, never a
     // hardcoded constant), but a correct password now only advances the
     // owner to an MFA challenge/enrollment step, handed off via the
@@ -276,6 +287,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: GENERIC_AUTH_ERROR }, { status: 401 });
     }
 
+    // Migration 045: the owner's two-step setting (on unless they turned
+    // it off). If it cannot be read, nobody is signed in -- an unknown
+    // setting is never treated as "off".
+    let security: OwnerSecurityState;
+    try {
+      security = await getOwnerSecurityState(authData.user.id);
+    } catch {
+      console.error("OWNER_LOGIN_SECURITY_STATE_ERROR");
+      return NextResponse.json({ error: "Sign-in is temporarily unavailable. Please try again." }, { status: 503 });
+    }
+
     await clearRateLimit("login", clientIp);
 
     // Phase 5.7D: no factor enrolled -> mandatory enrollment (this is the
@@ -284,11 +306,28 @@ export async function POST(req: Request) {
     // Phase 5.7D-R2 audit's "Existing-owner rollout"); one verified factor
     // -> challenge it; multiple -> the client is told every verified
     // factorId so it can offer a picker.
-    const flow = await beginMfaFlow(ownerAuthClient, {
-      authUserId: authData.user.id,
-      accessToken: authData.session.access_token,
-      refreshToken: authData.session.refresh_token,
-    });
+    //
+    // Migration 045: a code is asked for whenever two-step is on OR any
+    // verified authenticator exists; an owner who turned it off (and has no
+    // authenticator) gets a password-only session -- always the short one.
+    const flow = await beginMfaFlow(
+      ownerAuthClient,
+      {
+        authUserId: authData.user.id,
+        accessToken: authData.session.access_token,
+        refreshToken: authData.session.refresh_token,
+      },
+      security
+    );
+    if (flow.step === "password") {
+      const res = NextResponse.json({ ok: true, redirect: "/dashboard" });
+      setOwnerSessionCookie(
+        res,
+        await createOwnerSessionCookieValue({ workspaceId, authUserId: authData.user.id, sessionEpoch, trusted: false, mfa: false }),
+        false
+      );
+      return res;
+    }
     const res = NextResponse.json({
       ok: true,
       next: flow.step,

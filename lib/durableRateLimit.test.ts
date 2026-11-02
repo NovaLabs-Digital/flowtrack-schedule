@@ -122,8 +122,13 @@ describe("RATE_LIMIT_BUCKETS -- fixed, documented configuration", () => {
     assert.equal(RATE_LIMIT_BUCKETS.mfaVerify.maxAttempts, 5);
   });
 
-  test("exactly five buckets exist -- signup, confirmResend, login, mfaVerify, contact", () => {
-    assert.deepEqual(Object.keys(RATE_LIMIT_BUCKETS).sort(), ["confirmResend", "contact", "login", "mfaVerify", "signup"]);
+  test("exactly seven buckets exist -- signup, confirmResend, login, mfaVerify, contact, securityCheck, recoveryCode", () => {
+    assert.deepEqual(Object.keys(RATE_LIMIT_BUCKETS).sort(), ["confirmResend", "contact", "login", "mfaVerify", "recoveryCode", "securityCheck", "signup"]);
+  });
+
+  test("migration 045: password re-checks and recovery codes are tightly limited", () => {
+    assert.deepEqual(RATE_LIMIT_BUCKETS.securityCheck, { windowSeconds: 15 * 60, maxAttempts: 5, lockoutSeconds: 15 * 60 });
+    assert.deepEqual(RATE_LIMIT_BUCKETS.recoveryCode, { windowSeconds: 60 * 60, maxAttempts: 5, lockoutSeconds: 60 * 60 });
   });
 
   test("contact matches signup's window/attempt shape -- a public form deserves the same abuse bound as public signup", () => {

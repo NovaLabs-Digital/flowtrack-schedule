@@ -82,6 +82,16 @@ mock.module("@/lib/signupProvisioning", {
     provisionOwnerWorkspace: (id: string) => provisionOwnerWorkspaceImpl(id),
   },
 });
+// Migration 045: the owner's two-step setting (on by default).
+let securityState: { required: boolean; codesTotal: number; codesUnused: number } | Error = { required: true, codesTotal: 0, codesUnused: 0 };
+mock.module("@/lib/ownerSecurityStore", {
+  namedExports: {
+    getOwnerSecurityState: async () => {
+      if (securityState instanceof Error) throw securityState;
+      return securityState;
+    },
+  },
+});
 
 const { POST } = await import("./route.ts");
 const { REAL_WORKSPACE_ID } = await import("../../../../lib/workspace.ts");
@@ -90,6 +100,7 @@ function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
   currentFake = createFakeSupabaseAdmin(responses);
 }
 function resetState() {
+  securityState = { required: true, codesTotal: 0, codesUnused: 0 };
   signInWithPasswordResult = { data: null, error: { message: "invalid" } };
   beginMfaFlowImpl = async () => ({ step: "enroll", pendingToken: "opaque-token-1" });
   beginMfaFlowCalls = 0;
@@ -745,5 +756,64 @@ describe("POST /api/auth/login -- durable rate limiting (Phase 5.7D-R4)", () => 
     resetFixtures({});
     await POST(req({ email: "tester@example.com", password: "wrong" }, "7.7.7.11"));
     assert.deepEqual(clearRateLimitCalls, []);
+  });
+});
+
+describe("POST /api/auth/login -- migration 045: optional two-step sign-in", () => {
+  const signedIn = () => {
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 4 } }] });
+    signInWithPasswordResult = { data: { user: { id: AUTH_USER_ID }, session: { access_token: "at", refresh_token: "rt" } }, error: null };
+  };
+
+  test("two-step off and no authenticator: a password-only owner session (12 hours, never 30 days) and no pending verification", async () => {
+    resetState();
+    signedIn();
+    securityState = { required: false, codesTotal: 0, codesUnused: 0 };
+    beginMfaFlowImpl = async () => ({ step: "password" });
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.0.45"));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, redirect: "/dashboard" });
+    const cookie = res.headers.get("set-cookie") || "";
+    assert.ok(cookie.includes("sft_session="));
+    assert.ok(!cookie.includes("sft_mfa_pending="));
+    assert.ok(!/max-age/i.test(cookie), "a password-only session is never the 30-day cookie");
+    const { verifySessionCookie } = await import("../../../../lib/sessionCrypto.ts");
+    const value = decodeURIComponent(cookie.match(/sft_session=([^;]+)/)![1]);
+    const payload = await verifySessionCookie(value);
+    assert.equal(payload?.role, "owner");
+    if (payload?.role === "owner") {
+      assert.equal(payload.mfa, false);
+      assert.equal(payload.sessionEpoch, 4);
+      assert.ok(payload.exp - Math.floor(Date.now() / 1000) <= 60 * 60 * 12);
+    }
+  });
+
+  test("an unreadable two-step setting signs nobody in (503), never read as off", async () => {
+    resetState();
+    signedIn();
+    securityState = new Error("down");
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.0.46"));
+    assert.equal(res.status, 503);
+    assert.equal(beginMfaFlowCalls, 0);
+    assert.ok(!(res.headers.get("set-cookie") || "").includes("sft_session="));
+  });
+
+  test("the recover step hands the client to the recovery screen through the pending cookie only", async () => {
+    resetState();
+    signedIn();
+    securityState = { required: true, codesTotal: 10, codesUnused: 3 };
+    beginMfaFlowImpl = async () => ({ step: "recover", pendingToken: "opaque-recover" });
+    const res = await POST(req({ email: "owner@example.com", password: "correct-password" }, "10.0.0.47"));
+    assert.equal((await res.json()).next, "recover");
+    const cookie = res.headers.get("set-cookie") || "";
+    assert.ok(cookie.includes("sft_mfa_pending=") && !cookie.includes("sft_session="));
+  });
+
+  test("employee sign-in never reads the owner two-step setting", async () => {
+    resetState();
+    securityState = new Error("must not be read");
+    resetFixtures({ employees: [{ data: [] }] });
+    const res = await POST(req({ email: "emp@example.com", password: "x", role: "employee" }, "10.0.0.48"));
+    assert.equal(res.status, 401);
   });
 });

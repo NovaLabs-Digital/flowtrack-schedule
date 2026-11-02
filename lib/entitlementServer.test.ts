@@ -66,7 +66,7 @@ function stripeRecord(overrides: Partial<SubscriptionRecord> = {}): Subscription
 const OWNER_AUTH_USER_ID = "aaaaaaaa-0000-0000-0000-00000000owna";
 
 function ownerSession(workspaceId: string): Session {
-  return { role: "owner", workspaceId, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1 };
+  return { role: "owner", workspaceId, authUserId: OWNER_AUTH_USER_ID, sessionEpoch: 1, mfa: true };
 }
 
 // Phase 5.7D: requireCapability/requireFullAccess now also re-verify

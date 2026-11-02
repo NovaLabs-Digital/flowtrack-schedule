@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, Wrench, Users, Archive, Repeat, Receipt, Settings as SettingsIcon, User, ChevronLeft, type LucideIcon } from "lucide-react";
+import { Building2, Wrench, Users, Archive, Repeat, Receipt, Settings as SettingsIcon, User, ChevronLeft, ShieldCheck, type LucideIcon } from "lucide-react";
 import SettingsPanel from "@/app/components/dashboard/SettingsPanel";
+import { SignInSecurityControls } from "@/app/components/dashboard/SignInSecurityCard";
 import type { SettingsSection } from "@/app/components/dashboard/types";
 
 function SettingsCard({
@@ -165,6 +166,18 @@ export default function MobileSettings({
             <SettingsCard icon={Wrench} title="Services" subtitle="Service types, durations, colors" />
             <SettingsCard icon={Users} title="Staff" subtitle="Employees, positions, colors" />
             <SettingsCard icon={SettingsIcon} title="Preferences" subtitle="App preferences" />
+            <div id="sign-in-security-card" className="rounded-xl border border-slate-200 bg-white p-4 space-y-3 scroll-mt-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center shrink-0 text-slate-600">
+                  <ShieldCheck aria-hidden="true" size={20} />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-slate-900">Sign-in Security</div>
+                  <div className="text-xs text-slate-500">How you sign in to your owner account</div>
+                </div>
+              </div>
+              <SignInSecurityControls />
+            </div>
           </>
         )}
 

@@ -211,7 +211,22 @@ describe("consumePendingMfaChallenge -- atomic delete-and-return, single-winner 
       supabaseAccessToken: "at-secret",
       supabaseRefreshToken: "rt-secret",
       attemptCount: 2,
+      // Migration 045: a row written before 045 (or without these columns
+      // selected) reads as an ordinary sign-in.
+      purpose: "login",
+      enrolled: false,
+      recovered: false,
     });
+  });
+
+  test("migration 045: purpose, enrolled and recovered come back from the deleted row; an unknown purpose reads as a sign-in", async () => {
+    resetFixtures({ pending_mfa_challenges: [{ data: { ...CHALLENGE_ROW, purpose: "disable", enrolled: true, recovered: true } }] });
+    const result = await consumePendingMfaChallenge("tok-1");
+    assert.equal(result?.purpose, "disable");
+    assert.equal(result?.enrolled, true);
+    assert.equal(result?.recovered, true);
+    resetFixtures({ pending_mfa_challenges: [{ data: { ...CHALLENGE_ROW, purpose: "anything" } }] });
+    assert.equal((await consumePendingMfaChallenge("tok-1"))?.purpose, "login");
   });
 
   test("a second/replayed call against the same token, once already deleted, matches zero rows and returns null -- fails closed, does not resurrect or re-issue the challenge", async () => {

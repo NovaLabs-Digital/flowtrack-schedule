@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import type { Session } from "@/lib/session";
 import { serviceUnavailableDenial } from "@/lib/serviceUnavailable";
+import { getOwnerSecurityState } from "@/lib/ownerSecurityStore";
 
 const GENERIC_FORBIDDEN = { error: "Unauthorized" } as const;
 
@@ -69,6 +70,26 @@ export async function requireCurrentOwnerSession(session: Session): Promise<Owne
   if (data.workspace_id !== session.workspaceId || data.session_epoch !== session.sessionEpoch) {
     console.error("SESSION_EPOCH_MISMATCH");
     return fail(NextResponse.json(GENERIC_FORBIDDEN, { status: 403 }));
+  }
+
+  // Migration 045: a password-only session is accepted only while the
+  // owner's two-step setting is off. Turning it on also changes the epoch
+  // (above); this is the backstop if that ever didn't happen. An unknown
+  // setting is never read as "off". (A real owner session always carries
+  // mfa as true or false: lib/sessionCrypto.ts rejects any owner cookie
+  // without it.)
+  if (session.mfa === false) {
+    let required: boolean;
+    try {
+      required = (await getOwnerSecurityState(session.authUserId)).required;
+    } catch {
+      console.error("SESSION_TWO_STEP_STATE_ERROR");
+      return fail(serviceUnavailableDenial());
+    }
+    if (required) {
+      console.error("SESSION_TWO_STEP_REQUIRED");
+      return fail(NextResponse.json(GENERIC_FORBIDDEN, { status: 403 }));
+    }
   }
 
   return ok();

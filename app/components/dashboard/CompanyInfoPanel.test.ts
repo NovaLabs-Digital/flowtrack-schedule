@@ -39,8 +39,19 @@ describe("prop wiring", () => {
   test("SettingsPanel forwards canMutateOperationalData and isTrialing to CompanyInfoPanel", () => {
     const idx = settingsPanelSource.indexOf('if (section === "company")');
     assert.notEqual(idx, -1);
-    const line = settingsPanelSource.slice(idx, idx + 160);
-    assert.match(line, /<CompanyInfoPanel canMutateOperationalData=\{canMutateOperationalData\} isTrialing=\{isTrialing\} \/>/);
+    const line = settingsPanelSource.slice(idx, idx + 220);
+    assert.match(
+      line,
+      /<CompanyInfoPanel canMutateOperationalData=\{canMutateOperationalData\} isTrialing=\{isTrialing\} showSignInSecurity=\{showSignInSecurity\} \/>/
+    );
+  });
+
+  // Migration 045: Sign-in Security is for real signed-in owners only.
+  test("Sign-in Security renders only when asked, outside the operational-data fieldset", () => {
+    assert.match(source, /showSignInSecurity = false/);
+    const fieldsetEnd = source.lastIndexOf("</fieldset>");
+    const card = source.indexOf("{showSignInSecurity && <SignInSecurityCard />}");
+    assert.ok(card > fieldsetEnd && fieldsetEnd !== -1);
   });
 });
 

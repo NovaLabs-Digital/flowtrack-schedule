@@ -6,6 +6,7 @@ import { checkAndRecordRateLimit } from "@/lib/durableRateLimit";
 import { signInWithPassword, signUp } from "@/lib/signupAuth";
 import { createPendingSignup, findOwnerMembership, provisionOwnerWorkspace } from "@/lib/signupProvisioning";
 import { beginMfaFlow } from "@/lib/mfaFlow";
+import { getOwnerSecurityState } from "@/lib/ownerSecurityStore";
 import { setMfaPendingCookie } from "@/lib/session";
 
 const MIN_PASSWORD_LENGTH = 12;
@@ -100,11 +101,20 @@ export async function POST(req: Request) {
       });
       await provisionOwnerWorkspace(signIn.userId);
 
-      const flow = await beginMfaFlow(createOwnerAuthClient(), {
-        authUserId: signIn.userId,
-        accessToken: signIn.accessToken,
-        refreshToken: signIn.refreshToken,
-      });
+      const flow = await beginMfaFlow(
+        createOwnerAuthClient(),
+        {
+          authUserId: signIn.userId,
+          accessToken: signIn.accessToken,
+          refreshToken: signIn.refreshToken,
+        },
+        await getOwnerSecurityState(signIn.userId)
+      );
+      // Migration 045: an existing owner who turned two-step sign-in off
+      // signs in on the sign-in page; signup never issues a session.
+      if (flow.step === "password") {
+        return NextResponse.json({ error: ALREADY_EXISTS_ERROR }, { status: 409 });
+      }
       const res = NextResponse.json({ ok: true, next: flow.step, factorIds: flow.step === "challenge" ? flow.factorIds : undefined });
       await setMfaPendingCookie(res, flow.pendingToken);
       return res;

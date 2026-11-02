@@ -29,9 +29,41 @@ As of Phase 3 (tenant-foundation auth migration), **Supabase Auth is the sole ow
 1. Client submits `email` + `password` (no `role` field, distinguishing it from employee login).
 2. An isolated, request-local Supabase client — created fresh per request with the anon key (`SUPABASE_URL` / `SUPABASE_ANON_KEY`), `persistSession: false`, `autoRefreshToken: false`, `detectSessionInUrl: false` — calls `auth.signInWithPassword()`. This client is deliberately separate from the shared service-role `supabaseAdmin` client and holds no elevated database privileges; any session/token it receives is read only long enough to extract the authenticated user's id, then discarded — never stored, never sent to the browser. Only the existing `sft_session` cookie is ever issued.
 3. On success, the shared `supabaseAdmin` client (service-role) resolves the caller's workspace by looking up `workspace_memberships` for that user id with `role = "owner"`. Login succeeds only if **both** conditions hold: Supabase Auth verifies the credentials, **and** a matching `workspace_memberships` row is found. Either condition failing produces the same generic error.
-4. On success, the server creates a signed session payload `{ role: "owner", workspaceId, exp }` and sets it as the `sft_session` cookie.
+4. On success, the owner continues to the second sign-in step unless they turned two-step sign-in off (see [Owner two-step sign-in and recovery codes](#owner-two-step-sign-in-and-recovery-codes)). Only then does the server sign the session payload `{ role: "owner", workspaceId, authUserId, sessionEpoch, mfa, exp }` and set it as the `sft_session` cookie.
 5. On failure, the same generic `Invalid email or password` error is returned — the same message used for every other failure case on this endpoint.
 6. Server logs record a fixed `OWNER_LOGIN_SUCCESS` tag on success (with no `authPath` distinction now that there is only one path), and fixed tags (`OWNER_AUTH_MEMBERSHIP_MISSING`, `OWNER_AUTH_MEMBERSHIP_QUERY_ERROR`) when Supabase Auth succeeds but workspace resolution fails — never the submitted email, password, profile id, or any Supabase Auth token.
+
+### Owner two-step sign-in and recovery codes
+
+*(Migration 045.)* Two-step sign-in (password plus a six-digit code from an authenticator app, Supabase Auth TOTP) is **on by default for every owner, existing and new**, and each owner can turn it off for themselves in Settings > Sign-in Security (desktop and mobile). The setting belongs to the owner's sign-in identity (the Supabase Auth user) — the same thing the authenticator belongs to — and an identity can own only one workspace, so there is exactly one setting per owner account. Employee and tester sign-in are unaffected.
+
+- **One rule at sign-in, stricter on any doubt.** A code is asked for whenever the setting is on **or** a verified authenticator exists. A password-only session is issued only when the setting is off **and** no authenticator exists. If the setting cannot be read, nobody is signed in (it is never treated as "off"). Any partial failure between an authenticator change and the database update therefore leaves sign-in stricter, never weaker.
+- **Turning it on** requires the password again, then setting up an authenticator and verifying a code from it; the setting turns on only once that code is verified. Abandoning setup changes nothing.
+- **Turning it off** requires the password again **and** a valid code from the current authenticator. Then, in order: the setting turns off (recovery codes kept), the authenticator is removed, the recovery codes are cleared, and a security email is sent to the owner's sign-in address (independent of the business's client-notification switch).
+- **Every change signs out every other device**: turning on, turning off, new recovery codes, and recovery each increase `session_epoch` in the same database transaction that applies the change; the device that made the change gets a fresh session.
+- **Password-only sessions** (`mfa: false` in the signed payload) last at most 12 hours and are never the 30-day "keep me signed in" session; the server rejects a password-only payload claiming a longer life. They are accepted only while the owner's setting is off — `requireCurrentOwnerSession` re-checks this on every owner request, so a password-only session stops working the moment two-step sign-in is turned back on, even if the epoch change were somehow missed. Whether closing the browser signs someone out is up to the browser; it is not promised.
+- **Recovery codes**: 10 single-use codes are created whenever an authenticator is set up (turning on, a new owner's first sign-in, after recovery) or on request (password + code). Each is 16 characters from a 32-symbol alphabet (80 bits) and is shown once; only SHA-256 hashes are stored (`owner_recovery_codes`, service-role only). A code is used up atomically, so a replayed or concurrent use fails. New codes replace all old ones.
+- **Lost authenticator**: during sign-in (after the password), the owner enters one unused recovery code **and their password again**. Every authenticator on the identity is then removed, the code is used up, a security email is sent, and the owner sets up a new authenticator — whose verification creates new recovery codes and signs out every other device. Two-step sign-in stays on throughout. If the owner stops partway, the next sign-in asks for another recovery code: for an identity that has had recovery codes, a password alone can never set up a new authenticator. Account email plus business knowledge is **not** accepted as proof for recovery.
+- **One change at a time**: each identity has a short security-change lock (the life of one pending verification, about 5 minutes), so two changes can never interleave; a second change started meanwhile is refused, and cancelling a change releases the lock at once.
+- **Limits**: password re-checks in Sign-in Security (5 per 15 minutes) and recovery-code attempts (5 per hour) are limited per owner identity; code checks also stay under the existing per-network limit (5 per 5 minutes) and the per-verification limit (5 attempts).
+- **Reminder**: an owner with two-step sign-in on but no recovery codes (everyone who set up an authenticator before recovery codes existed) sees a dismissible reminder on the dashboard, desktop and mobile, linking to Sign-in Security. It reads only whether codes exist; codes are never shown again after they are created.
+- **Guided Demo hosting**: two-step sign-in is optional for the host as well. Hosting still requires the configured identity (`DEMO_HOST_AUTH_USER_ID`) and a current, valid owner session.
+
+#### When a security change fails part-way
+
+Supabase Auth (the authenticator) and the database cannot change in one transaction, so each change is ordered so that whatever step fails, sign-in is at least as strict as before **and** the owner keeps a way in (an authenticator, or unused recovery codes while two-step is on):
+
+| Change | Failure | What is left | Next sign-in | Recovery |
+|---|---|---|---|---|
+| Turn off | Database step fails | Nothing changed | Code | Retry |
+| Turn off | Database updated (setting off), authenticator removal fails | Authenticator and all recovery codes kept; lock released | Code | Retry turning off |
+| Turn off | Authenticator removed, clearing codes fails | Off as intended; left-over codes are not used by sign-in | Password | None needed (turning on again replaces them) |
+| Turn on | Authenticator verified, database save fails | Authenticator active; no codes yet; other devices still signed out; owner told | Code | "New recovery codes" saves codes and the setting |
+| Recovery | Authenticator removal fails | Recovery code not used | Code | Retry with the same code |
+| Recovery | Authenticator removed, using up the code fails | Code still unused | Recovery code (never password-only) | Retry with the same code |
+| Recovery | New authenticator verified, saving new codes fails | Previous unused codes still work; owner told | Code | "New recovery codes" |
+
+A change abandoned part-way holds the per-identity lock for at most its lifetime (about 5 minutes); Cancel releases it at once.
 
 ### Employee login flow
 
@@ -228,7 +260,7 @@ If workspace-aware RLS policies are ever deliberately designed in the future (e.
 - HTTPS is used in production (cookies are marked `secure` whenever `NODE_ENV === "production"`).
 - The hosting platform (Vercel) keeps configured environment variables confidential and injects them only into the app's own runtime.
 - `SESSION_SECRET` is configured in every environment before that environment serves traffic — if it's missing, the app fails closed (no sessions can be created or accepted) rather than falling back to something weaker.
-- The owner's workstation and credentials are reasonably trusted — there is currently no MFA layer defending the owner account beyond the password itself.
+- The owner's workstation is reasonably trusted. Owner accounts have two-step sign-in on by default; an owner who turns it off relies on their password alone (see [Owner two-step sign-in and recovery codes](#owner-two-step-sign-in-and-recovery-codes)).
 - The Supabase service-role key is only ever used server-side; it is never sent to the browser.
 - `is_demo` flags are set correctly and consistently by application code — the isolation between demo and real data depends on every write path setting this flag correctly, not on a database-level constraint.
 
@@ -239,7 +271,8 @@ If workspace-aware RLS policies are ever deliberately designed in the future (e.
 These are documented as **future enhancements**, not current defects — each was explicitly scoped out of Sprint 1/2 rather than overlooked.
 
 - **Distributed rate limiting**: the current login rate limiter is in-memory per server instance. A determined attacker spread across many serverless instances could exceed the intended limit. A durable version would need an external store (e.g. Redis/Upstash).
-- **MFA**: no second factor exists for the owner account today.
+- **Two-step sign-in is optional**: an owner can turn it off for their own account (migration 045). Owners who signed up before recovery codes existed have none until they create them in Settings > Sign-in Security; without codes, a lost authenticator cannot be recovered in the app.
+- **Security email delivery is not yet verified end to end**: the emails sent when two-step sign-in is turned off or a recovery code is used (`lib/securityEmail.ts`, via Resend) were exercised with messages disabled in every test, including the real Supabase Auth run; actual delivery to an inbox has not been confirmed. A failed send never blocks or reverses the security change itself.
 - **OAuth**: no third-party identity provider integration.
 - **Signup flow**: there is no self-service account creation; owner and employee accounts are provisioned directly.
 - **Password reset improvements**: no self-service password reset flow currently exists.
@@ -261,6 +294,11 @@ These are documented as **future enhancements**, not current defects — each wa
 1. Reset the owner's Supabase Auth password immediately (via the Supabase dashboard or the Admin API — never by re-entering the old password anywhere).
 2. Rotate `SESSION_SECRET` as well (see above) — this ensures any session already issued to an attacker using the compromised credentials is invalidated, not just future login attempts.
 3. Review recent activity in the database for any changes made during the suspected compromise window.
+
+### If an owner loses their authenticator
+
+1. With an unused recovery code: the owner recovers in the app during sign-in (recovery code + password), then sets up a new authenticator. Nothing is needed from support.
+2. Without a recovery code: there is no in-app path. Account email plus business knowledge is **not** sufficient proof; any manual recovery needs a stronger, documented identity check and Alberto's explicit approval per case. No support tool for this exists yet.
 
 ### After discovering an API vulnerability
 
@@ -289,6 +327,10 @@ Migrated owner login from a purely environment-variable credential check to Supa
 ### Tenant Foundation Phase 3 — Fallback Removal
 
 After the Supabase Auth path was confirmed working in production (verified via runtime logs showing `OWNER_LOGIN_SUCCESS` with no membership-resolution errors, on the correct deployed commit, with no credentials or tokens appearing in logs), the temporary `ADMIN_EMAIL` / `ADMIN_PASSWORD` fallback was removed from `app/api/auth/login/route.ts`. Owner login now succeeds only when Supabase Auth verifies the credentials **and** `workspace_memberships` resolves an owner workspace — there is no other path. The `ADMIN_EMAIL` / `ADMIN_PASSWORD` environment variables themselves were intentionally left in place in Vercel/local environments at this step; removing the now-unused variables is a separate, later cleanup action.
+
+### Optional owner two-step sign-in (migration 045)
+
+Two-step sign-in became optional per owner (on by default for existing and new owners), with single-use recovery codes, an in-app lost-authenticator flow, a security email when it is turned off or a recovery code is used, and every security change signing out every other device. Password-only sessions are limited to 12 hours and re-checked against the owner's setting on every request. See [Owner two-step sign-in and recovery codes](#owner-two-step-sign-in-and-recovery-codes).
 
 ### Tenant Foundation Phase 4A/4B — Database Access Lockdown Verification & Formalization
 

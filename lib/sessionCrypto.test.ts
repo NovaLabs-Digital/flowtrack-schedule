@@ -61,18 +61,28 @@ describe("owner session payload (Phase 5.7D)", () => {
     assert.equal(payload, null);
   });
 
-  test("mfa: false is rejected -- an owner session can never claim aal2 without the literal true marker", async () => {
-    const value = await signSessionPayload({
-      role: "owner",
-      workspaceId: "ws-1",
-      authUserId: "user-1",
-      // @ts-expect-error -- deliberately constructing an invalid payload to prove verification rejects it
-      mfa: false,
-      sessionEpoch: 1,
-      exp: newExpiry(),
-    });
-    const payload = await verifySessionCookie(value);
-    assert.equal(payload, null);
+  // Migration 045: mfa records how the session signed in; false is a
+  // password-only session, which may never outlive the short owner session.
+  test("mfa: false (password-only) is accepted only within the 12-hour short session", async () => {
+    const short = await signSessionPayload({ role: "owner", workspaceId: "ws-1", authUserId: "user-1", mfa: false, sessionEpoch: 1, exp: newExpiry(60 * 60 * 12) });
+    assert.equal((await verifySessionCookie(short))?.role, "owner");
+    const long = await signSessionPayload({ role: "owner", workspaceId: "ws-1", authUserId: "user-1", mfa: false, sessionEpoch: 1, exp: newExpiry(60 * 60 * 24 * 30) });
+    assert.equal(await verifySessionCookie(long), null);
+  });
+
+  test("a missing or non-boolean mfa marker is rejected", async () => {
+    for (const mfa of ["true", 1, null, undefined]) {
+      const value = await signSessionPayload({
+        role: "owner",
+        workspaceId: "ws-1",
+        authUserId: "user-1",
+        // @ts-expect-error -- deliberately constructing an invalid payload to prove verification rejects it
+        mfa,
+        sessionEpoch: 1,
+        exp: newExpiry(),
+      });
+      assert.equal(await verifySessionCookie(value), null);
+    }
   });
 
   test("a non-integer or zero sessionEpoch is rejected", async () => {

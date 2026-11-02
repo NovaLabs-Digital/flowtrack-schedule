@@ -5,6 +5,7 @@ import { createOwnerAuthClient } from "@/lib/supabaseAuthClient";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { provisionOwnerWorkspace } from "@/lib/signupProvisioning";
 import { beginMfaFlow } from "@/lib/mfaFlow";
+import { getOwnerSecurityState } from "@/lib/ownerSecurityStore";
 import { setMfaPendingCookie } from "@/lib/session";
 
 // Receives Supabase's own confirmation-email redirect and proves email
@@ -62,13 +63,27 @@ export async function GET(req: Request) {
     // guard).
     await provisionOwnerWorkspace(data.user.id);
 
-    const flow = await beginMfaFlow(client, {
-      authUserId: data.user.id,
-      accessToken: data.session.access_token,
-      refreshToken: data.session.refresh_token,
-    });
+    const flow = await beginMfaFlow(
+      client,
+      {
+        authUserId: data.user.id,
+        accessToken: data.session.access_token,
+        refreshToken: data.session.refresh_token,
+      },
+      await getOwnerSecurityState(data.user.id)
+    );
 
-    const dest = flow.step === "enroll" ? `${appUrl}/mfa/enroll` : `${appUrl}/mfa/challenge`;
+    // A confirmation link is never a sign-in by itself: an identity that
+    // turned two-step sign-in off (a re-used link) signs in with its password.
+    if (flow.step === "password") {
+      return NextResponse.redirect(`${appUrl}/login`);
+    }
+    const dest =
+      flow.step === "enroll"
+        ? `${appUrl}/mfa/enroll`
+        : flow.step === "recover"
+          ? `${appUrl}/mfa/challenge?recover=1`
+          : `${appUrl}/mfa/challenge`;
     const res = NextResponse.redirect(dest);
     await setMfaPendingCookie(res, flow.pendingToken);
     return res;

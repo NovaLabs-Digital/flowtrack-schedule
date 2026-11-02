@@ -78,9 +78,46 @@ mock.module("@/lib/mfaPending", {
     MFA_MAX_ATTEMPTS: 5,
   },
 });
+// Migration 045 fixtures: finishing a security change, removing
+// authenticators, signing out other devices, the security email.
+let finishImpl: (required: boolean | null, hashes: string[] | null) => Promise<number | null> = async () => 2;
+let finishCalls: Array<{ holder: string; required: boolean | null; hashes: string[] | null }> = [];
+let unlockCalls = 0;
+let removeImpl: () => Promise<void> = async () => {};
+let removeCalls = 0;
+let bumpCalls = 0;
+let emails: string[] = [];
 mock.module("@/lib/signupProvisioning", {
   namedExports: {
     findOwnerMembership: (id: string) => findOwnerMembershipImpl(id),
+    bumpSessionEpoch: async () => {
+      bumpCalls++;
+    },
+  },
+});
+mock.module("@/lib/ownerSecurityStore", {
+  namedExports: {
+    finishOwnerSecurity: async (_user: string, holder: string, required: boolean | null, hashes: string[] | null) => {
+      finishCalls.push({ holder, required, hashes });
+      return finishImpl(required, hashes);
+    },
+    unlockOwnerSecurity: async () => {
+      unlockCalls++;
+    },
+    lockOwnerSecurity: async () => true,
+    removeAllAuthenticators: async () => {
+      removeCalls++;
+      return removeImpl();
+    },
+  },
+});
+mock.module("@/lib/securityEmail", {
+  namedExports: {
+    sendAccountSecurityEmail: async (_user: string, subject: string) => {
+      emails.push(subject);
+      return true;
+    },
+    TWO_STEP_OFF_EMAIL: { subject: "Two-step sign-in was turned off", text: "..." },
   },
 });
 mock.module("@/lib/session", {
@@ -122,6 +159,13 @@ function resetState() {
   createdSessionParams = null;
   rateLimitCalls = [];
   rateLimitResult = { limited: false };
+  finishImpl = async () => 2;
+  finishCalls = [];
+  unlockCalls = 0;
+  removeImpl = async () => {};
+  removeCalls = 0;
+  bumpCalls = 0;
+  emails = [];
 }
 
 function req(body: unknown, ip = "192.0.2.1") {
@@ -376,5 +420,118 @@ describe("POST /api/auth/mfa/verify -- durable IP rate limiting (Phase 5.7D-R4, 
     const res = await POST(req({ code: "123456" }, "203.0.113.52"));
     assert.equal(res.status, 429);
     assert.equal(recordedAttempts.length, 0, "the per-challenge counter must never even be touched once the IP-level limit already denies");
+  });
+});
+
+describe("POST /api/auth/mfa/verify -- migration 045: finishing each security change", () => {
+  const as = (over: Record<string, unknown>) => {
+    resetState();
+    challenge = { ...challenge!, purpose: "login", enrolled: false, recovered: false, ...over };
+  };
+
+  test("an ordinary sign-in changes nothing about security", async () => {
+    as({});
+    const res = await POST(req({ code: "123456" }));
+    assert.equal(res.status, 200);
+    assert.equal(finishCalls.length, 0);
+    assert.equal((await res.json()).recoveryCodes, undefined);
+  });
+
+  test("first authenticator at sign-in: two-step on, 10 new recovery codes (only hashes stored), other devices signed out", async () => {
+    as({ enrolled: true });
+    findOwnerMembershipImpl = async () => ({ workspaceId: WORKSPACE_ID, sessionEpoch: 2 });
+    const res = await POST(req({ code: "123456", trustDevice: true }));
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.recoveryCodes.length, 10);
+    assert.equal(finishCalls.length, 1);
+    assert.equal(finishCalls[0].required, true);
+    assert.equal(finishCalls[0].hashes!.length, 10);
+    for (const code of body.recoveryCodes) assert.ok(!finishCalls[0].hashes!.includes(code), "never the code itself");
+    assert.match(finishCalls[0].holder, /^[0-9a-f]{64}$/);
+    assert.equal(createdSessionParams?.sessionEpoch, 2, "this device's new session carries the new epoch");
+    assert.equal(createdSessionParams?.trusted, true, "keep-me-signed-in still applies to signing in");
+  });
+
+  test("turning on from Settings: same, but never a 30-day session", async () => {
+    as({ purpose: "enable", enrolled: true });
+    const res = await POST(req({ code: "123456", trustDevice: true }));
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).recoveryCodes.length, 10);
+    assert.equal(createdSessionParams?.trusted, false);
+  });
+
+  test("turning on, saving fails: the authenticator is verified (sign-in asks for a code), the owner is told, other devices are still signed out", async () => {
+    as({ purpose: "enable", enrolled: true });
+    finishImpl = async () => null;
+    const res = await POST(req({ code: "123456" }));
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.recoveryCodes, undefined);
+    assert.match(body.notice, /recovery codes couldn't be created/);
+    assert.equal(bumpCalls, 1);
+    assert.equal(unlockCalls, 1);
+  });
+
+  test("turning off: setting off first (codes kept), then the authenticator removed, then codes cleared, then the email", async () => {
+    as({ purpose: "disable" });
+    const res = await POST(req({ code: "123456", trustDevice: true }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(finishCalls.map((c) => [c.required, c.hashes]), [[false, null], [null, []]]);
+    assert.equal(removeCalls, 1);
+    assert.deepEqual(emails, ["Two-step sign-in was turned off"]);
+    assert.equal(createdSessionParams?.trusted, false);
+  });
+
+  test("turning off, the database step fails: nothing changed, no authenticator removed, no email, this device's session untouched", async () => {
+    as({ purpose: "disable" });
+    finishImpl = async () => null;
+    const res = await POST(req({ code: "123456" }));
+    assert.equal(res.status, 409);
+    assert.equal(removeCalls, 0);
+    assert.deepEqual(emails, []);
+    assert.equal(createdSessionParams, null);
+  });
+
+  test("turning off, removing the authenticator fails: reported as still on (sign-in still asks for a code), no email, this device stays signed in", async () => {
+    as({ purpose: "disable" });
+    removeImpl = async () => {
+      throw new Error("auth down");
+    };
+    const res = await POST(req({ code: "123456" }));
+    assert.equal(res.status, 500);
+    assert.match((await res.json()).error, /still on/);
+    assert.deepEqual(emails, []);
+    assert.ok(createdSessionParams, "a fresh session for this device, since other devices were signed out");
+  });
+
+  test("new recovery codes: codes replaced, setting unchanged; failure keeps the old codes", async () => {
+    as({ purpose: "codes" });
+    const ok = await POST(req({ code: "123456" }));
+    assert.equal((await ok.json()).recoveryCodes.length, 10);
+    assert.equal(finishCalls[0].required, true, "new codes also affirm the setting on (repairs an interrupted turn-on)");
+    as({ purpose: "codes" });
+    finishImpl = async () => null;
+    const failed = await POST(req({ code: "123456" }));
+    assert.equal(failed.status, 409);
+    assert.match((await failed.json()).error, /existing codes still work/);
+  });
+
+  test("a replayed verification (already used) changes nothing", async () => {
+    as({ purpose: "disable" });
+    consumeReturnsNull = true;
+    const res = await POST(req({ code: "123456" }));
+    assert.equal(res.status, 401);
+    assert.equal(finishCalls.length, 0);
+    assert.equal(removeCalls, 0);
+  });
+
+  test("a wrong code changes nothing", async () => {
+    as({ purpose: "disable" });
+    mfaVerifyResult = { data: null, error: { message: "invalid" } };
+    const res = await POST(req({ code: "000000" }));
+    assert.equal(res.status, 401);
+    assert.equal(finishCalls.length, 0);
+    assert.equal(removeCalls, 0);
   });
 });

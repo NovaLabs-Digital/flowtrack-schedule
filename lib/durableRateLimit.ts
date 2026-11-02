@@ -22,6 +22,10 @@ export const RATE_LIMIT_BUCKETS = {
   login: { windowSeconds: 15 * 60, maxAttempts: 5, lockoutSeconds: 15 * 60 },
   mfaVerify: { windowSeconds: 5 * 60, maxAttempts: 5, lockoutSeconds: 5 * 60 },
   contact: { windowSeconds: 15 * 60, maxAttempts: 5, lockoutSeconds: 15 * 60 },
+  // Migration 045, keyed per owner identity (not per network): password
+  // re-checks in Sign-in Security, and recovery-code attempts.
+  securityCheck: { windowSeconds: 15 * 60, maxAttempts: 5, lockoutSeconds: 15 * 60 },
+  recoveryCode: { windowSeconds: 60 * 60, maxAttempts: 5, lockoutSeconds: 60 * 60 },
 } as const;
 
 export type RateLimitBucket = keyof typeof RATE_LIMIT_BUCKETS;

@@ -17,6 +17,19 @@ let currentFake = createFakeSupabaseAdmin({});
 mock.module("@/lib/supabaseAdmin", {
   namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
 });
+// Migration 045: the owner's two-step setting, read only for password-only
+// sessions.
+let securityState: { required: boolean; codesTotal: number; codesUnused: number } | Error = { required: true, codesTotal: 0, codesUnused: 0 };
+let securityReads = 0;
+mock.module("@/lib/ownerSecurityStore", {
+  namedExports: {
+    getOwnerSecurityState: async () => {
+      securityReads++;
+      if (securityState instanceof Error) throw securityState;
+      return securityState;
+    },
+  },
+});
 
 const { requireCurrentOwnerSession } = await import("./sessionEpoch.ts");
 
@@ -51,6 +64,7 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
       role: "owner",
       workspaceId: WORKSPACE_ID,
       authUserId: AUTH_USER_ID,
+      mfa: true,
       sessionEpoch: 3,
     });
     assert.equal(result.ok, true);
@@ -60,7 +74,7 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: WORKSPACE_ID, session_epoch: 1 } }],
     });
-    await requireCurrentOwnerSession({ role: "owner", workspaceId: WORKSPACE_ID, authUserId: AUTH_USER_ID, sessionEpoch: 1 });
+    await requireCurrentOwnerSession({ role: "owner", workspaceId: WORKSPACE_ID, authUserId: AUTH_USER_ID, sessionEpoch: 1, mfa: true });
     const eqCalls = currentFake.calls.filter((c) => c.table === "workspace_memberships" && c.method === "eq");
     assert.ok(eqCalls.some((c) => c.args[0] === "profile_id" && c.args[1] === AUTH_USER_ID));
     assert.ok(eqCalls.some((c) => c.args[0] === "role" && c.args[1] === "owner"));
@@ -74,6 +88,7 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
       role: "owner",
       workspaceId: WORKSPACE_ID,
       authUserId: AUTH_USER_ID,
+      mfa: true,
       sessionEpoch: 1,
     });
     assert.equal(result.ok, false);
@@ -92,6 +107,7 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
       role: "owner",
       workspaceId: WORKSPACE_ID,
       authUserId: AUTH_USER_ID,
+      mfa: true,
       sessionEpoch: 1,
     });
     assert.equal(result.ok, false);
@@ -110,6 +126,7 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
       role: "owner",
       workspaceId: WORKSPACE_ID,
       authUserId: AUTH_USER_ID,
+      mfa: true,
       sessionEpoch: 1,
     });
     assert.equal(result.ok, false);
@@ -124,6 +141,7 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
       role: "owner",
       workspaceId: WORKSPACE_ID,
       authUserId: AUTH_USER_ID,
+      mfa: true,
       sessionEpoch: 1,
     });
     assert.equal(result.ok, false);
@@ -143,6 +161,7 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
         role: "owner",
         workspaceId: WORKSPACE_ID,
         authUserId: AUTH_USER_ID,
+        mfa: true,
         sessionEpoch: 1,
       });
       if (!result.ok) bodies.push(await result.response.json());
@@ -150,5 +169,47 @@ describe("requireCurrentOwnerSession -- owner sessions are re-verified against w
     assert.equal(bodies.length, 3);
     assert.deepEqual(bodies[0], bodies[1]);
     assert.deepEqual(bodies[1], bodies[2]);
+  });
+});
+
+describe("requireCurrentOwnerSession -- migration 045: password-only sessions", () => {
+  const passwordOnly = { role: "owner" as const, workspaceId: WORKSPACE_ID, authUserId: AUTH_USER_ID, sessionEpoch: 2, mfa: false };
+  const current = { workspace_memberships: [{ data: { workspace_id: WORKSPACE_ID, session_epoch: 2 } }] };
+
+  test("accepted while the owner's two-step setting is off", async () => {
+    resetFixtures(current);
+    securityState = { required: false, codesTotal: 0, codesUnused: 0 };
+    assert.equal((await requireCurrentOwnerSession(passwordOnly)).ok, true);
+  });
+
+  test("refused (403) once the setting is on -- even with a current session epoch", async () => {
+    resetFixtures(current);
+    securityState = { required: true, codesTotal: 10, codesUnused: 10 };
+    const result = await requireCurrentOwnerSession(passwordOnly);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.response.status, 403);
+  });
+
+  test("an unreadable setting is never read as off: refused as unavailable", async () => {
+    resetFixtures(current);
+    securityState = new Error("down");
+    const result = await requireCurrentOwnerSession(passwordOnly);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.response.status, 503);
+  });
+
+  test("a stale epoch is refused before the setting is even read", async () => {
+    resetFixtures({ workspace_memberships: [{ data: { workspace_id: WORKSPACE_ID, session_epoch: 3 } }] });
+    securityState = { required: false, codesTotal: 0, codesUnused: 0 };
+    securityReads = 0;
+    assert.equal((await requireCurrentOwnerSession(passwordOnly)).ok, false);
+    assert.equal(securityReads, 0);
+  });
+
+  test("two-step sessions never read the setting", async () => {
+    resetFixtures(current);
+    securityReads = 0;
+    assert.equal((await requireCurrentOwnerSession({ ...passwordOnly, mfa: true })).ok, true);
+    assert.equal(securityReads, 0);
   });
 });

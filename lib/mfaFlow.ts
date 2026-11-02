@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createPendingMfaChallenge } from "@/lib/mfaPending";
+import { signInStep, type OwnerSecurityState } from "@/lib/ownerSecurity";
 
 // Phase 5.7D — the one shared decision point for "what does this Auth user
 // need to do next to reach aal2," used identically by both entry points:
@@ -17,9 +18,18 @@ import { createPendingMfaChallenge } from "@/lib/mfaPending";
 // signInWithPassword or the confirmation exchange) — the browser only ever
 // receives the resulting opaque token, never the pair itself.
 
+// Migration 045 adds two outcomes (lib/ownerSecurity.ts's signInStep):
+//   recover  -- two-step is on, no authenticator exists, and the identity
+//               has had recovery codes: a recovery code is required before a
+//               new authenticator can be set up;
+//   password -- two-step is off and no authenticator exists: no second step
+//               (no pending row is created; the caller decides whether to
+//               issue a password-only session).
 export type MfaFlowStep =
   | { step: "enroll"; pendingToken: string }
-  | { step: "challenge"; pendingToken: string; factorIds: string[] };
+  | { step: "recover"; pendingToken: string }
+  | { step: "challenge"; pendingToken: string; factorIds: string[] }
+  | { step: "password" };
 
 export interface MfaListFactorsClient {
   auth: {
@@ -31,12 +41,15 @@ export interface MfaListFactorsClient {
 
 export async function beginMfaFlow(
   client: MfaListFactorsClient | SupabaseClient,
-  params: { authUserId: string; accessToken: string; refreshToken: string }
+  params: { authUserId: string; accessToken: string; refreshToken: string },
+  security: OwnerSecurityState
 ): Promise<MfaFlowStep> {
   const { data, error } = await (client as MfaListFactorsClient).auth.mfa.listFactors();
   if (error) throw error;
 
   const verifiedTotp = (data?.totp ?? []).filter((f) => f.status === "verified");
+  const step = signInStep(security, verifiedTotp.length);
+  if (step === "password") return { step: "password" };
 
   // Phase 5.7D-R12: when exactly one verified factor exists (the common
   // case), record its id on the pending row now, at creation time — the
@@ -60,8 +73,8 @@ export async function beginMfaFlow(
     factorId: soleVerifiedFactorId,
   });
 
-  if (verifiedTotp.length === 0) {
-    return { step: "enroll", pendingToken };
+  if (step === "enroll" || step === "recover") {
+    return { step, pendingToken };
   }
   return { step: "challenge", pendingToken, factorIds: verifiedTotp.map((f) => f.id) };
 }

@@ -53,8 +53,14 @@ export type SessionRole = "owner" | "tester" | "employee";
 // This is the intended, safe transition: no owner session is ever
 // "upgraded" in place; there is no path from an old-shaped payload to a
 // trusted new one.
+//
+// Migration 045: mfa records how this session signed in -- true after a
+// two-step sign-in, false after a password-only one (an owner who turned
+// two-step sign-in off). A password-only session never lasts longer than
+// OWNER_SESSION_SHORT_SECONDS, and lib/sessionEpoch.ts refuses it whenever
+// the owner's two-step setting is on.
 export type SessionPayload =
-  | { role: "owner"; workspaceId: string; authUserId: string; mfa: true; sessionEpoch: number; exp: number }
+  | { role: "owner"; workspaceId: string; authUserId: string; mfa: boolean; sessionEpoch: number; exp: number }
   | { role: "tester"; workspaceId: string; exp: number }
   | { role: "employee"; employeeId: string; workspaceId: string; exp: number };
 
@@ -214,7 +220,10 @@ export async function verifySessionCookie(value: string): Promise<SessionPayload
   if (payload.role === "owner") {
     const p = payload as { authUserId?: unknown; mfa?: unknown; sessionEpoch?: unknown };
     if (typeof p.authUserId !== "string" || !p.authUserId) return null;
-    if (p.mfa !== true) return null;
+    if (typeof p.mfa !== "boolean") return null;
+    // Password-only sessions: never longer than the short owner session
+    // (plus a minute of clock skew), whatever the signed exp says.
+    if (p.mfa === false && (payload.exp as number) > Math.floor(Date.now() / 1000) + OWNER_SESSION_SHORT_SECONDS + 60) return null;
     if (typeof p.sessionEpoch !== "number" || !Number.isInteger(p.sessionEpoch) || p.sessionEpoch < 1) return null;
     return payload as SessionPayload;
   }

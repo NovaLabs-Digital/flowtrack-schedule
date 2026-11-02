@@ -31,11 +31,17 @@ function generateOpaqueToken(): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// Migration 045: which flow a verification belongs to -- signing in, or a
+// signed-in owner turning two-step sign-in on or off, or creating new
+// recovery codes (each after re-entering their password).
+export type MfaPurpose = "login" | "enable" | "disable" | "codes";
+
 export interface CreatePendingMfaChallengeParams {
   authUserId: string;
   supabaseAccessToken: string;
   supabaseRefreshToken: string;
   factorId?: string | null;
+  purpose?: MfaPurpose;
 }
 
 // Creates a fresh, single-use pending-challenge row and returns its opaque
@@ -51,6 +57,7 @@ export async function createPendingMfaChallenge(params: CreatePendingMfaChalleng
     supabase_access_token: params.supabaseAccessToken,
     supabase_refresh_token: params.supabaseRefreshToken,
     expires_at: expiresAt,
+    ...(params.purpose && params.purpose !== "login" ? { purpose: params.purpose } : {}),
   });
   if (error) throw error;
   return token;
@@ -63,6 +70,30 @@ export interface PendingMfaChallenge {
   supabaseAccessToken: string;
   supabaseRefreshToken: string;
   attemptCount: number;
+  purpose: MfaPurpose;
+  // An authenticator was set up in this flow (it becomes the identity's
+  // authenticator once verified).
+  enrolled: boolean;
+  // A recovery code was accepted in this flow.
+  recovered: boolean;
+}
+
+const PENDING_COLUMNS =
+  "token, auth_user_id, factor_id, supabase_access_token, supabase_refresh_token, attempt_count, purpose, enrolled, recovered";
+
+function toPending(data: Record<string, unknown>): PendingMfaChallenge {
+  const purpose = data.purpose;
+  return {
+    token: data.token as string,
+    authUserId: data.auth_user_id as string,
+    factorId: (data.factor_id as string | null) ?? null,
+    supabaseAccessToken: data.supabase_access_token as string,
+    supabaseRefreshToken: data.supabase_refresh_token as string,
+    attemptCount: data.attempt_count as number,
+    purpose: purpose === "enable" || purpose === "disable" || purpose === "codes" ? purpose : "login",
+    enrolled: data.enrolled === true,
+    recovered: data.recovered === true,
+  };
 }
 
 // Reads and validates a pending challenge by its opaque token, WITHOUT
@@ -82,21 +113,14 @@ export interface PendingMfaChallenge {
 export async function getPendingMfaChallenge(token: string): Promise<PendingMfaChallenge | null> {
   const { data, error } = await supabaseAdmin
     .from("pending_mfa_challenges")
-    .select("token, auth_user_id, factor_id, supabase_access_token, supabase_refresh_token, attempt_count, expires_at")
+    .select(`${PENDING_COLUMNS}, expires_at`)
     .eq("token", token)
     .maybeSingle();
 
   if (error || !data) return null;
   if (new Date(data.expires_at).getTime() < Date.now()) return null;
 
-  return {
-    token: data.token,
-    authUserId: data.auth_user_id,
-    factorId: data.factor_id,
-    supabaseAccessToken: data.supabase_access_token,
-    supabaseRefreshToken: data.supabase_refresh_token,
-    attemptCount: data.attempt_count,
-  };
+  return toPending(data);
 }
 
 // Increments attempt_count and returns the new count. Callers compare
@@ -121,6 +145,24 @@ export async function recordFailedMfaAttempt(token: string): Promise<number> {
 // server-held row rather than trusting whatever a client request supplies.
 export async function setPendingMfaFactorId(token: string, factorId: string): Promise<void> {
   await supabaseAdmin.from("pending_mfa_challenges").update({ factor_id: factorId }).eq("token", token);
+}
+
+// Migration 045: the authenticator set up in this flow (verify then makes
+// it the identity's authenticator, with new recovery codes).
+export async function setPendingEnrolled(token: string, factorId: string): Promise<void> {
+  const { error } = await supabaseAdmin.from("pending_mfa_challenges").update({ factor_id: factorId, enrolled: true }).eq("token", token);
+  if (error) throw new Error("MFA_PENDING_UPDATE_ERROR");
+}
+
+// Migration 045: a recovery code was accepted. Removing the lost
+// authenticator ends the identity's Supabase sessions, so the fresh session
+// from the re-entered password replaces the stored one.
+export async function setPendingRecovered(token: string, accessToken: string, refreshToken: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("pending_mfa_challenges")
+    .update({ recovered: true, factor_id: null, supabase_access_token: accessToken, supabase_refresh_token: refreshToken })
+    .eq("token", token);
+  if (error) throw new Error("MFA_PENDING_UPDATE_ERROR");
 }
 
 // Single-use consumption: atomically DELETEs the row and returns its data
@@ -148,17 +190,10 @@ export async function consumePendingMfaChallenge(token: string): Promise<Pending
     .from("pending_mfa_challenges")
     .delete()
     .eq("token", token)
-    .select("token, auth_user_id, factor_id, supabase_access_token, supabase_refresh_token, attempt_count")
+    .select(PENDING_COLUMNS)
     .maybeSingle();
 
   if (error || !data) return null;
 
-  return {
-    token: data.token,
-    authUserId: data.auth_user_id,
-    factorId: data.factor_id,
-    supabaseAccessToken: data.supabase_access_token,
-    supabaseRefreshToken: data.supabase_refresh_token,
-    attemptCount: data.attempt_count,
-  };
+  return toPending(data);
 }

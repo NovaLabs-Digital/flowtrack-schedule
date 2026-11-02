@@ -16,6 +16,7 @@ import MobileBottomNav, { MobileTabKey } from "@/app/components/mobile/MobileBot
 import MobileSchedule from "@/app/components/mobile/MobileSchedule";
 import MobileNeedsAttentionControl from "@/app/components/mobile/MobileNeedsAttentionControl";
 import OwnerBillingBanner, { OwnerBillingBannerProps } from "@/app/components/dashboard/OwnerBillingBanner";
+import RecoveryCodesReminder from "@/app/components/dashboard/RecoveryCodesReminder";
 import CapabilityGatedButton from "@/app/components/dashboard/CapabilityGatedButton";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
 
@@ -212,6 +213,7 @@ export default function MobileDashboard({
         readOnlyEndsAt={readOnlyEndsAt}
         timezone={timezone}
       />
+      {!isTester && !isLocalDemo && <RecoveryCodesReminder userId={userId} onOpen={() => handleTabChange("settings")} />}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {selectedAppt ? (
           <MobileAppointmentDetail

@@ -27,6 +27,9 @@ export type LoginNavigationDecision =
 const MFA_STEP_DESTINATIONS = new Map<string, string>([
   ["enroll", "/mfa/enroll"],
   ["challenge", "/mfa/challenge"],
+  // Migration 045: two-step on, no authenticator, and the identity has had
+  // recovery codes -- a recovery code comes first.
+  ["recover", "/mfa/challenge?recover=1"],
 ]);
 
 export interface LoginApiResponse {

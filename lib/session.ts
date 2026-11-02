@@ -27,7 +27,7 @@ import {
 // lib/sessionEpoch.ts), both required to safely re-verify the session on
 // every protected request (see lib/workspace.ts).
 export type Session =
-  | { role: "owner"; workspaceId: string; authUserId: string; sessionEpoch: number }
+  | { role: "owner"; workspaceId: string; authUserId: string; sessionEpoch: number; mfa: boolean }
   | { role: "tester"; workspaceId: string }
   | { role: "employee"; employeeId: string; workspaceId: string }
   | { role: "none" };
@@ -43,7 +43,7 @@ export async function getSession(): Promise<Session> {
     return { role: "employee", employeeId: payload.employeeId, workspaceId: payload.workspaceId };
   }
   if (payload.role === "owner") {
-    return { role: "owner", workspaceId: payload.workspaceId, authUserId: payload.authUserId, sessionEpoch: payload.sessionEpoch };
+    return { role: "owner", workspaceId: payload.workspaceId, authUserId: payload.authUserId, sessionEpoch: payload.sessionEpoch, mfa: payload.mfa };
   }
   return { role: "tester", workspaceId: payload.workspaceId };
 }
@@ -81,18 +81,24 @@ export async function createSessionCookieValue(
 // (never a stale or client-supplied value). `trusted` controls both the
 // signed exp claim's duration (12h vs 30d) and, at the cookie-setting call
 // site (setOwnerSessionCookie below), whether Max-Age is present at all.
+//
+// Migration 045: mfa: false is a password-only session (the owner turned
+// two-step sign-in off; app/api/auth/login/route.ts is its only issuer). It
+// is always the short session -- never the 30-day one.
 export async function createOwnerSessionCookieValue(params: {
   workspaceId: string;
   authUserId: string;
   sessionEpoch: number;
   trusted: boolean;
+  mfa?: boolean;
 }): Promise<string> {
-  const exp = newExpiry(params.trusted ? OWNER_SESSION_TRUSTED_SECONDS : OWNER_SESSION_SHORT_SECONDS);
+  const mfa = params.mfa ?? true;
+  const exp = newExpiry(params.trusted && mfa ? OWNER_SESSION_TRUSTED_SECONDS : OWNER_SESSION_SHORT_SECONDS);
   return signSessionPayload({
     role: "owner",
     workspaceId: params.workspaceId,
     authUserId: params.authUserId,
-    mfa: true,
+    mfa,
     sessionEpoch: params.sessionEpoch,
     exp,
   });

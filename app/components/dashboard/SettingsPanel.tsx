@@ -19,6 +19,7 @@ export default function SettingsPanel({
   billingFocusServiceDate,
   onBillingSaved,
   isLocalDemo = false,
+  showSignInSecurity = false,
 }: {
   section: SettingsSection;
   // Phase 5.5E-E1E forwarded this only to ArchivedClientsPanel. Phase
@@ -63,8 +64,13 @@ export default function SettingsPanel({
   // behavior (Edit/Disable only, matching "a real service is deactivated,
   // never deleted") is completely unchanged.
   isLocalDemo?: boolean;
+  // Real signed-in owners only (never a demo, tester, or Guided Demo
+  // Session): the Company section's Sign-in Security card.
+  showSignInSecurity?: boolean;
 }) {
-  if (section === "company") return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} />;
+  if (section === "company") {
+    return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} showSignInSecurity={showSignInSecurity} />;
+  }
   if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} isTester={isLocalDemo} />;
   if (section === "staff") return <StaffPanel canMutateOperationalData={canMutateOperationalData} />;
   if (section === "archived") return <ArchivedClientsPanel canMutateOperationalData={canMutateOperationalData} />;
