@@ -248,19 +248,42 @@ describe("apply_recurrence_change: one-time -> recurring", () => {
       "UTC hour differs across the transition while local time holds");
   });
 
-  test("literal Izabel dates (Sept 22 / Oct 20 / Nov 17 / Dec 15, 2026, 9:00 AM New York) -- runs only while Sept 22, 2026 is still in the future", {
-    skip: Date.now() >= Date.UTC(2026, 8, 22, 12) ? "requires Sept 22, 2026 to be in the future (activation rejects past templates)" : false,
-  }, async () => {
+  // The Izabel pattern, placed relative to today so it runs year-round: in
+  // 2026 it was Sept 22 / Oct 20 / Nov 17 / Dec 15 at 9:00 AM, every 4 weeks,
+  // with the fall clock change (Nov 1) between the 2nd and 3rd visits, edited
+  // from an appointment one week later at 4:30 AM. Here the anchor is the
+  // Tuesday on or before 40 days ahead of the next usable fall-back date
+  // (first Sunday of November), so visits 1-2 are daylight time and 3-4
+  // standard time.
+  test("Izabel pattern, future-relative: Tuesday 9:00 AM every 4 weeks across the fall clock change keeps 9:00 AM on every visit", async () => {
+    const NY = "America/New_York";
+    const fallBack = (year: number) => {
+      const nov1 = DateTime.fromObject({ year, month: 11, day: 1 }, { zone: NY });
+      return nov1.plus({ days: (7 - nov1.weekday) % 7 }); // first Sunday of November
+    };
+    const anchorFor = (year: number) => {
+      const target = fallBack(year).minus({ days: 40 });
+      return target.minus({ days: (target.weekday - 2 + 7) % 7 }).set({ hour: 9, minute: 0, second: 0, millisecond: 0 }); // Tuesday on or before
+    };
+    const thisYear = DateTime.now().setZone(NY).year;
+    let anchorDt = anchorFor(thisYear);
+    if (anchorDt <= DateTime.now().plus({ days: 2 })) anchorDt = anchorFor(thisYear + 1);
+    const change = fallBack(anchorDt.year);
+
     const fx = await makeWorkspace(c);
-    const start = DateTime.fromObject({ year: 2026, month: 9, day: 22, hour: 9 }, { zone: "America/New_York" }).toJSDate();
-    // originally Sept 29 4:30 AM, edited to Sept 22 9:00 AM every 4 weeks
-    const apptId = await makeAppointment(c, fx, { scheduledFor: DateTime.fromObject({ year: 2026, month: 9, day: 29, hour: 4, minute: 30 }, { zone: "America/New_York" }).toJSDate() });
+    // originally one week later at 4:30 AM, edited to the anchor, every 4 weeks
+    const apptId = await makeAppointment(c, fx, { scheduledFor: anchorDt.plus({ days: 7 }).set({ hour: 4, minute: 30 }).toJSDate() });
     const appt = await getAppt(apptId);
-    const res = await apply(c, fx, apptId, randomUUID(), requestFor(appt, [], { start, freq: "weekly", weeks: 4 }), expectedFrom(appt, []));
+    const res = await apply(c, fx, apptId, randomUUID(), requestFor(appt, [], { start: anchorDt.toJSDate(), freq: "weekly", weeks: 4 }), expectedFrom(appt, []));
     assert.equal(res.outcome, "applied", JSON.stringify(res));
-    const all = [await getAppt(apptId), ...(await seriesRows(fx.workspaceId, res.new_series_id)).filter((r) => r.id !== apptId)]
-      .map((r) => DateTime.fromJSDate(r.scheduled_for).setZone("America/New_York").toFormat("yyyy-MM-dd h:mm a"));
-    assert.deepEqual(all.slice(0, 4), ["2026-09-22 9:00 AM", "2026-10-20 9:00 AM", "2026-11-17 9:00 AM", "2026-12-15 9:00 AM"]);
+    const visits = [await getAppt(apptId), ...(await seriesRows(fx.workspaceId, res.new_series_id)).filter((r) => r.id !== apptId)]
+      .slice(0, 4)
+      .map((r) => DateTime.fromJSDate(r.scheduled_for).setZone(NY));
+    const expectedDates = [0, 28, 56, 84].map((d) => anchorDt.plus({ days: d }).toFormat("yyyy-MM-dd"));
+    assert.deepEqual(visits.map((v) => v.toFormat("yyyy-MM-dd")), expectedDates, "every 4 weeks, Tuesdays");
+    assert.deepEqual(visits.map((v) => v.toFormat("h:mm a")), ["9:00 AM", "9:00 AM", "9:00 AM", "9:00 AM"]);
+    assert.deepEqual(visits.map((v) => v.offset), [-240, -240, -300, -300], "visits 1-2 daylight time, 3-4 standard time");
+    assert.ok(visits[1] < change && visits[2] > change, "the clock change falls between the 2nd and 3rd visits");
   });
 
   test("moving the anchor and changing its fields in the same call: the boundary comes from the LOCKED row, not the request", async () => {

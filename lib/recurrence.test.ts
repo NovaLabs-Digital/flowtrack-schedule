@@ -26,7 +26,9 @@ import {
   MAX_HORIZON_DAYS,
   MAX_MONTHLY_HORIZON_MONTHS,
 } from "./recurrence.ts";
-import { BUSINESS_TZ, TIMEZONE_OPTIONS } from "./timezone.ts";
+import { BUSINESS_TZ, TIMEZONE_OPTIONS, resolveLocalWallClock, zonedDateTimeToUTC } from "./timezone.ts";
+import { localMoveBetween, applyLocalMove } from "./localShift.ts";
+import { generateOccurrencesInWindow } from "./recurringSeriesReplenishment.ts";
 
 // Builds a Date representing an exact wall-clock instant in the business's
 // own timezone (America/New_York) -- simulating what the BROWSER actually
@@ -504,5 +506,143 @@ describe("Phase 5D: cross-timezone correctness -- addDays/addCalendarMonths are 
         }
       }
     }
+  });
+});
+
+// lib/localShift.ts -- "This & future" moves later occurrences by the selected
+// occurrence's change in LOCAL calendar days and clock minutes.
+describe("localShift: business-local moves for 'This & future'", () => {
+  const NY = "America/New_York";
+  const local = (iso: string) => DateTime.fromISO(iso).setZone(NY).toFormat("yyyy-MM-dd HH:mm");
+
+  test("a move across the spring change is +3 days, same clock time -- not 3 days minus an hour", () => {
+    assert.deepEqual(localMoveBetween("2027-03-12T14:00:00.000Z", "2027-03-15T13:00:00.000Z", NY), { days: 3, minutes: 0 });
+  });
+
+  test("a move across the fall change, and a time-only change, are measured on the clock", () => {
+    assert.deepEqual(localMoveBetween("2027-11-05T13:00:00.000Z", "2027-11-08T14:00:00.000Z", NY), { days: 3, minutes: 0 });
+    assert.deepEqual(localMoveBetween("2027-03-05T14:00:00.000Z", "2027-03-05T15:30:00.000Z", NY), { days: 0, minutes: 90 });
+  });
+
+  test("applying a move keeps the local clock time on the other side of a change, both directions", () => {
+    const later = applyLocalMove("2027-04-09T13:00:00.000Z", { days: 3, minutes: 0 }, NY);
+    assert.ok(later.ok && local(later.iso) === "2027-04-12 09:00");
+    const earlier = applyLocalMove("2027-03-15T13:00:00.000Z", { days: -3, minutes: 0 }, NY);
+    assert.ok(earlier.ok && local(earlier.iso) === "2027-03-12 09:00" && earlier.iso === "2027-03-12T14:00:00.000Z");
+  });
+
+  test("clock minutes roll over midnight and month ends on the local calendar", () => {
+    const r = applyLocalMove("2027-01-31T04:00:00.000Z", { days: 0, minutes: 120 }, NY); // Jan 30 23:00 -> Jan 31 01:00
+    assert.ok(r.ok && local(r.iso) === "2027-01-31 01:00");
+    const m = applyLocalMove("2027-01-31T14:00:00.000Z", { days: 1, minutes: 0 }, NY);
+    assert.ok(m.ok && local(m.iso) === "2027-02-01 09:00");
+  });
+
+  test("a time the clock skips (Sun Mar 14 2027, 2:30 AM) is refused, never silently moved to 3:30", () => {
+    const r = applyLocalMove("2027-03-13T07:30:00.000Z", { days: 1, minutes: 0 }, NY);
+    assert.equal(r.ok, false);
+    assert.equal(resolveLocalWallClock({ year: 2027, month: 3, day: 14, hour: 2, minute: 30, second: 0, millisecond: 0 }, NY), null);
+  });
+
+  test("a time that happens twice (Sun Nov 7 2027, 1:30 AM) resolves to the earlier one, whatever the runtime's own guess", () => {
+    const d = resolveLocalWallClock({ year: 2027, month: 11, day: 7, hour: 1, minute: 30, second: 0, millisecond: 0 }, NY);
+    assert.equal(d?.toUTC().toISO(), "2027-11-07T05:30:00.000Z");
+  });
+
+  test("a zone without DST (Phoenix) is a plain day move", () => {
+    const r = applyLocalMove("2027-04-09T16:00:00.000Z", { days: 3, minutes: 0 }, "America/Phoenix");
+    assert.ok(r.ok && r.iso === "2027-04-12T16:00:00.000Z");
+  });
+
+  test("moved occurrences line up with the series' later top-ups: Fri every-2-weeks moved to Mon on Mar 15 (across the spring change)", () => {
+    // Later occurrences before the move: Fri Mar 26, Fri Apr 9 at 9:00.
+    const moved = ["2027-03-26T13:00:00.000Z", "2027-04-09T13:00:00.000Z"].map((s) => {
+      const r = applyLocalMove(s, localMoveBetween("2027-03-12T14:00:00.000Z", "2027-03-15T13:00:00.000Z", NY), NY);
+      assert.ok(r.ok);
+      return r.iso;
+    });
+    // The update route re-anchors an active series on the edited occurrence
+    // (Mon Mar 15, 9:00); the daily top-up generates from that anchor.
+    const topUp = generateOccurrencesInWindow({
+      frequencyType: "weekly", repeatWeeks: 2, repeatMonths: null,
+      anchorLocalDate: "2027-03-15", anchorLocalTime: "09:00", anchorTimezone: NY,
+      after: "2027-03-15T13:00:00.000Z", through: "2027-04-30T23:59:59.000Z", maxOccurrences: 10,
+    });
+    assert.ok(topUp.ok);
+    const generated = topUp.occurrences.map((o) => new Date(o).toISOString());
+    assert.deepEqual(moved, generated.slice(0, 2), "same instants the generator produces");
+    assert.ok(moved.every((m) => local(m).endsWith("09:00")));
+  });
+});
+
+// One DST policy (lib/timezone.ts resolveLocalWallClock) for every path that
+// turns a business-local date and time into an instant: appointment entry,
+// recurring generation, series top-ups and "This & future" moves. A repeated
+// fall-back time is the EARLIER instant on every path -- never left to
+// Luxon's runtime-dependent guess -- and a skipped spring-forward time is
+// refused on every path.
+describe("one DST policy across entry, generation, top-ups and moves", () => {
+  const NY = "America/New_York";
+
+  test("ambiguous Sun Nov 7 2027, 1:30 AM: every path produces the same, earlier instant (1:30 EDT = 05:30Z)", () => {
+    const expected = "2027-11-07T05:30:00.000Z";
+
+    const entry = zonedDateTimeToUTC("2027-11-07", "01:30", NY);
+    assert.ok(entry.ok);
+    const fromEntry = new Date(entry.iso).toISOString();
+
+    const generated = generateFutureDatesSafe(new Date("2027-10-31T05:30:00.000Z"), "weekly", 1, NY); // Sun Oct 31, 1:30 AM EDT
+    assert.ok(generated.ok);
+    const fromGeneration = generated.dates[0].toISOString();
+
+    const topUp = generateOccurrencesInWindow({
+      frequencyType: "weekly", repeatWeeks: 1, repeatMonths: null,
+      anchorLocalDate: "2027-10-31", anchorLocalTime: "01:30", anchorTimezone: NY,
+      after: "2027-10-31T05:30:00.000Z", through: "2027-11-08T00:00:00.000Z", maxOccurrences: 5,
+    });
+    assert.ok(topUp.ok);
+    const fromTopUp = new Date(topUp.occurrences[0]).toISOString();
+
+    const moved = applyLocalMove("2027-11-06T05:30:00.000Z", { days: 1, minutes: 0 }, NY); // Sat Nov 6, 1:30 AM EDT -> Sun
+    assert.ok(moved.ok);
+    const fromMove = new Date(moved.iso).toISOString();
+
+    assert.deepEqual([fromEntry, fromGeneration, fromTopUp, fromMove], [expected, expected, expected, expected]);
+  });
+
+  test("a series anchored ON the repeated hour resolves its anchor to the earlier instant too", () => {
+    const topUp = generateOccurrencesInWindow({
+      frequencyType: "daily", repeatWeeks: null, repeatMonths: null,
+      anchorLocalDate: "2027-11-07", anchorLocalTime: "01:30", anchorTimezone: NY,
+      after: "2027-11-07T05:00:00.000Z", through: "2027-11-09T00:00:00.000Z", maxOccurrences: 5,
+    });
+    assert.ok(topUp.ok);
+    // Next day at 1:30 AM EST -- one calendar day after the (earlier) anchor.
+    assert.equal(new Date(topUp.occurrences[0]).toISOString(), "2027-11-08T06:30:00.000Z");
+  });
+
+  test("skipped Sun Mar 14 2027, 2:30 AM: every path refuses it -- nothing is saved shifted", () => {
+    const entry = zonedDateTimeToUTC("2027-03-14", "02:30", NY);
+    assert.equal(entry.ok, false);
+
+    const generated = generateFutureDatesSafe(new Date("2027-03-07T07:30:00.000Z"), "weekly", 1, NY); // Sun Mar 7, 2:30 AM EST
+    assert.equal(generated.ok, false, "the whole series is refused, not partially generated");
+
+    const topUp = generateOccurrencesInWindow({
+      frequencyType: "weekly", repeatWeeks: 1, repeatMonths: null,
+      anchorLocalDate: "2027-03-07", anchorLocalTime: "02:30", anchorTimezone: NY,
+      after: "2027-03-07T07:30:00.000Z", through: "2027-03-22T00:00:00.000Z", maxOccurrences: 5,
+    });
+    assert.deepEqual(topUp, { ok: false, reason: "dst_gap" });
+
+    const moved = applyLocalMove("2027-03-13T07:30:00.000Z", { days: 1, minutes: 0 }, NY);
+    assert.equal(moved.ok, false);
+  });
+
+  test("ordinary times are unchanged on every path (Tue Nov 9 2027, 9:00 AM EST)", () => {
+    const entry = zonedDateTimeToUTC("2027-11-09", "09:00", NY);
+    assert.ok(entry.ok && new Date(entry.iso).toISOString() === "2027-11-09T14:00:00.000Z");
+    const generated = generateFutureDatesSafe(new Date("2027-11-02T13:00:00.000Z"), "weekly", 1, NY); // Tue Nov 2, 9:00 EDT
+    assert.ok(generated.ok && generated.dates[0].toISOString() === "2027-11-09T14:00:00.000Z");
   });
 });

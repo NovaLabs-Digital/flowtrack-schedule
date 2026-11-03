@@ -28,6 +28,7 @@ import {
 } from "@/lib/recurringSeries";
 import { effectiveTimezone } from "@/lib/timezone";
 import { isHistoricalAppointment } from "@/lib/payroll";
+import { localMoveBetween, applyLocalMove } from "@/lib/localShift";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -174,6 +175,75 @@ export async function PATCH(req: Request) {
         .order("scheduled_for", { ascending: true });
       if (sibErr) throw sibErr;
       return data ?? [];
+    }
+
+    // The workspace's saved timezone, read at most once per request.
+    let timezoneCache: string | null = null;
+    async function workspaceTimezone(): Promise<string> {
+      if (timezoneCache) return timezoneCache;
+      const { data: settings } = await supabaseAdmin
+        .from("company_settings")
+        .select("timezone")
+        .eq("workspace_id", workspaceId)
+        .maybeSingle();
+      timezoneCache = effectiveTimezone(settings?.timezone);
+      return timezoneCache;
+    }
+
+    // "This & future": every later occurrence moves by the same change the
+    // owner made to this one, in the business's local calendar and clock
+    // (lib/localShift.ts) -- never a fixed elapsed-time offset, which lands an
+    // hour off whenever this occurrence's old and new dates sit on opposite
+    // sides of a daylight-saving change. Each occurrence keeps its own clock
+    // time plus that change, and its own duration (plus any change the owner
+    // made to this occurrence's duration).
+    const newStartIso = typeof body.scheduled_for === "string" ? body.scheduled_for.trim() : null;
+    const startChanges = !!newStartIso && new Date(newStartIso).getTime() !== new Date(existingData.scheduled_for).getTime();
+    const durationDeltaMs =
+      body.scheduled_end && existingData.scheduled_end
+        ? new Date(body.scheduled_end).getTime() - new Date(existingData.scheduled_end).getTime() -
+          ((newStartIso ? new Date(newStartIso).getTime() : new Date(existingData.scheduled_for).getTime()) -
+            new Date(existingData.scheduled_for).getTime())
+        : 0;
+    type SiblingTarget = { scheduled_for?: string; scheduled_end?: string };
+    async function planSiblingTargets(sibs: Sibling[]): Promise<{ ok: true; targets: Map<string, SiblingTarget> } | { ok: false; local: string }> {
+      const targets = new Map<string, SiblingTarget>();
+      if (sibs.length === 0 || (!startChanges && durationDeltaMs === 0)) return { ok: true, targets };
+      const timezone = startChanges ? await workspaceTimezone() : "";
+      const move = startChanges ? localMoveBetween(existingData.scheduled_for, newStartIso!, timezone) : null;
+      for (const sib of sibs) {
+        const target: SiblingTarget = {};
+        const oldStartMs = new Date(sib.scheduled_for).getTime();
+        let startMs = oldStartMs;
+        if (move) {
+          const moved = applyLocalMove(sib.scheduled_for, move, timezone);
+          if (!moved.ok) return { ok: false, local: moved.local };
+          startMs = new Date(moved.iso).getTime();
+          if (startMs !== oldStartMs) target.scheduled_for = new Date(startMs).toISOString();
+        }
+        if (sib.scheduled_end) {
+          const endMs = startMs + (new Date(sib.scheduled_end).getTime() - oldStartMs) + durationDeltaMs;
+          if (endMs !== new Date(sib.scheduled_end).getTime()) target.scheduled_end = new Date(endMs).toISOString();
+        }
+        targets.set(sib.id, target);
+      }
+      return { ok: true, targets };
+    }
+
+    // Checked before anything is written: a later occurrence that would land
+    // on a time the clock skips (the spring-forward gap) refuses the whole
+    // request, the same rule appointment entry and the recurrence generator use.
+    if (mode === "future" && existingData.series_id && startChanges) {
+      const plan = await planSiblingTargets(await fetchSiblings());
+      if (!plan.ok) {
+        return json(
+          {
+            error: `A later appointment in this series would move to ${plan.local}, a time that doesn't exist because of a daylight-saving change. Nothing was saved. Move only this appointment, or choose another time.`,
+            code: "NONEXISTENT_LOCAL_TIME",
+          },
+          400
+        );
+      }
     }
 
     // Phase 5.7D-R18: validate every assignment change (origin + every
@@ -364,23 +434,13 @@ export async function PATCH(req: Request) {
     const siblings = await fetchSiblings();
 
     if (mode === "future" && siblings.length > 0) {
-      const newStart = body.scheduled_for ? new Date(body.scheduled_for) : null;
-      const newEnd = body.scheduled_end ? new Date(body.scheduled_end) : null;
-      const oldStart = new Date(existingData.scheduled_for);
-      const oldEnd = existingData.scheduled_end ? new Date(existingData.scheduled_end) : null;
-
-      // Full timestamp delta, not a same-day hour/minute comparison: moving
-      // the selected occurrence from Thursday to Wednesday at an unchanged
-      // clock time has zero hour/minute delta, so a time-of-day-only check
-      // never propagates it, leaving every future occurrence stuck on the
-      // old weekday. Each sibling is a materialized, independently-stored
-      // row (see manage-recurrence's generateFutureDates insert), so this
-      // delta must be added to each sibling's own scheduled_for/scheduled_end
-      // rather than recomputed from the recurrence rule -- that's also what
-      // keeps the interval between occurrences intact regardless of
-      // frequency_type (daily/weekdays/weekly/every-N-weeks).
-      const startDeltaMs = newStart ? newStart.getTime() - oldStart.getTime() : 0;
-      const endDeltaMs = newEnd && oldEnd ? newEnd.getTime() - oldEnd.getTime() : startDeltaMs;
+      // Re-planned against this fresh sibling list (see planSiblingTargets).
+      // The pre-check above already refused a nonexistent local time; one
+      // appearing only now means an occurrence was added concurrently.
+      const plan = await planSiblingTargets(siblings);
+      if (!plan.ok) {
+        return json({ error: "This recurring series was changed by another request. Please refresh and try again.", code: "NONEXISTENT_LOCAL_TIME" }, 409);
+      }
 
       for (const sib of siblings) {
         const sibUpdate: Record<string, any> = {};
@@ -396,19 +456,17 @@ export async function PATCH(req: Request) {
         // (clearing) propagating the same way a real color value does.
         if (apptUpdate.team_color !== undefined) sibUpdate.team_color = apptUpdate.team_color;
 
-        if (startDeltaMs !== 0) {
-          sibUpdate.scheduled_for = new Date(new Date(sib.scheduled_for).getTime() + startDeltaMs).toISOString();
+        const target = plan.targets.get(sib.id);
+        if (target?.scheduled_for) {
+          sibUpdate.scheduled_for = target.scheduled_for;
           // Same reminder-reliability fix as the origin appointment above --
-          // startDeltaMs !== 0 already means this sibling's scheduled_for is
-          // actually changing, so no further value comparison is needed here.
+          // a target is only set when this sibling's time actually changes.
           sibUpdate.reminder_24h_sent_at = null;
           // Same claim-invalidation as the origin appointment above.
           sibUpdate.reminder_24h_claimed_at = null;
           sibUpdate.reminder_24h_claim_token = null;
         }
-        if (endDeltaMs !== 0 && sib.scheduled_end) {
-          sibUpdate.scheduled_end = new Date(new Date(sib.scheduled_end).getTime() + endDeltaMs).toISOString();
-        }
+        if (target?.scheduled_end) sibUpdate.scheduled_end = target.scheduled_end;
 
         if (Object.keys(sibUpdate).length > 0) {
           const { error } = await supabaseAdmin
@@ -458,12 +516,7 @@ export async function PATCH(req: Request) {
     let registryWarning = false;
     if (seriesInvolved && oldSeriesWasActive) {
       try {
-        const { data: settings } = await supabaseAdmin
-          .from("company_settings")
-          .select("timezone")
-          .eq("workspace_id", workspaceId)
-          .maybeSingle();
-        const timezone = effectiveTimezone(settings?.timezone);
+        const timezone = await workspaceTimezone();
 
         const seriesRow = await fetchSeriesById(existingData.series_id!, workspaceId);
         const liveOccurrences = await fetchLiveOccurrenceSnapshots(existingData.series_id!, workspaceId);

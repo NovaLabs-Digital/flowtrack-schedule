@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { stepLocalWallClock } from "./timezone";
 
 export const MAX_HORIZON_DAYS = 182;
 
@@ -29,8 +30,15 @@ export const MAX_MONTHLY_HORIZON_MONTHS = 24;
 // real IANA DST offset for the target date/zone, so the business-local
 // wall-clock hour is what's preserved for daily/weekdays/weekly recurrence
 // too, exactly like addCalendarMonths already did for monthly (Phase 2).
+//
+// The resulting local time goes through the one DST policy in
+// lib/timezone.ts (resolveLocalWallClock): a repeated fall-back time resolves
+// to the earlier instant. A skipped spring-forward time keeps Luxon's own
+// forward-shifted result, so generateFutureDatesSafe's local-time check still
+// refuses the whole series rather than saving a shifted occurrence.
 export function addDays(date: Date, days: number, tz: string): Date {
-  return DateTime.fromJSDate(date).setZone(tz).plus({ days }).toJSDate();
+  const local = DateTime.fromJSDate(date).setZone(tz);
+  return (stepLocalWallClock(local, { days }) ?? local.plus({ days })).toJSDate();
 }
 
 // Adds `months` calendar months to `date`, always measured from `date`'s
@@ -41,7 +49,8 @@ export function addDays(date: Date, days: number, tz: string): Date {
 // later occurrence, so Jan 31 + 1 month = Feb 28, but Jan 31 + 2 months is
 // computed fresh from day 31 and lands on Mar 31, not Mar 28.
 export function addCalendarMonths(date: Date, months: number, tz: string): Date {
-  return DateTime.fromJSDate(date).setZone(tz).plus({ months }).toJSDate();
+  const local = DateTime.fromJSDate(date).setZone(tz);
+  return (stepLocalWallClock(local, { months }) ?? local.plus({ months })).toJSDate();
 }
 
 function isWeekdayInTz(d: Date, tz: string): boolean {

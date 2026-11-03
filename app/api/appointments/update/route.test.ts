@@ -18,6 +18,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
 import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { DateTime } from "luxon";
 import { fileURLToPath } from "node:url";
 import {
   createFakeSupabaseAdmin,
@@ -482,8 +483,10 @@ describe("existing appointment-editing business rules remain unchanged once enti
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1" }) }, // fetch existing
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // later occurrences, planned before any write
         { error: null }, // update source
         { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings
         { error: null }, // update sibling
@@ -590,8 +593,15 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START, scheduled_end: OLD_SELECTED_END }) }, // fetch existing
+        {
+          data: [
+            { id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END },
+            { id: "sib-2", scheduled_for: SIB2_OLD_START, scheduled_end: SIB2_OLD_END },
+          ],
+        }, // later occurrences, planned before any write
         { error: null }, // hasColumn("scheduled_end")
         { error: null }, // update source (cutoff)
         {
@@ -651,8 +661,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { data: [] }, // later occurrences, planned before any write
         { error: null }, // update source
         { data: [] }, // no future siblings
       ],
@@ -668,8 +680,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { data: [] }, // later occurrences, planned before any write
         { error: null }, // update source
         { data: [] }, // no future siblings -- proves the cutoff update doesn't depend on any sibling existing
       ],
@@ -687,8 +701,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { data: [] }, // later occurrences, planned before any write
         { error: null },
         { data: [] },
       ],
@@ -704,8 +720,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null }] }, // later occurrences, planned before any write
         { error: null },
         { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null }] },
         { error: null },
@@ -717,8 +735,9 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     const workspaceEqCalls = currentFake.calls.filter(
       (c) => c.table === "appointments" && c.method === "eq" && c.args[0] === "workspace_id"
     );
-    // fetch existing, update source, siblings select, update sibling -- exactly four, all scoped
-    assert.equal(workspaceEqCalls.length, 4);
+    // fetch existing, early siblings select (planning), update source,
+    // siblings select, update sibling -- exactly five, all scoped
+    assert.equal(workspaceEqCalls.length, 5);
     assert.ok(workspaceEqCalls.every((c) => c.args[1] === REAL_WORKSPACE_ID));
   });
 
@@ -726,8 +745,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: "2026-08-06T14:00:00.000Z", scheduled_end: "2026-08-06T15:00:00.000Z" }) },
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-13T14:00:00.000Z", scheduled_end: "2026-08-13T15:00:00.000Z" }] }, // later occurrences, planned before any write
         { error: null }, // hasColumn(scheduled_end)
         { error: null }, // update source
         { data: [{ id: "sib-1", scheduled_for: "2026-08-13T14:00:00.000Z", scheduled_end: "2026-08-13T15:00:00.000Z" }] },
@@ -774,8 +795,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null }] }, // later occurrences, planned before any write
         { error: null },
         { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null }] },
         { error: null },
@@ -796,8 +819,15 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
         { data: subscriptionRow({ stripe_status: "active" }) }, // canMutateOperationalData
         { data: subscriptionRow({ stripe_status: "active" }) }, // canSendNotifications
       ],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) },
+        {
+          data: [
+            { id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: null },
+            { id: "sib-2", scheduled_for: SIB2_OLD_START, scheduled_end: null },
+          ],
+        }, // later occurrences, planned before any write
         { error: null }, // update source
         {
           data: [
@@ -827,8 +857,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START, scheduled_end: OLD_SELECTED_END }) },
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END }] }, // later occurrences, planned before any write
         { error: null }, // hasColumn(scheduled_end)
         { error: null }, // update source
         { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END }] },
@@ -849,8 +881,10 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START, scheduled_end: null }) },
+        { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END }] }, // later occurrences, planned before any write
         { error: null }, // update source (no hasColumn probe -- scheduled_end absent from body, matching MoveConfirmDialog when scheduledEnd is falsy)
         { data: [{ id: "sib-1", scheduled_for: SIB1_OLD_START, scheduled_end: SIB1_OLD_END }] },
         { error: null },
@@ -870,8 +904,15 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-daily", scheduled_for: "2026-08-06T09:00:00.000Z" }) },
+        {
+          data: [
+            { id: "sib-1", scheduled_for: "2026-08-07T09:00:00.000Z", scheduled_end: null },
+            { id: "sib-2", scheduled_for: "2026-08-08T09:00:00.000Z", scheduled_end: null },
+          ],
+        }, // later occurrences, planned before any write
         { error: null }, // update source
         {
           data: [
@@ -923,8 +964,15 @@ describe("SFT reminder reliability fix: rescheduling clears reminder_24h_sent_at
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1", scheduled_for: "2026-08-06T14:00:00.000Z" }) },
+        {
+          data: [
+            { id: "sib-1", scheduled_for: "2026-09-03T14:00:00.000Z", scheduled_end: null },
+            { id: "sib-2", scheduled_for: "2026-10-01T14:00:00.000Z", scheduled_end: null },
+          ],
+        }, // later occurrences, planned before any write
         { error: null }, // update source
         {
           data: [
@@ -1678,9 +1726,10 @@ describe("Phase 2: monthly recurrence required no changes to this route (source-
     }
   });
 
-  test("the sibling ('This & future') shift is delta-based (old vs. new timestamp), not recomputed from any recurrence rule", () => {
-    assert.ok(routeSource.includes("startDeltaMs"));
-    assert.ok(routeSource.includes("endDeltaMs"));
+  test("the sibling ('This & future') shift applies the selected occurrence's own local date/clock change, not a fixed elapsed offset and not a recurrence rule", () => {
+    assert.ok(routeSource.includes("localMoveBetween(existingData.scheduled_for, newStartIso!, timezone)"));
+    assert.ok(routeSource.includes("applyLocalMove(sib.scheduled_for, move, timezone)"));
+    assert.ok(!routeSource.includes("startDeltaMs"), "no fixed elapsed-millisecond offset");
   });
 });
 
@@ -1722,6 +1771,7 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
         subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
         appointments: [
           { data: existingAppt({ series_id: "series-1" }) }, // fetch existing
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // later occurrences, planned before any write
           { error: null }, // update source
           { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // siblings
           { error: null }, // update sibling
@@ -1809,8 +1859,10 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
       appointments: [
         { data: existingAppt({ series_id: "series-1" }) },
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // later occurrences, planned before any write
         { error: null },
         { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
         { error: null },
@@ -1906,6 +1958,7 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [
         { data: existingAppt({ series_id: "series-1" }) },
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // later occurrences, planned before any write
         { error: null },
         { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
         { error: null },
@@ -1939,6 +1992,7 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
         subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
         appointments: [
           { data: existingAppt({ series_id: "series-1" }) },
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // later occurrences, planned before any write
           { error: null },
           { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
           { error: null },
@@ -1971,6 +2025,7 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
         subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
         appointments: [
           { data: existingAppt({ series_id: "series-1" }) },
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // later occurrences, planned before any write
           { error: null },
           { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
           { error: null },
@@ -2002,6 +2057,7 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
         subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
         appointments: [
           { data: existingAppt({ series_id: "series-1" }) },
+        { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] }, // later occurrences, planned before any write
           { error: null },
           { data: [{ id: "sib-1", scheduled_for: "2026-08-10T14:00:00.000Z", scheduled_end: null }] },
           { error: null },
@@ -2037,7 +2093,11 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
-      appointments: [{ data: existingAppt({ series_id: "series-1" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1" }) },
+        { data: [] }, // later occurrences, planned before any write (a read)
+      ],
       recurring_series: [
         { data: { id: "series-1", status: "active" } }, // observed active
         { data: [] }, // but the CAS matches nothing -- e.g. a concurrent Delete This & Future already stopped it
@@ -2164,5 +2224,136 @@ describe("historical-record protection -- past/completed/cancelled appointments 
     const res = await PATCH(req({ appointment_id: "appt-1", service_type: "New Service" }));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true });
+  });
+});
+
+// "This & future" moves later occurrences by the selected one's change in the
+// business's LOCAL calendar and clock (lib/localShift.ts), never a fixed
+// elapsed offset -- a fixed offset lands an hour off whenever the selected
+// occurrence's old and new dates sit on opposite sides of a DST change.
+describe("'This & future' across daylight-saving changes keeps the business-local clock time", () => {
+  const H = 3_600_000;
+  const plusMs = (iso: string, ms: number) => new Date(new Date(iso).getTime() + ms).toISOString();
+  function local(iso: string, tz = "America/New_York") {
+    return DateTime.fromISO(iso).setZone(tz).toFormat("ccc yyyy-MM-dd HH:mm");
+  }
+  // Every appointment lasts `durH` hours (scheduled_end set) unless sibDurH says otherwise.
+  async function moveFuture(o: { from: string; to: string; sibs: string[]; tz?: string; durH?: number; sibDurH?: number[] }) {
+    const durMs = (o.durH ?? 2) * H;
+    const sibRows = o.sibs.map((s, i) => ({ id: `sib-${i + 1}`, scheduled_for: s, scheduled_end: plusMs(s, (o.sibDurH?.[i] ?? o.durH ?? 2) * H) }));
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: o.tz ?? "America/New_York" } }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: o.from, scheduled_end: plusMs(o.from, durMs) }) },
+        { data: sibRows }, // planning (before any write)
+        { error: null }, // hasColumn(scheduled_end)
+        { error: null }, // update selected
+        { data: sibRows }, // siblings (fresh)
+        ...sibRows.map(() => ({ error: null })),
+      ],
+      recurring_series: [{ data: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: o.to, scheduled_end: plusMs(o.to, durMs) }));
+    const updates = currentFake.calls
+      .filter((c) => c.table === "appointments" && c.method === "update")
+      .map((c) => c.args[0] as Record<string, string | null>);
+    return { res, updates };
+  }
+
+  test("spring forward, moved later: Fri Mar 12 9:00 -> Mon Mar 15 9:00 keeps Apr 9 9:00 at 9:00 (Apr 12), with its 2-hour duration", async () => {
+    const { res, updates } = await moveFuture({ from: "2027-03-12T14:00:00.000Z", to: "2027-03-15T13:00:00.000Z", sibs: ["2027-04-09T13:00:00.000Z"] });
+    assert.equal(res.status, 200);
+    assert.equal(local(updates[1].scheduled_for!), "Mon 2027-04-12 09:00");
+    assert.equal(new Date(updates[1].scheduled_end!).getTime() - new Date(updates[1].scheduled_for!).getTime(), 2 * H);
+  });
+
+  test("fall back, moved later: Fri Nov 5 9:00 -> Mon Nov 8 9:00 keeps Dec 3 9:00 at 9:00 (Dec 6)", async () => {
+    const { updates } = await moveFuture({ from: "2027-11-05T13:00:00.000Z", to: "2027-11-08T14:00:00.000Z", sibs: ["2027-12-03T14:00:00.000Z"] });
+    assert.equal(local(updates[1].scheduled_for!), "Mon 2027-12-06 09:00");
+  });
+
+  test("spring forward, moved earlier: Mon Mar 15 9:00 -> Fri Mar 12 9:00 keeps Apr 12 9:00 at 9:00 (Apr 9)", async () => {
+    const { updates } = await moveFuture({ from: "2027-03-15T13:00:00.000Z", to: "2027-03-12T14:00:00.000Z", sibs: ["2027-04-12T13:00:00.000Z"] });
+    assert.equal(local(updates[1].scheduled_for!), "Fri 2027-04-09 09:00");
+  });
+
+  test("fall back, moved earlier: Mon Nov 8 9:00 -> Fri Nov 5 9:00 keeps Dec 6 9:00 at 9:00 (Dec 3)", async () => {
+    const { updates } = await moveFuture({ from: "2027-11-08T14:00:00.000Z", to: "2027-11-05T13:00:00.000Z", sibs: ["2027-12-06T14:00:00.000Z"] });
+    assert.equal(local(updates[1].scheduled_for!), "Fri 2027-12-03 09:00");
+  });
+
+  test("time-only change before the spring change: 9:00 -> 10:00 on Mar 5 moves later occurrences to 10:00 too (Mar 19, Apr 2)", async () => {
+    const { updates } = await moveFuture({
+      from: "2027-03-05T14:00:00.000Z", to: "2027-03-05T15:00:00.000Z",
+      sibs: ["2027-03-19T13:00:00.000Z", "2027-04-02T13:00:00.000Z"],
+    });
+    assert.deepEqual(updates.slice(1).map((u) => local(u.scheduled_for!)), ["Fri 2027-03-19 10:00", "Fri 2027-04-02 10:00"]);
+  });
+
+  test("an occurrence deliberately at a different time keeps that difference (10:00 among 9:00s stays 10:00), and each keeps its own duration", async () => {
+    const { updates } = await moveFuture({
+      from: "2027-03-12T14:00:00.000Z", to: "2027-03-15T13:00:00.000Z",
+      sibs: ["2027-04-09T13:00:00.000Z", "2027-04-23T14:00:00.000Z"], sibDurH: [2, 3],
+    });
+    assert.deepEqual(updates.slice(1).map((u) => local(u.scheduled_for!)), ["Mon 2027-04-12 09:00", "Mon 2027-04-26 10:00"]);
+    assert.equal(new Date(updates[2].scheduled_end!).getTime() - new Date(updates[2].scheduled_for!).getTime(), 3 * H);
+  });
+
+  test("each moved occurrence re-arms its reminder (sent flag and claim cleared)", async () => {
+    const { updates } = await moveFuture({ from: "2027-03-12T14:00:00.000Z", to: "2027-03-15T13:00:00.000Z", sibs: ["2027-04-09T13:00:00.000Z"] });
+    assert.equal(updates[1].reminder_24h_sent_at, null);
+    assert.equal(updates[1].reminder_24h_claimed_at, null);
+    assert.equal(updates[1].reminder_24h_claim_token, null);
+  });
+
+  test("a later occurrence that would land on a time the clock skips (Sun Mar 14 2:30 AM) refuses the whole request with nothing written", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [
+        { data: existingAppt({ series_id: "series-1", scheduled_for: "2027-03-06T07:30:00.000Z", scheduled_end: null }) }, // Sat Mar 6 2:30 AM EST
+        { data: [{ id: "sib-1", scheduled_for: "2027-03-13T07:30:00.000Z", scheduled_end: null }] }, // Sat Mar 13 2:30 AM EST
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "future", scheduled_for: "2027-03-07T07:30:00.000Z" })); // Sun Mar 7 2:30 AM
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.code, "NONEXISTENT_LOCAL_TIME");
+    assert.match(body.error, /Nothing was saved/);
+    assert.equal(writeCalls(currentFake.calls).length, 0, "no appointment or series write");
+  });
+
+  test("a later occurrence landing in the repeated fall-back hour (Sun Nov 7 1:30 AM) resolves to the earlier 1:30 (still daylight time)", async () => {
+    const { updates } = await moveFuture({
+      from: "2027-10-30T05:30:00.000Z", to: "2027-10-31T05:30:00.000Z", // Sat Oct 30 -> Sun Oct 31, 1:30 AM EDT
+      sibs: ["2027-11-06T05:30:00.000Z"], durH: 1, // Sat Nov 6 1:30 AM EDT
+    });
+    assert.equal(updates[1].scheduled_for, "2027-11-07T05:30:00.000Z", "1:30 AM EDT, the first of the two 1:30s");
+  });
+
+  test("uses the workspace's saved timezone: Phoenix (no DST) moves by exactly 3 days, where New York arithmetic would add an hour", async () => {
+    const { updates } = await moveFuture({
+      tz: "America/Phoenix",
+      from: "2027-03-12T16:00:00.000Z", to: "2027-03-15T16:00:00.000Z", // Fri -> Mon, 9:00 AM MST both
+      sibs: ["2027-04-09T16:00:00.000Z"],
+    });
+    assert.equal(updates[1].scheduled_for, "2027-04-12T16:00:00.000Z");
+    const tzRead = currentFake.calls.find((c) => c.table === "company_settings" && c.method === "eq");
+    assert.deepEqual(tzRead?.args, ["workspace_id", REAL_WORKSPACE_ID], "timezone is read for the signed-in workspace only");
+  });
+
+  test("an ordinary move with no DST change is unchanged: same result as a fixed delta (Thu -> Wed, every 4 weeks)", async () => {
+    const { updates } = await moveFuture({ from: "2027-05-06T13:00:00.000Z", to: "2027-05-05T13:00:00.000Z", sibs: ["2027-06-03T13:00:00.000Z"] });
+    assert.equal(updates[1].scheduled_for, "2027-06-02T13:00:00.000Z");
+  });
+
+  test("assignments are untouched when the request does not change staff -- no assignment sync is attempted", async () => {
+    await moveFuture({ from: "2027-03-12T14:00:00.000Z", to: "2027-03-15T13:00:00.000Z", sibs: ["2027-04-09T13:00:00.000Z"] });
+    assert.equal(currentFake.rpcCalls.length, 0);
   });
 });

@@ -808,12 +808,11 @@ describe("generateOccurrencesInWindow -- fall ambiguity", () => {
       )
     );
     assert.equal(result.occurrences.length, 1);
-    // The project's already-approved policy (lib/timezone.ts's
-    // zonedDateTimeToUTC, empirically documented there): the FIRST/earlier
-    // occurrence -- still-DST-active offset (-04:00), before the clocks
-    // fall back -- computed independently here via direct construction.
-    const expected = DateTime.fromFormat("2026-11-01 01:30", "yyyy-MM-dd HH:mm", { zone: NY }).toUTC().toISO()!;
-    assert.equal(result.occurrences[0], expected);
+    // The project's one DST policy (lib/timezone.ts resolveLocalWallClock):
+    // the FIRST/earlier occurrence -- still-DST-active offset (-04:00),
+    // before the clocks fall back. Written as the literal instant rather
+    // than computed with Luxon's own default, which varies by runtime.
+    assert.equal(result.occurrences[0], "2026-11-01T05:30:00.000Z");
     assert.equal(DateTime.fromISO(result.occurrences[0]).setZone(NY).offset, -240);
   });
 

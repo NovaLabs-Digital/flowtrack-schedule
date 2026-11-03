@@ -57,7 +57,7 @@
 // wall-clock time and weekday exact and non-drifting no matter how many
 // occurrences have already been generated in prior calls.
 import { DateTime } from "luxon";
-import { isSupportedTimezone } from "./timezone";
+import { isSupportedTimezone, resolveLocalWallClock, stepLocalWallClock } from "./timezone";
 import type { RecurringFrequency } from "./recurringSeries";
 
 export interface GenerateOccurrencesInWindowParams {
@@ -147,12 +147,16 @@ function resolveAnchor(
   anchorLocalTime: string,
   anchorTimezone: string
 ): { ok: true; dt: DateTime } | { ok: false; reason: "invalid_input" | "dst_gap" } {
-  const dt = DateTime.fromFormat(`${anchorLocalDate} ${anchorLocalTime}`, "yyyy-MM-dd HH:mm", { zone: anchorTimezone });
-  if (!dt.isValid) {
+  const parsed = DateTime.fromFormat(`${anchorLocalDate} ${anchorLocalTime}`, "yyyy-MM-dd HH:mm", { zone: anchorTimezone });
+  if (!parsed.isValid) {
     return { ok: false, reason: "invalid_input" };
   }
-  const [requestedHour, requestedMinute] = anchorLocalTime.split(":").map(Number);
-  if (dt.hour !== requestedHour || dt.minute !== requestedMinute) {
+  // The one DST policy in lib/timezone.ts: a skipped time is a gap, a
+  // repeated time is the earlier instant.
+  const [year, month, day] = anchorLocalDate.split("-").map(Number);
+  const [hour, minute] = anchorLocalTime.split(":").map(Number);
+  const dt = resolveLocalWallClock({ year, month, day, hour, minute }, anchorTimezone);
+  if (!dt) {
     return { ok: false, reason: "dst_gap" };
   }
   return { ok: true, dt };
@@ -178,13 +182,17 @@ function computeCandidate(
   repeatWeeks: number | null,
   repeatMonths: number | null
 ): DateTime {
-  if (frequencyType === "daily" || frequencyType === "weekdays") {
-    return anchor.plus({ days: k });
-  }
-  if (frequencyType === "weekly") {
-    return anchor.plus({ days: k * (repeatWeeks as number) * 7 });
-  }
-  return anchor.plus({ months: k * (repeatMonths as number) });
+  // Stepped on the local calendar and resolved under the one DST policy in
+  // lib/timezone.ts (a repeated fall-back time is the earlier instant). A
+  // skipped spring-forward time keeps Luxon's forward-shifted result, which
+  // the caller's hour/minute check reports as a dst_gap.
+  const step =
+    frequencyType === "daily" || frequencyType === "weekdays"
+      ? { days: k }
+      : frequencyType === "weekly"
+        ? { days: k * (repeatWeeks as number) * 7 }
+        : { months: k * (repeatMonths as number) };
+  return stepLocalWallClock(anchor, step) ?? anchor.plus(step);
 }
 
 // Production-review correction (algorithm audit): a rolling generator must

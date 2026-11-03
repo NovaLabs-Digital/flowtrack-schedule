@@ -215,39 +215,78 @@ export type ZonedInstantResult = { ok: true; iso: string } | { ok: false; error:
 // the true UTC instant, resolved with an explicit IANA zone via Luxon --
 // never the browser/device's ambient zone.
 //
-// DST handling (empirically verified against the installed Luxon version --
-// see the DST probe referenced in the Phase 5C report):
+// DST handling -- ONE explicit policy, shared by appointment entry (here),
+// recurring generation (lib/recurrence.ts), series top-ups
+// (lib/recurringSeriesReplenishment.ts) and "This & future" moves
+// (lib/localShift.ts), all through resolveLocalWallClock below:
 //
 // - Nonexistent local time (spring-forward gap, e.g. 2027-03-14 02:30
-//   America/New_York): Luxon does NOT mark this invalid -- it silently
-//   rolls the wall-clock time forward past the gap (02:30 -> 03:30) and
-//   returns isValid: true. Left unchecked this would silently save the
-//   WRONG appointment. This function catches it by round-tripping the
-//   requested hour/minute against what Luxon actually produced -- a
-//   mismatch means the requested time never existed, and is rejected with
-//   a clear error rather than silently shifted.
+//   America/New_York): rejected with a clear error, never silently shifted.
 // - Ambiguous local time (fall-back, e.g. 2027-11-07 01:30
-//   America/New_York, which occurs twice): Luxon deterministically resolves
-//   to the FIRST/earlier occurrence (the still-DST-active offset, before
-//   the clocks fall back) -- exactly the documented preferred policy, so no
-//   special-case handling is needed here, only this test-backed reliance on
-//   that deterministic behavior.
+//   America/New_York, which occurs twice): the FIRST/earlier occurrence
+//   (still daylight time, before the clocks fall back). Decided here, not
+//   left to Luxon's own guess, which differs between runtimes (the Node
+//   runtime used for local testing picks the later one).
 export function zonedDateTimeToUTC(date: string, time: string, tz: string): ZonedInstantResult {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
     return { ok: false, error: "Please enter a valid date and time." };
   }
 
-  const dt = DateTime.fromFormat(`${date} ${time}`, "yyyy-MM-dd HH:mm", { zone: tz });
-  if (!dt.isValid) {
+  const [year, month, day] = date.split("-").map(Number);
+  const [hour, minute] = time.split(":").map(Number);
+  if (!DateTime.fromObject({ year, month, day, hour, minute }, { zone: "UTC" }).isValid || !DateTime.local().setZone(tz).isValid) {
     return { ok: false, error: "Please enter a valid date and time." };
   }
 
-  const [requestedHour, requestedMinute] = time.split(":").map(Number);
-  if (dt.hour !== requestedHour || dt.minute !== requestedMinute) {
+  const dt = resolveLocalWallClock({ year, month, day, hour, minute }, tz);
+  if (!dt) {
     return { ok: false, error: "That time doesn't exist due to a daylight-saving change. Please choose another time." };
   }
 
   return { ok: true, iso: dt.toUTC().toISO()! };
+}
+
+export type LocalWallClock = { year: number; month: number; day: number; hour: number; minute: number; second?: number; millisecond?: number };
+
+// The instant at which the clock in `tz` reads `wall`, under the policy
+// above: null when that time never happens (spring-forward gap), the EARLIER
+// instant when it happens twice (fall-back hour). Checks each UTC offset the
+// zone uses around that date and keeps the ones whose local reading matches.
+export function resolveLocalWallClock(wall: LocalWallClock, tz: string): DateTime | null {
+  const second = wall.second ?? 0;
+  const millisecond = wall.millisecond ?? 0;
+  const asUtc = Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, second, millisecond);
+  const offsets = new Set<number>();
+  for (const probe of [asUtc - 86_400_000, asUtc, asUtc + 86_400_000]) {
+    offsets.add(DateTime.fromMillis(probe, { zone: tz }).offset);
+  }
+  let earliest: DateTime | null = null;
+  for (const offset of offsets) {
+    const candidate = DateTime.fromMillis(asUtc - offset * 60_000, { zone: tz });
+    if (
+      candidate.year === wall.year && candidate.month === wall.month && candidate.day === wall.day &&
+      candidate.hour === wall.hour && candidate.minute === wall.minute
+    ) {
+      if (!earliest || candidate.toMillis() < earliest.toMillis()) earliest = candidate;
+    }
+  }
+  return earliest;
+}
+
+// `dt`'s local date and clock time in its own zone, stepped by whole
+// calendar days/months and minutes with no DST adjustment (plain calendar
+// arithmetic), then resolved back to an instant under the policy above.
+// Returns null when the stepped local time doesn't exist.
+export function stepLocalWallClock(dt: DateTime, step: { days?: number; months?: number; minutes?: number }): DateTime | null {
+  const target = DateTime.fromObject(
+    { year: dt.year, month: dt.month, day: dt.day, hour: dt.hour, minute: dt.minute, second: dt.second, millisecond: dt.millisecond },
+    { zone: "UTC" }
+  ).plus(step);
+  const resolved = resolveLocalWallClock(
+    { year: target.year, month: target.month, day: target.day, hour: target.hour, minute: target.minute, second: target.second, millisecond: target.millisecond },
+    dt.zoneName ?? "UTC"
+  );
+  return resolved;
 }
 
 // ============================================================================
