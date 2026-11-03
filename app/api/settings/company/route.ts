@@ -6,6 +6,7 @@ import { getSession, requireOwner, assertWorkspace } from "@/lib/session";
 import { requireCapability } from "@/lib/entitlementServer";
 import { effectiveBusinessHours, normalizeBusinessHours } from "@/lib/businessHours";
 import { effectiveTimezone, normalizeTimezone } from "@/lib/timezone";
+import { servesPublicBooking } from "@/lib/workspace";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -51,6 +52,9 @@ export async function GET() {
       smsConfigured: !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN && !!process.env.TWILIO_FROM_NUMBER,
       activeStaff: activeStaff ?? 0,
       totalStaff: totalStaff ?? 0,
+      // Whether this workspace has a public booking page at all (see
+      // lib/workspace.ts servesPublicBooking).
+      publicBookingAvailable: servesPublicBooking(session.workspaceId),
     };
 
     // Phase 4: effective/current Business Hours -- the saved value if
@@ -96,6 +100,15 @@ export async function POST(req: Request) {
       if (body[f] !== undefined) fields[f] = (body[f] || "").trim() || null;
     }
     if (typeof body.booking_enabled === "boolean") {
+      // Turning public booking ON is refused for a workspace the /book page
+      // doesn't serve -- before anything is written. Turning it off is
+      // always allowed.
+      if (body.booking_enabled && !servesPublicBooking(session.workspaceId)) {
+        return json(
+          { error: "Public booking isn't available for your business yet. Nothing was saved.", code: "PUBLIC_BOOKING_UNAVAILABLE" },
+          409
+        );
+      }
       fields.booking_enabled = body.booking_enabled;
     }
     if (typeof body.notifications_enabled === "boolean") {

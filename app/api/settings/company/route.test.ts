@@ -660,3 +660,67 @@ describe("Phase 5B: Time Zone (foundation only -- not yet wired into scheduling)
     });
   });
 });
+
+// The /book page, its availability endpoint and public creation are fixed to
+// one workspace (lib/workspace.ts servesPublicBooking). Any other workspace
+// can't turn public booking on -- enforced here, not only in the toggle.
+describe("public booking is only available to the workspace the /book page serves", () => {
+  const OTHER_WORKSPACE_ID = "aaaaaaaa-1111-4222-8333-444444444444"; // fictional new customer
+  const OTHER_SESSION = { ...OWNER_SESSION, workspaceId: OTHER_WORKSPACE_ID };
+  function otherFixtures(companySettings: FakeSupabaseFixture[]) {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: OTHER_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: companySettings,
+      employees: [{ count: 0 }, { count: 0 }],
+    });
+    sessionToReturn = OTHER_SESSION;
+  }
+
+  test("another workspace turning public booking ON is refused before anything is read or written", async () => {
+    otherFixtures([]);
+    const res = await POST(req("POST", { booking_enabled: true, notifications_enabled: true }));
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, "PUBLIC_BOOKING_UNAVAILABLE");
+    assert.match(body.error, /isn't available for your business yet/);
+    assert.equal(writeCalls(currentFake.calls).filter((c) => c.table === "company_settings").length, 0);
+    assert.equal(currentFake.calls.filter((c) => c.table === "company_settings").length, 0);
+  });
+
+  test("another workspace can still turn public booking OFF, and save notifications on their own", async () => {
+    otherFixtures([{ data: { id: "cs-1" } }, { error: null }]);
+    assert.equal((await POST(req("POST", { booking_enabled: false }))).status, 200);
+    otherFixtures([{ data: { id: "cs-1" } }, { error: null }]);
+    const res = await POST(req("POST", { notifications_enabled: true }));
+    assert.equal(res.status, 200);
+    const write = writeCalls(currentFake.calls).filter((c) => c.table === "company_settings").pop()!;
+    assert.ok(!("booking_enabled" in (write.args[0] as Record<string, unknown>)), "booking setting untouched");
+  });
+
+  test("the workspace /book serves can still turn public booking on (unchanged)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { id: "cs-1" } }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    assert.equal((await POST(req("POST", { booking_enabled: true }))).status, 200);
+  });
+
+  test("GET reports whether public booking is available: yes for the /book workspace, no for any other", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true } }],
+      employees: [{ count: 0 }, { count: 0 }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    assert.equal((await (await GET()).json()).status.publicBookingAvailable, true);
+
+    otherFixtures([{ data: { company_name: "New Customer Co.", booking_enabled: true } }]);
+    const body = await (await GET()).json();
+    assert.equal(body.status.publicBookingAvailable, false);
+    assert.equal(body.settings.booking_enabled, true, "the stored value is reported as-is, never rewritten");
+  });
+});

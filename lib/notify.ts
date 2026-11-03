@@ -2,6 +2,7 @@ import twilio from "twilio";
 import { Resend } from "resend";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { effectiveTimezone } from "@/lib/timezone";
+import { servesPublicBooking } from "@/lib/workspace";
 
 let resendClient: Resend | null = null;
 function getResend(): Resend {
@@ -112,7 +113,9 @@ export async function getCompanyIdentity(workspaceId: string): Promise<CompanyId
     .maybeSingle();
   return {
     companyName: sanitizeCompanyName(data?.company_name),
-    bookingEnabled: Boolean(data?.booking_enabled),
+    // Only a workspace the /book page actually serves can invite a client
+    // to it (lib/workspace.ts) -- never another business's booking page.
+    bookingEnabled: Boolean(data?.booking_enabled) && servesPublicBooking(workspaceId),
     timezone: effectiveTimezone(data?.timezone),
   };
 }

@@ -16,6 +16,7 @@ import { test, describe, mock } from "node:test";
 import assert from "node:assert/strict";
 import { createFakeSupabaseAdmin } from "./testSupport.ts";
 import type { FakeSupabaseFixture } from "./testSupport.ts";
+import { REAL_WORKSPACE_ID } from "./workspace.ts";
 
 let currentFake = createFakeSupabaseAdmin({});
 
@@ -112,11 +113,18 @@ describe("getCompanyName -- workspace-scoped lookup", () => {
 });
 
 describe("getCompanyIdentity -- combined workspace-scoped company_name + booking_enabled lookup", () => {
-  test("booking_enabled: true is read through unchanged", async () => {
+  test("booking_enabled: true is read through unchanged for the workspace the /book page serves", async () => {
     resetFixtures({ company_settings: [{ data: { company_name: "Acme Cleaning", booking_enabled: true } }] });
-    const identity = await getCompanyIdentity("workspace-a");
+    const identity = await getCompanyIdentity(REAL_WORKSPACE_ID);
     assert.equal(identity.companyName, "Acme Cleaning");
     assert.equal(identity.bookingEnabled, true);
+  });
+
+  test("any other workspace never gets a booking link, even with booking_enabled: true stored -- /book books with a different business", async () => {
+    resetFixtures({ company_settings: [{ data: { company_name: "New Customer Co.", booking_enabled: true } }] });
+    const identity = await getCompanyIdentity("workspace-new-customer");
+    assert.equal(identity.bookingEnabled, false);
+    assert.equal(identity.companyName, "New Customer Co.");
   });
 
   test("booking_enabled: false is read through unchanged", async () => {
@@ -148,7 +156,7 @@ describe("getCompanyIdentity -- combined workspace-scoped company_name + booking
 
   test("Workspace A booking enabled / Workspace B booking disabled -- each call reflects only its own workspace, never the other's", async () => {
     resetFixtures({ company_settings: [{ data: { company_name: "Workspace A Co.", booking_enabled: true } }] });
-    const a = await getCompanyIdentity("workspace-a");
+    const a = await getCompanyIdentity(REAL_WORKSPACE_ID);
     assert.equal(a.bookingEnabled, true);
     assert.equal(a.companyName, "Workspace A Co.");
 

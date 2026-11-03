@@ -35,7 +35,7 @@ const TZ_CHANGE_WARNING =
   "Changing the time zone changes how appointment times are displayed and scheduled going forward. Existing appointment timestamps are not rewritten.";
 
 type CompanyForm = { company_name: string; phone: string; email: string; address: string; city: string; state: string; zip: string };
-type Status = { emailConfigured: boolean; smsConfigured: boolean; activeStaff: number; totalStaff: number };
+type Status = { emailConfigured: boolean; smsConfigured: boolean; activeStaff: number; totalStaff: number; publicBookingAvailable?: boolean };
 
 type TimeRange = { start: string; end: string };
 type BusinessHoursForm = Record<WeekdayKey, TimeRange[]>;
@@ -280,7 +280,10 @@ export default function CompanyInfoPanel({
   useEffect(() => { editBase.begin(); }, [saved, editBase]);
 
   const dirty = JSON.stringify(form) !== JSON.stringify(saved);
-  const automationDirty = bookingEnabled !== bookingSaved || notificationsEnabled !== notificationsSaved;
+  // Public booking exists only for the workspace the /book page serves
+  // (the server reports it, and refuses turning it on anywhere else).
+  const publicBookingAvailable = status?.publicBookingAvailable === true;
+  const automationDirty = (publicBookingAvailable && bookingEnabled !== bookingSaved) || notificationsEnabled !== notificationsSaved;
   const hoursDirty = JSON.stringify(businessHours) !== JSON.stringify(businessHoursSaved);
   const tzDirty = timezone !== timezoneSaved;
 
@@ -395,7 +398,11 @@ export default function CompanyInfoPanel({
       const res = await fetch("/api/settings/company", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...editBase.headers() },
-        body: JSON.stringify({ booking_enabled: bookingEnabled, notifications_enabled: notificationsEnabled }),
+        body: JSON.stringify(
+          publicBookingAvailable
+            ? { booking_enabled: bookingEnabled, notifications_enabled: notificationsEnabled }
+            : { notifications_enabled: notificationsEnabled }
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -428,7 +435,7 @@ export default function CompanyInfoPanel({
         <CompanyStatusStrip
           emailConfigured={status.emailConfigured}
           smsConfigured={status.smsConfigured}
-          bookingEnabled={bookingEnabled}
+          bookingEnabled={publicBookingAvailable && bookingEnabled}
           activeStaff={status.activeStaff}
           totalStaff={status.totalStaff}
         />
@@ -757,13 +764,16 @@ export default function CompanyInfoPanel({
         }
       >
         <SettingsToggle
-          checked={bookingEnabled}
+          checked={publicBookingAvailable && bookingEnabled}
           onChange={setBookingEnabled}
+          disabled={!publicBookingAvailable}
           label="Enable Public Booking"
           helper={
-            bookingEnabled
-              ? "Your /book page is live — customers can request appointments online."
-              : "Off by default. Customers see a friendly message and must contact you directly."
+            !publicBookingAvailable
+              ? "Public booking isn't available for your business yet. Customers contact you directly to book."
+              : bookingEnabled
+                ? "Your /book page is live — customers can request appointments online."
+                : "Off by default. Customers see a friendly message and must contact you directly."
           }
         />
         <div className="border-t border-slate-100 pt-3">

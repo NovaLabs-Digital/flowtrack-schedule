@@ -710,3 +710,26 @@ describe("Phase 5.7C: notifications_enabled fails closed before the stored value
     assert.ok(!before.includes("?"), "onChange must not be conditionally wired");
   });
 });
+
+// Public booking exists only for the workspace the /book page serves; the
+// server reports it (status.publicBookingAvailable) and refuses turning it on
+// anywhere else (app/api/settings/company/route.ts).
+describe("public booking availability", () => {
+  test("availability comes from the server, defaulting to unavailable when not reported", () => {
+    assert.match(source, /const publicBookingAvailable = status\?\.publicBookingAvailable === true;/);
+  });
+
+  test("the toggle is disabled, shown off, and explains why when unavailable", () => {
+    assert.match(source, /checked=\{publicBookingAvailable && bookingEnabled\}/);
+    assert.match(source, /disabled=\{!publicBookingAvailable\}/);
+    assert.match(source, /Public booking isn't available for your business yet\. Customers contact you directly to book\./);
+  });
+
+  test("saving Automation never sends a booking value when unavailable, so the stored setting is left untouched", () => {
+    assert.match(source, /publicBookingAvailable\s*\?\s*\{ booking_enabled: bookingEnabled, notifications_enabled: notificationsEnabled \}\s*:\s*\{ notifications_enabled: notificationsEnabled \}/);
+  });
+
+  test("the status strip shows booking off when unavailable, whatever is stored", () => {
+    assert.match(source, /bookingEnabled=\{publicBookingAvailable && bookingEnabled\}/);
+  });
+});
