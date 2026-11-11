@@ -15,6 +15,7 @@
     "test:db:billing": "node --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/completed_job_billing.test.ts",
     "test:db:reminders": "node --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/reminder_claims.test.ts test-db/reminder_occurrence_dedup.test.ts",
     "test:db:owner-security": "node --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/owner_security_045.test.ts",
+    "test:db:capacity": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/capacity_fixes.test.ts",
     "test:db:messages": "node --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/messages_sent_subject.test.ts"
   },
   "dependencies": {

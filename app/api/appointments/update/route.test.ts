@@ -647,6 +647,11 @@ describe("recurring 'This & future' rescheduling shifts every future occurrence 
         { data: existingAppt({ series_id: "series-1", scheduled_for: OLD_SELECTED_START }) }, // fetch existing
         { error: null }, // update source only
       ],
+      // The original time is recorded as skipped first (read + compare-and-set update).
+      recurring_series: [
+        { data: { id: "series-1", excluded_occurrences: [], updated_at: "2026-07-01T00:00:00.000Z" } },
+        { data: [{ id: "series-1" }] },
+      ],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await PATCH(
@@ -1883,17 +1888,98 @@ describe("Block 2B safety correction: This & Future quarantines an ACTIVE series
     assert.equal(recurringSeriesCalls.filter((c) => c.method === "maybeSingle").length, 1);
   });
 
-  test("mode='single' (Only This) never touches recurring_series, even on an active series with a time change", async () => {
+  // Approved 2026-11-03 (capacity report D2c): an Only This move records the
+  // ORIGINAL time as skipped on the series, so an automatic top-up cannot
+  // recreate the job the owner moved. It never calls an RPC, never changes
+  // the series' snapshot or status, and happens before the appointment write.
+  test("mode='single' with a time change records the ORIGINAL time as skipped on its series -- before the move, no RPC, no snapshot change", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1" }) }, { error: null }],
+      recurring_series: [
+        { data: { id: "series-1", excluded_occurrences: ["2026-07-27T14:00:00.000Z"], updated_at: "2026-07-01T00:00:00.000Z" } },
+        { data: [{ id: "series-1" }] },
+      ],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-03T15:00:00.000Z" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(currentFake.rpcCalls, []);
+    const seriesUpdate = currentFake.calls.find((c) => c.table === "recurring_series" && c.method === "update");
+    const patch = seriesUpdate!.args[0] as Record<string, unknown>;
+    assert.deepEqual(Object.keys(patch).sort(), ["excluded_occurrences", "updated_at"]);
+    assert.deepEqual(patch.excluded_occurrences, ["2026-07-27T14:00:00.000Z", "2026-08-03T14:00:00.000Z"]);
+    const seriesEqs = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq").map((c) => c.args);
+    assert.deepEqual(seriesEqs.slice(-3), [["id", "series-1"], ["workspace_id", REAL_WORKSPACE_ID], ["updated_at", "2026-07-01T00:00:00.000Z"]]);
+    const order = currentFake.calls.filter((c) => c.method === "update").map((c) => c.table);
+    assert.deepEqual(order, ["recurring_series", "appointments"]);
+  });
+
+  test("mode='single' with a time change: if the skip cannot be recorded, NOTHING is saved (500, zero appointment writes)", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1" }) }],
+      recurring_series: [{ error: { message: "down" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-03T15:00:00.000Z" }));
+    assert.equal(res.status, 500);
+    assert.match((await res.json()).error, /Nothing was saved/);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 0);
+  });
+
+  test("mode='single': a concurrent series change makes the compare-and-set retry; persistent conflict returns 409 and saves nothing", async () => {
+    const row = { data: { id: "series-1", excluded_occurrences: [], updated_at: "2026-07-01T00:00:00.000Z" } };
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1" }) }],
+      recurring_series: [row, { data: [] }, row, { data: [] }, row, { data: [] }, row, { data: [] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-03T15:00:00.000Z" }));
+    assert.equal(res.status, 409);
+    assert.equal(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update").length, 4);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 0);
+  });
+
+  test("mode='single': an already-skipped original time is not written twice", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1" }) }, { error: null }],
+      recurring_series: [{ data: { id: "series-1", excluded_occurrences: ["2026-08-03T14:00:00+00:00"], updated_at: "2026-07-01T00:00:00.000Z" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-03T15:00:00.000Z" }));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "update").length, 0);
+  });
+
+  test("mode='single' WITHOUT a time change (notes/price only) never touches recurring_series", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt({ series_id: "series-1" }) }, { error: null }],
     });
     sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", notes: "gate code 1234" }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+  });
+
+  test("a one-time (non-series) move never touches recurring_series", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: null }) }, { error: null }],
+    });
+    sessionToReturn = OWNER_SESSION;
     const res = await PATCH(req({ appointment_id: "appt-1", mode: "single", scheduled_for: "2026-08-03T15:00:00.000Z" }));
     assert.equal(res.status, 200);
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
-    assert.deepEqual(currentFake.rpcCalls, []);
   });
 
   // Block 2C-1 regression: under the durable-snapshot design,

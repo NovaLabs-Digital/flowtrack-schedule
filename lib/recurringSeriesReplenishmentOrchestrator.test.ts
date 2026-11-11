@@ -17,7 +17,21 @@ import assert from "node:assert/strict";
 import { createFakeSupabaseAdmin } from "./testSupport.ts";
 import type { FakeSupabaseFixture } from "./testSupport.ts";
 
-let currentFake = createFakeSupabaseAdmin({});
+type OrchestratorFake = ReturnType<typeof createFakeSupabaseAdmin> & {
+  bookkeepingRpcCalls: { fn: string; args: unknown }[];
+};
+// Failure-bookkeeping RPCs (bounded retries, via the existing
+// rate_limit_counters RPCs). Reported separately from rpcCalls so every
+// replenish/quarantine assertion below still counts only real mutations;
+// tests about retries assert on bookkeepingRpcCalls directly.
+const BOOKKEEPING_RPCS = new Set(["record_rate_limit_attempt", "clear_rate_limit"]);
+function wrapFake(fake: ReturnType<typeof createFakeSupabaseAdmin>): OrchestratorFake {
+  const wrapped = { supabaseAdmin: fake.supabaseAdmin, calls: fake.calls } as OrchestratorFake;
+  Object.defineProperty(wrapped, "rpcCalls", { get: () => fake.rpcCalls.filter((c) => !BOOKKEEPING_RPCS.has(c.fn)) });
+  Object.defineProperty(wrapped, "bookkeepingRpcCalls", { get: () => fake.rpcCalls.filter((c) => BOOKKEEPING_RPCS.has(c.fn)) });
+  return wrapped;
+}
+let currentFake = wrapFake(createFakeSupabaseAdmin({}));
 
 mock.module("@/lib/supabaseAdmin", {
   namedExports: {
@@ -33,7 +47,10 @@ const {
   REPLENISH_TARGET_COVERAGE_DAYS,
   REPLENISH_THRESHOLD_DAYS,
   MAX_OCCURRENCES_PER_SERIES_PER_RUN,
-  MAX_SERIES_PROCESSED_PER_RUN,
+  FAILURE_BUCKET_PREFIX,
+  FAILURE_WINDOW_SECONDS,
+  FAILURE_MAX_ATTEMPTS,
+  FAILURE_LOCKOUT_SECONDS,
 } = await import("./recurringSeriesReplenishmentOrchestrator.ts");
 const { resolveEntitlement, resolveWorkspaceEntitlement, noDataResult } = await import("./entitlement.ts");
 const { DEMO_WORKSPACE_ID } = await import("./workspace.ts");
@@ -72,11 +89,33 @@ function internalSubscriptionRecord(): SubscriptionRecord {
 const ALWAYS_PERMITTED_ENTITLEMENT: EntitlementResult = resolveEntitlement(internalSubscriptionRecord(), new Date("2026-01-01T00:00:00.000Z"));
 const ALWAYS_PERMITTED_FETCH_ENTITLEMENT = async (_workspaceId: string): Promise<EntitlementResult> => ALWAYS_PERMITTED_ENTITLEMENT;
 
+// Coverage is now read with one exact query PER SERIES (in selection
+// order). Tests describe all series' occurrence rows in one fixture, as
+// before; this splits it into one fixture per selected series (rows
+// matched on series_id only, so a workspace-mismatched row still reaches
+// the orchestrator's own cross-check). A single error fixture applies to
+// every series' read. Failure-record reads default to "no records".
 function resetFixtures(
   responses: Record<string, FakeSupabaseFixture[]>,
   rpcResponses: Record<string, FakeSupabaseFixture[]> = {}
 ) {
-  currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
+  const out: Record<string, FakeSupabaseFixture[]> = { ...responses };
+  const seriesRows = (responses.recurring_series?.[0]?.data ?? []) as { id: string }[];
+  const appts = responses.appointments;
+  if (Array.isArray(seriesRows) && appts && appts.length === 1) {
+    const only = appts[0];
+    out.appointments = seriesRows.map((series) =>
+      only.error
+        ? { error: only.error }
+        : { data: ((only.data ?? []) as { series_id: string }[]).filter((row) => row.series_id === series.id) }
+    );
+  }
+  if (!out.rate_limit_counters) out.rate_limit_counters = Array.from({ length: 20 }, () => ({ data: [] }));
+  const rpc = { ...rpcResponses };
+  for (const fn of BOOKKEEPING_RPCS) {
+    if (!rpc[fn]) rpc[fn] = Array.from({ length: 200 }, () => ({ data: null }));
+  }
+  currentFake = wrapFake(createFakeSupabaseAdmin(out, rpc));
 }
 
 // Fixed "now" for every test -- chosen well before the 2026-03-08 US
@@ -146,26 +185,177 @@ describe("source-level proof: this module never writes directly to appointments/
   });
 });
 
-describe("selection query shape", () => {
-  test("filters status=active and is_demo=false, orders by last_replenished_at asc nulls-first then id, limits to MAX_SERIES_PROCESSED_PER_RUN", async () => {
-    resetFixtures({
-      recurring_series: queueSelection([]),
-    });
+describe("selection: need-based, paginated, fair across all workspaces (capacity report D2)", () => {
+  const REPLENISHED = { data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } };
+  const ids = (n: number, prefix = "s") => Array.from({ length: n }, (_, i) => `${prefix}${String(i).padStart(4, "0")}`);
+
+  test("reads every active non-demo series with a stable id order and pagination -- no LIMIT, no last_replenished_at ordering", async () => {
+    resetFixtures({ recurring_series: queueSelection([]) });
     await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
-    const eqCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq");
+    const seriesCalls = currentFake.calls.filter((c) => c.table === "recurring_series");
+    const eqCalls = seriesCalls.filter((c) => c.method === "eq");
     assert.deepEqual(eqCalls[0].args, ["status", "active"]);
     assert.deepEqual(eqCalls[1].args, ["is_demo", false]);
-    const orderCalls = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "order");
-    assert.deepEqual(orderCalls[0].args, ["last_replenished_at", { ascending: true, nullsFirst: true }]);
-    assert.deepEqual(orderCalls[1].args, ["id", { ascending: true }]);
-    const limitCall = currentFake.calls.find((c) => c.table === "recurring_series" && c.method === "limit");
-    assert.deepEqual(limitCall!.args, [MAX_SERIES_PROCESSED_PER_RUN]);
+    const orderCalls = seriesCalls.filter((c) => c.method === "order");
+    assert.deepEqual(orderCalls.map((c) => c.args), [["id", { ascending: true }]]);
+    assert.deepEqual(seriesCalls.find((c) => c.method === "range")!.args, [0, 999]);
+    assert.ok(!seriesCalls.some((c) => c.method === "limit"));
+  });
+
+  test("more than 1,000 active series: every page is read and every series' coverage is checked", async () => {
+    const all = ids(1050).map((id) => activeSeriesRow({ id }));
+    const sufficient = daysFromNow(REPLENISH_THRESHOLD_DAYS + 10);
+    currentFake = wrapFake(
+      createFakeSupabaseAdmin({
+        recurring_series: [{ data: all.slice(0, 1000) }, { data: all.slice(1000) }],
+        appointments: all.map((s) => ({ data: [{ series_id: s.id, workspace_id: "ws-1", scheduled_for: sufficient }] })),
+      })
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    const ranges = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "range").map((c) => c.args);
+    assert.deepEqual(ranges, [[0, 999], [1000, 1999]]);
+    assert.equal(summary.counts.activeSeriesExamined, 1050);
+    assert.equal(summary.counts.skippedSufficientCoverage, 1050);
+    assert.equal(currentFake.rpcCalls.length, 0);
+  });
+
+  test("each series' coverage is one exact, workspace-scoped, newest-first lookup", async () => {
+    resetFixtures({
+      recurring_series: queueSelection([activeSeriesRow({ id: "a", workspace_id: "ws-a" })]),
+      appointments: queueOccurrences([{ series_id: "a", workspace_id: "ws-a", scheduled_for: daysFromNow(REPLENISH_THRESHOLD_DAYS + 1) }]),
+    });
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    const appt = currentFake.calls.filter((c) => c.table === "appointments");
+    assert.deepEqual(appt.filter((c) => c.method === "eq").map((c) => c.args), [["series_id", "a"], ["workspace_id", "ws-a"], ["status", "scheduled"]]);
+    assert.deepEqual(appt.find((c) => c.method === "order")!.args, ["scheduled_for", { ascending: false }]);
+    assert.deepEqual(appt.find((c) => c.method === "limit")!.args, [1]);
+  });
+
+  test("more than 100 series needing a top-up (210 across 3 workspaces) are all processed in ONE run", async () => {
+    const rows = ids(210).map((id, i) => activeSeriesRow({ id, workspace_id: `ws-${i % 3}` }));
+    resetFixtures(
+      { recurring_series: queueSelection(rows), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: rows.map(() => REPLENISHED) }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.replenished, 210);
+    assert.equal(summary.counts.deferredByProcessingLimit, 0);
+    assert.equal(new Set(currentFake.rpcCalls.map((c) => (c.args as { p_series_id: string }).p_series_id)).size, 210);
+    for (const call of currentFake.rpcCalls) {
+      const args = call.args as { p_series_id: string; p_workspace_id: string };
+      assert.equal(args.p_workspace_id, rows.find((r) => r.id === args.p_series_id)!.workspace_id);
+    }
+  });
+
+  test("most urgent first: the series closest to running out is processed before others, whatever its id or workspace", async () => {
+    const rows = [
+      activeSeriesRow({ id: "a", workspace_id: "ws-1" }),
+      activeSeriesRow({ id: "b", workspace_id: "ws-2" }),
+      activeSeriesRow({ id: "c", workspace_id: "ws-3" }),
+    ];
+    resetFixtures(
+      {
+        recurring_series: queueSelection(rows),
+        appointments: queueOccurrences([
+          { series_id: "a", workspace_id: "ws-1", scheduled_for: daysFromNow(20) },
+          { series_id: "b", workspace_id: "ws-2", scheduled_for: daysFromNow(2) },
+          { series_id: "c", workspace_id: "ws-3", scheduled_for: daysFromNow(10) },
+        ]),
+      },
+      { replenish_recurring_series: rows.map(() => REPLENISHED) }
+    );
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.deepEqual(currentFake.rpcCalls.map((c) => (c.args as { p_series_id: string }).p_series_id), ["b", "c", "a"]);
+  });
+
+  test("no starvation past the per-run cap: 150 needing series with a cap of 40 are each processed exactly once within 4 runs", async () => {
+    const all = ids(150).map((id, i) => activeSeriesRow({ id, workspace_id: `ws-${i % 10}` }));
+    // Each series' tail ends on a different day, so urgency order is total.
+    const tail = new Map(all.map((s, i) => [s.id, daysFromNow(i % 29)]));
+    const processedOnce = new Map<string, number>();
+    for (let run = 1; run <= 4; run++) {
+      resetFixtures(
+        {
+          recurring_series: queueSelection(all),
+          appointments: queueOccurrences(all.map((s) => ({ series_id: s.id, workspace_id: s.workspace_id, scheduled_for: tail.get(s.id)! }))),
+        },
+        { replenish_recurring_series: all.map(() => REPLENISHED) }
+      );
+      const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT, maxSeriesProcessed: 40 });
+      const done = currentFake.rpcCalls.map((c) => (c.args as { p_series_id: string }).p_series_id);
+      const remainingBefore = all.filter((s) => !processedOnce.has(s.id)).length;
+      assert.equal(done.length, Math.min(40, remainingBefore));
+      assert.equal(summary.counts.deferredByProcessingLimit, remainingBefore - done.length);
+      // Processed in urgency order (earliest tail first).
+      const tails = done.map((id) => tail.get(id)!);
+      assert.deepEqual(tails, [...tails].sort());
+      for (const id of done) {
+        processedOnce.set(id, (processedOnce.get(id) ?? 0) + 1);
+        tail.set(id, daysFromNow(REPLENISH_TARGET_COVERAGE_DAYS)); // topped up
+      }
+    }
+    assert.equal(processedOnce.size, 150);
+    assert.ok([...processedOnce.values()].every((n) => n === 1));
+  });
+
+  test("time budget: processing stops between series when the budget is spent, and the rest are reported as deferred", async () => {
+    // One workspace per series so each one triggers its own (uncached)
+    // entitlement lookup, which is where this test advances the clock.
+    const rows = ids(10).map((id, i) => activeSeriesRow({ id, workspace_id: `ws-${i}` }));
+    resetFixtures(
+      { recurring_series: queueSelection(rows), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: rows.map(() => REPLENISHED) }
+    );
+    let t = 0;
+    // Coverage reads see t=0; each series processed advances the clock 10ms.
+    const clock = () => t;
+    const realFetch = ALWAYS_PERMITTED_FETCH_ENTITLEMENT;
+    const summary = await runReplenishmentPass({
+      dryRun: false,
+      now: NOW,
+      clock,
+      budgetMs: 35,
+      fetchEntitlement: async (ws) => {
+        t += 10;
+        return realFetch(ws);
+      },
+    });
+    assert.equal(summary.counts.replenished, 4); // checks at t=0,10,20,30 pass; t=40 >= 35 stops
+    assert.equal(summary.counts.replenished + summary.counts.deferredByProcessingLimit, 10);
+  });
+
+  test("budget spent during coverage reads: unread series are deferred, never treated as covered or failed", async () => {
+    const rows = ids(30).map((id) => activeSeriesRow({ id }));
+    resetFixtures({ recurring_series: queueSelection(rows), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: true, now: NOW, clock: () => 0, budgetMs: 0, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.deferredByProcessingLimit, 30);
+    assert.equal(summary.counts.skippedSufficientCoverage, 0);
+    assert.equal(summary.counts.safeFailures, 0);
+  });
+
+  test("a failed coverage read fails closed for THAT series only; the others still run", async () => {
+    const rows = [activeSeriesRow({ id: "a" }), activeSeriesRow({ id: "b" })];
+    currentFake = wrapFake(
+      createFakeSupabaseAdmin(
+        {
+          recurring_series: queueSelection(rows),
+          appointments: [{ error: { message: "boom" } }, { data: [] }],
+          rate_limit_counters: [{ data: [] }],
+        },
+        {
+          replenish_recurring_series: [REPLENISHED],
+          record_rate_limit_attempt: [{ data: null }],
+        }
+      )
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.safeFailures, 1);
+    assert.equal(summary.counts.replenished, 1);
+    assert.deepEqual(currentFake.rpcCalls.map((c) => (c.args as { p_series_id: string }).p_series_id), ["b"]);
   });
 
   test("no active rows is a clean no-op: zero RPC calls, zero appointments query, all counts zero", async () => {
-    resetFixtures({
-      recurring_series: queueSelection([]),
-    });
+    resetFixtures({ recurring_series: queueSelection([]) });
     const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
     assert.equal(currentFake.rpcCalls.length, 0);
     assert.ok(!currentFake.calls.some((c) => c.table === "appointments"));
@@ -184,17 +374,110 @@ describe("selection query shape", () => {
       truncatedSeries: 0,
       deferredByProcessingLimit: 0,
       skippedEntitlementRestricted: 0,
+      backedOffAfterFailures: 0,
     });
   });
+});
 
-  test("processing-limit truncation is reported via deferredByProcessingLimit using an exact COUNT, not merely a boolean", async () => {
-    resetFixtures({
-      recurring_series: queueSelection([activeSeriesRow({ id: "s1" })], 137),
-      appointments: queueOccurrences([]),
-    });
+describe("bounded retries: a repeatedly failing series cannot hold up others", () => {
+  const REPLENISHED = { data: { outcome: "replenished", inserted_count: 1, skipped_count: 0 } };
+  const key = (id: string) => `${FAILURE_BUCKET_PREFIX}${id}`;
+
+  test("a failure is recorded through the existing atomic rate-limit RPC with the bounded-retry settings", async () => {
+    resetFixtures(
+      { recurring_series: queueSelection([activeSeriesRow({ id: "bad" })]), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: [{ error: { message: "rpc down" } }] }
+    );
     const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
-    assert.equal(summary.counts.activeSeriesExamined, 1);
-    assert.equal(summary.counts.deferredByProcessingLimit, 136);
+    assert.equal(summary.counts.safeFailures, 1);
+    assert.deepEqual(currentFake.bookkeepingRpcCalls, [
+      {
+        fn: "record_rate_limit_attempt",
+        args: {
+          p_bucket_key: key("bad"),
+          p_window_seconds: FAILURE_WINDOW_SECONDS,
+          p_max_attempts: FAILURE_MAX_ATTEMPTS,
+          p_lockout_seconds: FAILURE_LOCKOUT_SECONDS,
+        },
+      },
+    ]);
+  });
+
+  test("a series with a recent failure is processed AFTER every healthy series, even when it is the most urgent", async () => {
+    const rows = [activeSeriesRow({ id: "bad", workspace_id: "ws-1" }), activeSeriesRow({ id: "good", workspace_id: "ws-2" })];
+    resetFixtures(
+      {
+        recurring_series: queueSelection(rows),
+        appointments: queueOccurrences([
+          { series_id: "bad", workspace_id: "ws-1", scheduled_for: daysFromNow(1) },
+          { series_id: "good", workspace_id: "ws-2", scheduled_for: daysFromNow(20) },
+        ]),
+        rate_limit_counters: [{ data: [{ bucket_key: key("bad"), attempt_count: 2, locked_until: null }] }],
+      },
+      { replenish_recurring_series: [REPLENISHED, REPLENISHED] }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT, maxSeriesProcessed: 1 });
+    assert.deepEqual(currentFake.rpcCalls.map((c) => (c.args as { p_series_id: string }).p_series_id), ["good"]);
+    assert.equal(summary.counts.deferredByProcessingLimit, 1);
+  });
+
+  test("a series locked out after repeated failures is skipped (no RPC) and counted; others proceed", async () => {
+    const rows = [activeSeriesRow({ id: "bad" }), activeSeriesRow({ id: "good" })];
+    resetFixtures(
+      {
+        recurring_series: queueSelection(rows),
+        appointments: queueOccurrences([]),
+        rate_limit_counters: [{ data: [{ bucket_key: key("bad"), attempt_count: 3, locked_until: daysFromNow(2) }] }],
+      },
+      { replenish_recurring_series: [REPLENISHED] }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.backedOffAfterFailures, 1);
+    assert.deepEqual(currentFake.rpcCalls.map((c) => (c.args as { p_series_id: string }).p_series_id), ["good"]);
+  });
+
+  test("an expired lockout lets the series try again", async () => {
+    resetFixtures(
+      {
+        recurring_series: queueSelection([activeSeriesRow({ id: "bad" })]),
+        appointments: queueOccurrences([]),
+        rate_limit_counters: [{ data: [{ bucket_key: key("bad"), attempt_count: 3, locked_until: daysFromNow(-1) }] }],
+      },
+      { replenish_recurring_series: [REPLENISHED] }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.backedOffAfterFailures, 0);
+    assert.equal(summary.counts.replenished, 1);
+    assert.deepEqual(currentFake.bookkeepingRpcCalls, [{ fn: "clear_rate_limit", args: { p_bucket_key: key("bad") } }]);
+  });
+
+  test("a conflict is not counted as a failure (another writer got there first)", async () => {
+    resetFixtures(
+      { recurring_series: queueSelection([activeSeriesRow()]), appointments: queueOccurrences([]) },
+      { replenish_recurring_series: [{ data: { outcome: "conflict", inserted_count: 0, skipped_count: 0 } }] }
+    );
+    await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.deepEqual(currentFake.bookkeepingRpcCalls, []);
+  });
+
+  test("dry run never writes failure records", async () => {
+    resetFixtures({ recurring_series: queueSelection([activeSeriesRow({ snapshot_updated_at: null })]), appointments: queueOccurrences([]) });
+    const summary = await runReplenishmentPass({ dryRun: true, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.safeFailures, 1);
+    assert.deepEqual(currentFake.bookkeepingRpcCalls, []);
+  });
+
+  test("a failure-record read error fails open: series are still processed normally", async () => {
+    resetFixtures(
+      {
+        recurring_series: queueSelection([activeSeriesRow()]),
+        appointments: queueOccurrences([]),
+        rate_limit_counters: [{ error: { message: "down" } }],
+      },
+      { replenish_recurring_series: [REPLENISHED] }
+    );
+    const summary = await runReplenishmentPass({ dryRun: false, now: NOW, fetchEntitlement: ALWAYS_PERMITTED_FETCH_ENTITLEMENT });
+    assert.equal(summary.counts.replenished, 1);
   });
 });
 

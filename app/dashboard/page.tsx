@@ -16,6 +16,19 @@ import type { AppointmentEmployeeAssignment } from "@/app/components/dashboard/t
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function DashboardLoadErrorScreen() {
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center px-6">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-6 shadow-sm text-center" role="alert">
+        <div className="text-sm font-semibold text-slate-900">Your schedule could not be loaded</div>
+        <div className="mt-2 text-xs text-slate-500 leading-relaxed">
+          Nothing is shown rather than an incomplete schedule. Your data is safe. Please refresh the page in a moment.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default async function DashboardPage() {
   const session = await getSession();
   // middleware.ts already redirects anything but owner/tester away from
@@ -84,23 +97,24 @@ export default async function DashboardPage() {
     return <LockedReactivationScreen recoveryAction={entitlement.recoveryAction} />;
   }
 
-  let clientFields = "id, name, email, phone, archived_at, address, client_since, referred_by, status, notes, preferred_contact_method, auto_email, auto_sms";
-  let clientsRes = await supabaseAdmin
-    .from("clients")
-    .select(clientFields)
-    .eq("workspace_id", workspaceId)
-    .eq("is_demo", isTester)
-    .order("name", { ascending: true });
-
-  if (clientsRes.error) {
-    clientFields = "id, name, email, phone";
-    clientsRes = await supabaseAdmin
+  // Paginated like appointments below: a client list past PostgREST's
+  // 1000-row response cap would otherwise be silently cut off. `id` after
+  // `name` keeps the order stable when two clients share a name. No
+  // reduced-column retry on error (there used to be one, from before these
+  // columns existed): a transient failure would have shown clients without
+  // their address/notes/contact settings. Any error shows the load-error
+  // screen instead.
+  const clientFields = "id, name, email, phone, archived_at, address, client_since, referred_by, status, notes, preferred_contact_method, auto_email, auto_sms";
+  const clientsRes = await fetchAllPages(async (from, to) =>
+    supabaseAdmin
       .from("clients")
       .select(clientFields)
       .eq("workspace_id", workspaceId)
       .eq("is_demo", isTester)
-      .order("name", { ascending: true });
-  }
+      .order("name", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
 
   const clients = clientsRes.data as any[] | null;
   const clientsErr = clientsRes.error;
@@ -115,8 +129,11 @@ export default async function DashboardPage() {
   // scheduled_for with `id` as a tiebreaker so pages never overlap or skip
   // a row, and fails closed (returns the error) rather than silently
   // handing back a partial set if any page fails.
-  let apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, repeat_months, employee_id, actual_started_at, actual_completed_at, price_cents, team_color, cancelled_at, cancellation_reported_date, cancellation_reason";
-  let apptsRes = await fetchAllPages(async (from, to) =>
+  // No reduced-column retry on error (same reason as clients above): a
+  // partial field list would show jobs without price, team color or
+  // cancellation details. Any failed page shows the load-error screen.
+  const apptFields = "id, client_id, service_type, scheduled_for, status, notes, duration_minutes, scheduled_end, series_id, frequency_type, repeat_weeks, repeat_months, employee_id, actual_started_at, actual_completed_at, price_cents, team_color, cancelled_at, cancellation_reported_date, cancellation_reason";
+  const apptsRes = await fetchAllPages(async (from, to) =>
     supabaseAdmin
       .from("appointments")
       .select(apptFields)
@@ -126,20 +143,6 @@ export default async function DashboardPage() {
       .order("id", { ascending: true })
       .range(from, to)
   );
-
-  if (apptsRes.error) {
-    apptFields = "id, client_id, service_type, scheduled_for, status, notes";
-    apptsRes = await fetchAllPages(async (from, to) =>
-      supabaseAdmin
-        .from("appointments")
-        .select(apptFields)
-        .eq("workspace_id", workspaceId)
-        .eq("is_demo", isTester)
-        .order("scheduled_for", { ascending: true })
-        .order("id", { ascending: true })
-        .range(from, to)
-    );
-  }
 
   const appointments = apptsRes.data as any[] | null;
   const apptsErr = apptsRes.error;
@@ -171,9 +174,14 @@ export default async function DashboardPage() {
     // employees table may not exist yet
   }
 
-  let employeeHours: any[] = [];
-  try {
-    // Scoped by workspace_id alone — NOT filtered through an
+  // Required data: manual hours and assignments drive payroll, worked-hours
+  // warnings and who is shown on every job. Both are paginated (each used
+  // to be a single query, silently cut off at PostgREST's 1000-row cap --
+  // past that, every newer job showed as unassigned) and both fail closed:
+  // if any page fails, the dashboard shows the load-error screen below
+  // instead of an incomplete schedule.
+  //
+  // Scoped by workspace_id alone — NOT filtered through an
     // .in("appointment_id", apptIds) list built from `appointments`. A
     // workspace with enough appointments to hit PostgREST's default
     // max-rows (1000) truncates that list, and passing a ~1000-UUID list
@@ -184,38 +192,36 @@ export default async function DashboardPage() {
     // table only ever holds the (much smaller) set of manual overrides,
     // so scoping by workspace_id directly is both simpler and correct
     // regardless of how many appointments the workspace has.
-    const hoursRes = await supabaseAdmin
+  const hoursRes = await fetchAllPages(async (from, to) =>
+    supabaseAdmin
       .from("appointment_employee_hours")
       .select("id, appointment_id, employee_id, hours_worked, note, created_at, updated_at")
-      .eq("workspace_id", workspaceId);
-    if (!hoursRes.error) employeeHours = hoursRes.data ?? [];
-  } catch {
-    // appointment_employee_hours table may not exist yet
-  }
+      .eq("workspace_id", workspaceId)
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
+  const employeeHours: any[] = hoursRes.data ?? [];
 
-  let assignments: AppointmentEmployeeAssignment[] = [];
-  try {
-    // Phase 5.7D-R18: every appointment_employees row for the workspace --
-    // the authoritative "who is assigned" source. Same optional-existence
-    // pattern as services/employees/employeeHours above (this table is not
-    // yet applied in production as of this phase): a missing/errored table
-    // is treated as "no assignments yet," never a hard failure.
-    // Phase 5.7D-R19: ordered so every consumer (Team Color's deterministic
+  // Phase 5.7D-R18: every appointment_employees row for the workspace --
+  // the authoritative "who is assigned" source.
+  // Phase 5.7D-R19: ordered so every consumer (Team Color's deterministic
     // fallback, employee names/indicators, Worked Hours rows) sees
     // assignments in the same stable order without each having to re-sort
     // -- see lib/sortAssignmentsStable.ts's sortAssignmentsStable, which
-    // consumers still apply defensively rather than trusting query order
-    // alone survives every intermediate grouping/filtering step.
-    const assignRes = await supabaseAdmin
+  // consumers still apply defensively rather than trusting query order
+  // alone survives every intermediate grouping/filtering step. `id` is
+  // unique, so pages never overlap or skip even when many rows share a
+  // created_at (bulk-created recurring series).
+  const assignRes = await fetchAllPages<AppointmentEmployeeAssignment>(async (from, to) =>
+    supabaseAdmin
       .from("appointment_employees")
       .select("id, appointment_id, employee_id, actual_started_at, actual_completed_at, job_notes, created_at, updated_at")
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: true })
-      .order("id", { ascending: true });
-    if (!assignRes.error) assignments = (assignRes.data ?? []) as AppointmentEmployeeAssignment[];
-  } catch {
-    // appointment_employees table may not exist yet
-  }
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
+  const assignments: AppointmentEmployeeAssignment[] = assignRes.data ?? [];
 
   // Calendar Paid Indicator: the Schedule grid needs to know, for each
   // appointment it can render, only whether a PAID completed_job_billing
@@ -298,17 +304,11 @@ export default async function DashboardPage() {
     // company_settings row/column may not exist yet -- fall back safely.
   }
 
-  if (clientsErr || apptsErr) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="rounded-2xl border bg-white p-6 shadow-sm text-center">
-          <div className="text-sm font-semibold text-red-600">Failed to load data</div>
-          <div className="mt-2 text-xs text-slate-500">
-            {clientsErr?.message || apptsErr?.message}
-          </div>
-        </div>
-      </div>
-    );
+  // Never show a partial schedule: any required read failing (on any page)
+  // shows this screen instead. No database error text is shown.
+  if (clientsErr || apptsErr || hoursRes.error || assignRes.error) {
+    console.error("DASHBOARD_LOAD_ERROR");
+    return <DashboardLoadErrorScreen />;
   }
 
   // entitlementResult/entitlement were already resolved above, before any

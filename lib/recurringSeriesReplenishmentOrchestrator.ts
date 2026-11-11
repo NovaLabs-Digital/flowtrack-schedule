@@ -34,6 +34,7 @@ import type { RecurringFrequency } from "@/lib/recurringSeries";
 // convention and lib/entitlementServer.ts's own EntitlementFetcher pattern
 // -- every real invocation omits the override and gets this true default.
 import { fetchEntitlementForWorkspace } from "@/lib/entitlementServer";
+import { fetchAllPages, fetchAllPagesChunkedIn } from "@/lib/paginate";
 import type { EntitlementResult } from "@/lib/entitlement";
 
 type EntitlementFetcherFn = (workspaceId: string) => Promise<EntitlementResult>;
@@ -74,33 +75,43 @@ export const REPLENISH_THRESHOLD_DAYS = 30;
 // behavior requested.
 export const MAX_OCCURRENCES_PER_SERIES_PER_RUN = 20;
 
-// MAX_SERIES_PROCESSED_PER_RUN: bounds total work (and therefore wall-clock
-// time) per invocation, mirroring lib/reconcileSubscriptions.ts's own
-// RECONCILE_BATCH_LIMIT precedent. 100 is conservative against the route's
-// maxDuration = 60s budget.
+// MAX_SERIES_PROCESSED_PER_RUN: a hard safety cap on how many series may
+// reach a mutation decision (generation + entitlement + RPC) in one run.
+// The real bound is RUN_TIME_BUDGET_MS below; this cap only stops a
+// runaway run. Series past either bound are counted in
+// deferredByProcessingLimit and stay the most urgent for the next run.
 //
-// Accurate database-call model (corrected -- an earlier draft of this
-// comment claimed "3 queries total", which was only ever true of the
-// SELECT/read side and did not account for RPC calls):
-//   - exactly 3 bounded SELECT-side queries per run, regardless of batch
-//     size: the active-series list, an exact COUNT for the deferred-count,
-//     and one batched latest-occurrence query;
-//   - PLUS, in EITHER mode, at most one entitlement lookup per DISTINCT
-//     workspace among the series that actually need a mutation decision
-//     this run (sufficient-coverage and generation-failure series never
-//     reach this lookup at all -- see the entitlement cache below) --
-//     bounded above by min(distinct workspaces among the selected batch,
-//     MAX_SERIES_PROCESSED_PER_RUN), so at most 100, never more;
-//   - PLUS, in LIVE mode only, at most one mutation RPC call per series
-//     that is actually eligible for replenishment this run AND whose
-//     workspace's entitlement permits the mutation -- NOT per series
-//     merely examined, and bounded above by MAX_SERIES_PROCESSED_PER_RUN
-//     (so at most 100 RPC calls in the worst case, never more);
-//   - ZERO mutation RPC calls in DRY-RUN mode, for any number of series.
-// 3 (reads) + up to 100 (entitlement lookups) + up to 100 (writes, live
-// mode only) stays comfortably within the 60s budget even at the full
-// batch size.
-export const MAX_SERIES_PROCESSED_PER_RUN = 100;
+// History: this used to be 100 series SELECTED per run, ordered by
+// last_replenished_at. Series skipped for sufficient coverage never advance
+// last_replenished_at, so once more than 100 active series existed across
+// all workspaces, the same 100 were selected every run and every later
+// series was never examined (capacity report D2). Selection is now
+// need-based: every active series' coverage is read, and only the series
+// that actually need a top-up are processed, most urgent first.
+export const MAX_SERIES_PROCESSED_PER_RUN = 500;
+
+// RUN_TIME_BUDGET_MS: wall-clock budget for one run, leaving headroom under
+// the route's maxDuration = 60s. Checked before each coverage read and
+// before each series is processed; never interrupts a series mid-RPC.
+export const RUN_TIME_BUDGET_MS = 45_000;
+
+// COVERAGE_READ_CONCURRENCY: how many per-series coverage reads run at
+// once. Each is one indexed lookup (idx_appointments_series_occurrence).
+export const COVERAGE_READ_CONCURRENCY = 8;
+
+// Bounded retries. A series whose processing fails (safe_failure or
+// generation_failed) is recorded in rate_limit_counters under
+// "replenish-failure:<seriesId>" via the existing atomic
+// record_rate_limit_attempt RPC (migrations/017). Series with a failure
+// record are processed only after every healthy series in the same run;
+// after FAILURE_MAX_ATTEMPTS failures within FAILURE_WINDOW_SECONDS the
+// series is skipped (backedOffAfterFailures) until FAILURE_LOCKOUT_SECONDS
+// have passed. A success clears the record. Dry runs never write records.
+// Conflicts are not failures (they mean another writer got there first).
+export const FAILURE_BUCKET_PREFIX = "replenish-failure:";
+export const FAILURE_WINDOW_SECONDS = 14 * 24 * 60 * 60;
+export const FAILURE_MAX_ATTEMPTS = 3;
+export const FAILURE_LOCKOUT_SECONDS = 3 * 24 * 60 * 60;
 
 // ============================================================================
 // Types
@@ -155,6 +166,9 @@ export interface ReplenishmentRunCounts {
   // entitlement lookup is never even attempted for those, so they cannot
   // be miscounted as "restricted."
   skippedEntitlementRestricted: number;
+  // Needing series skipped this run because they failed FAILURE_MAX_ATTEMPTS
+  // times recently (bounded retries; see the FAILURE_* constants).
+  backedOffAfterFailures: number;
 }
 
 function emptyCounts(): ReplenishmentRunCounts {
@@ -173,6 +187,7 @@ function emptyCounts(): ReplenishmentRunCounts {
     truncatedSeries: 0,
     deferredByProcessingLimit: 0,
     skippedEntitlementRestricted: 0,
+    backedOffAfterFailures: 0,
   };
 }
 
@@ -212,83 +227,138 @@ const ACTIVE_SERIES_COLUMNS =
 // -- never fetched, never considered, never a candidate for any RPC call.
 // ============================================================================
 
-async function selectEligibleActiveSeries(
-  limit: number
-): Promise<{ rows: ActiveSeriesRow[]; totalEligible: number }> {
-  // Sequential, not Promise.all -- two small, independent reads against the
-  // same table; run one after the other so this function's own query order
-  // is simple to reason about (and to assert on in tests) rather than
-  // relying on concurrent-resolution ordering.
-  const rowsRes = await supabaseAdmin
-    .from("recurring_series")
-    .select(ACTIVE_SERIES_COLUMNS)
-    .eq("status", "active")
-    .eq("is_demo", false)
-    // Oldest-least-recently-replenished-first (NULLs -- never replenished
-    // yet -- sort first), with id as a deterministic tiebreaker. Mirrors
-    // lib/reconcileSubscriptions.ts's own "oldest-unconfirmed-first"
-    // fairness convention: if MAX_SERIES_PROCESSED_PER_RUN is ever
-    // exceeded, series NOT processed this run are exactly the ones with
-    // the most recent last_replenished_at, so they naturally rise to the
-    // front of the next run's ordering instead of being starved forever.
-    .order("last_replenished_at", { ascending: true, nullsFirst: true })
-    .order("id", { ascending: true })
-    .limit(limit);
-  if (rowsRes.error) throw rowsRes.error;
-
-  const countRes = await supabaseAdmin
-    .from("recurring_series")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "active")
-    .eq("is_demo", false);
-  if (countRes.error) throw countRes.error;
-
-  return {
-    rows: (rowsRes.data as ActiveSeriesRow[] | null) ?? [],
-    totalEligible: countRes.count ?? 0,
-  };
+// Every active, non-demo series across all workspaces, paginated with a
+// stable order (id is unique), failing closed on any page error. No LIMIT:
+// fairness comes from need-based ordering below, not from which rows a
+// capped query happens to return.
+async function selectAllActiveSeries(): Promise<ActiveSeriesRow[]> {
+  const res = await fetchAllPages<ActiveSeriesRow>(async (from, to) =>
+    supabaseAdmin
+      .from("recurring_series")
+      .select(ACTIVE_SERIES_COLUMNS)
+      .eq("status", "active")
+      .eq("is_demo", false)
+      .order("id", { ascending: true })
+      .range(from, to)
+  );
+  if (res.error) throw res.error;
+  return res.data ?? [];
 }
 
-// One batched query for every selected series' latest LIVE (status =
-// 'scheduled') occurrence -- never N individual queries, keeping this run's
-// total query count constant regardless of batch size. A cancelled
-// occurrence at any timestamp, however recent, never counts toward
-// coverage -- exactly the "cancelled occurrences must not falsely count as
-// live future coverage" requirement. workspace_id is read back and cross-
-// checked against the series' own known workspace_id defensively (this
-// query spans every workspace's active series at once, like
-// app/api/cron/reminders/route.ts already does -- there is no single
-// workspace-scoped filter available here, so per-row cross-checking is the
-// available defense-in-depth instead).
-async function fetchLatestScheduledOccurrences(
-  seriesById: Map<string, ActiveSeriesRow>
-): Promise<Map<string, string>> {
-  const seriesIds = [...seriesById.keys()];
-  const latest = new Map<string, string>();
-  if (seriesIds.length === 0) return latest;
-
+// One series' latest LIVE (status = 'scheduled') occurrence -- an exact,
+// indexed lookup per series instead of one batched read. The batched read
+// this replaces selected every scheduled occurrence (history included) of
+// up to 100 series in a single unpaginated, oldest-first query, so past
+// PostgREST's 1000-row cap it saw only the oldest rows and mistook most
+// series for having no future coverage (capacity report D2b). A cancelled
+// occurrence never counts toward coverage. Filtered by the series' own
+// workspace_id and cross-checked on the way back, so one workspace's rows
+// can never count toward another's series. Takes the max of whatever comes
+// back rather than trusting row order.
+async function fetchLatestLiveOccurrence(series: ActiveSeriesRow): Promise<string | null> {
   const { data, error } = await supabaseAdmin
     .from("appointments")
     .select("series_id, workspace_id, scheduled_for")
-    .in("series_id", seriesIds)
+    .eq("series_id", series.id)
+    .eq("workspace_id", series.workspace_id)
     .eq("status", "scheduled")
-    .order("scheduled_for", { ascending: true });
+    .order("scheduled_for", { ascending: false })
+    .limit(1);
   if (error) throw error;
-
+  let latest: string | null = null;
   for (const row of (data as { series_id: string; workspace_id: string; scheduled_for: string }[] | null) ?? []) {
-    const series = seriesById.get(row.series_id);
-    if (!series || series.workspace_id !== row.workspace_id) continue;
-    const current = latest.get(row.series_id);
-    if (!current || row.scheduled_for > current) {
-      latest.set(row.series_id, row.scheduled_for);
-    }
+    if (row.series_id !== series.id || row.workspace_id !== series.workspace_id) continue;
+    const iso = new Date(row.scheduled_for).toISOString();
+    if (!latest || iso > latest) latest = iso;
   }
   return latest;
 }
 
-// ============================================================================
-// Per-series processing
-// ============================================================================
+interface FailureRecord {
+  attemptCount: number;
+  lockedUntil: string | null;
+}
+
+// Reads existing failure records for the given series. Fails open (empty
+// map, logged): missing backoff information only means a failing series is
+// retried normally this run, never that a healthy one is skipped.
+async function fetchFailureRecords(seriesIds: string[]): Promise<Map<string, FailureRecord>> {
+  const records = new Map<string, FailureRecord>();
+  if (seriesIds.length === 0) return records;
+  try {
+    const keys = seriesIds.map((id) => FAILURE_BUCKET_PREFIX + id);
+    const res = await fetchAllPagesChunkedIn<{ bucket_key: string; attempt_count: number; locked_until: string | null }>(
+      keys,
+      async (chunk, from, to) =>
+        supabaseAdmin
+          .from("rate_limit_counters")
+          .select("bucket_key, attempt_count, locked_until")
+          .in("bucket_key", chunk)
+          .order("bucket_key", { ascending: true })
+          .range(from, to)
+    );
+    if (res.error) throw res.error;
+    for (const row of res.data ?? []) {
+      if (!row.bucket_key.startsWith(FAILURE_BUCKET_PREFIX)) continue;
+      records.set(row.bucket_key.slice(FAILURE_BUCKET_PREFIX.length), {
+        attemptCount: row.attempt_count,
+        lockedUntil: row.locked_until ? new Date(row.locked_until).toISOString() : null,
+      });
+    }
+  } catch {
+    console.error("CRON_REPLENISH_FAILURE_RECORD_READ_ERROR");
+    return new Map();
+  }
+  return records;
+}
+
+async function recordSeriesFailure(seriesId: string): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin.rpc("record_rate_limit_attempt", {
+      p_bucket_key: FAILURE_BUCKET_PREFIX + seriesId,
+      p_window_seconds: FAILURE_WINDOW_SECONDS,
+      p_max_attempts: FAILURE_MAX_ATTEMPTS,
+      p_lockout_seconds: FAILURE_LOCKOUT_SECONDS,
+    });
+    if (error) throw error;
+  } catch {
+    console.error("CRON_REPLENISH_FAILURE_RECORD_WRITE_ERROR");
+  }
+}
+
+async function clearSeriesFailure(seriesId: string): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin.rpc("clear_rate_limit", { p_bucket_key: FAILURE_BUCKET_PREFIX + seriesId });
+    if (error) throw error;
+  } catch {
+    console.error("CRON_REPLENISH_FAILURE_RECORD_CLEAR_ERROR");
+  }
+}
+
+// Runs fn over items with at most `limit` in flight, starting items in
+// order. Stops starting new items once shouldStop() is true; unstarted
+// items are reported as "not_started".
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+  shouldStop: () => boolean
+): Promise<({ ok: true; value: R } | { ok: false; reason: "error" | "not_started" })[]> {
+  const results: ({ ok: true; value: R } | { ok: false; reason: "error" | "not_started" })[] = items.map(() => ({ ok: false, reason: "not_started" }));
+  let next = 0;
+  async function worker() {
+    while (next < items.length && !shouldStop()) {
+      const index = next++;
+      try {
+        results[index] = { ok: true, value: await fn(items[index]) };
+      } catch {
+        results[index] = { ok: false, reason: "error" };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
 
 type ProcessOutcome =
   | { kind: "skipped_sufficient_coverage" }
@@ -375,6 +445,11 @@ export interface RunReplenishmentPassOptions {
   // here is exercised against genuine EntitlementResult shapes without a
   // live Supabase/Stripe dependency.
   fetchEntitlement?: EntitlementFetcherFn;
+  // Injectable for tests: elapsed-time clock (ms), run budget and the
+  // per-run processing cap. Production uses the defaults.
+  clock?: () => number;
+  budgetMs?: number;
+  maxSeriesProcessed?: number;
 }
 
 // Block 2C-2F: per-RUN entitlement cache -- a plain Map created fresh
@@ -474,225 +549,213 @@ export async function runReplenishmentPass(options: RunReplenishmentPassOptions)
   const nowIso = nowDate.toISOString();
   const dryRun = options.dryRun;
   const fetchEntitlement = options.fetchEntitlement ?? fetchEntitlementForWorkspace;
-  // Fresh, local to this one invocation only -- see the cache's own
-  // documentation above RunReplenishmentPassOptions for why this must never
-  // be hoisted to module scope.
+  const clock = options.clock ?? (() => Date.now());
+  const budgetMs = options.budgetMs ?? RUN_TIME_BUDGET_MS;
+  const maxProcessed = options.maxSeriesProcessed ?? MAX_SERIES_PROCESSED_PER_RUN;
+  const startedAt = clock();
+  const outOfTime = () => clock() - startedAt >= budgetMs;
   const entitlementCache = new Map<string, EntitlementResult>();
 
   const counts = emptyCounts();
 
-  const { rows: seriesRows, totalEligible } = await selectEligibleActiveSeries(MAX_SERIES_PROCESSED_PER_RUN);
-  counts.activeSeriesExamined = seriesRows.length;
-  counts.deferredByProcessingLimit = Math.max(0, totalEligible - seriesRows.length);
-
-  if (seriesRows.length === 0) {
+  const allSeries = await selectAllActiveSeries();
+  counts.activeSeriesExamined = allSeries.length;
+  if (allSeries.length === 0) {
     return { dryRun, counts };
   }
-
-  const seriesById = new Map(seriesRows.map((s) => [s.id, s]));
-  const latestScheduledById = await fetchLatestScheduledOccurrences(seriesById);
 
   const targetThroughIso = addElapsedDays(nowDate, REPLENISH_TARGET_COVERAGE_DAYS);
   const thresholdIso = addElapsedDays(nowDate, REPLENISH_THRESHOLD_DAYS);
 
-  for (const series of seriesRows) {
+  // 1. Coverage for every active series. A read error fails closed for
+  // that series only (safe_failure, retried next run); series not read
+  // before the budget ran out are deferred.
+  const coverage = await mapWithConcurrency(allSeries, COVERAGE_READ_CONCURRENCY, fetchLatestLiveOccurrence, outOfTime);
+  const needing: { series: ActiveSeriesRow; coverageIso: string }[] = [];
+  coverage.forEach((result, index) => {
+    if (!result.ok) {
+      if (result.reason === "not_started") {
+        counts.deferredByProcessingLimit++;
+      } else {
+        console.error("CRON_REPLENISH_COVERAGE_READ_ERROR");
+        applyOutcome(counts, { kind: "safe_failure" });
+      }
+      return;
+    }
+    const latestScheduledFor = result.value;
+    const coverageIso = latestScheduledFor && latestScheduledFor > nowIso ? latestScheduledFor : nowIso;
+    if (coverageIso >= thresholdIso) {
+      applyOutcome(counts, { kind: "skipped_sufficient_coverage" });
+      return;
+    }
+    needing.push({ series: allSeries[index], coverageIso });
+  });
+
+  // 2. Most urgent first (soonest to run out), id as a stable tiebreaker.
+  // Series with a recent failure go after every healthy one; series that
+  // failed FAILURE_MAX_ATTEMPTS times are skipped until their lockout ends.
+  const failures = await fetchFailureRecords(needing.map((n) => n.series.id));
+  const queue = needing
+    .filter((n) => {
+      const record = failures.get(n.series.id);
+      if (record?.lockedUntil && record.lockedUntil > nowIso) {
+        counts.backedOffAfterFailures++;
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const fa = failures.has(a.series.id) ? 1 : 0;
+      const fb = failures.has(b.series.id) ? 1 : 0;
+      if (fa !== fb) return fa - fb;
+      if (a.coverageIso !== b.coverageIso) return a.coverageIso < b.coverageIso ? -1 : 1;
+      return a.series.id < b.series.id ? -1 : a.series.id > b.series.id ? 1 : 0;
+    });
+
+  // 3. Process within the budget. Each series is attempted at most once per
+  // run, so one failing series can never consume more than its own turn.
+  let processed = 0;
+  for (const item of queue) {
+    if (processed >= maxProcessed || outOfTime()) {
+      counts.deferredByProcessingLimit += queue.length - processed;
+      break;
+    }
+    processed++;
+    let outcome: ProcessOutcome;
     try {
-      const latestScheduledFor = latestScheduledById.get(series.id) ?? null;
-      // Coverage boundary: the latest live occurrence if it's genuinely in
-      // the future, otherwise "now" -- the explicitly justified safe
-      // boundary for a series with no live tail at all (or, defensively, a
-      // stale one somehow still in the past).
-      const coverageIso = latestScheduledFor && latestScheduledFor > nowIso ? latestScheduledFor : nowIso;
-
-      if (coverageIso >= thresholdIso) {
-        applyOutcome(counts, { kind: "skipped_sufficient_coverage" });
-        continue;
-      }
-
-      if (!series.snapshot_updated_at) {
-        // Structurally shouldn't happen for a status='active' row (see this
-        // file's header) -- handled defensively rather than assumed
-        // impossible, matching this codebase's established style.
-        console.error("CRON_REPLENISH_UNEXPECTED_NULL_SNAPSHOT_UPDATED_AT");
-        applyOutcome(counts, { kind: "safe_failure" });
-        continue;
-      }
-
-      const afterIso = coverageIso;
-
-      const genResult = generateOccurrencesInWindow({
-        frequencyType: series.frequency_type,
-        repeatWeeks: series.repeat_weeks,
-        repeatMonths: series.repeat_months,
-        anchorLocalDate: series.anchor_local_date,
-        anchorLocalTime: series.anchor_local_time,
-        anchorTimezone: series.anchor_timezone,
-        after: afterIso,
-        through: targetThroughIso,
-        maxOccurrences: MAX_OCCURRENCES_PER_SERIES_PER_RUN,
+      outcome = await processSeries(item.series, item.coverageIso, {
+        targetThroughIso,
+        dryRun,
+        counts,
+        entitlementCache,
+        fetchEntitlement,
       });
-
-      if (!genResult.ok) {
-        if (genResult.reason === "dst_gap") {
-          // Block 2C-2F: a DST-gap quarantine is still an operational write
-          // (quarantine_recurring_series_for_replenishment mutates the
-          // series row) -- it is gated exactly like a normal replenishment,
-          // never mutated merely to record a quarantine reason for a
-          // workspace whose billing access currently forbids it. The
-          // registry itself is left untouched (still status='active') so
-          // this series is naturally re-examined on a later run once access
-          // is restored.
-          const entitlement = await resolveCachedEntitlement(series.workspace_id, entitlementCache, fetchEntitlement);
-          if (entitlement === "lookup_error") {
-            applyOutcome(counts, { kind: "safe_failure" });
-            continue;
-          }
-          if (!isMutationPermitted(entitlement)) {
-            applyOutcome(counts, {
-              kind: isEntitlementLookupUnavailable(entitlement) ? "safe_failure" : "skipped_entitlement_restricted",
-            });
-            continue;
-          }
-
-          if (dryRun) {
-            applyOutcome(counts, { kind: "would_quarantine_dst_gap" });
-            continue;
-          }
-          try {
-            const q = await quarantineRecurringSeriesForReplenishment({
-              seriesId: series.id,
-              workspaceId: series.workspace_id,
-              expectedSnapshotUpdatedAt: series.snapshot_updated_at,
-              reason: "dst_gap",
-            });
-            if (q.outcome === "quarantined") {
-              applyOutcome(counts, { kind: "quarantined_dst_gap" });
-            } else if (q.outcome === "conflict") {
-              applyOutcome(counts, { kind: "conflict" });
-            } else {
-              // "invalid_reason" -- unreachable from this call site (reason
-              // is always the literal "dst_gap"), handled defensively.
-              console.error("CRON_REPLENISH_UNEXPECTED_QUARANTINE_OUTCOME");
-              applyOutcome(counts, { kind: "safe_failure" });
-            }
-          } catch {
-            console.error("CRON_REPLENISH_QUARANTINE_RPC_ERROR");
-            applyOutcome(counts, { kind: "safe_failure" });
-          }
-          continue;
-        }
-
-        // invalid_input / invalid_timezone / iteration_limit -- fail
-        // closed, no appointments created, no unsupported review_reason
-        // invented. Structurally near-unreachable for a genuinely active
-        // row (see this file's header), logged for visibility if it ever
-        // does fire. The reason is folded into the event code itself
-        // (never passed as a second console.error argument) so this stays
-        // a fixed, stable tag, matching this route's "no raw values ever
-        // passed to a logging call" convention.
-        console.error(`CRON_REPLENISH_GENERATION_FAILED_${genResult.reason.toUpperCase()}`);
-        applyOutcome(counts, { kind: "generation_failed" });
-        continue;
-      }
-
-      // Reported honestly, in BOTH modes, independent of the outcome below:
-      // a truncated window means real, valid occurrences existed beyond
-      // MAX_OCCURRENCES_PER_SERIES_PER_RUN -- this run's own counts must
-      // never be read as "this series reached full target coverage" when
-      // that isn't true. See ReplenishmentRunCounts.truncatedSeries.
-      if (genResult.truncated) {
-        counts.truncatedSeries++;
-      }
-
-      if (genResult.occurrences.length === 0) {
-        // Window was valid but empty (e.g. the only candidates land exactly
-        // on already-materialized slots) -- nothing to request this run.
-        applyOutcome(counts, { kind: "skipped_sufficient_coverage" });
-        continue;
-      }
-
-      // Block 2C-2F: entitlement is resolved here -- only once a real
-      // mutation (replenishment) is actually about to be proposed/attempted
-      // -- never earlier. A series that never reaches this line (sufficient
-      // coverage, or a non-dst_gap generation failure) never triggers an
-      // entitlement lookup at all, keeping the added query count bounded to
-      // series that actually need a mutation decision this run, per
-      // workspace, via the cache above.
-      const entitlement = await resolveCachedEntitlement(series.workspace_id, entitlementCache, fetchEntitlement);
-      if (entitlement === "lookup_error") {
-        applyOutcome(counts, { kind: "safe_failure" });
-        continue;
-      }
-      if (!isMutationPermitted(entitlement)) {
-        applyOutcome(counts, {
-          kind: isEntitlementLookupUnavailable(entitlement) ? "safe_failure" : "skipped_entitlement_restricted",
-        });
-        continue;
-      }
-
-      if (dryRun) {
-        applyOutcome(counts, { kind: "would_replenish", requested: genResult.occurrences.length });
-        continue;
-      }
-
-      try {
-        const result = await replenishRecurringSeries({
-          seriesId: series.id,
-          workspaceId: series.workspace_id,
-          expectedSnapshotUpdatedAt: series.snapshot_updated_at,
-          occurrences: genResult.occurrences,
-        });
-        switch (result.outcome) {
-          case "replenished":
-            applyOutcome(counts, {
-              kind: "replenished",
-              inserted: result.insertedCount,
-              skipped: result.skippedCount,
-            });
-            break;
-          case "conflict":
-            applyOutcome(counts, { kind: "conflict" });
-            break;
-          case "client_stopped":
-            applyOutcome(counts, { kind: "stopped_client_inactive" });
-            break;
-          case "employee_review_required":
-            applyOutcome(counts, { kind: "quarantined_employee_ineligible" });
-            break;
-          case "missing_snapshot_review_required":
-            // Structurally shouldn't happen for a status='active' row (see
-            // this file's header) -- defensively handled, not assumed
-            // impossible.
-            console.error("CRON_REPLENISH_UNEXPECTED_MISSING_SNAPSHOT");
-            applyOutcome(counts, { kind: "safe_failure" });
-            break;
-          case "invalid_input":
-            // Unreachable in practice (this module's own occurrence array
-            // always satisfies the RPC's own validation), handled
-            // defensively.
-            console.error("CRON_REPLENISH_UNEXPECTED_INVALID_INPUT");
-            applyOutcome(counts, { kind: "safe_failure" });
-            break;
-          default: {
-            const _exhaustive: never = result.outcome;
-            throw new Error(`Unhandled replenish outcome: ${JSON.stringify(_exhaustive)}`);
-          }
-        }
-      } catch (err) {
-        if (err instanceof RecurringSeriesReplenishmentRpcError) {
-          console.error("CRON_REPLENISH_RPC_ERROR");
-        } else {
-          console.error("CRON_REPLENISH_UNEXPECTED_ERROR");
-        }
-        applyOutcome(counts, { kind: "safe_failure" });
-      }
     } catch {
-      // Outermost per-series guard -- an unexpected exception anywhere
-      // above (a bug, a malformed row) never aborts the rest of the run.
       console.error("CRON_REPLENISH_SERIES_LOOP_ERROR");
-      applyOutcome(counts, { kind: "safe_failure" });
+      outcome = { kind: "safe_failure" };
+    }
+    applyOutcome(counts, outcome);
+    if (!dryRun) {
+      if (outcome.kind === "safe_failure" || outcome.kind === "generation_failed") {
+        await recordSeriesFailure(item.series.id);
+      } else if (outcome.kind === "replenished" && failures.has(item.series.id)) {
+        await clearSeriesFailure(item.series.id);
+      }
     }
   }
 
   return { dryRun, counts };
+}
+
+interface ProcessContext {
+  targetThroughIso: string;
+  dryRun: boolean;
+  counts: ReplenishmentRunCounts;
+  entitlementCache: Map<string, EntitlementResult>;
+  fetchEntitlement: EntitlementFetcherFn;
+}
+
+// One series that needs a top-up: generate, gate on entitlement, then
+// quarantine (DST gap) or replenish via the atomic RPC. Same decisions as
+// the previous per-series loop body; it now returns its outcome instead of
+// recording it inline.
+async function processSeries(series: ActiveSeriesRow, coverageIso: string, ctx: ProcessContext): Promise<ProcessOutcome> {
+  if (!series.snapshot_updated_at) {
+    console.error("CRON_REPLENISH_UNEXPECTED_NULL_SNAPSHOT_UPDATED_AT");
+    return { kind: "safe_failure" };
+  }
+
+  const genResult = generateOccurrencesInWindow({
+    frequencyType: series.frequency_type,
+    repeatWeeks: series.repeat_weeks,
+    repeatMonths: series.repeat_months,
+    anchorLocalDate: series.anchor_local_date,
+    anchorLocalTime: series.anchor_local_time,
+    anchorTimezone: series.anchor_timezone,
+    after: coverageIso,
+    through: ctx.targetThroughIso,
+    maxOccurrences: MAX_OCCURRENCES_PER_SERIES_PER_RUN,
+  });
+
+  if (!genResult.ok) {
+    if (genResult.reason === "dst_gap") {
+      const entitlement = await resolveCachedEntitlement(series.workspace_id, ctx.entitlementCache, ctx.fetchEntitlement);
+      if (entitlement === "lookup_error") return { kind: "safe_failure" };
+      if (!isMutationPermitted(entitlement)) {
+        return { kind: isEntitlementLookupUnavailable(entitlement) ? "safe_failure" : "skipped_entitlement_restricted" };
+      }
+      if (ctx.dryRun) return { kind: "would_quarantine_dst_gap" };
+      try {
+        const q = await quarantineRecurringSeriesForReplenishment({
+          seriesId: series.id,
+          workspaceId: series.workspace_id,
+          expectedSnapshotUpdatedAt: series.snapshot_updated_at,
+          reason: "dst_gap",
+        });
+        if (q.outcome === "quarantined") return { kind: "quarantined_dst_gap" };
+        if (q.outcome === "conflict") return { kind: "conflict" };
+        console.error("CRON_REPLENISH_UNEXPECTED_QUARANTINE_OUTCOME");
+        return { kind: "safe_failure" };
+      } catch {
+        console.error("CRON_REPLENISH_QUARANTINE_RPC_ERROR");
+        return { kind: "safe_failure" };
+      }
+    }
+    console.error(`CRON_REPLENISH_GENERATION_FAILED_${genResult.reason.toUpperCase()}`);
+    return { kind: "generation_failed" };
+  }
+
+  if (genResult.truncated) {
+    ctx.counts.truncatedSeries++;
+  }
+
+  if (genResult.occurrences.length === 0) {
+    return { kind: "skipped_sufficient_coverage" };
+  }
+
+  const entitlement = await resolveCachedEntitlement(series.workspace_id, ctx.entitlementCache, ctx.fetchEntitlement);
+  if (entitlement === "lookup_error") return { kind: "safe_failure" };
+  if (!isMutationPermitted(entitlement)) {
+    return { kind: isEntitlementLookupUnavailable(entitlement) ? "safe_failure" : "skipped_entitlement_restricted" };
+  }
+
+  if (ctx.dryRun) {
+    return { kind: "would_replenish", requested: genResult.occurrences.length };
+  }
+
+  try {
+    const result = await replenishRecurringSeries({
+      seriesId: series.id,
+      workspaceId: series.workspace_id,
+      expectedSnapshotUpdatedAt: series.snapshot_updated_at,
+      occurrences: genResult.occurrences,
+    });
+    switch (result.outcome) {
+      case "replenished":
+        return { kind: "replenished", inserted: result.insertedCount, skipped: result.skippedCount };
+      case "conflict":
+        return { kind: "conflict" };
+      case "client_stopped":
+        return { kind: "stopped_client_inactive" };
+      case "employee_review_required":
+        return { kind: "quarantined_employee_ineligible" };
+      case "missing_snapshot_review_required":
+        console.error("CRON_REPLENISH_UNEXPECTED_MISSING_SNAPSHOT");
+        return { kind: "safe_failure" };
+      case "invalid_input":
+        console.error("CRON_REPLENISH_UNEXPECTED_INVALID_INPUT");
+        return { kind: "safe_failure" };
+      default: {
+        const _exhaustive: never = result.outcome;
+        throw new Error(`Unhandled replenish outcome: ${JSON.stringify(_exhaustive)}`);
+      }
+    }
+  } catch (err) {
+    if (err instanceof RecurringSeriesReplenishmentRpcError) {
+      console.error("CRON_REPLENISH_RPC_ERROR");
+    } else {
+      console.error("CRON_REPLENISH_UNEXPECTED_ERROR");
+    }
+    return { kind: "safe_failure" };
+  }
 }

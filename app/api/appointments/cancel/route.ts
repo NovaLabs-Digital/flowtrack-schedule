@@ -7,6 +7,7 @@ import { cancelTemplates } from "@/lib/templates";
 import { requireCapabilityForWorkspace } from "@/lib/entitlementServer";
 import { isHistoricalAppointment } from "@/lib/payroll";
 import { fetchAssignments } from "@/lib/appointmentEmployees";
+import { excludeSeriesOccurrence } from "@/lib/seriesOccurrenceExclusion";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
 
     const apptRes = await supabaseAdmin
       .from("appointments")
-      .select("id, status, client_id, service_type, is_demo, workspace_id, scheduled_for, scheduled_end, duration_minutes")
+      .select("id, status, client_id, service_type, is_demo, workspace_id, scheduled_for, scheduled_end, duration_minutes, series_id")
       .eq("cancel_token", token)
       .maybeSingle();
 
@@ -49,6 +50,13 @@ export async function POST(req: Request) {
     const historicalAssignments = await fetchAssignments(apptRes.data.id, workspaceId);
     if (isHistoricalAppointment(apptRes.data, historicalAssignments)) {
       return json({ error: "This appointment has already passed and can no longer be cancelled.", code: "APPOINTMENT_IS_HISTORICAL" }, 409);
+    }
+
+    // Same best-effort skip as the owner's single cancellation
+    // (app/api/appointments/delete/route.ts); never blocks the client.
+    if (apptRes.data.series_id) {
+      const exclusion = await excludeSeriesOccurrence(apptRes.data.series_id, workspaceId, apptRes.data.scheduled_for);
+      if (exclusion === "error" || exclusion === "conflict") console.error("SERIES_OCCURRENCE_EXCLUSION_FAILED");
     }
 
     await supabaseAdmin

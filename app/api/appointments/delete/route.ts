@@ -9,6 +9,7 @@ import { requireCapability, requireCapabilityForWorkspace } from "@/lib/entitlem
 import { quarantineIfObservedActive, finalizeSeriesStopped, RECURRING_SERIES_REVIEW_WARNING } from "@/lib/recurringSeries";
 import { isHistoricalAppointment, deriveAppointmentTrackingStatus } from "@/lib/payroll";
 import { fetchAssignments } from "@/lib/appointmentEmployees";
+import { excludeSeriesOccurrence } from "@/lib/seriesOccurrenceExclusion";
 
 const CANCELLATION_REASON_MAX_LENGTH = 2000;
 
@@ -231,6 +232,14 @@ export async function POST(req: Request) {
     }
 
     if (mode === "single") {
+      // The cancelled row stays, which already blocks re-insertion through
+      // the (series_id, scheduled_for) unique index; the exclusion keeps the
+      // skip if the row is ever replaced. Best-effort: a failure here never
+      // blocks the owner's cancellation.
+      if (appt.series_id) {
+        const exclusion = await excludeSeriesOccurrence(appt.series_id, workspaceId, appt.scheduled_for);
+        if (exclusion === "error" || exclusion === "conflict") console.error("SERIES_OCCURRENCE_EXCLUSION_FAILED");
+      }
       const { error } = await supabaseAdmin
         .from("appointments")
         .update({ status: "cancelled", ...cancellationFields })

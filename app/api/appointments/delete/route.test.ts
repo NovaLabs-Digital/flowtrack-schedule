@@ -672,16 +672,40 @@ describe("Block 2B safety correction: Delete This & Future is fail-closed around
     assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
   });
 
-  test("mode='single' (cancelling just one occurrence) never touches recurring_series", async () => {
+  // Approved 2026-11-03: cancelling one future occurrence also records it as
+  // skipped on its series (no RPC, no status/snapshot change). Best-effort:
+  // the cancelled row already blocks re-insertion via the unique index.
+  test("mode='single' (cancelling one future occurrence) records it as skipped on its series -- no RPC, no other series change", async () => {
     resetFixtures({
       workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
       subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
       appointments: [{ data: existingAppt({ series_id: "series-1" }) }, { error: null }],
+      recurring_series: [
+        { data: { id: "series-1", excluded_occurrences: [], updated_at: "2026-07-01T00:00:00.000Z" } },
+        { data: [{ id: "series-1" }] },
+      ],
     });
     sessionToReturn = OWNER_SESSION;
     const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
     assert.equal(res.status, 200);
-    assert.deepEqual(currentFake.calls.filter((c) => c.table === "recurring_series"), []);
+    assert.deepEqual(currentFake.rpcCalls, []);
+    const seriesUpdate = currentFake.calls.find((c) => c.table === "recurring_series" && c.method === "update");
+    const patch = seriesUpdate!.args[0] as Record<string, unknown>;
+    assert.deepEqual(Object.keys(patch).sort(), ["excluded_occurrences", "updated_at"]);
+    assert.deepEqual(patch.excluded_occurrences, ["2026-08-03T14:00:00.000Z"]);
+  });
+
+  test("mode='single': a failure recording the skip never blocks the cancellation", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      appointments: [{ data: existingAppt({ series_id: "series-1" }) }, { error: null }],
+      recurring_series: [{ error: { message: "down" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req({ appointment_id: "appt-1", mode: "single" }));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
   });
 
   test("mode='future' with no series_id never touches recurring_series", async () => {

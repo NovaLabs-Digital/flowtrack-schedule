@@ -29,6 +29,7 @@ import {
 import { effectiveTimezone } from "@/lib/timezone";
 import { isHistoricalAppointment } from "@/lib/payroll";
 import { localMoveBetween, applyLocalMove } from "@/lib/localShift";
+import { excludeSeriesOccurrence } from "@/lib/seriesOccurrenceExclusion";
 
 function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
@@ -396,6 +397,21 @@ export async function PATCH(req: Request) {
       const teamColorValidation = validateTeamColorInput(body.team_color);
       if (!teamColorValidation.ok) return json({ error: teamColorValidation.error }, 400);
       apptUpdate.team_color = teamColorValidation.value;
+    }
+
+    // A single occurrence leaving its original time: record that time as
+    // skipped on the series FIRST, so an automatic top-up can never recreate
+    // the job the owner moved (lib/seriesOccurrenceExclusion.ts). The moved
+    // appointment and the rest of the series are unchanged. If this cannot
+    // be recorded, nothing is saved.
+    if (mode !== "future" && existingData.series_id && startChanges) {
+      const exclusion = await excludeSeriesOccurrence(existingData.series_id, workspaceId, existingData.scheduled_for);
+      if (exclusion === "conflict") {
+        return json({ error: "This recurring series was changed by another request. Nothing was saved. Please refresh and try again." }, 409);
+      }
+      if (exclusion === "error") {
+        return json({ error: "Unable to move this appointment right now. Nothing was saved. Please try again." }, 500);
+      }
     }
 
     if (Object.keys(apptUpdate).length > 0) {

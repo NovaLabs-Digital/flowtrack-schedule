@@ -46,7 +46,7 @@ describe("app/dashboard/page.tsx -- services query includes default_price_cents 
 // $200.00; reopening the saved appointment showed blank) before this fix.
 describe("app/dashboard/page.tsx -- primary appointments query includes price_cents (Phase 5.7D-R17B follow-up)", () => {
   test("apptFields' primary (non-fallback) value includes price_cents", () => {
-    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    const fieldsMatch = source.match(/const apptFields = "([^"]*)";/);
     assert.ok(fieldsMatch, "expected to find the apptFields primary field-list declaration");
     assert.ok(
       fieldsMatch![1].includes("price_cents"),
@@ -55,7 +55,7 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
   });
 
   test("apptFields still includes every previously-selected column -- additive, not a replacement", () => {
-    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    const fieldsMatch = source.match(/const apptFields = "([^"]*)";/);
     for (const col of [
       "id", "client_id", "service_type", "scheduled_for", "status", "notes",
       "duration_minutes", "scheduled_end", "series_id", "frequency_type",
@@ -68,38 +68,32 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
   // Phase 5.7D-R19: team_color follows the exact precedent set by
   // price_cents (R17B) -- added to the primary field list only, relying on
   // the same fallback-on-error mechanism for a not-yet-migrated column.
+  // Capacity fix (2026-11-03): the reduced-column retry is gone for both
+  // appointments and clients -- a failed page must never silently become a
+  // schedule missing price/team color/cancellation details.
+  test("no reduced-column fallback for appointments or clients -- a failure shows the load-error screen", () => {
+    assert.ok(!/apptFields = "[^"]*";\s*\n\s*apptsRes = await/.test(source));
+    assert.ok(!source.includes('clientFields = "id, name, email, phone";'));
+    assert.ok(!source.includes("let apptFields"));
+    assert.ok(!source.includes("let clientFields"));
+  });
+
   test("apptFields' primary value includes team_color (Phase 5.7D-R19)", () => {
-    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    const fieldsMatch = source.match(/const apptFields = "([^"]*)";/);
     assert.ok(fieldsMatch![1].includes("team_color"), `apptFields is missing team_color: "${fieldsMatch![1]}"`);
   });
 
-  test("the minimal fallback field list also excludes team_color, same as it excludes price_cents", () => {
-    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
-    assert.ok(fallbackMatch);
-    assert.ok(!fallbackMatch![1].includes("team_color"));
-  });
 
   // Phase 2 (Monthly Recurring Appointments): repeat_months follows the
   // exact same precedent as price_cents (R17B) and team_color (R19) above
   // -- added to the primary field list only, relying on the same
   // fallback-on-error mechanism for a not-yet-migrated column.
   test("apptFields' primary value includes repeat_months", () => {
-    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    const fieldsMatch = source.match(/const apptFields = "([^"]*)";/);
     assert.ok(fieldsMatch![1].includes("repeat_months"), `apptFields is missing repeat_months: "${fieldsMatch![1]}"`);
   });
 
-  test("the minimal fallback field list also excludes repeat_months, same as it excludes price_cents/team_color", () => {
-    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
-    assert.ok(fallbackMatch);
-    assert.ok(!fallbackMatch![1].includes("repeat_months"));
-  });
 
-  test("the minimal fallback field list (used only when the primary query errors) is deliberately left unchanged -- it never included duration_minutes/scheduled_end/etc. either", () => {
-    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
-    assert.ok(fallbackMatch);
-    assert.ok(!fallbackMatch![1].includes("price_cents"));
-    assert.ok(!fallbackMatch![1].includes("duration_minutes"));
-  });
 
   // SFT cancellation-history fix: without these three columns in the
   // primary select, cancelled_at/cancellation_reported_date/
@@ -111,19 +105,12 @@ describe("app/dashboard/page.tsx -- primary appointments query includes price_ce
   // cancellation reason/date) traced back to exactly this file, the same
   // class of bug as price_cents/team_color/repeat_months above.
   test("apptFields' primary value includes cancelled_at, cancellation_reported_date, and cancellation_reason (migrations/038)", () => {
-    const fieldsMatch = source.match(/let apptFields = "([^"]*)";/);
+    const fieldsMatch = source.match(/const apptFields = "([^"]*)";/);
     for (const col of ["cancelled_at", "cancellation_reported_date", "cancellation_reason"]) {
       assert.ok(fieldsMatch![1].includes(col), `apptFields is missing ${col}: "${fieldsMatch![1]}"`);
     }
   });
 
-  test("the minimal fallback field list also excludes the three new cancellation columns, same precedent as every other post-launch column", () => {
-    const fallbackMatch = source.match(/apptFields = "([^"]*)";\s*\n\s*apptsRes = await fetchAllPages/);
-    assert.ok(fallbackMatch);
-    for (const col of ["cancelled_at", "cancellation_reported_date", "cancellation_reason"]) {
-      assert.ok(!fallbackMatch![1].includes(col));
-    }
-  });
 });
 
 // Phase 5.7D-R18: this file's own established defect pattern (see the two
@@ -149,10 +136,40 @@ describe("app/dashboard/page.tsx -- fetches appointment_employees assignments, w
     assert.ok(block![0].includes('.eq("workspace_id", workspaceId)'));
   });
 
-  test("a missing/erroring appointment_employees table degrades to an empty list, not a hard failure -- same optional-existence pattern as services/employees/employeeHours", () => {
-    const block = source.match(/let assignments[\s\S]*?catch \{[\s\S]*?\}/);
-    assert.ok(block, "expected the assignments fetch to be wrapped in try/catch");
-    assert.ok(block![0].includes("let assignments: AppointmentEmployeeAssignment[] = [];"));
+  // Capacity report D1 (2026-11-03): the assignments, manual-hours and
+  // clients reads are paginated (previously one query each, silently cut off
+  // at PostgREST's 1000-row cap) and fail closed. Behavior beyond 1000 rows is
+  // proven against real PostgreSQL in test-db/dashboard_pagination.test.ts.
+  test("assignments, manual hours and clients are each read through fetchAllPages with .range()", () => {
+    for (const table of ["appointment_employees", "appointment_employee_hours", "clients"]) {
+      const blocks = source.split(`.from("${table}")`).slice(1);
+      assert.ok(blocks.length > 0, table);
+      for (const block of blocks) {
+        const statement = block.slice(0, block.indexOf(");") + 2);
+        assert.ok(statement.includes(".range(from, to)"), `${table} read must be paginated`);
+      }
+    }
+  });
+
+  test("every paginated read has a unique-id tiebreaker so pages never overlap or skip", () => {
+    for (const table of ["appointment_employees", "appointment_employee_hours", "clients"]) {
+      for (const block of source.split(`.from("${table}")`).slice(1)) {
+        const statement = block.slice(0, block.indexOf(");") + 2);
+        assert.ok(statement.includes('.order("id", { ascending: true })'), table);
+      }
+    }
+  });
+
+  test("a failed page of assignments or manual hours shows the load-error screen -- never a silently empty or partial schedule", () => {
+    assert.ok(source.includes("if (clientsErr || apptsErr || hoursRes.error || assignRes.error) {"));
+    assert.ok(source.includes("return <DashboardLoadErrorScreen />;"));
+    assert.ok(!/let assignments[\s\S]*?catch \{/.test(source), "assignments must not be wrapped in a swallow-all try/catch");
+  });
+
+  test("the load-error screen shows no database error text", () => {
+    const screen = source.slice(source.indexOf("function DashboardLoadErrorScreen"), source.indexOf("export default async function DashboardPage"));
+    assert.ok(!screen.includes(".message"));
+    assert.ok(screen.includes("Your schedule could not be loaded"));
   });
 
   test("assignments is passed to DashboardShell", () => {

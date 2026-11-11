@@ -123,6 +123,17 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // hand-encoded here -- that is genuinely complex and Luxon's own `.isValid`
 // (checked in resolveAnchor below) is the right tool for it.
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// recurring_series.anchor_local_time is a Postgres `time` column, which
+// PostgREST returns as "HH:mm:ss" ("08:00:00"). That form is accepted when the
+// seconds are zero (anchors are always whole minutes) and reduced to "HH:mm";
+// anything else is left as-is and fails TIME_RE. Without this, every real
+// series failed generation as invalid_input and was never topped up
+// (capacity fix, 2026-11-03).
+function normalizeAnchorTime(value: string): string {
+  const zeroSeconds = /^(\d{2}:\d{2}):00(\.0+)?$/.exec(value);
+  return zeroSeconds ? zeroSeconds[1] : value;
+}
 const SUPPORTED_FREQUENCIES: ReadonlySet<string> = new Set(["daily", "weekdays", "weekly", "monthly"]);
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -250,7 +261,6 @@ function runGeneration(
     repeatWeeks,
     repeatMonths,
     anchorLocalDate,
-    anchorLocalTime,
     anchorTimezone,
     after,
     through,
@@ -292,6 +302,7 @@ function runGeneration(
   if (!isWeeklyShapeValid && !isMonthlyShapeValid && !isDailyOrWeekdaysShapeValid) {
     return { result: { ok: false, reason: "invalid_input" }, iterationsUsed: 0 };
   }
+  const anchorLocalTime = normalizeAnchorTime(params.anchorLocalTime);
   if (!DATE_RE.test(anchorLocalDate) || !TIME_RE.test(anchorLocalTime)) {
     return { result: { ok: false, reason: "invalid_input" }, iterationsUsed: 0 };
   }

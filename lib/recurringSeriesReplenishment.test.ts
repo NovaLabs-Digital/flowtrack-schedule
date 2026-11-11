@@ -81,6 +81,23 @@ describe("generateOccurrencesInWindow -- general validation", () => {
     expectFail(generateOccurrencesInWindow(baseParams({ anchorLocalDate: "2026-02-30" })), "invalid_input");
   });
 
+  // Real recurring_series rows come from a Postgres `time` column, which
+  // PostgREST returns with seconds. Before this fix every real series failed
+  // generation as invalid_input (capacity fix, 2026-11-03).
+  test('accepts the database form "HH:mm:ss" with zero seconds, identically to "HH:mm"', () => {
+    const a = expectOk(generateOccurrencesInWindow(baseParams({ anchorLocalTime: "09:00:00" })));
+    const b = expectOk(generateOccurrencesInWindow(baseParams({ anchorLocalTime: "09:00" })));
+    assert.deepEqual(a, b);
+    assert.ok(a.occurrences.length > 0);
+    assert.deepEqual(expectOk(generateOccurrencesInWindow(baseParams({ anchorLocalTime: "09:00:00.000000" }))), b);
+  });
+
+  test('rejects "HH:mm:ss" with non-zero seconds, and malformed second parts', () => {
+    for (const bad of ["09:00:30", "09:00:0", "09:00:", "9:00:00", "25:00:00", "09:60:00"]) {
+      expectFail(generateOccurrencesInWindow(baseParams({ anchorLocalTime: bad })), "invalid_input");
+    }
+  });
+
   test("rejects a malformed anchor time shape", () => {
     expectFail(generateOccurrencesInWindow(baseParams({ anchorLocalTime: "9:00" })), "invalid_input");
   });

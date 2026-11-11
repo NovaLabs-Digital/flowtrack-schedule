@@ -150,6 +150,37 @@ describe("POST /api/appointments/cancel -- the cancellation mutation is never en
     assert.equal(currentNotify.smsCalls.length, 0);
   });
 
+  // Approved 2026-11-03: a client cancelling one future occurrence of a
+  // series also records it as skipped (best-effort; never blocks the client).
+  test("a future series occurrence cancelled by the client is recorded as skipped on its series -- workspace-scoped, no RPC", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }],
+      appointments: [{ data: apptRow({ series_id: "series-1", scheduled_for: "2099-03-02T14:00:00.000Z" }) }, { error: null }],
+      recurring_series: [
+        { data: { id: "series-1", excluded_occurrences: [], updated_at: "2099-01-01T00:00:00.000Z" } },
+        { data: [{ id: "series-1" }] },
+      ],
+    });
+    const res = await POST(req({ token: "tok" }));
+    assert.equal(res.status, 200);
+    const seriesUpdate = currentFake.calls.find((c) => c.table === "recurring_series" && c.method === "update");
+    assert.deepEqual((seriesUpdate!.args[0] as { excluded_occurrences: string[] }).excluded_occurrences, ["2099-03-02T14:00:00.000Z"]);
+    const eqs = currentFake.calls.filter((c) => c.table === "recurring_series" && c.method === "eq").map((c) => c.args);
+    assert.ok(eqs.some((a) => a[0] === "workspace_id" && a[1] === REAL_WORKSPACE_ID));
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
+  });
+
+  test("a failure recording the skip never blocks the client's cancellation", async () => {
+    resetFixtures({
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }],
+      appointments: [{ data: apptRow({ series_id: "series-1", scheduled_for: "2099-03-02T14:00:00.000Z" }) }, { error: null }],
+      recurring_series: [{ error: { message: "down" } }],
+    });
+    const res = await POST(req({ token: "tok" }));
+    assert.equal(res.status, 200);
+    assert.equal(currentFake.calls.filter((c) => c.table === "appointments" && c.method === "update").length, 1);
+  });
+
   test("restricted response reveals no billing/entitlement/workspace detail -- body is exactly { ok: true }", async () => {
     resetFixtures({
       subscriptions: [{ data: subscriptionRow({ stripe_status: "canceled" }) }],
