@@ -72,7 +72,9 @@ for (const name of ["LockedReactivationScreen", "TemporaryUnavailableScreen", "T
 mock.module("next/navigation", { namedExports: { redirect: () => { throw new Error("redirect"); } } });
 
 const { default: DashboardPage } = await import("../app/dashboard/page.tsx");
-const { runReplenishmentPass, FAILURE_BUCKET_PREFIX, FAILURE_MAX_ATTEMPTS } = await import("../lib/recurringSeriesReplenishmentOrchestrator.ts");
+const { runReplenishmentPass, FAILURE_BUCKET_PREFIX, FAILURE_MAX_ATTEMPTS, REPLENISH_TARGET_COVERAGE_DAYS, REPLENISH_THRESHOLD_DAYS } = await import("../lib/recurringSeriesReplenishmentOrchestrator.ts");
+// A tail this far out never needs a top-up under the rolling horizon.
+const COVERED = REPLENISH_THRESHOLD_DAYS + 15;
 const { excludeSeriesOccurrence } = await import("../lib/seriesOccurrenceExclusion.ts");
 
 let db: TestDb;
@@ -187,17 +189,17 @@ async function snapshotRows(wsIds: string[]) {
 }
 
 // Independent expectation (SQL, not the app's generator): weekly slots after
-// the live tail, through now + 60 days, at most 20.
+// the live tail, through now + the rolling horizon, at most 20.
 async function expectedNewSlots(seriesId: string): Promise<string[]> {
   const { rows } = await c.query(
     `WITH s AS (SELECT * FROM recurring_series WHERE id = $1),
           tail AS (SELECT GREATEST(now(), COALESCE(max(scheduled_for), now())) AS t FROM appointments WHERE series_id = $1 AND status = 'scheduled')
      SELECT slot FROM s, tail,
        LATERAL (SELECT ((s.anchor_local_date + 7 * k) + s.anchor_local_time) AT TIME ZONE s.anchor_timezone AS slot FROM generate_series(0, 200) k) g
-     WHERE g.slot > tail.t AND g.slot <= now() + interval '60 days'
+     WHERE g.slot > tail.t AND g.slot <= now() + make_interval(days => $2::int)
        AND g.slot <> ALL (s.excluded_occurrences)
      ORDER BY slot LIMIT 20`,
-    [seriesId]
+    [seriesId, REPLENISH_TARGET_COVERAGE_DAYS]
   );
   return rows.map((r) => r.slot.toISOString());
 }
@@ -210,9 +212,9 @@ describe("D1: the owner dashboard loads every required row past 1,000, and never
   let other: SeededWs;
 
   before(async () => {
-    // Tails of 45 days: these series never need a top-up, so later suites' counts stay exact.
-    main = await seedWorkspace("Dash main", Array.from({ length: 20 }, () => 45));
-    other = await seedWorkspace("Dash other", [45, 45]);
+    // Tails past the threshold: these series never need a top-up, so later suites' counts stay exact.
+    main = await seedWorkspace("Dash main", Array.from({ length: 20 }, () => COVERED));
+    other = await seedWorkspace("Dash other", [COVERED, COVERED]);
     // > 1000 clients (one-time clients without series).
     await c.query(
       "INSERT INTO clients (id, workspace_id, name, status) SELECT gen_random_uuid(), $1::uuid, 'One-off ' || lpad(i::text, 4, '0'), 'active' FROM generate_series(1, 1040) i",
@@ -305,8 +307,8 @@ describe("D2: fair top-up across all workspaces, beyond 100 series, on the real 
   const expected = new Map<string, string[]>();
   let summary: Awaited<ReturnType<typeof runReplenishmentPass>>;
 
-  // 70 series per workspace: 50 need a top-up (tail 0-29 days), 20 do not (45 days).
-  const tails = Array.from({ length: 70 }, (_, i) => (i < 50 ? i % 30 : 45));
+  // 70 series per workspace: 50 need a top-up (tail 0-29 days), 20 do not (past the threshold).
+  const tails = Array.from({ length: 70 }, (_, i) => (i < 50 ? i % 30 : COVERED));
 
   before(async () => {
     A = await seedWorkspace("Top-up A", tails);
@@ -314,7 +316,7 @@ describe("D2: fair top-up across all workspaces, beyond 100 series, on the real 
     C = await seedWorkspace("Top-up C", tails);
     R = await seedWorkspace("Top-up restricted", tails.slice(0, 10));
     before1 = await snapshotRows([A.id, B.id, C.id, R.id]);
-    for (const ws of [A, B, C]) for (const s of ws.series.filter((x) => x.tailDays < 30)) expected.set(s.id, await expectedNewSlots(s.id));
+    for (const ws of [A, B, C]) for (const s of ws.series.filter((x) => x.tailDays < REPLENISH_THRESHOLD_DAYS)) expected.set(s.id, await expectedNewSlots(s.id));
     const { rows } = await c.query("SELECT count(*) n FROM appointments WHERE status = 'scheduled' AND series_id IS NOT NULL");
     assert.ok(Number(rows[0].n) > 10 * MAX_ROWS, "scheduled history far exceeds one response");
     installClient();
@@ -334,7 +336,7 @@ describe("D2: fair top-up across all workspaces, beyond 100 series, on the real 
 
   test("each processed series gets exactly the expected new weekly slots -- right local time, both snapshot employees, its own workspace", async () => {
     for (const ws of [A, B, C]) {
-      for (const s of ws.series.filter((x) => x.tailDays < 30)) {
+      for (const s of ws.series.filter((x) => x.tailDays < REPLENISH_THRESHOLD_DAYS)) {
         const { rows } = await c.query(
           `SELECT a.id, a.scheduled_for, a.workspace_id, (a.scheduled_for AT TIME ZONE $2)::time AS local_time, rs.anchor_local_time,
                   array_agg(ae.employee_id ORDER BY ae.employee_id) AS emps, array_agg(DISTINCT ae.workspace_id) AS asg_ws
@@ -364,7 +366,7 @@ describe("D2: fair top-up across all workspaces, beyond 100 series, on the real 
     const added = (wsId: string) => after1.appts.filter((x) => x.workspace_id === wsId).length - before1.appts.filter((x) => x.workspace_id === wsId).length;
     assert.equal(added(R.id), 0);
     for (const ws of [A, B, C]) {
-      for (const s of ws.series.filter((x) => x.tailDays >= 30)) {
+      for (const s of ws.series.filter((x) => x.tailDays >= REPLENISH_THRESHOLD_DAYS)) {
         const n = after1.appts.filter((x) => x.series_id === s.id).length;
         const m = before1.appts.filter((x) => x.series_id === s.id).length;
         assert.equal(n, m);
@@ -372,12 +374,28 @@ describe("D2: fair top-up across all workspaces, beyond 100 series, on the real 
     }
   });
 
-  test("a second run is a no-op for the topped-up series (no duplicates, nothing re-created)", async () => {
-    const beforeCount = Number((await c.query("SELECT count(*) n FROM appointments")).rows[0].n);
+  test("a second run only continues after the first batch (bounded, 26-week window): no duplicates, nothing re-created, existing rows untouched", async () => {
+    const wsIds = [A.id, B.id, C.id, R.id];
+    const mid = await snapshotRows(wsIds);
     installClient();
     const s2 = await runReplenishmentPass({ dryRun: false, fetchEntitlement: async (ws) => (ws === R.id ? RESTRICTED : INTERNAL) });
-    assert.equal(s2.counts.replenished, 0);
-    assert.equal(Number((await c.query("SELECT count(*) n FROM appointments")).rows[0].n), beforeCount);
+    assert.ok(s2.counts.occurrencesInserted <= s2.counts.replenished * 20, "never more than 20 per series per run");
+    const after2 = await snapshotRows(wsIds);
+    const byId = new Map(after2.appts.map((x) => [x.id, x]));
+    for (const row of mid.appts) assert.deepEqual(byId.get(row.id), row, "an existing row changed");
+    const lastBefore = new Map<string, number>();
+    for (const r of mid.appts) if (r.series_id) lastBefore.set(r.series_id, Math.max(lastBefore.get(r.series_id) ?? 0, new Date(r.scheduled_for).getTime()));
+    const midIds = new Set(mid.appts.map((x) => x.id));
+    for (const r of after2.appts.filter((x) => !midIds.has(x.id))) {
+      assert.ok(new Date(r.scheduled_for).getTime() > lastBefore.get(r.series_id)!, "a new visit landed before the existing tail");
+      assert.ok(new Date(r.scheduled_for).getTime() <= Date.now() + REPLENISH_TARGET_COVERAGE_DAYS * 86400000, "past the rolling window");
+    }
+    assert.equal(after2.appts.filter((x) => x.workspace_id === R.id).length, mid.appts.filter((x) => x.workspace_id === R.id).length);
+    const { rows: dup } = await c.query(
+      "SELECT series_id, scheduled_for, count(*) FROM appointments WHERE workspace_id = ANY($1::uuid[]) GROUP BY 1, 2 HAVING count(*) > 1",
+      [wsIds]
+    );
+    assert.deepEqual(dup, []);
   });
 });
 
@@ -555,7 +573,7 @@ describe("D2: failures partway through and bounded retries", { skip: SKIP }, () 
     // Enough active series in total for a second page.
     const { rows } = await c.query("SELECT count(*) n FROM recurring_series WHERE status = 'active'");
     if (Number(rows[0].n) <= MAX_ROWS) {
-      await seedWorkspace("Pages filler", Array.from({ length: MAX_ROWS + 1 - Number(rows[0].n) }, () => 45));
+      await seedWorkspace("Pages filler", Array.from({ length: MAX_ROWS + 1 - Number(rows[0].n) }, () => COVERED));
     }
     const beforeCount = Number((await c.query("SELECT count(*) n FROM appointments WHERE workspace_id = $1", [H.id])).rows[0].n);
     installClient((call) => call.kind === "select" && call.table === "recurring_series" && call.seq === 2);

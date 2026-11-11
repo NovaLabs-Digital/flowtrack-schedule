@@ -151,13 +151,18 @@ describe("validateEmployeeIdsInWorkspace -- never trust a browser-submitted empl
   test("empty list is trivially valid, zero Supabase calls", async () => {
     resetFixtures({});
     const result = await validateEmployeeIdsInWorkspace([], "ws-1");
-    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(result, { ok: true, inactiveIds: [] });
     assert.equal(currentFake.calls.length, 0);
   });
   test("all IDs found in the workspace -> ok", async () => {
     resetFixtures({ employees: [{ data: [{ id: "emp-1" }, { id: "emp-2" }] }] });
     const result = await validateEmployeeIdsInWorkspace(["emp-1", "emp-2"], "ws-1");
-    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(result, { ok: true, inactiveIds: [] });
+  });
+  test("employees who are no longer active are still valid, and reported as inactive (they may stay on a visit, never be added)", async () => {
+    resetFixtures({ employees: [{ data: [{ id: "emp-1", active: true }, { id: "emp-2", active: false }] }] });
+    const result = await validateEmployeeIdsInWorkspace(["emp-1", "emp-2"], "ws-1");
+    assert.deepEqual(result, { ok: true, inactiveIds: ["emp-2"] });
   });
   test("an id belonging to a different workspace (or nonexistent) is rejected, not silently dropped", async () => {
     resetFixtures({ employees: [{ data: [{ id: "emp-1" }] }] });

@@ -19,8 +19,6 @@ import {
 } from "@/lib/appointmentEmployees";
 import { validateTeamColorInput } from "@/lib/teamColor";
 import {
-  quarantineIfObservedActive,
-  activateSeriesWithSnapshot,
   fetchSeriesById,
   fetchLiveOccurrenceSnapshots,
   evaluateSeriesConsistency,
@@ -133,9 +131,11 @@ export async function PATCH(req: Request) {
     const employee_ids: string[] | undefined =
       body.employee_ids !== undefined ? dedupeEmployeeIds(Array.isArray(body.employee_ids) ? body.employee_ids : []) : undefined;
 
+    const inactiveEmployeeIds = new Set<string>();
     if (employee_ids !== undefined) {
       const employeeValidation = await validateEmployeeIdsInWorkspace(employee_ids, workspaceId);
       if (!employeeValidation.ok) return json({ error: employeeValidation.error }, 404);
+      for (const id of employeeValidation.inactiveIds) inactiveEmployeeIds.add(id);
     }
 
     // Siblings (for "future" mode) are needed both for the pre-R18
@@ -161,6 +161,12 @@ export async function PATCH(req: Request) {
     // issues exactly one query, at the same point as before; only the
     // employee_ids-present case now correctly re-queries after quarantine,
     // which is the one case that actually needed it.
+    //
+    // The edited appointment itself is never one of its own siblings. The
+    // mutation-time call below runs AFTER this appointment has been saved at
+    // its new time; moved later, it would otherwise match the "later than
+    // the original time" filter and be moved a second time (9:00 entered,
+    // 10:00 saved -- reported 2026-11-11).
     type Sibling = { id: string; scheduled_for: string; scheduled_end: string | null };
     async function fetchSiblings(): Promise<Sibling[]> {
       if (mode !== "future" || !existingData.series_id) {
@@ -172,6 +178,7 @@ export async function PATCH(req: Request) {
         .eq("series_id", existingData.series_id)
         .eq("workspace_id", workspaceId)
         .eq("status", "scheduled")
+        .neq("id", appointment_id)
         .gt("scheduled_for", existingData.scheduled_for)
         .order("scheduled_for", { ascending: true });
       if (sibErr) throw sibErr;
@@ -301,38 +308,24 @@ export async function PATCH(req: Request) {
           409
         );
       }
+
+      // An employee who is no longer active can never be newly ADDED to a
+      // visit -- refused here, before anything is written, rather than by the
+      // assignment sync after this visit was already saved. One who is
+      // already on the visit and stays on it is fine (see needsSync below).
+      const adding = [...(originPlan?.toAdd ?? []), ...[...siblingPlans.values()].flatMap((p) => p.toAdd)];
+      if (adding.some((id) => inactiveEmployeeIds.has(id))) {
+        return assignmentSyncErrorResponse("employee_not_eligible");
+      }
     }
 
-    // Block 2B safety correction: a "This & Future" edit to an appointment
-    // belonging to an ACTIVE series must quarantine that series to
-    // review_required BEFORE any appointment row is mutated -- a "single"
-    // edit never touches the registry at all, matching every other route's
-    // "abort before appointment mutation" invariant. quarantineIfObservedActive
-    // explicitly observes the row's current status first, so a zero-row
-    // compare-and-set result is only ever a safe no-op when that
-    // observation already showed the series wasn't active; if it WAS
-    // observed active and the transition then matches nothing, that's a
-    // genuine concurrent change -- abort with 409 and never touch a single
-    // appointment row. oldSeriesWasActive is remembered so the post-mutation
-    // re-finalize step below only ever attempts to reactivate a series this
-    // same request actually quarantined -- it must never auto-activate a
-    // legacy review_required series just because one of its occurrences
-    // happened to be edited.
-    const seriesInvolved = mode === "future" && !!existingData.series_id;
-    let oldSeriesWasActive = false;
-    if (seriesInvolved) {
-      let outcome: Awaited<ReturnType<typeof quarantineIfObservedActive>>;
-      try {
-        outcome = await quarantineIfObservedActive(existingData.series_id!, workspaceId);
-      } catch (err) {
-        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
-        return json({ error: "Unable to prepare this recurring series for changes right now. Please try again." }, 500);
-      }
-      if (outcome.outcome === "conflict") {
-        return json({ error: "This recurring series was changed by another request. Please refresh and try again." }, 409);
-      }
-      oldSeriesWasActive = outcome.outcome === "quarantined";
-    }
+    // Assignments are only re-synced when this request actually adds or
+    // removes someone. The edit form always resends the whole staff list, and
+    // the sync refuses any list containing an employee who has since been
+    // deactivated -- so an unchanged list used to fail AFTER this visit's new
+    // time was saved, and before any later visit was touched (reported
+    // 2026-11-11: This & future changed only the selected visit).
+    const needsSync = (p: { toAdd: string[]; toRemove: string[] }) => p.toAdd.length > 0 || p.toRemove.length > 0;
 
     const apptUpdate: Record<string, any> = {};
     if (body.service_type !== undefined)
@@ -399,191 +392,184 @@ export async function PATCH(req: Request) {
       apptUpdate.team_color = teamColorValidation.value;
     }
 
-    // A single occurrence leaving its original time: record that time as
-    // skipped on the series FIRST, so an automatic top-up can never recreate
-    // the job the owner moved (lib/seriesOccurrenceExclusion.ts). The moved
-    // appointment and the rest of the series are unchanged. If this cannot
-    // be recorded, nothing is saved.
-    if (mode !== "future" && existingData.series_id && startChanges) {
-      const exclusion = await excludeSeriesOccurrence(existingData.series_id, workspaceId, existingData.scheduled_for);
-      if (exclusion === "conflict") {
-        return json({ error: "This recurring series was changed by another request. Nothing was saved. Please refresh and try again." }, 409);
+    let registryWarning = false;
+
+    if (mode === "future" && existingData.series_id) {
+      // "This & future": the whole edit -- this visit, every later visit,
+      // staff changes, and holding/re-confirming the series -- is planned
+      // here and applied by ONE database transaction (migrations/047
+      // apply_future_edit): either all of it is saved, or none of it.
+      const seriesId = existingData.series_id;
+      const sibs = await fetchSiblings();
+      if (employee_ids !== undefined) {
+        const planned = new Set(siblingPlans.keys());
+        if (sibs.length !== planned.size || sibs.some((x) => !planned.has(x.id))) {
+          return json({ error: "This recurring series was changed by another request. Nothing was saved. Please refresh and try again." }, 409);
+        }
       }
-      if (exclusion === "error") {
-        return json({ error: "Unable to move this appointment right now. Nothing was saved. Please try again." }, 500);
-      }
-    }
-
-    if (Object.keys(apptUpdate).length > 0) {
-      const { error } = await supabaseAdmin
-        .from("appointments")
-        .update(apptUpdate)
-        .eq("id", appointment_id)
-        .eq("workspace_id", workspaceId);
-      if (error) throw error;
-    }
-
-    if (originPlan) {
-      // Block 2C-1: the atomic, shared-lock-coordinated sync -- see
-      // migrations/027a's sync_appointment_assignments for the full
-      // concurrency argument. A non-"synced" outcome stops this request
-      // immediately: the appointment's own scalar fields (apptUpdate,
-      // just above) may already be committed at this point -- this route
-      // makes a sequence of independent PostgREST calls, not one
-      // transaction, so that prior write is NOT rolled back here. What this
-      // check guarantees is narrower but still essential: the request never
-      // reports ok:true while claiming an assignment change that did not
-      // actually apply, and it never proceeds to the recurring-series
-      // registry re-finalize below using a stale or unconfirmed employee
-      // set.
-      const syncResult = await syncAssignmentsAtomically({
-        appointmentId: appointment_id,
-        workspaceId,
-        expectedCurrentEmployeeIds: originPlan.currentEmployeeIds,
-        desiredEmployeeIds: employee_ids!,
-      });
-      if (syncResult.outcome !== "synced") {
-        return assignmentSyncErrorResponse(syncResult.outcome);
-      }
-    }
-
-    const siblings = await fetchSiblings();
-
-    if (mode === "future" && siblings.length > 0) {
-      // Re-planned against this fresh sibling list (see planSiblingTargets).
-      // The pre-check above already refused a nonexistent local time; one
-      // appearing only now means an occurrence was added concurrently.
-      const plan = await planSiblingTargets(siblings);
+      const plan = await planSiblingTargets(sibs);
       if (!plan.ok) {
-        return json({ error: "This recurring series was changed by another request. Please refresh and try again.", code: "NONEXISTENT_LOCAL_TIME" }, 409);
+        return json({ error: "This recurring series was changed by another request. Nothing was saved. Please refresh and try again.", code: "NONEXISTENT_LOCAL_TIME" }, 409);
       }
 
-      for (const sib of siblings) {
-        const sibUpdate: Record<string, any> = {};
-
-        if (apptUpdate.service_type !== undefined) sibUpdate.service_type = apptUpdate.service_type;
-        if (apptUpdate.notes !== undefined) sibUpdate.notes = apptUpdate.notes;
-        if (apptUpdate.duration_minutes !== undefined) sibUpdate.duration_minutes = apptUpdate.duration_minutes;
-        if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
-        if (apptUpdate.price_cents !== undefined) sibUpdate.price_cents = apptUpdate.price_cents;
-        // Phase 5.7D-R19: "this and future" copies the selected occurrence's
-        // team_color onto every eligible future sibling, exactly mirroring
-        // price_cents immediately above -- including an explicit null
-        // (clearing) propagating the same way a real color value does.
-        if (apptUpdate.team_color !== undefined) sibUpdate.team_color = apptUpdate.team_color;
-
-        const target = plan.targets.get(sib.id);
-        if (target?.scheduled_for) {
-          sibUpdate.scheduled_for = target.scheduled_for;
-          // Same reminder-reliability fix as the origin appointment above --
-          // a target is only set when this sibling's time actually changes.
-          sibUpdate.reminder_24h_sent_at = null;
-          // Same claim-invalidation as the origin appointment above.
-          sibUpdate.reminder_24h_claimed_at = null;
-          sibUpdate.reminder_24h_claim_token = null;
-        }
-        if (target?.scheduled_end) sibUpdate.scheduled_end = target.scheduled_end;
-
-        if (Object.keys(sibUpdate).length > 0) {
-          const { error } = await supabaseAdmin
-            .from("appointments")
-            .update(sibUpdate)
-            .eq("id", sib.id)
-            .eq("workspace_id", workspaceId);
-          if (error) throw error;
-        }
-
+      // Fields copied onto every later visit (same set as always: never the
+      // time, which moves by the local change, and never the status).
+      const siblingFields: Record<string, unknown> = {};
+      for (const key of ["service_type", "notes", "duration_minutes", "employee_id", "price_cents", "team_color"]) {
+        if (apptUpdate[key] !== undefined) siblingFields[key] = apptUpdate[key];
+      }
+      const siblingsPayload = sibs.map((sib) => {
+        const target = plan.targets.get(sib.id) ?? {};
+        return {
+          id: sib.id,
+          expected_scheduled_for: sib.scheduled_for,
+          expected_scheduled_end: sib.scheduled_end,
+          ...(target.scheduled_for ? { scheduled_for: target.scheduled_for } : {}),
+          ...(target.scheduled_end ? { scheduled_end: target.scheduled_end } : {}),
+        };
+      });
+      const sortedIds = (ids: string[]) => [...ids].sort();
+      const assignmentsPayload: { appointment_id: string; expected: string[]; desired: string[] }[] = [];
+      if (originPlan && needsSync(originPlan)) {
+        assignmentsPayload.push({ appointment_id, expected: sortedIds(originPlan.currentEmployeeIds), desired: sortedIds(employee_ids!) });
+      }
+      for (const sib of sibs) {
         const sibPlan = siblingPlans.get(sib.id);
-        if (sibPlan) {
-          // Block 2C-1: same atomic sync as the origin's own call above --
-          // a non-"synced" outcome stops the request immediately, before
-          // any remaining sibling is touched and before the registry
-          // re-finalize step below ever runs. Earlier siblings in this same
-          // loop (and the origin itself) may already be committed -- this
-          // route has never been one transaction, and this correction does
-          // not change that; it only makes THIS one step atomic and its
-          // failure impossible to silently ignore.
-          const syncResult = await syncAssignmentsAtomically({
-            appointmentId: sib.id,
-            workspaceId,
-            expectedCurrentEmployeeIds: sibPlan.currentEmployeeIds,
-            desiredEmployeeIds: employee_ids!,
-          });
-          if (syncResult.outcome !== "synced") {
-            return assignmentSyncErrorResponse(syncResult.outcome);
+        if (sibPlan && needsSync(sibPlan)) {
+          assignmentsPayload.push({ appointment_id: sib.id, expected: sortedIds(sibPlan.currentEmployeeIds), desired: sortedIds(employee_ids!) });
+        }
+      }
+
+      // Re-confirming an ACTIVE series: checked here on the planned result,
+      // over the visits this edit governs (this one and every later one --
+      // upcoming visits before it keep their time and must not hold the
+      // series). A legacy review_required series is never auto-confirmed.
+      let activation: Record<string, unknown> | null = null;
+      try {
+        const seriesRow = await fetchSeriesById(seriesId, workspaceId);
+        if (seriesRow?.status === "active") {
+          const timezone = await workspaceTimezone();
+          const current = new Map((await fetchLiveOccurrenceSnapshots(seriesId, workspaceId)).map((o) => [o.id, o]));
+          const anchorNow = current.get(appointment_id);
+          if (anchorNow) {
+            const pick = <T,>(key: string, fallback: T): T => (apptUpdate[key] !== undefined ? apptUpdate[key] : fallback);
+            const plannedAnchor = {
+              ...anchorNow,
+              scheduledFor: pick("scheduled_for", anchorNow.scheduledFor),
+              serviceType: pick("service_type", anchorNow.serviceType),
+              priceCents: pick("price_cents", anchorNow.priceCents),
+              durationMinutes: pick("duration_minutes", anchorNow.durationMinutes),
+              teamColor: pick("team_color", anchorNow.teamColor),
+              employeeIds: employee_ids ?? anchorNow.employeeIds,
+            };
+            const plannedLater = sibs.flatMap((sib) => {
+              const cur = current.get(sib.id);
+              if (!cur) return [];
+              const target = plan.targets.get(sib.id);
+              return [{
+                ...cur,
+                scheduledFor: target?.scheduled_for ?? cur.scheduledFor,
+                serviceType: pick("service_type", cur.serviceType),
+                priceCents: pick("price_cents", cur.priceCents),
+                durationMinutes: pick("duration_minutes", cur.durationMinutes),
+                teamColor: pick("team_color", cur.teamColor),
+                employeeIds: employee_ids ?? cur.employeeIds,
+              }];
+            });
+            const consistency = evaluateSeriesConsistency([plannedAnchor, ...plannedLater], appointment_id, seriesRow.frequency_type, timezone, seriesRow.repeat_months);
+            if (consistency.ok) {
+              const { data: anchorRow, error: anchorErr } = await supabaseAdmin
+                .from("appointments")
+                .select("notes")
+                .eq("id", appointment_id)
+                .eq("workspace_id", workspaceId)
+                .single();
+              if (anchorErr) throw anchorErr;
+              activation = {
+                service_type: plannedAnchor.serviceType,
+                price_cents: plannedAnchor.priceCents,
+                duration_minutes: plannedAnchor.durationMinutes,
+                notes: apptUpdate.notes !== undefined ? apptUpdate.notes : anchorRow.notes,
+                team_color: plannedAnchor.teamColor,
+                scheduled_for: plannedAnchor.scheduledFor,
+                employee_ids: sortedIds(plannedAnchor.employeeIds),
+                timezone,
+              };
+            }
           }
         }
+      } catch (err) {
+        // Planning the re-confirmation failed: the edit still saves, and an
+        // active series is left on hold for the owner (review warning).
+        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
+        activation = null;
       }
 
-    }
+      const anchorFields: Record<string, unknown> = { ...apptUpdate };
+      delete anchorFields.reminder_24h_sent_at;
+      delete anchorFields.reminder_24h_claimed_at;
+      delete anchorFields.reminder_24h_claim_token;
 
-    // Block 2B safety correction: re-finalize the series ONLY if it was
-    // actually active (and therefore quarantined) at the top of this
-    // request -- a legacy review_required series must never be silently
-    // auto-activated just because one of its occurrences was edited; that
-    // remains exclusively an explicit owner action via
-    // app/api/recurring-series/activate. This is the confirmed template's
-    // fields (service, price, duration, notes, team color, employee
-    // assignments) moving forward via template_appointment_id -- the
-    // registry never duplicates those values itself, it only points at the
-    // appointment row that carries them. Anchor date/time/timezone are
-    // recomputed from the edited appointment's own current scheduled_for,
-    // a no-op when the time didn't actually change.
-    let registryWarning = false;
-    if (seriesInvolved && oldSeriesWasActive) {
-      try {
-        const timezone = await workspaceTimezone();
-
-        const seriesRow = await fetchSeriesById(existingData.series_id!, workspaceId);
-        const liveOccurrences = await fetchLiveOccurrenceSnapshots(existingData.series_id!, workspaceId);
-        const consistency = seriesRow
-          ? evaluateSeriesConsistency(liveOccurrences, appointment_id, seriesRow.frequency_type, timezone, seriesRow.repeat_months)
-          : ({ ok: false, blockers: [] } as const);
-
-        if (consistency.ok) {
-          // Block 2C-1: re-fetch the edited appointment's own CURRENT, fully
-          // -committed field values -- rather than reconstructing them from
-          // a mix of existingData (pre-update) and apptUpdate's own partial
-          // delta (which only contains fields THIS request happened to
-          // touch). This guarantees the "expected" values passed to the RPC
-          // are a true, fresh reflection of what's actually in the database
-          // right now; the RPC's own lock-and-compare then only has to
-          // prove nothing raced between THIS read and the RPC call itself.
-          const { data: currentAppt, error: currentApptErr } = await supabaseAdmin
-            .from("appointments")
-            .select("service_type, price_cents, duration_minutes, notes, team_color, scheduled_for")
-            .eq("id", appointment_id)
-            .eq("workspace_id", workspaceId)
-            .single();
-          if (currentApptErr) throw currentApptErr;
-          const currentAssignments = await fetchAssignments(appointment_id, workspaceId);
-
-          const outcome = await activateSeriesWithSnapshot({
-            seriesId: existingData.series_id!,
-            workspaceId,
-            clientId: existingData.client_id,
-            templateAppointmentId: appointment_id,
-            timezone,
-            expected: {
-              serviceType: currentAppt.service_type,
-              priceCents: currentAppt.price_cents,
-              durationMinutes: currentAppt.duration_minutes,
-              notes: currentAppt.notes,
-              teamColor: currentAppt.team_color,
-              scheduledForIso: currentAppt.scheduled_for,
-              employeeIds: currentAssignments.map((a) => a.employee_id),
-            },
-          });
-          if (outcome.outcome !== "activated") registryWarning = true;
-        } else {
-          // Stays quarantined in review_required -- the resulting live tail
-          // no longer agrees, so this requires explicit owner review rather
-          // than an automatic reactivation.
-          registryWarning = true;
+      const { data: applied, error: applyErr } = await supabaseAdmin.rpc("apply_future_edit", {
+        p_workspace_id: workspaceId,
+        p_appointment_id: appointment_id,
+        p_expected_scheduled_for: existingData.scheduled_for,
+        p_anchor: anchorFields,
+        p_siblings: siblingsPayload,
+        p_sibling_fields: siblingFields,
+        p_assignments: assignmentsPayload,
+        p_activation: activation,
+      });
+      if (applyErr) {
+        console.error("FUTURE_EDIT_ERROR", applyErr);
+        return json({ error: "Unable to save these changes right now. Nothing was saved. Please try again." }, 500);
+      }
+      const result = (applied ?? {}) as { outcome?: string; review_warning?: boolean };
+      if (result.outcome === "employee_not_eligible" || result.outcome === "appointment_not_found") {
+        return assignmentSyncErrorResponse(result.outcome);
+      }
+      if (result.outcome !== "applied") {
+        return json({ error: "This recurring series was changed by another request. Nothing was saved. Please refresh and try again." }, 409);
+      }
+      registryWarning = result.review_warning === true;
+    } else {
+      // A single occurrence leaving its original time: record that time as
+      // skipped on the series FIRST, so an automatic top-up can never recreate
+      // the job the owner moved (lib/seriesOccurrenceExclusion.ts). The moved
+      // appointment and the rest of the series are unchanged. If this cannot
+      // be recorded, nothing is saved.
+      if (existingData.series_id && startChanges) {
+        const exclusion = await excludeSeriesOccurrence(existingData.series_id, workspaceId, existingData.scheduled_for);
+        if (exclusion === "conflict") {
+          return json({ error: "This recurring series was changed by another request. Nothing was saved. Please refresh and try again." }, 409);
         }
-      } catch (err) {
-        console.error("RECURRING_SERIES_REGISTRY_ERROR", err);
-        registryWarning = true;
+        if (exclusion === "error") {
+          return json({ error: "Unable to move this appointment right now. Nothing was saved. Please try again." }, 500);
+        }
+      }
+
+      if (Object.keys(apptUpdate).length > 0) {
+        const { error } = await supabaseAdmin
+          .from("appointments")
+          .update(apptUpdate)
+          .eq("id", appointment_id)
+          .eq("workspace_id", workspaceId);
+        if (error) throw error;
+      }
+
+      if (originPlan && needsSync(originPlan)) {
+        // Block 2C-1: the atomic, shared-lock-coordinated sync (migrations/
+        // 027a). Only reached when staff actually change; an inactive
+        // employee being added was already refused before any write.
+        const syncResult = await syncAssignmentsAtomically({
+          appointmentId: appointment_id,
+          workspaceId,
+          expectedCurrentEmployeeIds: originPlan.currentEmployeeIds,
+          desiredEmployeeIds: employee_ids!,
+        });
+        if (syncResult.outcome !== "synced") {
+          return assignmentSyncErrorResponse(syncResult.outcome);
+        }
       }
     }
 

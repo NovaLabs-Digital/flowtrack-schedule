@@ -166,10 +166,22 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
     calls.push(call);
     if (opts.failWhen?.(call)) return { data: null, error: { message: `injected failure: rpc ${fn} #${call.seq}` } };
     try {
-      const meta = await pool.query("SELECT proretset FROM pg_proc WHERE proname = $1 LIMIT 1", [fn]);
+      const meta = await pool.query(
+        `SELECT proretset, proargnames, ARRAY(SELECT format_type(t, NULL) FROM unnest(proargtypes) t) AS types
+         FROM pg_proc WHERE proname = $1 LIMIT 1`,
+        [fn]
+      );
+      // PostgREST sends the request body as JSON, so a json/jsonb parameter
+      // receives the JSON value as-is (node-postgres would otherwise turn a
+      // JS array into a Postgres array literal).
+      const typeOf = new Map<string, string>();
+      const names: string[] = meta.rows[0]?.proargnames ?? [];
+      const types: string[] = meta.rows[0]?.types ?? [];
+      names.forEach((n, i) => typeOf.set(n, types[i]));
       const values: unknown[] = [];
       const named = Object.entries(args).map(([k, v]) => {
-        values.push(v);
+        const t = typeOf.get(k);
+        values.push((t === "jsonb" || t === "json") && v !== null && v !== undefined ? JSON.stringify(v) : v);
         return `${ident(k)} => $${values.length}`;
       });
       const res = await pool.query(`SELECT * FROM ${ident(fn)}(${named.join(", ")})`, values);

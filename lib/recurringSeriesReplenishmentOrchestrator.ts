@@ -47,21 +47,18 @@ type EntitlementFetcherFn = (workspaceId: string) => Promise<EntitlementResult>;
 //
 // REPLENISH_TARGET_COVERAGE_DAYS: how far into the future a series' live
 // (status='scheduled') tail should reach once this pass finishes acting on
-// it. Deliberately much smaller than the one-time creation horizons in
-// lib/recurrence.ts (182 days for daily/weekdays/weekly, 24 months for
-// monthly) -- this is a ROLLING top-up, not a re-materialization of the
-// full original horizon on every run.
-export const REPLENISH_TARGET_COVERAGE_DAYS = 60;
+// it: a rolling 26 weeks, the same window a new weekly/daily series is
+// created with (lib/recurrence.ts MAX_HORIZON_DAYS), so an owner always sees
+// the same half-year of recurring visits ahead (decided 2026-11-11; it was
+// 60 days, which left the calendar nearly empty past ~2 months).
+export const REPLENISH_TARGET_COVERAGE_DAYS = 182;
 
 // REPLENISH_THRESHOLD_DAYS: once a series' live tail drops below this many
-// days ahead of "now", it becomes eligible for replenishment this run.
-// Chosen well below REPLENISH_TARGET_COVERAGE_DAYS (30 vs 60) so a single
-// daily cron cadence -- which only lets the buffer shrink by ~1 day between
-// runs -- can never let a series run dry; also matches the existing
-// "expiresWithin30Days" 30-day urgency threshold app/api/recurring-series/route.ts's
-// GET already uses for the owner review queue, so "30 days out" is already
-// an established meaningful boundary in this product, not a new invented one.
-export const REPLENISH_THRESHOLD_DAYS = 30;
+// days ahead of "now" (25 weeks), it is topped up this run. One week below
+// the target, so the daily cron adds about one visit per weekly series per
+// week instead of re-materializing the window, and a missed run or two
+// never lets the window shrink noticeably.
+export const REPLENISH_THRESHOLD_DAYS = 175;
 
 // MAX_OCCURRENCES_PER_SERIES_PER_RUN: the number of occurrences requested
 // for one series in one run. Set to exactly 20 -- migrations/027b's
@@ -69,7 +66,7 @@ export const REPLENISH_THRESHOLD_DAYS = 30;
 // > 20 as invalid_input, so this uses the RPC's full per-call capacity
 // rather than an arbitrary smaller number. A series needing more than 20
 // occurrences to reach full target coverage (e.g. a freshly activated daily
-// series with zero live tail, needing up to 60) is simply topped up
+// series with zero live tail, needing up to 182) is simply topped up
 // incrementally over several runs -- self-correcting, and exactly the
 // "maintain a buffer, don't re-materialize the whole horizon at once"
 // behavior requested.

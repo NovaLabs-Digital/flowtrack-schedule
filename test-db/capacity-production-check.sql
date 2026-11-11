@@ -27,19 +27,19 @@ SELECT count(*) AS active_series,
 FROM recurring_series
 WHERE status = 'active' AND is_demo = false;
 
--- Series whose live future tail is under 30 days (would need a top-up now).
-SELECT rs.workspace_id, count(*) AS series_under_30_days
+-- Series whose live future tail is under 175 days (25 weeks): would be topped up now (rolling 26-week window).
+SELECT rs.workspace_id, count(*) AS series_under_175_days
 FROM recurring_series rs
 WHERE rs.status = 'active' AND rs.is_demo = false
   AND COALESCE((SELECT max(a.scheduled_for) FROM appointments a
-                WHERE a.series_id = rs.id AND a.status = 'scheduled'), now()) < now() + interval '30 days'
+                WHERE a.series_id = rs.id AND a.status = 'scheduled'), now()) < now() + interval '175 days'
 GROUP BY rs.workspace_id;
 
 -- 3. PostgREST max-rows setting is a project setting, not SQL-visible:
 --    check Supabase Dashboard > Project Settings > API > "Max rows".
 
 -- 4. BEFORE turning live top-ups on (REPLENISHMENT_DRY_RUN=false): every slot
---    a live run would create in the next 60 days, per series, flagged when
+--    a live run would create in the next 182 days (26 weeks), per series, flagged when
 --    the same series has an off-pattern job nearby -- the signature of a
 --    single-occurrence move made before 2026-11-03, whose original slot was
 --    never recorded as skipped and WOULD be recreated (a duplicate visit).
@@ -73,7 +73,7 @@ FROM slots sl
 JOIN recurring_series rs ON rs.id = sl.series_id
 WHERE sl.slot > sl.live_tail
   AND sl.slot > now()
-  AND sl.slot <= now() + interval '60 days'
+  AND sl.slot <= now() + interval '182 days'
   AND sl.slot <> ALL (rs.excluded_occurrences)
   AND NOT EXISTS (SELECT 1 FROM appointments a WHERE a.series_id = sl.series_id AND a.scheduled_for = sl.slot)
 -- Flagged rows (column 4 not null) first.

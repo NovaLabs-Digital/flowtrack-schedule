@@ -56,23 +56,28 @@ export function dedupeEmployeeIds(employeeIds: string[]): string[] {
 // the authenticated caller's own workspace, or the whole request is
 // rejected (fail closed), never silently filtered down to only the valid
 // subset.
+//
+// Also reports which of them are no longer active (`inactiveIds`), from the
+// same read: an employee who has left can stay on the visits they already
+// have, but must never be newly added to one.
 export async function validateEmployeeIdsInWorkspace(
   employeeIds: string[],
   workspaceId: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (employeeIds.length === 0) return { ok: true };
+): Promise<{ ok: true; inactiveIds: string[] } | { ok: false; error: string }> {
+  if (employeeIds.length === 0) return { ok: true, inactiveIds: [] };
   const { data, error } = await supabaseAdmin
     .from("employees")
-    .select("id")
+    .select("id, active")
     .in("id", employeeIds)
     .eq("workspace_id", workspaceId);
   if (error) throw error;
-  const foundIds = new Set((data ?? []).map((e: { id: string }) => e.id));
+  const rows = (data ?? []) as { id: string; active?: boolean }[];
+  const foundIds = new Set(rows.map((e) => e.id));
   const missing = employeeIds.filter((id) => !foundIds.has(id));
   if (missing.length > 0) {
     return { ok: false, error: "One or more assigned employees were not found." };
   }
-  return { ok: true };
+  return { ok: true, inactiveIds: rows.filter((e) => e.active === false).map((e) => e.id) };
 }
 
 export function computeAssignmentDiff(
