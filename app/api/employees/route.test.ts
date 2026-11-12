@@ -16,15 +16,20 @@ let currentFake = createFakeSupabaseAdmin({});
 let sessionToReturn: unknown = { role: "none" };
 
 mock.module("@/lib/supabaseAdmin", {
-  namedExports: { supabaseAdmin: { from: (table: string) => currentFake.supabaseAdmin.from(table) } },
+  namedExports: {
+    supabaseAdmin: {
+      from: (table: string) => currentFake.supabaseAdmin.from(table),
+      rpc: (fn: string, args?: unknown) => currentFake.supabaseAdmin.rpc(fn, args),
+    },
+  },
 });
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => sessionToReturn) });
 
 const { GET, POST, PATCH } = await import("./route.ts");
 const { DEMO_WORKSPACE_ID, REAL_WORKSPACE_ID } = await import("../../../lib/workspace.ts");
 
-function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>) {
-  currentFake = createFakeSupabaseAdmin(responses);
+function resetFixtures(responses: Record<string, FakeSupabaseFixture[]>, rpcResponses: Record<string, FakeSupabaseFixture[]> = {}) {
+  currentFake = createFakeSupabaseAdmin(responses, rpcResponses);
 }
 function req(method: string, body?: unknown) {
   return new Request("http://localhost/api/employees", {
@@ -308,5 +313,170 @@ describe("GET /api/employees is governed by canViewExistingData (Phase 5.6E)", (
     assert.equal(res.status, 503);
     assert.deepEqual(await res.json(), SERVICE_UNAVAILABLE_BODY);
     assert.equal(currentFake.calls.filter((c) => c.table === "employees").length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Employee seats (migrations/048): the database refuses a new or reactivated
+// active employee once the workspace's seats are all in use (SQLSTATE SL001).
+describe("Employee seats: a full workspace gets 409 EMPLOYEE_SEATS_FULL, nothing else changes", () => {
+  const SEATS_FULL_ERROR = { message: "All 5 employee seats are in use.", code: "SL001", details: '{"used" : 5, "allowance" : 5}' };
+
+  test("POST: seat refusal -> 409 with the seat counts and a plain message", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ error: SEATS_FULL_ERROR }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { name: "Sixth" }));
+    assert.equal(res.status, 409);
+    assert.deepEqual(await res.json(), {
+      error: "All 5 employee seats are in use. Deactivate an employee to free a seat.",
+      code: "EMPLOYEE_SEATS_FULL",
+      seats: { used: 5, allowance: 5, available: 0 },
+    });
+  });
+
+  test("PATCH reactivation: seat refusal -> 409 EMPLOYEE_SEATS_FULL", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ data: { is_demo: false } }, { error: SEATS_FULL_ERROR }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req("PATCH", { id: "emp-1", active: true }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "EMPLOYEE_SEATS_FULL");
+  });
+
+  test("any other database error is still a 500, never mistaken for a seat refusal", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ error: { message: "duplicate key value", code: "23505" } }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const res = await POST(req("POST", { name: "Dup" }));
+    assert.equal(res.status, 500);
+  });
+});
+
+describe("GET /api/employees/seats", () => {
+  test("owner: used / allowance / available from the database's own rule, for the owner's own workspace", async () => {
+    const { GET: SEATS } = await import("./seats/route.ts");
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      },
+      { employee_seat_usage: [{ data: { used: 3, allowance: 5, available: 2, owner_linked: true } }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await SEATS();
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { used: 3, allowance: 5, available: 2, ownerLinked: true });
+    assert.deepEqual(currentFake.rpcCalls, [{ fn: "employee_seat_usage", args: { p_workspace_id: REAL_WORKSPACE_ID } }]);
+  });
+
+  test("before migration 048 (no seat function) it answers 503, so the Staff page simply hides the seat line", async () => {
+    const { GET: SEATS } = await import("./seats/route.ts");
+    resetFixtures(
+      {
+        workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+        subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      },
+      { employee_seat_usage: [{ error: { message: "function employee_seat_usage(uuid) does not exist", code: "42883" } }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    assert.equal((await SEATS()).status, 503);
+  });
+
+  test("non-owners are refused before any read", async () => {
+    const { GET: SEATS } = await import("./seats/route.ts");
+    resetFixtures({});
+    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+    assert.equal((await SEATS()).status, 403);
+    assert.equal(currentFake.calls.length, 0);
+  });
+});
+
+describe("GET /api/employees marks the signed-in owner's own record and never exposes the profile id", () => {
+  test("is_you is true only for the record linked to this owner", async () => {
+    resetFixtures({
+      workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+      subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+      employees: [{ data: [
+        { id: "e1", name: "Me", phone: null, color: "#000000", active: true, email: null, position: null, owner_profile_id: OWNER_AUTH_USER_ID },
+        { id: "e2", name: "Crew", phone: null, color: "#000000", active: true, email: null, position: null, owner_profile_id: null },
+      ] }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET()).json();
+    assert.deepEqual(body.map((e: { id: string; is_you: boolean }) => [e.id, e.is_you]), [["e1", true], ["e2", false]]);
+    assert.ok(!JSON.stringify(body).includes(OWNER_AUTH_USER_ID));
+    assert.ok(!JSON.stringify(body).includes("owner_profile_id"));
+  });
+});
+
+describe("POST/DELETE /api/employees/owner-link", () => {
+  const ownerLinkReq = (method: string, body: unknown) =>
+    new Request("http://localhost/api/employees/owner-link", { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const entitled = () => ({
+    workspace_memberships: [{ data: { workspace_id: REAL_WORKSPACE_ID, session_epoch: 1 } }],
+    subscriptions: [{ data: subscriptionRow({ stripe_status: "active" }) }],
+  });
+
+  test("links the record to the SIGNED-IN owner's account, scoped to the owner's workspace and real records; any profile id in the body is ignored", async () => {
+    const { POST: LINK } = await import("./owner-link/route.ts");
+    resetFixtures({ ...entitled(), employees: [{ data: [{ id: "e1" }] }] });
+    sessionToReturn = OWNER_SESSION;
+    const res = await LINK(ownerLinkReq("POST", { employee_id: "e1", owner_profile_id: "someone-else", profile_id: "someone-else" }));
+    assert.equal(res.status, 200);
+    const update = currentFake.calls.find((c) => c.table === "employees" && c.method === "update")!;
+    assert.deepEqual(update.args[0], { owner_profile_id: OWNER_AUTH_USER_ID });
+    const eqs = currentFake.calls.filter((c) => c.table === "employees" && c.method === "eq").map((c) => c.args);
+    assert.deepEqual(eqs, [["id", "e1"], ["workspace_id", REAL_WORKSPACE_ID], ["is_demo", false]]);
+  });
+
+  test("unlinking only ever removes MY link", async () => {
+    const { DELETE: UNLINK } = await import("./owner-link/route.ts");
+    resetFixtures({ ...entitled(), employees: [{ data: [{ id: "e1" }] }] });
+    sessionToReturn = OWNER_SESSION;
+    assert.equal((await UNLINK(ownerLinkReq("DELETE", { employee_id: "e1" }))).status, 200);
+    const update = currentFake.calls.find((c) => c.table === "employees" && c.method === "update")!;
+    assert.deepEqual(update.args[0], { owner_profile_id: null });
+    const eqs = currentFake.calls.filter((c) => c.table === "employees" && c.method === "eq").map((c) => c.args);
+    assert.deepEqual(eqs.at(-1), ["owner_profile_id", OWNER_AUTH_USER_ID]);
+  });
+
+  test("a second linked record -> 409 OWNER_ALREADY_LINKED; not the owner -> 403; no matching record -> 404", async () => {
+    const { POST: LINK } = await import("./owner-link/route.ts");
+    sessionToReturn = OWNER_SESSION;
+    resetFixtures({ ...entitled(), employees: [{ error: { message: "duplicate key", code: "23505" } }] });
+    const dup = await LINK(ownerLinkReq("POST", { employee_id: "e2" }));
+    assert.equal(dup.status, 409);
+    assert.equal((await dup.json()).code, "OWNER_ALREADY_LINKED");
+    resetFixtures({ ...entitled(), employees: [{ error: { message: "Only the owner...", code: "SL002" } }] });
+    assert.equal((await LINK(ownerLinkReq("POST", { employee_id: "e2" }))).status, 403);
+    resetFixtures({ ...entitled(), employees: [{ data: [] }] });
+    assert.equal((await LINK(ownerLinkReq("POST", { employee_id: "nope" }))).status, 404);
+  });
+
+  test("removing the link while all seats are in use -> 409 EMPLOYEE_SEATS_FULL", async () => {
+    const { DELETE: UNLINK } = await import("./owner-link/route.ts");
+    sessionToReturn = OWNER_SESSION;
+    resetFixtures({ ...entitled(), employees: [{ error: { message: "All 5 employee seats are in use.", code: "SL001", details: '{"used" : 5, "allowance" : 5}' } }] });
+    const res = await UNLINK(ownerLinkReq("DELETE", { employee_id: "e1" }));
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, "EMPLOYEE_SEATS_FULL");
+  });
+
+  test("owners only: testers are refused before any read", async () => {
+    const { POST: LINK } = await import("./owner-link/route.ts");
+    resetFixtures({});
+    sessionToReturn = { role: "tester", workspaceId: DEMO_WORKSPACE_ID };
+    assert.equal((await LINK(ownerLinkReq("POST", { employee_id: "e1" }))).status, 403);
+    assert.equal(currentFake.calls.length, 0);
   });
 });

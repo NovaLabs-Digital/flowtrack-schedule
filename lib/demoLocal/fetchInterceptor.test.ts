@@ -875,6 +875,50 @@ describe("one-time demo appointment cancellation", () => {
 });
 
 // ---------------------------------------------------------------------
+// Employee seats -- same rule as the real database (migrations/048).
+// ---------------------------------------------------------------------
+describe("installDemoFetchInterceptor -- employee seats", () => {
+  test("GET /api/employees/seats counts active employees against 5 seats; adding past 5 and reactivating while full are refused (409)", async () => {
+    const seats0 = (await call("/api/employees/seats")).data;
+    assert.equal(seats0.allowance, 5);
+    assert.equal(seats0.used, getSnapshot().employees.filter((e) => e.active).length);
+    assert.equal(seats0.available, 5 - seats0.used);
+
+    for (let i = seats0.used; i < 5; i++) assert.equal((await call("/api/employees", "POST", { name: `Seat ${i}` })).status, 201);
+    const full = await call("/api/employees", "POST", { name: "One too many" });
+    assert.equal(full.status, 409);
+    assert.equal(full.data.code, "EMPLOYEE_SEATS_FULL");
+    assert.deepEqual(full.data.seats, { used: 5, allowance: 5, available: 0, ownerLinked: false });
+    assert.ok(!getSnapshot().employees.some((e) => e.name === "One too many"));
+
+    // Inactive needs no seat; reactivating it while full is refused.
+    const inactive = await call("/api/employees", "POST", { name: "Seasonal", active: false });
+    assert.equal(inactive.status, 201);
+    assert.equal((await call("/api/employees", "PATCH", { id: inactive.data.id, active: true })).status, 409);
+
+    // Deactivating frees a seat that can be reused.
+    const someone = getSnapshot().employees.find((e) => e.active)!;
+    assert.equal((await call("/api/employees", "PATCH", { id: someone.id, active: false })).status, 200);
+    assert.deepEqual((await call("/api/employees/seats")).data, { used: 4, allowance: 5, available: 1, ownerLinked: false });
+    assert.equal((await call("/api/employees", "PATCH", { id: inactive.data.id, active: true })).status, 200);
+    // Editing an active employee while full is fine.
+    assert.equal((await call("/api/employees", "PATCH", { id: inactive.data.id, name: "Seasonal Lead" })).status, 200);
+
+    // The owner's own record: owner + 5 active is allowed, a 6th is not.
+    const me = await call("/api/employees", "POST", { name: "Demo Owner", active: false });
+    assert.equal((await call("/api/employees/owner-link", "POST", { employee_id: me.data.id })).status, 200);
+    assert.equal((await call("/api/employees", "PATCH", { id: me.data.id, active: true })).status, 200, "the owner's record needs no seat");
+    assert.deepEqual((await call("/api/employees/seats")).data, { used: 5, allowance: 5, available: 0, ownerLinked: true });
+    assert.equal((await call("/api/employees", "POST", { name: "Sixth" })).status, 409);
+    assert.ok((await call("/api/employees")).data.find((e: { id: string; is_you?: boolean }) => e.id === me.data.id).is_you);
+    // Only one record can be the owner's; unlinking an active one while full is refused.
+    const other = getSnapshot().employees.find((e) => e.active && !e.is_you)!;
+    assert.equal((await call("/api/employees/owner-link", "POST", { employee_id: other.id })).status, 409);
+    assert.equal((await call("/api/employees/owner-link", "DELETE", { employee_id: me.data.id })).status, 409);
+  });
+});
+
+// ---------------------------------------------------------------------
 // Lifecycle: self-uninstall once the visitor has left /demo. MUST stay the
 // last block in this file -- it swaps window.fetch.
 // ---------------------------------------------------------------------

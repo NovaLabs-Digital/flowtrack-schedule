@@ -55,6 +55,12 @@ export type CapabilityGatedButtonProps = {
   // notice block) -- referenced via aria-describedby only while restricted.
   // Omit when no such notice exists at the call site.
   ariaDescribedBy?: string;
+  // Explains the OTHER reason the button is disabled (`disabled`, e.g. all
+  // employee seats in use): id of a visible message, referenced via
+  // aria-describedby while disabled for that reason and not restricted.
+  disabledReasonId?: string;
+  // Hover text (e.g. why the button is disabled).
+  title?: string;
 };
 
 export default function CapabilityGatedButton({
@@ -65,6 +71,8 @@ export default function CapabilityGatedButton({
   className,
   children,
   ariaDescribedBy,
+  disabledReasonId,
+  title,
 }: CapabilityGatedButtonProps) {
   const restricted = !allowed;
   const isDisabled = restricted || !!disabled;
@@ -89,7 +97,8 @@ export default function CapabilityGatedButton({
       onClick: handleClick,
       disabled: isDisabled,
       "aria-disabled": isDisabled,
-      "aria-describedby": restricted ? ariaDescribedBy : undefined,
+      "aria-describedby": restricted ? ariaDescribedBy : disabled ? disabledReasonId : undefined,
+      title,
       className,
     },
     children

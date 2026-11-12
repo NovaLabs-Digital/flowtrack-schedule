@@ -547,6 +547,13 @@ describe("only the approved routes reference the capability gates -- every other
     // files already appear above (their existing POST/PATCH mutation
     // guards), so only this genuinely new file needs adding here.
     path.join("app", "api", "clients", "archived", "route.ts"),
+    // Employee seats (migrations/048) -- owner-only read of used / allowance
+    // / available (canViewExistingData, same read-gate precedent as
+    // clients/archived above).
+    path.join("app", "api", "employees", "seats", "route.ts"),
+    // The owner's own employee record (migrations/048) -- link/unlink
+    // (canMutateOperationalData, same gate as every other staff mutation).
+    path.join("app", "api", "employees", "owner-link", "route.ts"),
     // Block 2B (Automatic Recurring-Series Replenishment) -- the owner
     // review queue (canViewExistingData, same read-gate precedent as
     // clients/archived above) and its one mutation, activation

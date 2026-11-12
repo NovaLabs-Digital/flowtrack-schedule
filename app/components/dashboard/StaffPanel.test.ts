@@ -103,19 +103,19 @@ describe("mutation guards: handleSave (including password changes), toggleActive
 });
 
 describe("governed controls: Add, Edit x2, Deactivate/Reactivate x2, Save submit", () => {
-  test("exactly six CapabilityGatedButton call sites exist", () => {
+  test("exactly nine CapabilityGatedButton call sites exist", () => {
     const matches = source.match(/<CapabilityGatedButton/g) ?? [];
-    assert.equal(matches.length, 6, "expected + Add Employee, active-row Edit, active-row Deactivate, inactive-row Edit, inactive-row Reactivate, and the form's Save submit");
+    assert.equal(matches.length, 9, "expected + Add Employee, Edit x2, Deactivate, Reactivate, the form's Save submit, This is me / Not me x2, and 'Yes, this is me'");
   });
 
-  test("all six are wired with allowed={canMutateOperationalData}", () => {
+  test("all nine are wired with allowed={canMutateOperationalData}", () => {
     const matches = source.match(/allowed=\{canMutateOperationalData\}/g) ?? [];
-    assert.equal(matches.length, 6);
+    assert.equal(matches.length, 9);
   });
 
-  test("all six reference the single shared notice via ariaDescribedBy", () => {
+  test("all nine reference the single shared notice via ariaDescribedBy", () => {
     const matches = source.match(/ariaDescribedBy=\{RESTRICTED_NOTICE_ID\}/g) ?? [];
-    assert.equal(matches.length, 6);
+    assert.equal(matches.length, 9);
   });
 
   test("the form's Save/Add submit button preserves type=\"submit\" and disabled={saving}", () => {
@@ -237,5 +237,77 @@ describe("password visibility (Phase 5.7D-R17)", () => {
     assert.equal([...source.matchAll(/<PasswordInput/g)].length, 1);
     assert.ok(source.includes('autoComplete="new-password"'));
     assert.ok(!source.includes('type="password"'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Employee seats (migrations/048).
+describe("employee seats in Staff settings", () => {
+  test("seats are read from /api/employees/seats for owners only (never for the tester demo)", () => {
+    const fn = source.slice(source.indexOf("function loadSeats()"), source.indexOf("useEffect(() => { loadEmployees(); loadSeats(); }, []);"));
+    assert.ok(fn.includes("if (isTester) return;"));
+    assert.ok(fn.includes('fetch("/api/employees/seats")'));
+    assert.ok(source.includes("useEffect(() => { loadEmployees(); loadSeats(); }, []);"));
+  });
+
+  test("shows 'Seats: X of Y used' with how many are available, or that all seats are in use", () => {
+    assert.ok(source.includes('data-testid="staff-seats"'));
+    assert.ok(source.includes("Seats: {seats.used} of {seats.allowance} used"));
+    assert.ok(source.includes("{seats.available} available"));
+    assert.ok(source.includes("All seats in use. Deactivate an employee to add or reactivate someone."));
+  });
+
+  test("the seat line is hidden when seats could not be read (the server still enforces the allowance)", () => {
+    assert.ok(source.includes("{seats && ("));
+    assert.ok(source.includes("const seatsFull = seats !== null && seats.available <= 0;"));
+  });
+
+  test("+ Add Employee and Reactivate are disabled while every seat is in use; Deactivate and Edit never are", () => {
+    const add = source.slice(source.indexOf("onClick={startAdd}"), source.indexOf("+ Add Employee"));
+    assert.ok(add.includes("disabled={seatsFull}"));
+    // Reactivate: blocked while full -- except the owner's own record, which never uses a seat.
+    const reactivate = source.slice(source.indexOf("disabled={seatsFull && !e.is_you}"), source.indexOf("Reactivate\n"));
+    assert.ok(reactivate.includes("onClick={() => toggleActive(e)}"));
+  });
+
+  test("a refused toggle shows the server's message (e.g. all seats in use) and refreshes the seat count", () => {
+    const fn = source.slice(source.indexOf("async function toggleActive"), source.indexOf("async function setOwnerLink"));
+    assert.ok(fn.includes('setMessage({ type: "error", text: data?.error || "Toggle failed." });'));
+    assert.equal((fn.match(/loadSeats\(\);/g) ?? []).length, 2);
+  });
+});
+
+describe("disabled Add / Reactivate explain why (seats full)", () => {
+  test("both point at the visible seat message (aria-describedby) and carry hover text; the message is announced when it changes", () => {
+    assert.equal((source.match(/disabledReasonId=\{SEATS_NOTICE_ID\}/g) ?? []).length, 2);
+    assert.ok(source.includes('title={seatsFull ? "All employee seats are in use. Deactivate an employee to add someone." : undefined}'));
+    assert.ok(source.includes('title={seatsFull && !e.is_you ? "All employee seats are in use. Deactivate an employee to reactivate this one." : undefined}'));
+    assert.ok(source.includes('id={SEATS_NOTICE_ID} data-testid="staff-seats"'));
+    assert.ok(source.includes('aria-live="polite"'));
+  });
+  test("the Inactive list says reactivating needs a free seat while full", () => {
+    assert.ok(source.includes("Reactivating needs a free seat."));
+  });
+});
+
+describe("the owner's own record (This is me)", () => {
+  test("linking needs an explicit confirmation step; the request carries only the record id", () => {
+    assert.ok(source.includes("setConfirmLinkFor(e)"), "'This is me' only opens the confirmation");
+    assert.ok(source.includes("Is {confirmLinkFor.name} you, the owner?"));
+    assert.ok(source.includes("onClick={() => setOwnerLink(confirmLinkFor, true)}"));
+    const fn = source.slice(source.indexOf("async function setOwnerLink"), source.indexOf("const inputCls"));
+    assert.ok(fn.includes('fetch("/api/employees/owner-link"'));
+    assert.ok(fn.includes("JSON.stringify({ employee_id: e.id })"));
+    assert.ok(!/profile|authUserId|email/.test(fn), "never sends who the owner is");
+  });
+  test("offered only to the owner (not the tester demo) and only while no record is linked; the linked record shows 'Not me' and a badge", () => {
+    assert.ok(source.includes("const canOfferLink = !isTester && !ownerLinked;"));
+    assert.equal((source.match(/\{\(e\.is_you \|\| canOfferLink\) && \(/g) ?? []).length, 2);
+    assert.equal((source.match(/\{e\.is_you \? "Not me" : "This is me"\}/g) ?? []).length, 2);
+    assert.equal((source.match(/\{e\.is_you && <OwnerBadge \/>\}/g) ?? []).length, 2);
+    assert.ok(source.includes("You · owner · no seat"));
+  });
+  test("the seat line says the owner doesn't use a seat once linked", () => {
+    assert.ok(source.includes("You (owner) don&apos;t use a seat"));
   });
 });

@@ -618,6 +618,55 @@ function handleListEmployees(): Response {
   return json(getSnapshot().employees);
 }
 
+// Employee seats -- the same rule the real database enforces
+// (migrations/048): at most DEMO_SEAT_ALLOWANCE active employees; inactive
+// ones and the owner never count. The demo business uses the standard
+// allowance. The visitor's own record ("This is me", migrations/048) never
+// uses a seat.
+const DEMO_SEAT_ALLOWANCE = 5;
+function demoSeats() {
+  const emps = getSnapshot().employees;
+  const used = emps.filter((e) => e.active && !e.is_you).length;
+  return { used, allowance: DEMO_SEAT_ALLOWANCE, available: Math.max(0, DEMO_SEAT_ALLOWANCE - used), ownerLinked: emps.some((e) => e.is_you) };
+}
+
+// POST / DELETE /api/employees/owner-link -- app/api/employees/owner-link/route.ts:
+// mark one record as the owner's own (at most one), or remove that mark.
+async function handleOwnerLink(req: Request, link: boolean): Promise<Response> {
+  const body = await readJsonBody(req);
+  const id = typeof body?.employee_id === "string" ? body.employee_id.trim() : "";
+  if (!id) return json({ error: "Missing employee_id" }, 400);
+  const snap = getSnapshot();
+  const target = snap.employees.find((e) => e.id === id);
+  if (!target || (!link && !target.is_you)) return json({ error: "Employee not found" }, 404);
+  if (link && snap.employees.some((e) => e.is_you && e.id !== id)) {
+    return json({ error: "Another employee record is already marked as you. Remove that link first.", code: "OWNER_ALREADY_LINKED" }, 409);
+  }
+  if (!link && target.active && demoSeats().available <= 0) {
+    const seats = demoSeats();
+    return json({ error: `All ${seats.allowance} employee seats are in use. Deactivate an employee before removing your owner link from an active record.`, code: "EMPLOYEE_SEATS_FULL", seats }, 409);
+  }
+  setSnapshot({ ...snap, employees: snap.employees.map((e) => (e.id === id ? { ...e, is_you: link } : e)) });
+  notify();
+  return json({ ok: true });
+}
+function demoSeatsFull(): Response {
+  const seats = demoSeats();
+  return json(
+    {
+      error: `All ${seats.allowance} employee seats are in use. Deactivate an employee to free a seat.`,
+      code: "EMPLOYEE_SEATS_FULL",
+      seats,
+    },
+    409
+  );
+}
+
+// GET /api/employees/seats -- app/api/employees/seats/route.ts.
+function handleEmployeeSeats(): Response {
+  return json(demoSeats());
+}
+
 // POST /api/employees -- app/api/employees/route.ts POST: 201 with the new
 // row (id, name, phone, color, active, email, position).
 //
@@ -642,6 +691,7 @@ async function handleCreateEmployee(req: Request): Promise<Response> {
     email: email || null,
     position: position || null,
   };
+  if (row.active && demoSeats().available <= 0) return demoSeatsFull();
   const snap = getSnapshot();
   setSnapshot({ ...snap, employees: [...snap.employees, row].sort(byName) });
   notify();
@@ -674,6 +724,7 @@ async function handleUpdateEmployee(req: Request): Promise<Response> {
   if (Object.keys(update).length === 0 && !passwordProvided) {
     return json({ error: "No fields to update" }, 400);
   }
+  if (update.active === true && !existing.active && !existing.is_you && demoSeats().available <= 0) return demoSeatsFull();
   if (Object.keys(update).length > 0) {
     setSnapshot({ ...snap, employees: snap.employees.map((e) => (e.id === id ? { ...e, ...update } : e)).sort(byName) });
     notify();
@@ -1321,6 +1372,9 @@ const ROUTES: Route[] = [
   { method: "GET", path: "/api/appointments/messages", handler: handleAppointmentMessages },
   { method: "GET", path: "/api/clients/messages", handler: handleClientMessages },
   { method: "GET", path: "/api/employees", handler: handleListEmployees },
+  { method: "GET", path: "/api/employees/seats", handler: handleEmployeeSeats },
+  { method: "POST", path: "/api/employees/owner-link", handler: (req: Request) => handleOwnerLink(req, true) },
+  { method: "DELETE", path: "/api/employees/owner-link", handler: (req: Request) => handleOwnerLink(req, false) },
   { method: "POST", path: "/api/employees", handler: handleCreateEmployee },
   { method: "PATCH", path: "/api/employees", handler: handleUpdateEmployee },
   { method: "GET", path: "/api/services", handler: handleListServices },

@@ -256,3 +256,24 @@ describe("projection integrity", () => {
     assert.equal(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled"), true);
   });
 });
+
+describe("disabled for another reason (e.g. all employee seats in use) can explain why", () => {
+  test("disabledReasonId is referenced only while disabled for that reason; the restricted notice wins when restricted; title is passed through", async () => {
+    const make = (allowed: boolean, disabled: boolean) =>
+      render(React.createElement(CapabilityGatedButton, {
+        allowed, disabled, onClick: () => {}, className: "c", ariaDescribedBy: "restricted-notice",
+        disabledReasonId: "seats-notice", title: disabled ? "All seats in use" : undefined,
+      }, "Add"));
+    let btn = make(true, true).container.querySelector("button")!;
+    assert.equal(btn.getAttribute("aria-describedby"), "seats-notice");
+    assert.equal(btn.getAttribute("title"), "All seats in use");
+    assert.equal(btn.disabled, true);
+    cleanup();
+    btn = make(true, false).container.querySelector("button")!;
+    assert.equal(btn.getAttribute("aria-describedby"), null);
+    assert.equal(btn.getAttribute("title"), null);
+    cleanup();
+    btn = make(false, true).container.querySelector("button")!;
+    assert.equal(btn.getAttribute("aria-describedby"), "restricted-notice");
+  });
+});

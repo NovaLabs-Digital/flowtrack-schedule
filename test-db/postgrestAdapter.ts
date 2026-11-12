@@ -35,7 +35,14 @@ export const POSTGREST_TYPES = {
   },
 };
 
-export type AdapterCall = { kind: "select" | "update" | "rpc"; table: string; seq: number; args?: unknown; range?: [number, number] };
+export type AdapterCall = { kind: "select" | "update" | "insert" | "rpc"; table: string; seq: number; args?: unknown; range?: [number, number] };
+
+// PostgREST passes a database error through as { code: SQLSTATE, message,
+// details: DETAIL, hint }; app code branches on `code` (e.g. 'SL001').
+function pgError(err: unknown) {
+  const e = err as { message?: string; code?: string; detail?: string; hint?: string };
+  return { message: e.message ?? String(err), code: e.code, details: e.detail ?? null, hint: e.hint ?? null };
+}
 
 type Filter = { sql: string; values: unknown[] };
 
@@ -64,10 +71,13 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
   };
 
   function from(table: string) {
-    let mode: "select" | "update" = "select";
+    let mode: "select" | "update" | "insert" = "select";
     let columns = "*";
     let returning: string | null = null;
     let patch: Record<string, unknown> | null = null;
+    let rowsToInsert: Record<string, unknown>[] = [];
+    let countExact = false;
+    let headOnly = false;
     let single: "maybe" | "one" | null = null;
     const filters: Filter[] = [];
     const orders: string[] = [];
@@ -76,9 +86,16 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
     let range: [number, number] | undefined;
 
     const builder: any = {
-      select(cols: string = "*") {
-        if (mode === "update") returning = cols;
+      select(cols: string = "*", opts: { count?: string; head?: boolean } = {}) {
+        if (mode === "update" || mode === "insert") returning = cols;
         else columns = cols;
+        countExact = opts.count === "exact";
+        headOnly = !!opts.head;
+        return builder;
+      },
+      insert(values: Record<string, unknown> | Record<string, unknown>[]) {
+        mode = "insert";
+        rowsToInsert = Array.isArray(values) ? values : [values];
         return builder;
       },
       update(values: Record<string, unknown>) {
@@ -115,10 +132,28 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
       },
     };
 
-    async function execute(): Promise<{ data: unknown; error: { message: string } | null; count?: number | null }> {
+    async function execute(): Promise<{ data: unknown; error: { message: string; code?: string; details?: string | null; hint?: string | null } | null; count?: number | null }> {
       const call: AdapterCall = { kind: mode, table, seq: nextSeq(`${mode}:${table}`), range };
       calls.push(call);
       if (opts.failWhen?.(call)) return { data: null, error: { message: `injected failure: ${mode} ${table} #${call.seq}` } };
+
+      if (mode === "insert") {
+        try {
+          const keys = Array.from(new Set(rowsToInsert.flatMap((r) => Object.keys(r))));
+          const sql = `INSERT INTO ${ident(table)} (${keys.map(ident).join(", ")})
+                       SELECT ${keys.map(ident).join(", ")} FROM jsonb_populate_recordset(NULL::${ident(table)}, $1::jsonb)
+                       ${returning ? `RETURNING ${returning}` : ""}`;
+          const res = await pool.query(sql, [JSON.stringify(rowsToInsert)]);
+          const rows = res.rows.map(rowToJs);
+          if (single) {
+            if (rows.length !== 1) return { data: null, error: { message: "JSON object requested, multiple (or no) rows returned", code: "PGRST116", details: null, hint: null } };
+            return { data: rows[0], error: null };
+          }
+          return { data: returning ? rows : null, error: null };
+        } catch (err) {
+          return { data: null, error: pgError(err) };
+        }
+      }
 
       const values: unknown[] = [];
       const whereSql = filters.length
@@ -143,6 +178,10 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
           const res = await pool.query(sql, values);
           return { data: returning ? res.rows.map(rowToJs) : null, error: null };
         }
+        if (countExact) {
+          const c = await pool.query(`SELECT count(*)::int AS n FROM ${ident(table)}${whereSql}`, values);
+          if (headOnly) return { data: null, error: null, count: c.rows[0].n };
+        }
         const cap = Math.min(limit ?? MAX_ROWS, MAX_ROWS);
         const sql = `SELECT ${columns} FROM ${ident(table)}${whereSql}${orders.length ? " ORDER BY " + orders.join(", ") : ""} LIMIT ${cap} OFFSET ${offset}`;
         const res = await pool.query(sql, values);
@@ -154,7 +193,7 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
         }
         return { data: rows, error: null };
       } catch (err) {
-        return { data: null, error: { message: (err as Error).message } };
+        return { data: null, error: pgError(err) };
       }
     }
 

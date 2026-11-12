@@ -10,6 +10,31 @@ function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
 }
 
+// Employee seats (migrations/048): the database refuses a new or reactivated
+// active employee once the workspace's seats are all in use (SQLSTATE SL001,
+// DETAIL {"used", "allowance"}). Nothing was written; the owner frees a seat
+// by deactivating someone.
+function seatsFullResponse(error: { code?: string; details?: string | null }) {
+  if (error?.code !== "SL001") return null;
+  let used = 0;
+  let allowance = 0;
+  try {
+    const d = JSON.parse(error.details ?? "{}");
+    used = Number(d.used) || 0;
+    allowance = Number(d.allowance) || 0;
+  } catch {
+    // keep zeros; the message below still applies
+  }
+  return json(
+    {
+      error: `All ${allowance} employee seats are in use. Deactivate an employee to free a seat.`,
+      code: "EMPLOYEE_SEATS_FULL",
+      seats: { used, allowance, available: Math.max(0, allowance - used) },
+    },
+    409
+  );
+}
+
 export async function GET() {
   try {
     const session = await getSession();
@@ -26,13 +51,20 @@ export async function GET() {
 
     const { data, error } = await supabaseAdmin
       .from("employees")
-      .select("id, name, phone, color, active, email, position")
+      .select("id, name, phone, color, active, email, position, owner_profile_id")
       .eq("workspace_id", session.workspaceId)
       .eq("is_demo", isTester)
       .order("name", { ascending: true });
 
     if (error) throw error;
-    return json(data ?? []);
+    // is_you: the signed-in owner's own record (migrations/048). The profile
+    // id itself never leaves the server.
+    const me = session.role === "owner" ? session.authUserId : null;
+    const rows = ((data ?? []) as Record<string, unknown>[]).map(({ owner_profile_id, ...rest }) => ({
+      ...rest,
+      is_you: !!me && owner_profile_id === me,
+    }));
+    return json(rows);
   } catch (e: any) {
     console.error("GET_EMPLOYEES_ERROR", e);
     return json({ error: e?.message || "Server error" }, 500);
@@ -81,7 +113,11 @@ export async function POST(req: Request) {
       .select("id, name, phone, color, active, email, position")
       .single();
 
-    if (error) throw error;
+    if (error) {
+      const seatsFull = seatsFullResponse(error);
+      if (seatsFull) return seatsFull;
+      throw error;
+    }
     return json(data, 201);
   } catch (e: any) {
     console.error("CREATE_EMPLOYEE_ERROR", e);
@@ -139,7 +175,11 @@ export async function PATCH(req: Request) {
       .eq("id", id)
       .eq("workspace_id", session.workspaceId);
 
-    if (error) throw error;
+    if (error) {
+      const seatsFull = seatsFullResponse(error);
+      if (seatsFull) return seatsFull;
+      throw error;
+    }
     return json({ ok: true });
   } catch (e: any) {
     console.error("UPDATE_EMPLOYEE_ERROR", e);

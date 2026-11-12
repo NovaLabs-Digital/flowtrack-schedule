@@ -98,6 +98,9 @@ export type Employee = {
   color: string;
   active: boolean;
   position?: string | null;
+  // The signed-in owner's own employee record (migrations/048): linked by
+  // the owner ("This is me"); does not use an employee seat.
+  is_you?: boolean;
 };
 
 export type EmployeeHours = {
