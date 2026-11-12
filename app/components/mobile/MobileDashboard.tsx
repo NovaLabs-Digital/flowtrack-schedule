@@ -202,7 +202,8 @@ export default function MobileDashboard({
     <div className="h-[100dvh] flex flex-col bg-slate-100 text-slate-900 overflow-hidden safe-area-top">
       {isTester && (
         <div className="relative shrink-0 bg-amber-400 text-amber-950 text-center text-[11px] font-semibold py-1 px-3">
-          Demo Mode — fictional data, for testing only.
+          {/* Room for the Demo Controls button on the right, so it never covers the text. */}
+          <span className={isLocalDemo ? "block pr-24" : undefined}>Demo Mode — fictional data, for testing only.</span>
           {isLocalDemo && <MobileDemoControls />}
         </div>
       )}

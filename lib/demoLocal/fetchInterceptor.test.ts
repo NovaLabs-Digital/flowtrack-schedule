@@ -8,6 +8,11 @@ import { zonedDateValue } from "@/lib/timezone";
 import { addDays } from "@/lib/recurrence";
 import { effectiveBusinessHours } from "@/lib/businessHours";
 import { DEMO_TIMEZONE } from "@/lib/demoLocal/fixtures/generate";
+import { DateTime } from "luxon";
+import type { Appointment } from "@/app/components/dashboard/types";
+
+type Snapshot = ReturnType<typeof getSnapshot>;
+type HistoryRow = { kindLabel: string; subject: string | null; status: { code: string } };
 
 // Freeze the clock so "past/today/future" in the fixture and in the
 // handlers always agree, regardless of how long the suite takes.
@@ -701,7 +706,7 @@ describe("installDemoFetchInterceptor -- Message History", () => {
     return {
       id: m.id,
       channel: m.channel,
-      kindLabel: m.subject ? kindLabel : `[Simulated] ${kindLabel}`,
+      kindLabel: `[Simulated] ${kindLabel}`,
       toValue: m.to_value,
       body: m.body,
       subject: m.subject ? `[Simulated] ${m.subject}` : null,
@@ -731,7 +736,7 @@ describe("installDemoFetchInterceptor -- Message History", () => {
     assert.equal(msgs.filter((m) => classifyMessageStatus(m.provider_id, m.channel).code === "failed").length, 1);
   });
 
-  test("every simulated message is visibly labeled, SMS (no subject) via its kind label", async () => {
+  test("every simulated message is visibly labeled in the list (kind label), and an email also in its subject", async () => {
     const msgs = getSnapshot().messagesSent;
     const sms = msgs.find((m) => m.channel === "sms")!;
     const row = (await call(`/api/appointments/messages?appointment_id=${sms.appointment_id}`)).data.messages.find((r: any) => r.id === sms.id);
@@ -740,7 +745,7 @@ describe("installDemoFetchInterceptor -- Message History", () => {
     const email = msgs.find((m) => m.channel === "email")!;
     const e = (await call(`/api/appointments/messages?appointment_id=${email.appointment_id}`)).data.messages.find((r: any) => r.id === email.id);
     assert.ok(e.subject.startsWith("[Simulated] "));
-    assert.ok(!e.kindLabel.startsWith("[Simulated]"));
+    assert.ok(e.kindLabel.startsWith("[Simulated] "));
   });
 
   test("GET /api/clients/messages joins through the client's appointments and adds appointmentId", async () => {
@@ -834,43 +839,221 @@ describe("clearDemoSession", () => {
   });
 });
 
-describe("one-time demo appointment cancellation", () => {
-  test("create, cancel, and repeat cancellation retain history and never reach the server", async () => {
+describe("demo appointment cancellation (same rules as app/api/appointments/delete)", () => {
+  const createOne = async (extra: Record<string, unknown> = {}) => {
     const snap = getSnapshot();
-    const created = await call("/api/appointments/create", "POST", {
+    const res = await call("/api/appointments/create", "POST", {
       client_id: snap.clients[0].id, service_type: "Window Washing",
       scheduled_for: addDays(NOW, 4, TZ).toISOString(), duration_minutes: 90,
-      employee_ids: [snap.employees[0].id], price_cents: 12000,
+      employee_ids: [snap.employees[0].id], price_cents: 12000, ...extra,
     });
-    const id = created.data.appointmentId;
+    assert.equal(res.status, 200);
+    return res.data.appointmentId as string;
+  };
+
+  test("one-time: kept and marked cancelled; the chosen messages are recorded as simulated, never sent", async () => {
+    const id = await createOne();
     const before = getSnapshot();
-    const result = await call("/api/appointments/delete", "POST", { appointment_id: id, mode: "single", notify_channel: "both" });
+    const result = await call("/api/appointments/delete", "POST", { appointment_id: id, mode: "single", notify_channel: "both", cancellation_reason: "  Client travelling  " });
     assert.equal(result.status, 200);
+    assert.equal(result.data.cancelled, 1);
     const after = getSnapshot();
     assert.equal(after.appointments.length, before.appointments.length);
-    assert.equal(after.appointments.find(a => a.id === id)?.status, "cancelled");
-    assert.ok(after.appointments.find(a => a.id === id)?.cancelled_at);
-    assert.deepEqual(after.appointments.filter(a => a.id !== id), before.appointments.filter(a => a.id !== id));
+    const appt = after.appointments.find((a) => a.id === id)!;
+    assert.equal(appt.status, "cancelled");
+    assert.ok(appt.cancelled_at);
+    assert.equal(appt.cancellation_reason, "Client travelling");
+    assert.deepEqual(after.appointments.filter((a) => a.id !== id), before.appointments.filter((a) => a.id !== id));
     assert.deepEqual(after.assignments, before.assignments);
-    assert.deepEqual(after.messagesSent, before.messagesSent);
+    const added = after.messagesSent.slice(before.messagesSent.length);
+    assert.deepEqual(added.map((m) => [m.channel, m.kind, m.appointment_id, m.simulated]).sort(), [["email", "cancel", id, true], ["sms", "cancel", id, true]]);
+    const history = await call(`/api/appointments/messages?appointment_id=${id}`);
+    assert.ok(history.data.messages.every((m: HistoryRow) => m.kindLabel.startsWith("[Simulated] ")));
+    assert.ok(history.data.messages.every((m: HistoryRow) => m.status.code !== "sent"), "never shown as a confirmed send");
+    // Repeating is a harmless no-op.
     assert.equal((await call("/api/appointments/delete", "POST", { appointment_id: id, mode: "single" })).status, 200);
     assert.equal(originalFetch.mock.callCount(), 0);
   });
-  test("unknown, invalid, recurring, and historical requests fail without mutations", async () => {
+
+  test("no channel chosen, or the client's automatic messages off: nothing is recorded", async () => {
+    const id = await createOne();
+    const before = getSnapshot().messagesSent.length;
+    await call("/api/appointments/delete", "POST", { appointment_id: id, mode: "single", notify_channel: "none" });
+    assert.equal(getSnapshot().messagesSent.length, before);
+    const snap = getSnapshot();
+    setSnapshot({ ...snap, clients: snap.clients.map((c, i) => (i === 0 ? { ...c, auto_email: false, auto_sms: false } : c)) });
+    const id2 = await createOne({ scheduled_for: addDays(NOW, 5, TZ).toISOString() });
+    await call("/api/appointments/delete", "POST", { appointment_id: id2, mode: "single", notify_channel: "both" });
+    assert.equal(getSnapshot().messagesSent.length, before);
+  });
+
+  test("recurring, only this: that occurrence alone is cancelled", async () => {
+    const id = await createOne({ frequency_type: "weekly", repeat_weeks: 1 });
     const before = getSnapshot();
-    const recurring = before.appointments.find(a => a.series_id)!;
-    const historical = before.appointments.find(a => !a.series_id && new Date(a.scheduled_for).getTime() < NOW.getTime() && a.status !== "cancelled")!;
-    assert.ok(recurring);
-    assert.ok(historical);
+    const seriesId = before.appointments.find((a) => a.id === id)!.series_id!;
+    assert.ok(before.appointments.filter((a) => a.series_id === seriesId).length > 10);
+    const second = before.appointments.filter((a) => a.series_id === seriesId).sort((a, b) => a.scheduled_for.localeCompare(b.scheduled_for))[1];
+    const r = await call("/api/appointments/delete", "POST", { appointment_id: second.id, mode: "single" });
+    assert.equal(r.status, 200);
+    const after = getSnapshot();
+    assert.deepEqual(after.appointments.filter((a) => a.series_id === seriesId && a.status === "cancelled").map((a) => a.id), [second.id]);
+  });
+
+  test("recurring, this and future: this and every later occurrence cancelled, earlier kept, the series stopped", async () => {
+    const snap = getSnapshot();
+    const registry = snap.recurringSeries[0];
+    const live = snap.appointments.filter((a) => a.series_id === registry.id && a.status === "scheduled" && new Date(a.scheduled_for).getTime() > NOW.getTime()).sort((a, b) => a.scheduled_for.localeCompare(b.scheduled_for));
+    assert.ok(live.length >= 2);
+    const from = live[1];
+    const r = await call("/api/appointments/delete", "POST", { appointment_id: from.id, mode: "future" });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.cancelled, live.length - 1);
+    const after = getSnapshot();
+    assert.equal(after.appointments.find((a) => a.id === live[0].id)!.status, "scheduled");
+    for (const a of live.slice(1)) assert.equal(after.appointments.find((x) => x.id === a.id)!.status, "cancelled");
+    assert.equal(after.recurringSeries.find((s) => s.id === registry.id)!.status, "stopped");
+  });
+
+  test("past appointments: corrected one at a time; a completed job needs a reason; the reported date is kept", async () => {
+    const snap = getSnapshot();
+    const isPast = (a: (typeof snap.appointments)[number]) => new Date(a.scheduled_for).getTime() < NOW.getTime() && a.status !== "cancelled";
+    const completed = snap.appointments.find((a) => isPast(a) && snap.assignments.some((x) => x.appointment_id === a.id)
+      && snap.assignments.filter((x) => x.appointment_id === a.id).every((x) => x.actual_completed_at))!;
+    assert.ok(completed, "fixture has a completed past job");
+    assert.equal((await call("/api/appointments/delete", "POST", { appointment_id: completed.id, mode: "future" })).status, 409);
+    const noReason = await call("/api/appointments/delete", "POST", { appointment_id: completed.id, mode: "single" });
+    assert.equal(noReason.status, 400);
+    assert.equal(noReason.data.code, "CANCELLATION_REASON_REQUIRED");
+    assert.equal((await call("/api/appointments/delete", "POST", { appointment_id: completed.id, mode: "single", reason: "x", cancellation_reported_date: "2026-02-30" })).status, 400);
+    assert.deepEqual(getSnapshot(), snap, "refusals change nothing");
+    const ok = await call("/api/appointments/delete", "POST", {
+      appointment_id: completed.id, mode: "single", cancellation_reason: "Client cancelled at the door", cancellation_reported_date: daysAgo(1),
+    });
+    assert.equal(ok.status, 200);
+    const fixed = getSnapshot().appointments.find((a) => a.id === completed.id)!;
+    assert.equal(fixed.status, "cancelled");
+    assert.equal(fixed.cancellation_reason, "Client cancelled at the door");
+    assert.equal(fixed.cancellation_reported_date, daysAgo(1));
+    assert.deepEqual(getSnapshot().assignments, snap.assignments, "worked-time records are kept");
+    assert.equal((await call("/api/appointments/delete", "POST", { appointment_id: completed.id, mode: "single" })).data.already, true);
+  });
+
+  test("invalid requests fail without changes", async () => {
+    const before = getSnapshot();
+    const any = before.appointments[0];
     for (const [body, status] of [
       [{ mode: "single" }, 400],
       [{ appointment_id: "missing", mode: "single" }, 404],
-      [{ appointment_id: recurring.id, mode: "single" }, 400],
-      [{ appointment_id: historical.id, mode: "single" }, 400],
-      [{ appointment_id: historical.id, mode: "bad" }, 400],
+      [{ appointment_id: any.id, mode: "bad" }, 400],
     ] as const) assert.equal((await call("/api/appointments/delete", "POST", body)).status, status);
     assert.deepEqual(getSnapshot(), before);
     assert.equal(originalFetch.mock.callCount(), 0);
+  });
+});
+
+describe("demo recurrence change (same outcome as manage-recurrence / migrations 029)", () => {
+  const editBody = (a: Appointment, snap: Snapshot, extra: Record<string, unknown>) => ({
+    appointment_id: a.id,
+    client_operation_id: crypto.randomUUID(),
+    fields: {
+      scheduled_for: a.scheduled_for, scheduled_end: a.scheduled_end ?? null, service_type: a.service_type, notes: a.notes ?? null,
+      duration_minutes: a.duration_minutes ?? 60, price_cents: a.price_cents ?? null, team_color: a.team_color ?? null, status: "scheduled",
+    },
+    employee_ids: snap.assignments.filter((x) => x.appointment_id === a.id).map((x) => x.employee_id),
+    expected: {},
+    ...extra,
+  });
+
+  test("one-time -> every 2 weeks: a new active series of future visits, created locally", async () => {
+    const snap = getSnapshot();
+    const created = await call("/api/appointments/create", "POST", {
+      client_id: snap.clients[0].id, service_type: "Window Washing", scheduled_for: addDays(NOW, 3, TZ).toISOString(),
+      duration_minutes: 60, employee_ids: [snap.employees[0].id],
+    });
+    const s1 = getSnapshot();
+    const a = s1.appointments.find((x) => x.id === created.data.appointmentId)!;
+    const r = await call("/api/appointments/manage-recurrence", "POST", editBody(a, s1, { frequency_type: "weekly", repeat_weeks: 2 }));
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.ok, true);
+    assert.ok(r.data.created > 5);
+    const after = getSnapshot();
+    const anchor = after.appointments.find((x) => x.id === a.id)!;
+    assert.ok(anchor.series_id);
+    assert.equal(anchor.frequency_type, "weekly");
+    const series = after.appointments.filter((x) => x.series_id === anchor.series_id).sort((x, y) => x.scheduled_for.localeCompare(y.scheduled_for));
+    assert.equal(series.length, r.data.created + 1);
+    // Every visit at the same local time, two weeks apart (DST-safe generator).
+    const local = series.map((x) => DateTime.fromISO(x.scheduled_for).setZone(TZ));
+    for (let i = 1; i < local.length; i++) {
+      assert.equal(local[i].toFormat("HH:mm"), local[0].toFormat("HH:mm"));
+      assert.equal(Math.round(local[i].startOf("day").diff(local[i - 1].startOf("day"), "days").days), 14);
+    }
+    assert.equal(after.recurringSeries.find((s) => s.id === anchor.series_id)!.status, "active");
+    assert.ok(series.every((x) => after.assignments.some((y) => y.appointment_id === x.id && y.employee_id === snap.employees[0].id)));
+    assert.equal(originalFetch.mock.callCount(), 0);
+  });
+
+  test("recurring -> one-time: later visits are cancelled (kept as history), visits with recorded work are protected", async () => {
+    const snap = getSnapshot();
+    const created = await call("/api/appointments/create", "POST", {
+      client_id: snap.clients[1].id, service_type: "Lawn Mowing & Edging", scheduled_for: addDays(NOW, 2, TZ).toISOString(),
+      duration_minutes: 60, employee_ids: [snap.employees[1].id], frequency_type: "weekly", repeat_weeks: 1,
+    });
+    const s1 = getSnapshot();
+    const anchor = s1.appointments.find((x) => x.id === created.data.appointmentId)!;
+    const later = s1.appointments.filter((x) => x.series_id === anchor.series_id && x.id !== anchor.id).sort((x, y) => x.scheduled_for.localeCompare(y.scheduled_for));
+    // Record work on one later visit: it must be kept.
+    setSnapshot({ ...s1, assignments: s1.assignments.map((x) => (x.appointment_id === later[0].id ? { ...x, actual_started_at: new Date().toISOString() } : x)) });
+    const s2 = getSnapshot();
+    const r = await call("/api/appointments/manage-recurrence", "POST", editBody(anchor, s2, { frequency_type: "one_time" }));
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.cancelled, later.length - 1);
+    assert.equal(r.data.protectedOccurrences, 1);
+    assert.match(r.data.notice.message, /recorded work/);
+    const after = getSnapshot();
+    assert.equal(after.appointments.find((x) => x.id === anchor.id)!.series_id, null);
+    assert.equal(after.appointments.find((x) => x.id === later[0].id)!.status, "scheduled");
+    for (const x of later.slice(1)) assert.equal(after.appointments.find((y) => y.id === x.id)!.status, "cancelled");
+    assert.equal(after.appointments.length, s2.appointments.length, "nothing removed");
+  });
+
+  test("refusals change nothing: past record, archived client, unknown employee, invalid interval", async () => {
+    const snap = getSnapshot();
+    const past = snap.appointments.find((a) => new Date(a.scheduled_for).getTime() < NOW.getTime() - 86_400_000 && a.status !== "cancelled")!;
+    const pastRes = await call("/api/appointments/manage-recurrence", "POST", editBody(past, snap, { frequency_type: "weekly", repeat_weeks: 1 }));
+    assert.equal(pastRes.status, 409, JSON.stringify(pastRes.data));
+    const future = snap.appointments.find((a) => !a.series_id && a.status === "scheduled" && new Date(a.scheduled_for).getTime() > NOW.getTime())!;
+    assert.equal((await call("/api/appointments/manage-recurrence", "POST", { ...editBody(future, snap, { frequency_type: "weekly", repeat_weeks: 1 }), employee_ids: ["nobody"] })).status, 400);
+    assert.equal((await call("/api/appointments/manage-recurrence", "POST", { ...editBody(future, snap, { frequency_type: "weekly", repeat_weeks: 1 }), employee_ids: [crypto.randomUUID()] })).status, 409);
+    assert.equal((await call("/api/appointments/manage-recurrence", "POST", editBody(future, snap, { frequency_type: "weekly", repeat_weeks: 9 }))).status, 400);
+    assert.deepEqual(getSnapshot(), snap);
+  });
+});
+
+describe("demo This & future time change keeps local clock time across daylight saving (lib/localShift)", () => {
+  test("moving a Friday 9:00 visit just before the March change to Monday 9:00 keeps every later visit at Monday 9:00", async () => {
+    const snap = getSnapshot();
+    // Weekly on Fridays from Mar 12, 2027; clocks change Sun Mar 14, 2027.
+    // Moving Fri Mar 12 9:00 to Mon Mar 15 9:00 is 3 days minus 1 hour of
+    // elapsed time: a fixed offset would put every later visit at 8:00.
+    const startLocal = DateTime.fromObject({ year: 2027, month: 3, day: 12, hour: 9 }, { zone: TZ });
+    const created = await call("/api/appointments/create", "POST", {
+      client_id: snap.clients[2].id, service_type: "Window Washing", scheduled_for: startLocal.toUTC().toISO(),
+      scheduled_end: startLocal.plus({ hours: 1 }).toUTC().toISO(), duration_minutes: 60, employee_ids: [], frequency_type: "weekly", repeat_weeks: 1,
+    });
+    assert.equal(created.status, 200);
+    const anchor = getSnapshot().appointments.find((a) => a.id === created.data.appointmentId)!;
+    const newStart = startLocal.plus({ days: 3 });
+    const r = await call("/api/appointments/update", "PATCH", {
+      appointment_id: anchor.id, mode: "future",
+      scheduled_for: newStart.toUTC().toISO(), scheduled_end: newStart.plus({ hours: 1 }).toUTC().toISO(),
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const series = getSnapshot().appointments.filter((a) => a.series_id === anchor.series_id);
+    assert.ok(series.length > 10);
+    const local = series.map((a) => DateTime.fromISO(a.scheduled_for).setZone(TZ));
+    assert.deepEqual([...new Set(local.map((d) => d.toFormat("ccc HH:mm")))], ["Mon 09:00"]);
+    assert.deepEqual([...new Set(series.map((a) => DateTime.fromISO(a.scheduled_end!).setZone(TZ).toFormat("HH:mm")))], ["10:00"]);
   });
 });
 

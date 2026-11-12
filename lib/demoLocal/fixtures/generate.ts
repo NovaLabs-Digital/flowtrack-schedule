@@ -247,8 +247,11 @@ export function generateDemoFixture(now: Date): DemoFixtureBundle {
     status: c.status ?? "active",
     notes: c.notes ?? null,
     preferred_contact_method: c.preferred ?? "",
-    auto_email: false,
-    auto_sms: false,
+    // Automatic client messages on, as in a typical real business, so the
+    // "Notify client" choices have a visible (simulated) result in Message
+    // History. Nothing is ever actually sent from the demo.
+    auto_email: true,
+    auto_sms: true,
   }));
 
   const appointments: Appointment[] = [];

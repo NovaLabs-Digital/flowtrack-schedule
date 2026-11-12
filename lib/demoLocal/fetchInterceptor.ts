@@ -33,7 +33,10 @@ import {
 } from "@/lib/messageStatus";
 import { generateFutureDatesSafe } from "@/lib/recurrence";
 import { nowInBusinessTz, zonedDateTimeToUTC, zonedDateValue, zonedTimeValue, effectiveTimezone, normalizeTimezone } from "@/lib/timezone";
-import { toDateInputValue, isHistoricalAppointment } from "@/lib/payroll";
+import { toDateInputValue, isHistoricalAppointment, deriveAppointmentTrackingStatus } from "@/lib/payroll";
+import { localMoveBetween, applyLocalMove } from "@/lib/localShift";
+import { buildRecurrenceChangeRequest, mapRecurrenceRpcResult } from "@/lib/recurrenceChange";
+import { cancelTemplates, changeTemplates, confirmationTemplates } from "@/lib/templates";
 import { isValidPriceCents } from "@/lib/money";
 import { validateTeamColorInput } from "@/lib/teamColor";
 import { effectiveBusinessHours, normalizeBusinessHours } from "@/lib/businessHours";
@@ -44,6 +47,7 @@ import type { ConsistencyBlocker, ConsistencyResult, OccurrenceSnapshot, Recurri
 import { DateTime } from "luxon";
 import {
   DEMO_LOCAL_WORKSPACE_ID,
+  DEMO_SIMULATED_PROVIDER_ID,
   DEMO_TIMEZONE,
   type DemoEmployee,
   type DemoEmployeeHours,
@@ -133,6 +137,50 @@ function addLocalDays(d: Date, n: number): Date {
 
 const byScheduledFor = (a: { scheduled_for: string; id: string }, b: { scheduled_for: string; id: string }) =>
   a.scheduled_for.localeCompare(b.scheduled_for) || a.id.localeCompare(b.id);
+
+// ---------------------------------------------------------------------
+// Simulated client messages
+// ---------------------------------------------------------------------
+// Where the real route would email/text the client (the owner picked a
+// channel, the client has that contact and its automatic messages switched
+// on -- the same gate as lib/notify.ts's shouldSend plus the routes' own
+// auto_email/auto_sms checks), the demo sends NOTHING and records what would
+// have been sent, built from the real templates, as a simulated Message
+// History row (shown "[Simulated] ...", never as a confirmed send).
+type MessageTemplates = { email: { subject: string; body: string }; sms: string };
+
+function wantsChannel(channel: unknown, medium: "email" | "sms"): boolean {
+  return channel === "both" || channel === medium;
+}
+
+function simulatedMessages(
+  snap: DemoFixtureBundle,
+  appointmentId: string,
+  clientId: string,
+  channel: unknown,
+  kind: "confirmation" | "update" | "cancel",
+  build: (clientName: string, companyName: string) => MessageTemplates
+): DemoMessageSent[] {
+  if (channel !== "email" && channel !== "sms" && channel !== "both") return [];
+  const client = snap.clients.find((c) => c.id === clientId);
+  if (!client) return [];
+  const t = build(client.name, snap.companySettings.company_name || "Your service provider");
+  const createdAt = new Date().toISOString();
+  const rows: DemoMessageSent[] = [];
+  const row = (ch: "email" | "sms", to: string, body: string, subject: string | null): DemoMessageSent => ({
+    id: newId(), workspace_id: DEMO_LOCAL_WORKSPACE_ID, appointment_id: appointmentId, channel: ch, kind,
+    to_value: to, body, subject, provider_id: DEMO_SIMULATED_PROVIDER_ID, scheduled_for: null, created_at: createdAt, simulated: true,
+  });
+  if (client.email && client.auto_email && wantsChannel(channel, "email")) rows.push(row("email", client.email, t.email.body, t.email.subject));
+  if (client.phone && client.auto_sms && wantsChannel(channel, "sms")) rows.push(row("sms", client.phone, t.sms, null));
+  return rows;
+}
+
+// Recorded work on an appointment: a Job Tracking timestamp or saved hours.
+function hasRecordedWork(snap: DemoFixtureBundle, appointmentId: string): boolean {
+  return snap.assignments.some((a) => a.appointment_id === appointmentId && (a.actual_started_at || a.actual_completed_at))
+    || snap.employeeHours.some((h) => h.appointment_id === appointmentId);
+}
 
 // ---------------------------------------------------------------------
 // POST /api/appointments/create  (owner branch of the real route)
@@ -265,11 +313,15 @@ async function handleCreateAppointment(req: Request): Promise<Response> {
   );
 
   snap = getSnapshot();
+  const first = newAppointments[0];
+  const confirmation = simulatedMessages({ ...snap, clients }, first.id, first.client_id, body.notify_channel, "confirmation", (name, company) =>
+    confirmationTemplates(name, service_type, first.scheduled_for, "(cancellation link — not created in the demo)", company, tz));
   setSnapshot({
     ...snap,
     clients,
     appointments: [...snap.appointments, ...newAppointments].sort(byScheduledFor),
     assignments: [...snap.assignments, ...newAssignments],
+    messagesSent: [...snap.messagesSent, ...confirmation],
   });
   notify();
 
@@ -344,9 +396,42 @@ async function handleUpdateAppointment(req: Request): Promise<Response> {
     apptUpdate.employee_id = employee_ids.length === 1 ? employee_ids[0] : null;
   }
 
-  const startDeltaMs = apptUpdate.scheduled_for ? new Date(apptUpdate.scheduled_for).getTime() - new Date(existing.scheduled_for).getTime() : 0;
-  const oldEnd = existing.scheduled_end ? new Date(existing.scheduled_end).getTime() : null;
-  const endDeltaMs = apptUpdate.scheduled_end && oldEnd ? new Date(apptUpdate.scheduled_end).getTime() - oldEnd : startDeltaMs;
+  // "This & future" moves later occurrences exactly like the real route
+  // (lib/localShift.ts): by the owner's change in the business's local
+  // calendar and clock, never a fixed elapsed-time offset (which lands an
+  // hour off across a daylight-saving change), each keeping its own duration
+  // plus any change made to this one's duration.
+  const startChanges = !!apptUpdate.scheduled_for && new Date(apptUpdate.scheduled_for).getTime() !== new Date(existing.scheduled_for).getTime();
+  const durationDeltaMs =
+    apptUpdate.scheduled_end && existing.scheduled_end
+      ? new Date(apptUpdate.scheduled_end).getTime() - new Date(existing.scheduled_end).getTime() -
+        ((apptUpdate.scheduled_for ? new Date(apptUpdate.scheduled_for).getTime() : new Date(existing.scheduled_for).getTime()) -
+          new Date(existing.scheduled_for).getTime())
+      : 0;
+  const move = startChanges ? localMoveBetween(existing.scheduled_for, apptUpdate.scheduled_for!, DEMO_TIMEZONE) : null;
+  const isFutureSibling = (a: Appointment) =>
+    a.id !== appointment_id && a.series_id === existing.series_id && a.status === "scheduled" && a.scheduled_for > existing.scheduled_for;
+  const siblingTimes = new Map<string, { scheduled_for?: string; scheduled_end?: string }>();
+  if (mode === "future" && existing.series_id && (move || durationDeltaMs)) {
+    for (const a of snap.appointments.filter(isFutureSibling)) {
+      const oldStartMs = new Date(a.scheduled_for).getTime();
+      let startMs = oldStartMs;
+      const target: { scheduled_for?: string; scheduled_end?: string } = {};
+      if (move) {
+        const moved = applyLocalMove(a.scheduled_for, move, DEMO_TIMEZONE);
+        if (!moved.ok) {
+          return json({
+            error: `A later appointment in this series would move to ${moved.local}, a time that doesn't exist because of a daylight-saving change. Nothing was saved. Move only this appointment, or choose another time.`,
+            code: "NONEXISTENT_LOCAL_TIME",
+          }, 400);
+        }
+        startMs = new Date(moved.iso).getTime();
+        target.scheduled_for = moved.iso;
+      }
+      if (a.scheduled_end) target.scheduled_end = new Date(startMs + (new Date(a.scheduled_end).getTime() - oldStartMs) + durationDeltaMs).toISOString();
+      siblingTimes.set(a.id, target);
+    }
+  }
 
   const nowIso = new Date().toISOString();
   let appointments = snap.appointments.map((a) => (a.id === appointment_id ? { ...a, ...apptUpdate } : a));
@@ -380,14 +465,10 @@ async function handleUpdateAppointment(req: Request): Promise<Response> {
       if (apptUpdate.employee_id !== undefined) sibUpdate.employee_id = apptUpdate.employee_id;
       if (apptUpdate.price_cents !== undefined) sibUpdate.price_cents = apptUpdate.price_cents;
       if (apptUpdate.team_color !== undefined) sibUpdate.team_color = apptUpdate.team_color;
-      if (startDeltaMs) sibUpdate.scheduled_for = new Date(new Date(a.scheduled_for).getTime() + startDeltaMs).toISOString();
-      if (endDeltaMs && a.scheduled_end) sibUpdate.scheduled_end = new Date(new Date(a.scheduled_end).getTime() + endDeltaMs).toISOString();
-      return { ...a, ...sibUpdate };
+      return { ...a, ...sibUpdate, ...siblingTimes.get(a.id) };
     });
     if (employee_ids !== undefined) {
-      const siblingIds = new Set(
-        appointments.filter((a) => a.series_id === existing.series_id && a.id !== appointment_id && a.status === "scheduled" && a.scheduled_for > existing.scheduled_for).map((a) => a.id)
-      );
+      const siblingIds = new Set(snap.appointments.filter(isFutureSibling).map((a) => a.id));
       assignments = assignments.filter((a) => !siblingIds.has(a.appointment_id));
       assignments = [
         ...assignments,
@@ -400,7 +481,10 @@ async function handleUpdateAppointment(req: Request): Promise<Response> {
     }
   }
 
-  setSnapshot({ ...snap, appointments: appointments.sort(byScheduledFor), assignments });
+  const updated = appointments.find((a) => a.id === appointment_id)!;
+  const changeMessages = simulatedMessages(snap, appointment_id, existing.client_id, body.notify_channel, "update", (name, company) =>
+    changeTemplates(name, updated.service_type, updated.scheduled_for, company, DEMO_TIMEZONE));
+  setSnapshot({ ...snap, appointments: appointments.sort(byScheduledFor), assignments, messagesSent: [...snap.messagesSent, ...changeMessages] });
   notify();
   return json({ ok: true });
 }
@@ -1229,7 +1313,9 @@ function mapMessage(m: DemoMessageSent) {
   return {
     id: m.id,
     channel: m.channel,
-    kindLabel: m.simulated && !subject ? SIMULATED_PREFIX + kindLabel : kindLabel,
+    // The list row shows only the kind label, so it always carries the
+    // marker; an email's subject (shown when opened) carries it too.
+    kindLabel: m.simulated ? SIMULATED_PREFIX + kindLabel : kindLabel,
     toValue: m.to_value,
     body: m.body,
     subject: m.simulated && subject ? SIMULATED_PREFIX + subject : subject,
@@ -1334,36 +1420,212 @@ async function handleSaveCompanySettings(req: Request): Promise<Response> {
 // passed to the handler via `url`). Exact rather than prefix matching so
 // /api/billing/completed-jobs can never accidentally swallow
 // /api/billing/completed-jobs/update or any future sibling path.
-// One-time deletion follows the real UI's cancellation behavior: retain the
-// appointment and its history, mark it cancelled, and never send a message.
+// POST /api/appointments/delete -- app/api/appointments/delete/route.ts: the
+// owner's cancellation. The appointment is kept and marked cancelled (never
+// removed), with the same rules as the real route:
+//   * a past (historical) appointment is corrected one occurrence at a time,
+//     and correcting a COMPLETED job to cancelled requires a reason;
+//   * "single" cancels this occurrence (a recurring series simply skips it);
+//   * "future" cancels this and every later scheduled occurrence of its
+//     series (or, without a series, of the same client and service) and
+//     stops the series;
+//   * no message is sent: a chosen channel is recorded as a simulated one.
+const CANCELLATION_REASON_MAX_LENGTH = 2000;
+
+function isValidDateInput(value: string): boolean {
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  const parsed = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00.000Z`);
+  return !isNaN(parsed.getTime()) && parsed.getUTCFullYear() === Number(m[1])
+    && parsed.getUTCMonth() + 1 === Number(m[2]) && parsed.getUTCDate() === Number(m[3]);
+}
+
 async function handleDeleteAppointment(req: Request): Promise<Response> {
-  const body = await req.json().catch(() => ({}));
+  const body = (await readJsonBody(req)) ?? {};
   const id = typeof body.appointment_id === "string" ? body.appointment_id.trim() : "";
   if (!id) return json({ error: "Missing appointment_id" }, 400);
-  if (body.mode !== "single" && body.mode !== "future") return json({ error: "Invalid mode" }, 400);
+  const mode = body.mode;
+  if (mode !== "single" && mode !== "future") return json({ error: "Invalid mode" }, 400);
   const snap = getSnapshot();
   const appt = snap.appointments.find((a) => a.id === id);
   if (!appt) return json({ error: "Appointment not found" }, 404);
-  if (appt.series_id || (appt.frequency_type && appt.frequency_type !== "one_time")) {
-    return json({ error: "Recurring appointment cancellation is not available in this demo yet. Try a one-time appointment." }, 400);
-  }
-  // Never silently expand a one-time action to other jobs for this client.
-  if (body.mode !== "single") return json({ error: "Choose Only this appointment to cancel a one-time demo appointment." }, 400);
-  if (appt.status === "cancelled") return json({ ok: true });
+
   const assignments = snap.assignments.filter((a) => a.appointment_id === id);
-  if (isHistoricalAppointment(appt, assignments)) {
-    return json({ error: "Choose a current or future one-time appointment. Historical cancellation corrections are not available in this demo yet." }, 400);
+  const historical = isHistoricalAppointment(appt, assignments);
+  const reason = typeof body.cancellation_reason === "string" ? body.cancellation_reason.trim().slice(0, CANCELLATION_REASON_MAX_LENGTH) : "";
+  const reportedDate = typeof body.cancellation_reported_date === "string" ? body.cancellation_reported_date.trim() : "";
+  if (reportedDate && !isValidDateInput(reportedDate)) return json({ error: "Invalid cancellation reported date." }, 400);
+
+  if (historical) {
+    if (appt.status === "cancelled") return json({ ok: true, already: true, cancelled: 0 });
+    if (mode !== "single") {
+      return json({ error: "A past appointment can only be corrected one occurrence at a time. Future occurrences are unaffected.", code: "HISTORICAL_CANCEL_SINGLE_ONLY" }, 409);
+    }
+    if (deriveAppointmentTrackingStatus(assignments) === "completed" && !reason) {
+      return json({ error: "A reason is required to correct a completed appointment to cancelled.", code: "CANCELLATION_REASON_REQUIRED" }, 400);
+    }
   }
-  setSnapshot({ ...snap, appointments: snap.appointments.map((a) => a.id === id
-    ? { ...a, status: "cancelled", cancelled_at: new Date().toISOString() } : a) });
+
+  const fields: Partial<Appointment> = { status: "cancelled", cancelled_at: new Date().toISOString() };
+  if (reason) fields.cancellation_reason = reason;
+  if (reportedDate) fields.cancellation_reported_date = reportedDate;
+
+  let ids: string[];
+  let recurringSeries = snap.recurringSeries;
+  if (mode === "single") {
+    ids = [id];
+  } else {
+    ids = snap.appointments
+      .filter((a) => a.status === "scheduled" && a.scheduled_for >= appt.scheduled_for
+        && (appt.series_id ? a.series_id === appt.series_id : a.client_id === appt.client_id && a.service_type === appt.service_type))
+      .map((a) => a.id);
+    if (appt.series_id) {
+      const nowIso = new Date().toISOString();
+      recurringSeries = recurringSeries.map((r) => (r.id === appt.series_id && (r.status === "active" || r.status === "review_required")
+        ? { ...r, status: "stopped" as const, stopped_at: nowIso, updated_at: nowIso } : r));
+    }
+  }
+  const target = new Set(ids);
+  const messages = ids.length > 0
+    ? simulatedMessages(snap, id, appt.client_id, body.notify_channel, "cancel", (name, company) => cancelTemplates(name, appt.service_type, company, false))
+    : [];
+  setSnapshot({
+    ...snap,
+    appointments: snap.appointments.map((a) => (target.has(a.id) ? { ...a, ...fields } : a)),
+    recurringSeries,
+    messagesSent: [...snap.messagesSent, ...messages],
+  });
   notify();
-  return json({ ok: true });
+  return json({ ok: true, cancelled: ids.length });
+}
+
+// POST /api/appointments/manage-recurrence -- the owner changes how an
+// appointment repeats (one-time <-> recurring, frequency, interval), together
+// with any other edits, as ONE all-or-nothing change: the same outcome as
+// migrations/029's apply_recurrence_change. Dates come from the real
+// DST-safe generator (lib/recurrenceChange.ts). Later scheduled occurrences
+// of the old series are cancelled -- except any with recorded work, which are
+// kept on the old schedule -- the old series is stopped, and a new series is
+// created from the edited appointment. The response is the real route's.
+async function handleManageRecurrence(req: Request): Promise<Response> {
+  const body = await readJsonBody(req);
+  if (!body) return json({ error: "Invalid request body" }, 400);
+  const appointmentId = typeof body.appointment_id === "string" ? body.appointment_id.trim() : "";
+  if (!appointmentId) return json({ error: "Missing appointment_id" }, 400);
+  const snap = getSnapshot();
+  const anchor = snap.appointments.find((a) => a.id === appointmentId);
+  if (!anchor) return json({ error: "Appointment not found" }, 404);
+
+  const built = buildRecurrenceChangeRequest({
+    fields: body.fields,
+    employeeIds: body.employee_ids,
+    frequencyType: body.frequency_type,
+    repeatWeeks: body.repeat_weeks,
+    repeatMonths: body.repeat_months,
+    timezone: DEMO_TIMEZONE,
+  });
+  if (!built.ok) return json({ error: built.error }, built.status);
+  const r = built.request;
+  const refuse = (outcome: Record<string, unknown>) => {
+    const m = mapRecurrenceRpcResult(outcome);
+    return json(m.body, m.status);
+  };
+
+  const anchorAssignments = snap.assignments.filter((a) => a.appointment_id === appointmentId);
+  if (isHistoricalAppointment(anchor, anchorAssignments)) return refuse({ outcome: "appointment_is_historical" });
+  const eligible = new Set(snap.employees.filter((e) => e.active).map((e) => e.id));
+  if (r.employee_ids.some((e) => !eligible.has(e))) return refuse({ outcome: "employee_not_eligible" });
+  const blocked = anchorAssignments
+    .filter((a) => !r.employee_ids.includes(a.employee_id) && (a.actual_started_at || a.actual_completed_at
+      || snap.employeeHours.some((h) => h.appointment_id === appointmentId && h.employee_id === a.employee_id)))
+    .map((a) => a.employee_id);
+  if (blocked.length > 0) return refuse({ outcome: "assignment_removal_blocked", blocked_employee_ids: blocked });
+  const client = snap.clients.find((c) => c.id === anchor.client_id);
+  if (r.recurrence.frequency_type !== "one_time" && (!client || client.archived_at || client.status === "inactive")) {
+    return refuse({ outcome: "client_not_active" });
+  }
+
+  const nowIso = new Date().toISOString();
+  // Later scheduled occurrences of the old series: replaced, unless work was recorded.
+  const candidates = anchor.series_id
+    ? snap.appointments.filter((a) => a.series_id === anchor.series_id && a.id !== appointmentId && a.status === "scheduled" && a.scheduled_for > anchor.scheduled_for)
+    : [];
+  const protectedRows = candidates.filter((a) => hasRecordedWork(snap, a.id));
+  const cancelIds = new Set(candidates.filter((a) => !hasRecordedWork(snap, a.id)).map((a) => a.id));
+  const exclusions = new Set(protectedRows.map((a) => new Date(a.scheduled_for).getTime()));
+
+  const freq = r.recurrence.frequency_type;
+  const newSeriesId = freq === "one_time" ? null : newId();
+  const f = r.fields;
+  const repeat_weeks = freq === "weekly" ? (r.recurrence.repeat_weeks ?? 1) : 1;
+  const repeat_months = freq === "monthly" ? r.recurrence.repeat_months : null;
+  const employee_id = r.employee_ids.length === 1 ? r.employee_ids[0] : null;
+
+  let appointments: Appointment[] = snap.appointments.map((a) => {
+    if (cancelIds.has(a.id)) return { ...a, status: "cancelled" };
+    if (a.id !== appointmentId) return a;
+    return {
+      ...a, scheduled_for: f.scheduled_for, scheduled_end: f.scheduled_end, service_type: f.service_type, notes: f.notes,
+      duration_minutes: f.duration_minutes, price_cents: f.price_cents, team_color: f.team_color, status: "scheduled",
+      employee_id, frequency_type: freq, repeat_weeks, repeat_months, series_id: newSeriesId,
+    };
+  });
+  // Assignment diff on the anchor: kept employees keep their row (and any work).
+  const keep = new Set(r.employee_ids);
+  const have = new Set(anchorAssignments.map((a) => a.employee_id));
+  const assignmentRow = (appointment_id: string, employee_id: string): AppointmentEmployeeAssignment => ({
+    id: newId(), appointment_id, employee_id, actual_started_at: null, actual_completed_at: null, job_notes: null, created_at: nowIso, updated_at: nowIso,
+  });
+  let assignments = [
+    ...snap.assignments.filter((a) => a.appointment_id !== appointmentId || keep.has(a.employee_id)),
+    ...r.employee_ids.filter((e) => !have.has(e)).map((e) => assignmentRow(appointmentId, e)),
+  ];
+
+  let recurringSeries = snap.recurringSeries.map((s) => (s.id === anchor.series_id && s.status === "active"
+    ? { ...s, status: "stopped" as const, stopped_at: nowIso, updated_at: nowIso } : s));
+  let created = 0;
+  let skipped = 0;
+  if (newSeriesId) {
+    const template = appointments.find((a) => a.id === appointmentId)!;
+    const endOffset = f.scheduled_end ? new Date(f.scheduled_end).getTime() - new Date(f.scheduled_for).getTime() : null;
+    const added: Appointment[] = [];
+    for (const occ of r.occurrences) {
+      if (exclusions.has(new Date(occ).getTime())) { skipped++; continue; }
+      added.push({
+        ...template,
+        id: newId(), scheduled_for: occ, scheduled_end: endOffset === null ? null : new Date(new Date(occ).getTime() + endOffset).toISOString(),
+        actual_started_at: null, actual_completed_at: null, cancelled_at: null, cancellation_reported_date: null, cancellation_reason: null,
+      });
+    }
+    created = added.length;
+    appointments = [...appointments, ...added];
+    assignments = [...assignments, ...added.flatMap((a) => r.employee_ids.map((e) => assignmentRow(a.id, e)))];
+    const local = DateTime.fromISO(f.scheduled_for).setZone(DEMO_TIMEZONE);
+    recurringSeries = [...recurringSeries, {
+      id: newSeriesId, workspace_id: DEMO_LOCAL_WORKSPACE_ID, status: "active", client_id: anchor.client_id, is_demo: false,
+      template_appointment_id: appointmentId, frequency_type: freq as RecurringFrequency,
+      repeat_weeks: freq === "weekly" ? repeat_weeks : null, repeat_months,
+      anchor_local_date: local.toFormat("yyyy-MM-dd"), anchor_local_time: local.toFormat("HH:mm:ss"), anchor_timezone: DEMO_TIMEZONE,
+      source: "owner_created", created_at: nowIso, updated_at: nowIso, stopped_at: null, reviewed_at: nowIso, last_replenished_at: null,
+    }];
+  }
+
+  const messages = simulatedMessages(snap, appointmentId, anchor.client_id, body.notify_channel, "update", (name, company) =>
+    changeTemplates(name, f.service_type, f.scheduled_for, company, DEMO_TIMEZONE));
+  setSnapshot({ ...snap, appointments: appointments.sort(byScheduledFor), assignments, recurringSeries, messagesSent: [...snap.messagesSent, ...messages] });
+  notify();
+  const result = mapRecurrenceRpcResult({
+    outcome: "applied", cancelled_count: cancelIds.size, created_count: created, skipped_for_exclusion_count: skipped,
+    protected_count: protectedRows.length, protected: protectedRows.map((a) => ({ id: a.id, scheduled_for: a.scheduled_for })),
+  });
+  return json(result.body, result.status);
 }
 
 const ROUTES: Route[] = [
   { method: "POST", path: "/api/appointments/create", handler: handleCreateAppointment },
   { method: "POST", path: "/api/appointments/delete", handler: handleDeleteAppointment },
   { method: "PATCH", path: "/api/appointments/update", handler: handleUpdateAppointment },
+  { method: "POST", path: "/api/appointments/manage-recurrence", handler: handleManageRecurrence },
   { method: "GET", path: "/api/billing/completed-jobs", handler: handleCompletedJobs },
   { method: "PATCH", path: "/api/billing/completed-jobs/update", handler: handleBillingUpdate },
   { method: "GET", path: "/api/dashboard/needs-attention", handler: handleNeedsAttention },
