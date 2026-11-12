@@ -18,6 +18,37 @@ export type DemoExperienceStep = {
   // rejectedHint so the visitor knows why and what to do instead.
   rejectedActionId?: string;
   rejectedHint?: string;
+  // "Look, then Next" steps: this action opens something worth looking at
+  // (a client's profile, a phone tab, Settings) WITHOUT advancing. The step
+  // then spotlights revealedTargetSelector, shows revealedBody, and enables
+  // Next -- which stays disabled until the action happens.
+  revealActionId?: string;
+  revealedTargetSelector?: string;
+  revealedBody?: string;
+  // Elements the instruction card must never cover while they are on
+  // screen (a form being filled in, the card the visitor is looking at).
+  // The appointment form is always kept clear as well.
+  cardAvoidSelector?: string;
+  // Hover help for the tabs in this selector, by tab label.
+  tabHelpSelector?: string;
+  tabHelp?: Record<string, string>;
+};
+
+// A selector that reaches inside a same-origin iframe: "<iframe selector>
+// >>> <selector inside the frame>" (the phone preview's bottom bar).
+export const FRAME_SELECTOR_SEPARATOR = " >>> ";
+
+export const SETTINGS_TAB_HELP: Record<string, string> = {
+  "Company Info": "Your business name, contact details, hours, and how the business runs.",
+  Services: "What you sell: each service's duration, price, and color on the schedule.",
+  Employees: "Your team: contact details, colors, and sign-in for the employee app.",
+  "Archived Clients": "Clients you've archived. Restore one any time; their history is kept.",
+  "Recurring Series": "Repeating appointments that need a review before they keep going.",
+  Billing: "Completed jobs to invoice and mark paid.",
+  Automation: "Turn the public booking page and automatic client messages on or off. Not available in the demo: there is no booking page and no message is ever sent.",
+  Preferences: "Business hours and time zone.",
+  Notifications: "How clients hear from you. Not available in the demo: no message is ever sent.",
+  Subscription: "Your ScheduleFlowTrack plan. Not available in the demo: plan changes.",
 };
 
 // Steps 0-6 (Welcome, Schedule, Appointment Details, Edit Service, Clients,
@@ -87,10 +118,14 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
   {
     id: "clients",
     title: "Clients",
-    body: "Your customer database contains everything you need before arriving — phone, address, notes, gate codes, and communication preferences.",
+    body: "Click a client’s name to open their profile.",
     targetSelector: '[data-tour="clients-list"]',
-    actionRequired: true,
-    actionId: "open-client",
+    // Opening a client shows their profile card; the step waits for Next.
+    actionRequired: false,
+    revealActionId: "open-client",
+    revealedTargetSelector: '[data-tour="clients-list"], [data-tour="client-card"]',
+    revealedBody: "This is the client’s profile: phone, address, notes, gate codes, past and upcoming visits, and how they like to be contacted. Click another name to compare, then click Next.",
+    cardAvoidSelector: '[data-tour="client-card"]',
   },
   {
     id: "employees",
@@ -111,22 +146,42 @@ export const DEMO_EXPERIENCE_STEPS: DemoExperienceStep[] = [
     targetSelector: '[data-tour="services-area"]',
     actionRequired: true,
     actionId: "delete-service",
+    // The Add Service / edit form stays fully visible and clickable.
+    cardAvoidSelector: '[data-tour="service-form"]',
   },
   {
     id: "add-appointment",
     title: "Create an Appointment",
-    body: "Let's create your first appointment. Click “Add Appointment” to schedule a new customer.",
+    body: "Click + Add Appointment, choose an existing client, and save a new appointment. Adding a new client from the form is optional.",
     targetSelector: '[data-tour="add-appointment"]',
     actionRequired: true,
+    // Reported only once an appointment is saved -- never for a client alone.
     actionId: "create-appointment",
   },
   {
     id: "mobile-experience",
     title: "Mobile Admin",
-    body: "Everything you've done today is also available from your phone. Manage appointments. View clients. Create new jobs. Update schedules. Anywhere. Spend a moment interacting with the mobile preview, then open any tab to continue.",
-    targetSelector: '[data-tour="mobile-preview"]',
-    actionRequired: true,
-    actionId: "open-mobile-tab",
+    body: "Everything you can do here also works on your phone. Click Schedule or Clients in the bottom bar of the phone preview.",
+    targetSelector: `[data-tour="mobile-preview"] iframe${FRAME_SELECTOR_SEPARATOR}[data-tour="mobile-bottom-nav"]`,
+    actionRequired: false,
+    revealActionId: "open-mobile-tab",
+    revealedTargetSelector: '[data-tour="mobile-preview"]',
+    revealedBody: "That’s the same screen your phone shows. Try the other tabs too, then click Next.",
+    rejectedActionId: "open-mobile-other-tab",
+    rejectedHint: "That tab works too. For this step, click Schedule or Clients in the bottom bar of the phone preview.",
+  },
+  {
+    id: "settings-overview",
+    title: "Settings",
+    body: "Click Settings in the left sidebar.",
+    targetSelector: '[data-tour="settings-button"]',
+    actionRequired: false,
+    revealActionId: "open-settings",
+    revealedTargetSelector: '[data-tour="settings-area"]',
+    revealedBody: "Settings is how your business runs: Company Info, Services, Employees, Recurring Series, and Billing. Hover over each tab to learn about it, and open any you like. Nothing needs to be changed. Click Next when you’re ready.",
+    cardAvoidSelector: '[data-tour="settings-tabs"]',
+    tabHelpSelector: '[data-tour="settings-tabs"]',
+    tabHelp: SETTINGS_TAB_HELP,
   },
   {
     id: "completion",

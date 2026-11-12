@@ -88,8 +88,11 @@ export default function CompanyInfoPanel({
   canMutateOperationalData,
   isTrialing,
   showSignInSecurity = false,
+  isLocalDemo = false,
 }: {
   canMutateOperationalData: boolean;
+  // Browser-local demo only: labels what the demo cannot do.
+  isLocalDemo?: boolean;
   // Real signed-in owners only (never a demo): Settings > Sign-in Security.
   showSignInSecurity?: boolean;
   // Phase 5.6D: true only for a plain trialing subscription with no
@@ -750,7 +753,9 @@ export default function CompanyInfoPanel({
       <SettingsCard
         id="automation-card"
         title="Automation"
-        helper="Control what happens automatically for your business."
+        helper={isLocalDemo
+          ? "Control what happens automatically for your business. Not available in the demo: there is no public booking page and no message is ever sent. Switches are saved in this tab only."
+          : "Control what happens automatically for your business."}
         headerRight={
           <CapabilityGatedButton
             allowed={canMutateOperationalData}

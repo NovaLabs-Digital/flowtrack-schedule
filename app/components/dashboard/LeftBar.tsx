@@ -253,6 +253,7 @@ export default function LeftBar({
         </a>
         <button
           onClick={onToggleSettings}
+          data-tour="settings-button"
           title="Settings"
           aria-label="Settings"
           className={[

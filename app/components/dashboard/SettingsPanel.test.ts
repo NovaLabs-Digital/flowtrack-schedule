@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const source = fs.readFileSync(fileURLToPath(new URL("./SettingsPanel.tsx", import.meta.url)), "utf8");
 
-describe("SettingsPanel: isLocalDemo is forwarded ONLY to ServicesPanel's isTester prop", () => {
+describe("SettingsPanel: isLocalDemo reaches ServicesPanel (as isTester) and CompanyInfoPanel (demo labels) only", () => {
   test("isLocalDemo is an optional prop defaulting to false, so the real owner path (which never passes it) is unchanged", () => {
     assert.match(source, /isLocalDemo\?:\s*boolean;/);
     assert.match(source, /isLocalDemo = false,/);
@@ -31,8 +31,15 @@ describe("SettingsPanel: isLocalDemo is forwarded ONLY to ServicesPanel's isTest
     assert.match(block![0], /isTester=\{isLocalDemo\}/);
   });
 
-  test("no other panel (CompanyInfoPanel, StaffPanel, ArchivedClientsPanel, RecurringSeriesPanel, BillingPanel) ever receives isTester or isLocalDemo -- especially StaffPanel, whose isTester prop would hide + Add Employee", () => {
-    for (const panel of ["CompanyInfoPanel", "StaffPanel", "ArchivedClientsPanel", "RecurringSeriesPanel", "BillingPanel"]) {
+  test("CompanyInfoPanel receives isLocalDemo={isLocalDemo} only to label what the demo cannot do, and never isTester", () => {
+    const block = source.match(/<CompanyInfoPanel[\s\S]*?\/>/);
+    assert.ok(block);
+    assert.match(block![0], /isLocalDemo=\{isLocalDemo\}/);
+    assert.doesNotMatch(block![0], /isTester=/);
+  });
+
+  test("no other panel (StaffPanel, ArchivedClientsPanel, RecurringSeriesPanel, BillingPanel) ever receives isTester or isLocalDemo -- especially StaffPanel, whose isTester prop would hide + Add Employee", () => {
+    for (const panel of ["StaffPanel", "ArchivedClientsPanel", "RecurringSeriesPanel", "BillingPanel"]) {
       const block = source.match(new RegExp(`<${panel}[\\s\\S]*?\\/>`));
       assert.ok(block, `${panel}'s render line is present`);
       assert.doesNotMatch(block![0], /isTester=|isLocalDemo=/, `${panel} must never receive isTester or isLocalDemo`);

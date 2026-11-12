@@ -22,6 +22,10 @@ export function useDemoExperience(autoStartEnabled: boolean = false) {
   // Bumped by start/restart so re-entering the step already showing (e.g.
   // Restart while on Welcome) still re-opens that step's screen.
   const [visit, setVisit] = useState(0);
+  // "Look, then Next" steps (DemoExperienceStep.revealActionId): the step
+  // whose action has happened. Tied to the step like `rejection`, so it
+  // resets whenever the step changes (Next, Back, Restart).
+  const [revealedStep, setRevealedStep] = useState<number | null>(null);
 
   // Resume from localStorage on mount. This must run in an effect (not a lazy
   // useState initializer) so the first client render matches the server
@@ -71,6 +75,7 @@ export function useDemoExperience(autoStartEnabled: boolean = false) {
 
   const start = useCallback(() => {
     setRejection(null);
+    setRevealedStep(null);
     setStepIndex(0);
     setActive(true);
     setVisit((v) => v + 1);
@@ -86,6 +91,7 @@ export function useDemoExperience(autoStartEnabled: boolean = false) {
   // action that restores the original data.
   const restart = useCallback(() => {
     setRejection(null);
+    setRevealedStep(null);
     setStepIndex(0);
     setActive(true);
     setVisit((v) => v + 1);
@@ -93,11 +99,13 @@ export function useDemoExperience(autoStartEnabled: boolean = false) {
 
   const back = useCallback(() => {
     setRejection(null);
+    setRevealedStep(null);
     setStepIndex((i) => Math.max(0, i - 1));
   }, []);
 
   const next = useCallback(() => {
     setRejection(null);
+    setRevealedStep(null);
     setStepIndex((i) => {
       const nextIndex = i + 1;
       if (nextIndex >= DEMO_EXPERIENCE_STEPS.length) {
@@ -112,14 +120,19 @@ export function useDemoExperience(autoStartEnabled: boolean = false) {
   const markAction = useCallback(
     (actionId: string) => {
       const current = DEMO_EXPERIENCE_STEPS[stepIndex];
-      if (current?.actionId === actionId) {
+      if (current?.revealActionId === actionId) {
+        // Show the result and wait for Next -- never advance on its own.
+        setRejection(null);
+        setRevealedStep(stepIndex);
+      } else if (current?.actionId === actionId) {
         next();
-      } else if (current && !current.actionRequired && DEMO_EXPERIENCE_STEPS[stepIndex + 1]?.actionId === actionId) {
+      } else if (current && !current.actionRequired && !current.revealActionId && DEMO_EXPERIENCE_STEPS[stepIndex + 1]?.actionId === actionId) {
         // The visitor already did what the NEXT step asks (e.g. double-
         // clicking a card opens Edit while "Revenue & Worked Hours" is
         // showing) -- skip the view-only step rather than leave its
         // instructions behind the editor.
         setRejection(null);
+        setRevealedStep(null);
         setStepIndex((i) => Math.min(i + 2, DEMO_EXPERIENCE_STEPS.length - 1));
       } else if (current?.rejectedActionId === actionId && current.rejectedHint) {
         setRejection({ stepIndex, hint: current.rejectedHint });
@@ -134,12 +147,18 @@ export function useDemoExperience(autoStartEnabled: boolean = false) {
 
   const currentStep = active ? DEMO_EXPERIENCE_STEPS[stepIndex] ?? null : null;
   const hint = active && rejection?.stepIndex === stepIndex ? rejection.hint : null;
+  const revealed = active && revealedStep === stepIndex;
+  // Next is offered on every step without a required action, but a
+  // "look, then Next" step keeps it disabled until its action happened.
+  const canAdvance = !!currentStep && !currentStep.actionRequired && (!currentStep.revealActionId || revealed);
 
   return {
     active,
     stepIndex,
     currentStep,
     hint,
+    revealed,
+    canAdvance,
     totalSteps: DEMO_EXPERIENCE_STEPS.length,
     start,
     skip,

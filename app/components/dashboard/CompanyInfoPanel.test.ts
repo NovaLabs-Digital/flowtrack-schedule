@@ -42,7 +42,7 @@ describe("prop wiring", () => {
     const line = settingsPanelSource.slice(idx, idx + 220);
     assert.match(
       line,
-      /<CompanyInfoPanel canMutateOperationalData=\{canMutateOperationalData\} isTrialing=\{isTrialing\} showSignInSecurity=\{showSignInSecurity\} \/>/
+      /<CompanyInfoPanel canMutateOperationalData=\{canMutateOperationalData\} isTrialing=\{isTrialing\} showSignInSecurity=\{showSignInSecurity\} isLocalDemo=\{isLocalDemo\} \/>/
     );
   });
 

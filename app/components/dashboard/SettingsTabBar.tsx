@@ -76,7 +76,7 @@ export default function SettingsTabBar({
     "px-3 py-2.5 text-[13px] font-normal text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-colors whitespace-nowrap -mb-px";
 
   return (
-    <div className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto">
+    <div data-tour="settings-tabs" className="flex items-center gap-1 border-b border-slate-200 overflow-x-auto">
       {TABS.map(({ key, label }) => (
         <button key={key} onClick={() => onSelect(key)} className={primaryTabCls(activeSection === key)}>
           {label}

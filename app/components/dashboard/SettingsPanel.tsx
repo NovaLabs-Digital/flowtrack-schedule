@@ -69,7 +69,7 @@ export default function SettingsPanel({
   showSignInSecurity?: boolean;
 }) {
   if (section === "company") {
-    return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} showSignInSecurity={showSignInSecurity} />;
+    return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} showSignInSecurity={showSignInSecurity} isLocalDemo={isLocalDemo} />;
   }
   if (section === "services") return <ServicesPanel canMutateOperationalData={canMutateOperationalData} isTester={isLocalDemo} />;
   if (section === "staff") return <StaffPanel canMutateOperationalData={canMutateOperationalData} />;

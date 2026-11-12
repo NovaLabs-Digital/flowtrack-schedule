@@ -24,7 +24,7 @@ export default function MobileBottomNav({
   onChange: (tab: MobileTabKey) => void;
 }) {
   return (
-    <nav className="shrink-0 bg-white border-t border-slate-200 safe-area-bottom">
+    <nav data-tour="mobile-bottom-nav" className="shrink-0 bg-white border-t border-slate-200 safe-area-bottom">
       <div className="grid grid-cols-5 h-16">
         {TABS.map(({ key, label, icon: Icon }) => (
           <button

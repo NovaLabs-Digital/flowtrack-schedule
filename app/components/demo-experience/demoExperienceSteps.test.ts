@@ -13,7 +13,7 @@ import { render, cleanup, act } from "@testing-library/react";
 import { DEMO_EXPERIENCE_STEPS } from "./demoExperienceSteps";
 import { useDemoExperience } from "./useDemoExperience";
 import { notifyDemoAction, subscribeDemoStepEntered } from "./demoExperienceBus";
-import { backdropCells, type Box } from "./spotlightGeometry";
+import { backdropCells, placeCard, type Box } from "./spotlightGeometry";
 
 const shellSource = fs.readFileSync(
   fileURLToPath(new URL("../dashboard/DashboardShell.tsx", import.meta.url)),
@@ -52,7 +52,7 @@ function functionBody(rawSource: string, signature: string): string {
 }
 
 describe("DEMO_EXPERIENCE_STEPS -- storyboard order", () => {
-  test("all 11 steps, with Revenue & Worked Hours before the Edit instruction so Edit leads straight into Edit Service", () => {
+  test("all 12 steps, with Revenue & Worked Hours before the Edit instruction so Edit leads straight into Edit Service", () => {
     const ids = DEMO_EXPERIENCE_STEPS.map((s) => s.id);
     assert.deepEqual(ids, [
       "welcome",
@@ -65,12 +65,14 @@ describe("DEMO_EXPERIENCE_STEPS -- storyboard order", () => {
       "services",
       "add-appointment",
       "mobile-experience",
+      "settings-overview",
       "completion",
     ]);
   });
 
-  test("exactly one new step was added", () => {
-    assert.equal(DEMO_EXPERIENCE_STEPS.length, 11);
+  test("Settings overview is the last step before the finish screen", () => {
+    assert.equal(DEMO_EXPERIENCE_STEPS.length, 12);
+    assert.equal(DEMO_EXPERIENCE_STEPS[DEMO_EXPERIENCE_STEPS.length - 2].id, "settings-overview");
   });
 });
 
@@ -176,7 +178,8 @@ describe("useDemoExperience -- rejected actions keep the step and show its hint"
   });
 
   test("the overlay shows the hint in place of the step body", () => {
-    assert.match(overlaySource, /\{hint \? \([\s\S]*?role="status"[\s\S]*?\{hint\}[\s\S]*?\) : \([\s\S]*?\{currentStep\.body\}/);
+    assert.match(overlaySource, /\{hint \? \([\s\S]*?role="status"[\s\S]*?\{hint\}[\s\S]*?\) : \([\s\S]*?\{body\}/);
+    assert.match(overlaySource, /const body = revealed && currentStep\.revealedBody \? currentStep\.revealedBody : currentStep\.body;/);
   });
 });
 
@@ -338,5 +341,175 @@ describe("DashboardShell.openTourScreen -- each step opens the screen it needs",
     assert.match(body, /if \(isMobile\) return;/);
     assert.match(shellSource, /useLayoutEffect\(\(\) => \{\s*openTourScreenRef\.current = openTourScreen;\s*\}\);/);
     assert.match(shellSource, /useEffect\(\(\) => subscribeDemoStepEntered\(\(stepId\) => openTourScreenRef\.current\(stepId\)\), \[\]\);/);
+  });
+});
+
+// ---------------------------------------------------------------------
+// Review fixes (2026-11-12): look-then-Next steps, card placement, the
+// Add Appointment goal, the phone's bottom bar, and the Settings overview.
+// ---------------------------------------------------------------------
+const stepById = (id: string) => DEMO_EXPERIENCE_STEPS.find((s) => s.id === id)!;
+const readSource = (rel: string) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+
+describe("look-then-Next steps: the action shows the result, Next advances", () => {
+  afterEach(() => cleanup());
+
+  function host() {
+    window.localStorage.clear();
+    const latest: { api?: ReturnType<typeof useDemoExperience> } = {};
+    function Host() {
+      const api = useDemoExperience(false);
+      React.useEffect(() => {
+        latest.api = api;
+      });
+      return null;
+    }
+    render(React.createElement(Host));
+    return () => latest.api!;
+  }
+  const goTo = (get: () => ReturnType<typeof useDemoExperience>, id: string) => {
+    act(() => get().start());
+    while (get().currentStep?.id !== id) {
+      const s = get().currentStep!;
+      if (s.revealActionId) act(() => notifyDemoAction(s.revealActionId!));
+      if (s.actionRequired) act(() => notifyDemoAction(s.actionId!));
+      else act(() => get().next());
+    }
+  };
+
+  test("Clients: clicking a name opens the profile without advancing; Next is locked until then", () => {
+    const api = host();
+    goTo(api, "clients");
+    assert.equal(api().currentStep!.body, "Click a client’s name to open their profile.");
+    assert.equal(api().canAdvance, false, "Next is locked before a client is opened");
+    act(() => notifyDemoAction("open-client"));
+    assert.equal(api().currentStep!.id, "clients", "opening a client never advances the tour");
+    assert.equal(api().revealed, true);
+    assert.equal(api().canAdvance, true);
+    act(() => notifyDemoAction("open-client"));
+    assert.equal(api().currentStep!.id, "clients", "opening another client still stays");
+    act(() => api().next());
+    assert.equal(api().currentStep!.id, "employees");
+    act(() => api().back());
+    assert.equal(api().currentStep!.id, "clients");
+    assert.equal(api().canAdvance, false, "coming back asks for the click again");
+  });
+
+  test("Clients highlights the opened profile card and keeps the card clear of it", () => {
+    const s = stepById("clients");
+    assert.equal(s.revealedTargetSelector, '[data-tour="clients-list"], [data-tour="client-card"]');
+    assert.equal(s.cardAvoidSelector, '[data-tour="client-card"]');
+    assert.match(shellSource, /data-tour=\{!selectedAppt && selectedClient \? "client-card" : undefined\}/);
+  });
+
+  test("Mobile Admin: only Schedule or Clients reveal; other tabs show a hint; Next then advances", () => {
+    const api = host();
+    goTo(api, "mobile-experience");
+    const s = api().currentStep!;
+    assert.equal(s.body, "Everything you can do here also works on your phone. Click Schedule or Clients in the bottom bar of the phone preview.");
+    assert.match(s.targetSelector!, /mobile-bottom-nav/, "the bottom bar is what's highlighted first");
+    act(() => notifyDemoAction("open-mobile-other-tab"));
+    assert.equal(api().revealed, false);
+    assert.ok(api().hint);
+    act(() => notifyDemoAction("open-mobile-tab"));
+    assert.equal(api().currentStep!.id, "mobile-experience");
+    assert.equal(api().revealed, true);
+    assert.equal(api().hint, null);
+    act(() => api().next());
+    assert.equal(api().currentStep!.id, "settings-overview");
+  });
+
+  test("Settings overview: opening Settings reveals the tabs with hover help; nothing else required", () => {
+    const api = host();
+    goTo(api, "settings-overview");
+    assert.equal(api().canAdvance, false);
+    act(() => notifyDemoAction("open-settings"));
+    assert.equal(api().currentStep!.id, "settings-overview");
+    act(() => api().next());
+    assert.equal(api().currentStep!.id, "completion");
+    const s = stepById("settings-overview");
+    for (const tab of ["Company Info", "Services", "Employees", "Recurring Series", "Billing"]) {
+      assert.ok(s.revealedBody!.includes(tab), `${tab} is pointed out`);
+      assert.ok(s.tabHelp![tab], `${tab} has hover help`);
+    }
+    assert.match(s.revealedBody!, /Hover over each tab/);
+    assert.match(s.revealedBody!, /Nothing needs to be changed/);
+    for (const tab of ["Automation", "Notifications", "Subscription"]) assert.match(s.tabHelp![tab], /Not available in the demo/);
+  });
+
+  test("the opened screens report their actions from one place each", () => {
+    const shell = shellSource.replace(/\r\n/g, "\n");
+    assert.match(shell, /setCenterMode\("settings"\);\n\s*setSettingsSection\("company"\);\n\s*notifyDemoAction\("open-settings"\);/);
+    const preview = readSource("./MobileExperiencePreview.tsx");
+    assert.match(preview, /STEP_TABS = new Set\(\["schedule", "clients"\]\)/);
+    assert.match(preview, /STEP_TABS\.has\(event\.data\.tab\) \? "open-mobile-tab" : "open-mobile-other-tab"/);
+    assert.match(readSource("../mobile/MobileBottomNav.tsx"), /data-tour="mobile-bottom-nav"/);
+    assert.match(readSource("../dashboard/LeftBar.tsx"), /data-tour="settings-button"/);
+    assert.match(readSource("../dashboard/SettingsTabBar.tsx"), /data-tour="settings-tabs"/);
+    assert.match(readSource("../dashboard/DashboardSettingsArea.tsx"), /data-tour="settings-area"/);
+    assert.match(readSource("../dashboard/ServicesPanel.tsx"), /data-tour="service-form"/);
+  });
+
+  test("the overlay locks Next until the step's action, and shows hover help only after the reveal", () => {
+    assert.match(overlaySource, /disabled=\{nextLocked\}/);
+    assert.match(overlaySource, /const nextLocked = !currentStep\.actionRequired && !canAdvance;/);
+    assert.match(overlaySource, /const helpSelector = active && revealed \? currentStep\?\.tabHelpSelector \?\? null : null;/);
+    assert.match(overlaySource, /<li>✓ Toured Settings<\/li>/);
+  });
+});
+
+describe("Add Appointment: one unambiguous goal, completed only by a saved appointment", () => {
+  test("the instruction names the button, an existing client, and saving; a new client is optional", () => {
+    const s = stepById("add-appointment");
+    assert.equal(s.body, "Click + Add Appointment, choose an existing client, and save a new appointment. Adding a new client from the form is optional.");
+    assert.equal(s.actionId, "create-appointment");
+  });
+
+  test("create-appointment is reported only after the appointment itself is saved -- nowhere else", () => {
+    const modal = readSource("../dashboard/AppointmentModal.tsx").replace(/\r\n/g, "\n");
+    assert.match(modal, /if \(!res\.ok\) \{ setError\(data\?\.error \|\| `Request failed \(\$\{res\.status\}\)`\); return; \}\n\s*if \(data\?\.warning\?\.message\) alert\(data\.warning\.message\);\n\s*notifyDemoAction\("create-appointment"\);/);
+    assert.equal((modal.match(/notifyDemoAction\("create-appointment"\)/g) ?? []).length, 1);
+    for (const rel of ["../dashboard/DashboardShell.tsx", "../dashboard/ClientPanel.tsx", "../dashboard/LeftBar.tsx", "../dashboard/ArchivedClientsPanel.tsx"]) {
+      assert.doesNotMatch(readSource(rel), /notifyDemoAction\("create-appointment"\)/, `${rel} never completes the step`);
+    }
+  });
+});
+
+describe("placeCard -- the instruction card never covers what the visitor is using", () => {
+  const overlaps = (a: Box, b: Box) =>
+    a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height;
+  const inside = (c: Box, vw: number, vh: number) => c.left >= 0 && c.top >= 0 && c.left + c.width <= vw && c.top + c.height <= vh;
+
+  test("Services: the Add Service form stays clear at a full desktop, a small laptop, and 125% zoom", () => {
+    for (const [vw, vh] of [[1440, 900], [1280, 720], [1093, 614]]) {
+      // The Settings panel (spotlight) fills the center; the form sits inside it.
+      const panel: Box = { left: 250, top: 120, width: vw - 250 - 340, height: vh - 140 };
+      const form: Box = { left: 280, top: 300, width: Math.min(576, panel.width - 60), height: 300 };
+      const card = placeCard({ cardWidth: 384, cardHeight: 210, holes: [panel], avoid: [form], viewportWidth: vw, viewportHeight: vh });
+      assert.ok(!overlaps(card, form), `form covered at ${vw}x${vh}: ${JSON.stringify(card)}`);
+      assert.ok(inside(card, vw, vh), `card off screen at ${vw}x${vh}`);
+    }
+  });
+
+  test("the appointment form stays clear, narrowing the card when the window is small", () => {
+    for (const [vw, vh] of [[1440, 900], [1280, 720], [1093, 614]]) {
+      const modal: Box = { left: (vw - 512) / 2, top: 24, width: 512, height: vh - 48 };
+      const card = placeCard({ cardWidth: 384, cardHeight: 200, holes: [], avoid: [modal], viewportWidth: vw, viewportHeight: vh });
+      assert.ok(!overlaps(card, modal), `modal covered at ${vw}x${vh}: ${JSON.stringify(card)}`);
+      assert.ok(inside(card, vw, vh));
+    }
+  });
+
+  test("with nothing to avoid, the card sits beside the spotlight, not on it", () => {
+    const hole: Box = { left: 20, top: 300, width: 200, height: 400 };
+    const card = placeCard({ cardWidth: 384, cardHeight: 200, holes: [hole], avoid: [], viewportWidth: 1440, viewportHeight: 900 });
+    assert.ok(!overlaps(card, hole));
+  });
+});
+
+describe("overlay card measurement cannot loop", () => {
+  test("each card width is measured once per step text (bounded updates)", () => {
+    assert.match(overlaySource, /if \(prev\.key === contentKey && prev\.byWidth\[w\] !== undefined\) return prev;/);
+    assert.match(overlaySource, /const contentKey = `\$\{currentStep\?\.id\}\|\$\{revealed\}\|\$\{hint \?\? ""\}`;/);
   });
 });

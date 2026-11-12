@@ -89,7 +89,7 @@ export default function DashboardSettingsArea({
 
   if (!isTester || isLocalDemo) {
     return (
-      <div className="flex flex-col flex-1 min-h-0 pt-2">
+      <div data-tour="settings-area" className="flex flex-col flex-1 min-h-0 pt-2">
         <SettingsTabBar activeSection={settingsSection} onSelect={onSettingsSelect} />
         {/* scrollbarGutter: "stable" reserves this container's scrollbar
             width permanently, so a transient content-height change (e.g.

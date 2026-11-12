@@ -253,7 +253,7 @@ export default function ServicesPanel({
       {(showAdd || editingId) && (
         <>
         <SharedEditNotice draft={sharedDraft} />
-        <form onSubmit={handleSave} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3 max-w-xl">
+        <form data-tour="service-form" onSubmit={handleSave} className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3 max-w-xl">
         <fieldset disabled={sharedDraft.readOnly} className="m-0 min-w-0 space-y-3 border-0 p-0">
           <div className="text-xs font-semibold text-slate-700">
             {editingId ? "Edit Service" : "New Service"}

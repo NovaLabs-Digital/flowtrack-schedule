@@ -628,6 +628,7 @@ export default function DashboardShell({
     } else {
       setCenterMode("settings");
       setSettingsSection("company");
+      notifyDemoAction("open-settings");
     }
   }
 
@@ -856,7 +857,11 @@ export default function DashboardShell({
 
               {/* Client workspace — fills the remaining height below the
                   schedule grid and divider. */}
-              <div className="min-h-0 overflow-auto" style={{ flex: "1 1 0%", minHeight: 160 }}>
+              <div
+                className="min-h-0 overflow-auto"
+                style={{ flex: "1 1 0%", minHeight: 160 }}
+                data-tour={!selectedAppt && selectedClient ? "client-card" : undefined}
+              >
                 {selectedAppt ? (
                   <AppointmentDetailPanel
                     appointment={selectedAppt}
