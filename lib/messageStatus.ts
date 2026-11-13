@@ -79,6 +79,12 @@ export function classifyMessageStatus(providerId: string | null | undefined, cha
   if (providerId === "notifications-off") {
     return { code: "skipped_notifications_off", label: "Skipped — client notifications were off" };
   }
+  // Invoice emails (migration 050): an attempt still in flight, or one whose
+  // outcome the email service never confirmed -- it may or may not have
+  // gone out, so it is never shown as Sent or Failed.
+  if (providerId === "sending" || providerId === "unconfirmed") {
+    return { code: "unknown", label: "Outcome unknown — not confirmed" };
+  }
   const trimmed = typeof providerId === "string" ? providerId.trim() : "";
   // The only evidence this app can ever have of acceptance: a value that
   // actually matches the shape THIS channel's own provider returns on
@@ -181,6 +187,7 @@ export function describeMessageKind(kind: string): string {
     case "update": return "Appointment Update";
     case "cancel": return "Cancellation Notice";
     case "reminder_24h": return "24-Hour Reminder";
+    case "invoice": return "Invoice Email";
     default: return kind;
   }
 }

@@ -432,3 +432,184 @@ describe("Invoice numbers (top of Billing)", () => {
     assert.ok(screen.getByText("The final number is assigned when you issue the invoice."));
   });
 });
+
+describe("Review & Send (issued invoices)", () => {
+  const SEND_URL = `/api/invoices/${ISSUED.id}/send`;
+  const PREFILL = { to: "pat@example.test", subject: "Invoice SFT-1001 from ACS Cleaning", message: "Hi Pat,\n\nAttached is invoice SFT-1001 for $160.00, due on receipt." };
+  const loaded = (attempts: unknown[] = []) => ({ status: 200, body: { invoice_number: "SFT-1001", sendable: true, status: "issued", prefill: PREFILL, attachment: { file_name: "SFT-1001.pdf", bytes: 20480 }, attempts } });
+  const sentAttempt = { id: "a1", state: "sent", label: "Sent — delivery unconfirmed", to: "pat@example.test", subject: "Invoice", created_at: "2026-11-13T15:04:00Z" };
+  const openIssued = (canMutate = true, invoice: Record<string, unknown> = ISSUED) =>
+    render(React.createElement(InvoiceDialog, { invoiceId: String(invoice.id), canMutate, onClose: () => {}, onChanged: () => {} }));
+  const getIssued = (invoice: Record<string, unknown> = ISSUED) => on("GET", `/api/invoices/${invoice.id}`, () => ({ status: 200, body: { invoice, billing: { paid: false } } }));
+
+  test("only issued invoices offer Review & Send (not drafts, voided invoices, or read-only workspaces); opening it never sends", async () => {
+    handlers = [getIssued()];
+    openIssued();
+    await screen.findByRole("button", { name: "Review & Send" });
+    cleanup();
+    handlers = [getIssued()];
+    openIssued(false);
+    await screen.findByRole("link", { name: "Download PDF" });
+    assert.equal(screen.queryByRole("button", { name: "Review & Send" }), null);
+    cleanup();
+    const VOID = { ...ISSUED, status: "void", voided_at: "2026-11-13T00:00:00Z", void_reason: "typo" };
+    handlers = [getIssued(VOID)];
+    openIssued(true, VOID);
+    await screen.findByText(/Voided/);
+    assert.equal(screen.queryByRole("button", { name: "Review & Send" }), null);
+    cleanup();
+    handlers = [on("GET", `/api/invoices/${DRAFT.id}`, () => ({ status: 200, body: { invoice: DRAFT, billing: { paid: false }, next_available: "SFT-1001" } }))];
+    render(React.createElement(InvoiceDialog, { invoiceId: DRAFT.id, canMutate: true, onClose: () => {}, onChanged: () => {} }));
+    await screen.findByRole("button", { name: "Issue invoice" });
+    assert.equal(screen.queryByRole("button", { name: "Review & Send" }), null);
+    assert.equal(calls.filter((c) => c.method === "POST").length, 0);
+  });
+
+  test("prefilled and editable; Review shows the recipient and invoice number; Send posts once and shows Sent — delivery unconfirmed", async () => {
+    let changed = 0;
+    handlers = [
+      getIssued(),
+      on("GET", SEND_URL, () => loaded()),
+      on("POST", SEND_URL, (c) => ({ status: 201, body: { ok: true, attempt: { ...sentAttempt, id: "a9", to: c.body!.to } } })),
+    ];
+    render(React.createElement(InvoiceDialog, { invoiceId: ISSUED.id, canMutate: true, onClose: () => {}, onChanged: () => { changed++; } }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    assert.equal(((await screen.findByLabelText("To")) as HTMLInputElement).value, "pat@example.test");
+    assert.equal((screen.getByLabelText("Subject") as HTMLInputElement).value, PREFILL.subject);
+    assert.equal((screen.getByLabelText("Message") as HTMLTextAreaElement).value, PREFILL.message);
+    assert.match(screen.getByTestId("invoice-send-attachment").textContent ?? "", /SFT-1001\.pdf \(20 KB\), the PDF saved when this invoice was issued/);
+    await userEvent.clear(screen.getByLabelText("To"));
+    await userEvent.type(screen.getByLabelText("To"), "billing@example.test");
+    await userEvent.click(screen.getByRole("button", { name: "Review" }));
+    assert.match(screen.getByTestId("invoice-send-review").textContent ?? "", /Send invoice SFT-1001 to billing@example\.test\?/);
+    assert.equal(calls.filter((c) => c.method === "POST").length, 0, "nothing is sent before the confirm");
+    await userEvent.click(screen.getByRole("button", { name: "Send invoice" }));
+    assert.match((await screen.findByTestId("invoice-send-result")).textContent ?? "", /Sent — delivery unconfirmed.*invoice SFT-1001 to billing@example\.test/);
+    const posts = calls.filter((c) => c.method === "POST");
+    assert.equal(posts.length, 1);
+    assert.match(String(posts[0].body!.request_id), /^[0-9a-f-]{36}$/);
+    assert.deepEqual([posts[0].body!.to, posts[0].body!.subject, posts[0].body!.acknowledged_attempt_id], ["billing@example.test", PREFILL.subject, null]);
+    assert.equal(changed, 1);
+  });
+
+  test("a double-click on Send sends one request", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    handlers = [getIssued(), on("GET", SEND_URL, () => loaded())];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const call = { url: String(input), method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : null };
+      calls.push(call);
+      if (call.method === "POST") {
+        await gate;
+        return new Response(JSON.stringify({ ok: true, attempt: sentAttempt }), { status: 201, headers: { "Content-Type": "application/json" } });
+      }
+      for (const h of handlers) {
+        const r = h(call);
+        if (r) return new Response(JSON.stringify(r.body), { status: r.status, headers: { "Content-Type": "application/json" } });
+      }
+      throw new Error(`unscripted ${call.method} ${call.url}`);
+    }) as typeof fetch;
+    openIssued();
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review" }));
+    await userEvent.dblClick(screen.getByRole("button", { name: "Send invoice" }));
+    release();
+    await screen.findByTestId("invoice-send-result");
+    assert.equal(calls.filter((c) => c.method === "POST").length, 1);
+  });
+
+  test("lost connection: Check status repeats the SAME request (it can never send twice)", async () => {
+    let first = true;
+    handlers = [
+      getIssued(),
+      on("GET", SEND_URL, () => loaded()),
+      (c) => {
+        if (c.method !== "POST") return undefined;
+        if (first) {
+          first = false;
+          throw new TypeError("Failed to fetch");
+        }
+        return { status: 200, body: { ok: true, replayed: true, attempt: sentAttempt } };
+      },
+    ];
+    openIssued();
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send invoice" }));
+    assert.match((await screen.findByRole("alert")).textContent ?? "", /may or may not have been sent/);
+    await userEvent.click(screen.getByRole("button", { name: "Check status" }));
+    await screen.findByTestId("invoice-send-result");
+    const posts = calls.filter((c) => c.method === "POST");
+    assert.equal(posts.length, 2);
+    assert.equal(posts[0].body!.request_id, posts[1].body!.request_id);
+  });
+
+  test("already sent: the earlier send is shown and Send again acknowledges it", async () => {
+    handlers = [getIssued(), on("GET", SEND_URL, () => loaded([sentAttempt])), on("POST", SEND_URL, () => ({ status: 201, body: { ok: true, attempt: { ...sentAttempt, id: "a2" } } }))];
+    openIssued();
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    assert.match((await screen.findByTestId("invoice-send-history")).textContent ?? "", /Sent — delivery unconfirmed.*to pat@example\.test/);
+    await userEvent.click(screen.getByRole("button", { name: "Review" }));
+    assert.match(screen.getByTestId("invoice-send-warning").textContent ?? "", /already sent on .* to pat@example\.test\. Sending again emails another copy\./);
+    await userEvent.click(screen.getByRole("button", { name: "Send again" }));
+    await screen.findByTestId("invoice-send-result");
+    assert.equal(calls.find((c) => c.method === "POST")!.body!.acknowledged_attempt_id, "a1");
+  });
+
+  test("an unknown outcome is shown before an intentional resend (Send again anyway)", async () => {
+    const unknown = { ...sentAttempt, id: "u1", state: "uncertain", label: "Outcome unknown — not confirmed" };
+    handlers = [getIssued(), on("GET", SEND_URL, () => loaded([unknown])), on("POST", SEND_URL, () => ({ status: 201, body: { ok: true, attempt: { ...sentAttempt, id: "a3" } } }))];
+    openIssued();
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review" }));
+    assert.match(screen.getByTestId("invoice-send-warning").textContent ?? "", /unknown outcome .* the client may already have this invoice/);
+    assert.equal(screen.queryByRole("button", { name: "Send invoice" }), null);
+    await userEvent.click(screen.getByRole("button", { name: "Send again anyway" }));
+    await screen.findByTestId("invoice-send-result");
+    assert.equal(calls.find((c) => c.method === "POST")!.body!.acknowledged_attempt_id, "u1");
+  });
+
+  test("Failed and unknown results are shown as such; a send made meanwhile in another tab is shown before sending", async () => {
+    handlers = [
+      getIssued(), on("GET", SEND_URL, () => loaded()),
+      on("POST", SEND_URL, () => ({ status: 201, body: { ok: true, attempt: { ...sentAttempt, state: "failed", label: "Failed" }, reason: "Invalid recipient" } })),
+    ];
+    openIssued();
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send invoice" }));
+    assert.match((await screen.findByTestId("invoice-send-result")).textContent ?? "", /Failed.*nothing was sent \(Invalid recipient\)/);
+    assert.ok(screen.getByRole("button", { name: "Try again" }));
+    cleanup();
+
+    handlers = [
+      getIssued(), on("GET", SEND_URL, () => loaded()),
+      on("POST", SEND_URL, () => ({ status: 201, body: { ok: true, attempt: { ...sentAttempt, state: "uncertain", label: "Outcome unknown — not confirmed" }, reason: "no answer from the email service in time" } })),
+    ];
+    openIssued();
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send invoice" }));
+    assert.match((await screen.findByTestId("invoice-send-result")).textContent ?? "", /Outcome unknown — not confirmed.*may or may not have received it/);
+    cleanup();
+
+    let n = 0;
+    handlers = [
+      getIssued(), on("GET", SEND_URL, () => loaded()),
+      on("POST", SEND_URL, () => (++n === 1
+        ? { status: 409, body: { error: "This invoice was already sent. Confirm to send it again.", code: "PREVIOUS_ATTEMPT", attempt: sentAttempt } }
+        : { status: 201, body: { ok: true, attempt: { ...sentAttempt, id: "a4" } } })),
+    ];
+    openIssued();
+    await userEvent.click(await screen.findByRole("button", { name: "Review & Send" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review" }));
+    await userEvent.click(screen.getByRole("button", { name: "Send invoice" }));
+    await screen.findByTestId("invoice-send-warning");
+    await userEvent.click(screen.getByRole("button", { name: "Send again" }));
+    await screen.findByTestId("invoice-send-result");
+    const posts = calls.filter((c) => c.method === "POST").slice(-2); // this part's two sends
+    assert.equal(posts[0].body!.acknowledged_attempt_id, null);
+    assert.equal(posts[1].body!.acknowledged_attempt_id, "a1");
+    assert.notEqual(posts[0].body!.request_id, posts[1].body!.request_id);
+  });
+});

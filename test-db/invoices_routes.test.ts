@@ -26,6 +26,13 @@ import { computeBillingSummary, applyBillingStatusFilter, type CompletedJobRow }
 
 process.env.SUPABASE_URL = "http://localhost:54321";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
+// Email (Review & Send): a scripted stand-in for the Resend SDK below; no
+// request ever leaves this machine.
+process.env.TWILIO_ACCOUNT_SID = "ACtestaccountsidtestaccountsidtest";
+process.env.TWILIO_AUTH_TOKEN = "test-twilio-auth-token";
+process.env.TWILIO_FROM_NUMBER = "+15555550100";
+process.env.RESEND_API_KEY = "test-resend-api-key";
+process.env.RESEND_FROM_EMAIL = "invoices@example.test";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const schemaFile = process.env.TEST_DB_SCHEMA_FILE ? path.resolve(ROOT, process.env.TEST_DB_SCHEMA_FILE) : "";
@@ -52,6 +59,18 @@ mock.module("@/lib/supabaseAdmin", {
     },
   },
 });
+type SentEmail = { payload: any; options: any };
+const sentEmails: SentEmail[] = [];
+let emailReply: (payload: any) => Promise<{ data: any; error: any }> = async () => ({ data: { id: randomUUID() }, error: null });
+class FakeResend {
+  emails = {
+    send: async (payload: any, options: any) => {
+      sentEmails.push({ payload, options });
+      return emailReply(payload);
+    },
+  };
+}
+mock.module("resend", { namedExports: { Resend: FakeResend } });
 let session: any = { role: "none" };
 const { fakeSessionNamedExports } = await import("../lib/testSupport.ts");
 mock.module("@/lib/session", { namedExports: fakeSessionNamedExports(async () => session) });
@@ -69,6 +88,8 @@ const issueRoute = await import("../app/api/invoices/[id]/issue/route.ts");
 const voidRoute = await import("../app/api/invoices/[id]/void/route.ts");
 const pdfRoute = await import("../app/api/invoices/[id]/pdf/route.ts");
 const numberingRoute = await import("../app/api/invoices/numbering/route.ts");
+const sendRoute = await import("../app/api/invoices/[id]/send/route.ts");
+const messagesRoute = await import("../app/api/appointments/messages/route.ts");
 const billingRoute = await import("../app/api/billing/completed-jobs/route.ts");
 const billingUpdateRoute = await import("../app/api/billing/completed-jobs/update/route.ts");
 const directPaymentRoute = await import("../app/api/billing/completed-jobs/direct-payment/route.ts");
@@ -90,7 +111,7 @@ before(async () => {
       "038_add_cancellation_correction_fields.sql", "039_preserve_cancelled_occurrence_exclusion.sql", "040_add_messages_sent_subject.sql",
       "041_block_early_job_start.sql", "042_add_demo_sessions.sql", "043_guest_control_permissions.sql", "044_shared_session_view.sql",
       "045_owner_sign_in_security.sql", "046_session_chat.sql", "047_atomic_future_edit.sql", "048_employee_seat_allowance.sql",
-      "049_invoices.sql",
+      "049_invoices.sql", "050_invoice_email.sql",
     ],
   });
   c = await db.connect();
@@ -645,6 +666,215 @@ describe("Invoice numbers (Starting invoice number)", { skip: SKIP }, () => {
       capabilityAllowed = true;
     }
     assert.equal((await getNumbering(ws)).body.numbering.series, "sft", "nothing changed");
+  });
+});
+
+describe("Review & Send (migration 050)", { skip: SKIP }, () => {
+  const getSend = (ws: Ws, id: string) => (asOwner(ws), send(sendRoute.GET, "GET", `/api/invoices/${id}/send`, undefined, id));
+  const postSend = (ws: Ws, id: string, body: Record<string, unknown>) => (asOwner(ws), send(sendRoute.POST, "POST", `/api/invoices/${id}/send`, body, id));
+  async function issuedInvoice(ws: Ws) {
+    const job = await completedJob(ws);
+    const inv = (await createInvoice(ws, job)).body.invoice;
+    const r = await issueInvoice(ws, inv.id, 1);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    return { id: inv.id as string, job, number: r.body.invoice.invoice_number as string };
+  }
+  const reset = () => {
+    sentEmails.length = 0;
+    emailReply = async () => ({ data: { id: randomUUID() }, error: null });
+    delete process.env.INVOICE_EMAIL_TIMEOUT_MS;
+  };
+
+  test("prefill, review and send: the client's email, editable subject and message, and the exact stored PDF attached", async () => {
+    reset();
+    const ws = await newWorkspace();
+    await c.query("UPDATE company_settings SET email = 'office@acs.example' WHERE workspace_id = $1", [ws.workspaceId]);
+    const inv = await issuedInvoice(ws);
+    assert.equal(sentEmails.length, 0, "issuing never sends");
+    assert.equal((await c.query("SELECT count(*)::int AS n FROM messages_sent WHERE workspace_id = $1", [ws.workspaceId])).rows[0].n, 0);
+
+    const g = await getSend(ws, inv.id);
+    assert.equal(g.status, 200, JSON.stringify(g.body));
+    assert.equal(g.body.sendable, true);
+    assert.equal(g.body.prefill.to, "client@example.test", "the client's email");
+    assert.equal(g.body.prefill.subject, `Invoice ${inv.number} from ACS Cleaning`);
+    assert.match(g.body.prefill.message, new RegExp(`^Hi Izabel,\\n\\nAttached is invoice ${inv.number} for \\$150\\.00, due on receipt\\.`));
+    const stored = (await storedInvoice(inv.id)).pdf as Buffer;
+    assert.deepEqual(g.body.attachment, { file_name: `${inv.number}.pdf`, bytes: stored.length });
+    assert.deepEqual(g.body.attempts, []);
+
+    const requestId = randomUUID();
+    const r = await postSend(ws, inv.id, { request_id: requestId, to: "pat@example.test", subject: "Your invoice", message: "Hi Pat,\nAttached." });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.deepEqual([r.body.attempt.state, r.body.attempt.label, r.body.attempt.to], ["sent", "Sent — delivery unconfirmed", "pat@example.test"]);
+
+    assert.equal(sentEmails.length, 1);
+    const { payload, options } = sentEmails[0];
+    assert.equal(payload.to, "pat@example.test");
+    assert.equal(payload.subject, "Your invoice");
+    assert.equal(payload.text, "Hi Pat,\nAttached.");
+    assert.equal(payload.from, "ACS Cleaning <invoices@example.test>");
+    assert.equal(payload.replyTo, "office@acs.example", "the business email printed on the invoice");
+    assert.deepEqual(options, { idempotencyKey: requestId });
+    assert.equal(payload.attachments.length, 1);
+    assert.equal(payload.attachments[0].filename, `${inv.number}.pdf`);
+    assert.equal(payload.attachments[0].contentType, "application/pdf");
+    assert.ok(Buffer.from(payload.attachments[0].content, "base64").equals(stored), "the attachment is byte for byte the stored PDF");
+
+    // Message History shows the attempt.
+    asOwner(ws);
+    const h = await send(messagesRoute.GET, "GET", `/api/appointments/messages?appointment_id=${inv.job}`);
+    assert.equal(h.status, 200);
+    assert.equal(h.body.messages.length, 1);
+    assert.deepEqual([h.body.messages[0].kindLabel, h.body.messages[0].status.label, h.body.messages[0].toValue, h.body.messages[0].subject],
+      ["Invoice Email", "Sent — delivery unconfirmed", "pat@example.test", "Your invoice"]);
+    const row = (await c.query("SELECT * FROM messages_sent WHERE invoice_id = $1", [inv.id])).rows[0];
+    assert.equal(row.attachment_sha256, createHash("sha256").update(stored).digest("hex"));
+  });
+
+  test("the invoice's printed business email becomes Reply-To", async () => {
+    reset();
+    const ws = await newWorkspace();
+    const job = await completedJob(ws);
+    const draft = (await createInvoice(ws, job)).body.invoice;
+    await editDraft(ws, draft.id, 1, fieldsFrom(draft, { business_email: "office@acs.example" }));
+    await issueInvoice(ws, draft.id, 2);
+    await postSend(ws, draft.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" });
+    assert.equal(sentEmails[0].payload.replyTo, "office@acs.example");
+  });
+
+  test("drafts and voided invoices can't be sent; nothing reaches the email service", async () => {
+    reset();
+    const ws = await newWorkspace();
+    const draft = (await createInvoice(ws, await completedJob(ws))).body.invoice;
+    assert.equal((await getSend(ws, draft.id)).body.sendable, false);
+    const r1 = await postSend(ws, draft.id, { request_id: randomUUID(), to: "pat@example.test", subject: "x", message: "y" });
+    assert.deepEqual([r1.status, r1.body.code], [409, "NOT_ISSUED"]);
+    const inv = await issuedInvoice(ws);
+    await voidInvoice(ws, inv.id, "wrong client");
+    const r2 = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "x", message: "y" });
+    assert.deepEqual([r2.status, r2.body.code], [409, "NOT_ISSUED"]);
+    assert.equal(sentEmails.length, 0);
+  });
+
+  test("a double-click (same request, at the same moment) and a later retry send ONE email", async () => {
+    reset();
+    const ws = await newWorkspace();
+    const inv = await issuedInvoice(ws);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    emailReply = async () => { await gate; return { data: { id: randomUUID() }, error: null }; };
+    const body = { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" };
+    const first = postSend(ws, inv.id, body);
+    await new Promise((r) => setTimeout(r, 150));
+    const second = await postSend(ws, inv.id, body); // while the first is still sending
+    assert.deepEqual([second.status, second.body.replayed, second.body.attempt.state], [200, true, "sending"]);
+    release();
+    const r1 = await first;
+    assert.equal(r1.body.attempt.state, "sent");
+    const retry = await postSend(ws, inv.id, body);
+    assert.deepEqual([retry.status, retry.body.replayed, retry.body.attempt.state], [200, true, "sent"]);
+    assert.equal(sentEmails.length, 1);
+    assert.equal((await c.query("SELECT count(*)::int AS n FROM messages_sent WHERE invoice_id = $1", [inv.id])).rows[0].n, 1);
+  });
+
+  test("sending again after a successful send needs that send acknowledged", async () => {
+    reset();
+    const ws = await newWorkspace();
+    const inv = await issuedInvoice(ws);
+    const a = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" });
+    const b = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" });
+    assert.deepEqual([b.status, b.body.code, b.body.attempt.id, b.body.attempt.state], [409, "PREVIOUS_ATTEMPT", a.body.attempt.id, "sent"]);
+    assert.match(b.body.error, /already sent/);
+    const c2 = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi", acknowledged_attempt_id: a.body.attempt.id });
+    assert.equal(c2.body.attempt.state, "sent");
+    assert.equal(sentEmails.length, 2);
+    assert.notEqual(sentEmails[0].options.idempotencyKey, sentEmails[1].options.idempotencyKey);
+  });
+
+  test("a confirmed rejection shows Failed and nothing else is needed to try again", async () => {
+    reset();
+    const ws = await newWorkspace();
+    const inv = await issuedInvoice(ws);
+    emailReply = async () => ({ data: null, error: { statusCode: 422, name: "validation_error", message: "Invalid `to` field." } });
+    const r = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" });
+    assert.deepEqual([r.status, r.body.attempt.state, r.body.attempt.label, r.body.reason], [201, "failed", "Failed", "Invalid `to` field."]);
+    emailReply = async () => ({ data: { id: randomUUID() }, error: null });
+    const again = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" });
+    assert.equal(again.body.attempt.state, "sent");
+    const g = await getSend(ws, inv.id);
+    assert.deepEqual(g.body.attempts.map((x: any) => x.state), ["sent", "failed"]);
+  });
+
+  test("no trustworthy answer (network error, 5xx, timeout) shows the outcome as unknown and requires acknowledging it before a resend", async () => {
+    reset();
+    const ws = await newWorkspace();
+    for (const [label, reply] of [
+      ["network", async () => ({ data: null, error: { statusCode: null, name: "application_error", message: "Unable to fetch data. The request could not be resolved." } })],
+      ["5xx", async () => ({ data: null, error: { statusCode: 503, name: "application_error", message: "Service unavailable" } })],
+      ["no id", async () => ({ data: {}, error: null })],
+      ["timeout", () => new Promise<never>(() => {})],
+    ] as [string, () => Promise<any>][]) {
+      const inv = await issuedInvoice(ws);
+      emailReply = reply;
+      if (label === "timeout") process.env.INVOICE_EMAIL_TIMEOUT_MS = "200";
+      const r = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" });
+      delete process.env.INVOICE_EMAIL_TIMEOUT_MS;
+      assert.deepEqual([r.body.attempt.state, r.body.attempt.label], ["uncertain", "Outcome unknown — not confirmed"], label);
+      emailReply = async () => ({ data: { id: randomUUID() }, error: null });
+      const blocked = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi" });
+      assert.deepEqual([blocked.status, blocked.body.code, blocked.body.attempt.state], [409, "PREVIOUS_ATTEMPT", "uncertain"], label);
+      assert.match(blocked.body.error, /unknown outcome/);
+      const resend = await postSend(ws, inv.id, { request_id: randomUUID(), to: "pat@example.test", subject: "Invoice", message: "Hi", acknowledged_attempt_id: blocked.body.attempt.id });
+      assert.equal(resend.body.attempt.state, "sent", label);
+      asOwner(ws);
+      const h = await send(messagesRoute.GET, "GET", `/api/appointments/messages?appointment_id=${inv.job}`);
+      assert.deepEqual(h.body.messages.map((m: any) => m.status.label), ["Sent — delivery unconfirmed", "Outcome unknown — not confirmed"], label);
+    }
+  });
+
+  test("checks the recipient, subject and message before anything is sent", async () => {
+    reset();
+    const ws = await newWorkspace();
+    const inv = await issuedInvoice(ws);
+    const bad = [
+      [{ to: "not-an-email", subject: "s", message: "m" }, "to"],
+      [{ to: "a@b.co, c@d.co", subject: "s", message: "m" }, "to"],
+      [{ to: "pat@example.test", subject: "", message: "m" }, "subject"],
+      [{ to: "pat@example.test", subject: "a\nBcc: x@y.z", message: "m" }, "subject"],
+      [{ to: "pat@example.test", subject: "s", message: "  " }, "message"],
+    ] as const;
+    for (const [fields, field] of bad) {
+      const r = await postSend(ws, inv.id, { request_id: randomUUID(), ...fields });
+      assert.deepEqual([r.status, r.body.code, r.body.field], [400, "INVALID_FIELD", field]);
+    }
+    assert.equal((await postSend(ws, inv.id, { to: "pat@example.test", subject: "s", message: "m" })).status, 400, "a request id is required");
+    assert.equal(sentEmails.length, 0);
+  });
+
+  test("owner only and workspace-scoped: employees, testers, a restricted workspace and other workspaces are refused; nothing is sent", async () => {
+    reset();
+    const ws = await newWorkspace();
+    const other = await newWorkspace();
+    const inv = await issuedInvoice(ws);
+    const body = { request_id: randomUUID(), to: "pat@example.test", subject: "s", message: "m" };
+    const call = (h: any, method: string) => send(h, method, `/api/invoices/${inv.id}/send`, method === "POST" ? body : undefined, inv.id);
+    session = { role: "employee", workspaceId: ws.workspaceId, employeeId: ws.employeeIds[0] };
+    assert.equal((await call(sendRoute.GET, "GET")).status, 403);
+    assert.equal((await call(sendRoute.POST, "POST")).status, 403);
+    session = { role: "tester", workspaceId: ws.workspaceId };
+    assert.equal((await call(sendRoute.POST, "POST")).status, 403);
+    capabilityAllowed = false;
+    try {
+      assert.equal((asOwner(ws), await call(sendRoute.POST, "POST")).status, 403);
+    } finally {
+      capabilityAllowed = true;
+    }
+    asOwner(other);
+    assert.equal((await call(sendRoute.GET, "GET")).status, 404);
+    assert.equal((await call(sendRoute.POST, "POST")).status, 404);
+    assert.equal(sentEmails.length, 0);
+    assert.equal((await c.query("SELECT count(*)::int AS n FROM messages_sent WHERE invoice_id = $1", [inv.id])).rows[0].n, 0);
   });
 });
 

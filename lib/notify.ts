@@ -288,3 +288,79 @@ export async function sendEmail(to: string, subject: string, text: string, works
   // how the stored value is later displayed.
   return data.id || "resend";
 }
+
+// Review & Send (migration 050): one issued invoice, emailed by the owner on
+// purpose, with the invoice's stored PDF attached. Same Resend account,
+// sender address and From-name sanitizing as sendEmail. Unlike the
+// automatic appointment emails it is NOT gated by the client-notifications
+// switch: the owner reviews the recipient and confirms each send.
+//
+// The outcome is classified strictly:
+//   accepted  -- Resend returned an email id (delivery itself unconfirmed)
+//   failed    -- Resend rejected the request (HTTP 4xx): nothing was sent
+//   uncertain -- no answer we can trust: network error, timeout, 5xx, or a
+//                response without an id. The email may or may not have gone
+//                out, so the app shows that before allowing a resend.
+//   disabled  -- DISABLE_MESSAGES on this server: nothing was sent
+export type InvoiceEmailResult =
+  | { outcome: "accepted"; providerId: string }
+  | { outcome: "failed"; reason: string }
+  | { outcome: "uncertain"; reason: string }
+  | { outcome: "disabled" };
+
+const EMAIL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEFAULT_INVOICE_EMAIL_TIMEOUT_MS = 20_000;
+
+export async function sendInvoiceEmail(opts: {
+  to: string;
+  subject: string;
+  text: string;
+  fromDisplayName: string;
+  replyTo?: string | null;
+  attachment: { filename: string; content: Buffer };
+  idempotencyKey: string;
+}): Promise<InvoiceEmailResult> {
+  if (disabled) {
+    console.log("[DISABLE_MESSAGES] Invoice email skipped -- subject:", opts.subject);
+    return { outcome: "disabled" };
+  }
+  const timeoutMs = Number(process.env.INVOICE_EMAIL_TIMEOUT_MS) > 0 ? Number(process.env.INVOICE_EMAIL_TIMEOUT_MS) : DEFAULT_INVOICE_EMAIL_TIMEOUT_MS;
+  const fromName = sanitizeCompanyName(opts.fromDisplayName);
+  const replyTo = opts.replyTo && /^[^@\s<>,;"()]+@[^@\s<>,;"()]+\.[^@\s<>,;"()]+$/.test(opts.replyTo.trim()) ? opts.replyTo.trim() : undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    const send = getResend().emails.send(
+      {
+        from: `${fromName} <${process.env.RESEND_FROM_EMAIL}>`,
+        to: opts.to,
+        subject: opts.subject,
+        text: opts.text,
+        ...(replyTo ? { replyTo } : {}),
+        attachments: [{ filename: opts.attachment.filename, content: opts.attachment.content.toString("base64"), contentType: "application/pdf" }],
+      },
+      { idempotencyKey: opts.idempotencyKey }
+    );
+    const result = await Promise.race([send, timeout]);
+    if (result === "timeout") return { outcome: "uncertain", reason: "no answer from the email service in time" };
+    const { data, error } = result as { data: { id?: string } | null; error: { statusCode?: number | null; message?: string; name?: string } | null };
+    if (error) {
+      const status = typeof error.statusCode === "number" ? error.statusCode : null;
+      // 409 = Resend's "same idempotency key still in progress / different
+      // payload": not a confirmed rejection of this email.
+      if (status !== null && status >= 400 && status < 500 && status !== 409) {
+        return { outcome: "failed", reason: error.message || error.name || `rejected (${status})` };
+      }
+      return { outcome: "uncertain", reason: error.message || "the email service did not confirm" };
+    }
+    if (data?.id && EMAIL_ID_RE.test(data.id)) return { outcome: "accepted", providerId: data.id };
+    return { outcome: "uncertain", reason: "the email service answered without an email id" };
+  } catch (err) {
+    console.error("INVOICE_EMAIL_ERROR", describeProviderError(err));
+    return { outcome: "uncertain", reason: "the email service could not be reached" };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

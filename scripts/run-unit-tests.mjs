@@ -161,6 +161,8 @@ const FILES = [
   "lib/claimToken.test.ts",
   "lib/completedJobBilling.test.ts",
   "lib/invoices.test.ts",
+  "lib/invoiceEmail.test.ts",
+  "lib/notify.invoiceEmail.test.ts",
   "app/api/billing/completed-jobs/route.test.ts",
   "app/api/billing/completed-jobs/update/route.test.ts",
   "app/components/dashboard/BillingPanel.test.ts",

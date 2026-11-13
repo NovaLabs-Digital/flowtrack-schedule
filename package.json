@@ -18,7 +18,7 @@
     "test:db:capacity": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/capacity_fixes.test.ts",
     "test:db:scheduling": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/scheduling_issues.test.ts",
     "test:db:seats": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/employee_seats.test.ts",
-    "test:db:invoices": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/invoices_049.test.ts test-db/invoices_routes.test.ts",
+    "test:db:invoices": "node --experimental-test-module-mocks --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/invoices_049.test.ts test-db/invoices_routes.test.ts test-db/invoice_email_050.test.ts",
     "test:db:messages": "node --import ./scripts/test-register.mjs --test --test-concurrency=1 test-db/messages_sent_subject.test.ts"
   },
   "dependencies": {

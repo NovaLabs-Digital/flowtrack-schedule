@@ -234,3 +234,14 @@ describe("describeMessageKind", () => {
     assert.equal(describeMessageKind("some_future_kind"), "some_future_kind");
   });
 });
+
+describe("invoice emails (migration 050)", () => {
+  test("an invoice email reads 'Invoice Email'; in flight or unconfirmed reads as an unknown outcome, never Sent or Failed", () => {
+    assert.equal(describeMessageKind("invoice"), "Invoice Email");
+    for (const p of ["sending", "unconfirmed"]) {
+      assert.deepEqual(classifyMessageStatus(p, "email"), { code: "unknown", label: "Outcome unknown — not confirmed" });
+    }
+    assert.equal(classifyMessageStatus("4ef9a417-02e9-4d39-ad75-9611e0fcc33c", "email").label, "Sent — delivery unconfirmed");
+    assert.equal(classifyMessageStatus("failed", "email").label, "Failed");
+  });
+});

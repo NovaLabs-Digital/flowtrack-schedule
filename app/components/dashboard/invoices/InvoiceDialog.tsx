@@ -5,13 +5,14 @@
 // Invoice date / Due date; one Service Date / Product/service / Description
 // / Qty / Rate / Amount line; Payment instructions; Note to client; totals).
 // An ISSUED or VOID invoice opens as a preview of its stored PDF, with
-// Download PDF and (issued only) Void & Reissue.
+// Download PDF and (issued only) Review & Send and Void & Reissue.
 //
 // Opened from Appointment Details' Invoice card and from Billing's Draft /
 // invoice-number links -- the same component, so both places behave the same.
 import { useEffect, useRef, useState } from "react";
 import { centsToInputValue, formatCents, parsePriceToCents } from "@/lib/money";
 import { formatMMDDYY } from "@/lib/dateDisplay";
+import InvoiceSendPanel from "@/app/components/dashboard/invoices/InvoiceSendPanel";
 import { INVOICE_TERMS, dueDateFor, lineAmountCents, parseTaxRate, taxCents, type InvoiceDraftFields, type InvoiceTerms, type InvoiceView } from "@/lib/invoices";
 
 type Props = {
@@ -92,6 +93,7 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
   const [loadError, setLoadError] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [voidOpen, setVoidOpen] = useState(false);
+  const [sendOpen, setSendOpen] = useState(false);
   const [voidReason, setVoidReason] = useState("");
   const reissueRequestId = useRef(newRequestId());
 
@@ -442,6 +444,9 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
                 <span>Dated {formatMMDDYY(invoice.invoice_date)}</span>
                 <span>{invoice.bill_to_name}</span>
               </div>
+              {sendOpen && invoice.status === "issued" && invoice.invoice_number && (
+                <InvoiceSendPanel invoiceId={invoice.id} invoiceNumber={invoice.invoice_number} onClose={() => setSendOpen(false)} onSent={onChanged} />
+              )}
               <iframe title={`Invoice ${invoice.invoice_number} preview`} src={`/api/invoices/${invoice.id}/pdf?inline=1`} className="h-[60vh] w-full rounded-xl border border-slate-200 bg-slate-50" />
               {voidOpen && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -489,11 +494,16 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
             ) : (
               <>
                 <div>
-                  {invoice.status === "issued" && canMutate && !voidOpen && (
+                  {invoice.status === "issued" && canMutate && !voidOpen && !sendOpen && (
                     <button type="button" onClick={() => setVoidOpen(true)} className="rounded-lg px-3 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50">Void &amp; Reissue</button>
                   )}
                 </div>
-                <a href={`/api/invoices/${invoice.id}/pdf`} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700">Download PDF</a>
+                <div className="flex gap-2">
+                  {invoice.status === "issued" && canMutate && !voidOpen && !sendOpen && (
+                    <button type="button" onClick={() => setSendOpen(true)} className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">Review &amp; Send</button>
+                  )}
+                  <a href={`/api/invoices/${invoice.id}/pdf`} className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700">Download PDF</a>
+                </div>
               </>
             )}
           </div>

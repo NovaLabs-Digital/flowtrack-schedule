@@ -581,6 +581,9 @@ describe("only the approved routes reference the capability gates -- every other
     // Invoice numbers (migration 049): read the next available number
     // (canViewExistingData); set the starting number (canMutateOperationalData).
     path.join("app", "api", "invoices", "numbering", "route.ts"),
+    // Review & Send (migration 050): read the prefilled email (canViewExistingData);
+    // send it (canMutateOperationalData).
+    path.join("app", "api", "invoices", "[id]", "send", "route.ts"),
     // Message History -- read-only (canViewExistingData, same read-gate
     // precedent as clients/archived, recurring-series, and billing/
     // completed-jobs above), appointment-scoped and client-scoped
