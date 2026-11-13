@@ -206,8 +206,9 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
     if (opts.failWhen?.(call)) return { data: null, error: { message: `injected failure: rpc ${fn} #${call.seq}` } };
     try {
       const meta = await pool.query(
-        `SELECT proretset, proargnames, ARRAY(SELECT format_type(t, NULL) FROM unnest(proargtypes) t) AS types
-         FROM pg_proc WHERE proname = $1 LIMIT 1`,
+        `SELECT p.proretset, p.proargnames, ARRAY(SELECT format_type(t, NULL) FROM unnest(p.proargtypes) t) AS types,
+                rt.typtype = 'c' AS returns_row
+         FROM pg_proc p JOIN pg_type rt ON rt.oid = p.prorettype WHERE p.proname = $1 LIMIT 1`,
         [fn]
       );
       // PostgREST sends the request body as JSON, so a json/jsonb parameter
@@ -226,9 +227,12 @@ export function createPostgrestAdapter(pool: pg.Pool, opts: { failWhen?: (call: 
       const res = await pool.query(`SELECT * FROM ${ident(fn)}(${named.join(", ")})`, values);
       if (meta.rows[0]?.proretset) return { data: res.rows.map(rowToJs), error: null };
       const row = res.rows[0];
+      // A function returning a table row comes back from PostgREST as that
+      // row (an object), not as its first column.
+      if (meta.rows[0]?.returns_row) return { data: row ? rowToJs(row) : null, error: null };
       return { data: row ? toJs(Object.values(row)[0]) : null, error: null };
     } catch (err) {
-      return { data: null, error: { message: (err as Error).message } };
+      return { data: null, error: pgError(err) };
     }
   }
 
