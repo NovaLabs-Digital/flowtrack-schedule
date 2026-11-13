@@ -2,14 +2,20 @@
 // (invoice_render_snapshot, migration 049) -- and from nothing else, so the
 // stored PDF always prints exactly what issue_invoice verified.
 //
-// STEP 2 INTERIM LAYOUT: a plain, complete, readable invoice so issuing
-// produces a real PDF end to end. Step 3 replaces only the drawing below
-// with the layout matched to the owner's QuickBooks "Print or download"
-// preview; the contract (snapshot in, deterministic bytes out) stays.
+// Layout matched to the owner's QuickBooks "Print or download" invoice
+// (redacted sample, 2026-11-12): business block top-left, "Invoice" title
+// centered, BILL TO box, a six-column facts row (Invoice # / Date / Total
+// due / Due date / Terms / Enclosed), the line table (Service date /
+// Service type / Qty / Rate / Amount) with the product in bold over its
+// description, the note bottom-left, and Subtotal / Total / Balance due
+// bottom-right. Light-blue header bands with blue labels, thin gray rules.
+//
+// Not drawn (yet): the logo (no logo is stored -- the top-right stays
+// empty) and the Tax line (invoices carry no tax; total = the line amount).
 //
 // Deterministic: the same snapshot always produces the same bytes (no
 // creation/modification dates or producer metadata are written).
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb, type PDFFont } from "pdf-lib";
 
 export type InvoiceRenderSnapshot = {
   invoice_id: string;
@@ -40,10 +46,16 @@ export type InvoiceRenderSnapshot = {
 
 const TERMS_LABEL: Record<string, string> = { due_on_receipt: "Due on receipt", net_15: "Net 15", net_30: "Net 30" };
 
+// "$1,234.56" (Total due, Balance due).
 export function formatUsd(cents: number): string {
+  return `${cents < 0 ? "-" : ""}$${formatAmount(Math.abs(cents))}`;
+}
+// "1,234.56" without the dollar sign (Rate, Amount, Subtotal, Total -- as
+// QuickBooks prints them).
+export function formatAmount(cents: number): string {
   const sign = cents < 0 ? "-" : "";
   const abs = Math.abs(cents);
-  return `${sign}$${Math.floor(abs / 100).toLocaleString("en-US")}.${String(abs % 100).padStart(2, "0")}`;
+  return `${sign}${Math.floor(abs / 100).toLocaleString("en-US")}.${String(abs % 100).padStart(2, "0")}`;
 }
 // "2026-11-12" -> "11/12/2026" (QuickBooks' date style).
 export function formatInvoiceDate(date: string): string {
@@ -62,25 +74,35 @@ function safe(text: string): string {
     .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, "?");
 }
 
+const PAGE_W = 612; // US Letter, points
+const PAGE_H = 792;
+const LEFT = 24;
+const RIGHT = PAGE_W - 24;
+
+const INK = rgb(0, 0, 0);
+const LABEL = rgb(0.31, 0.53, 0.71); // QuickBooks' blue header text
+const BAND = rgb(0.863, 0.914, 0.953); // light-blue header band
+const RULE = rgb(0.72, 0.75, 0.78); // thin gray borders
+
 export async function renderInvoicePdf(s: InvoiceRenderSnapshot): Promise<Uint8Array> {
   const doc = await PDFDocument.create({ updateMetadata: false });
   doc.setTitle(`Invoice ${s.invoice_number}`, { showInWindowTitleBar: false });
-  const page = doc.addPage([612, 792]); // US Letter
+  const page = doc.addPage([PAGE_W, PAGE_H]);
   const regular = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const ink = rgb(0.1, 0.1, 0.12);
-  const muted = rgb(0.4, 0.4, 0.45);
-  const left = 54;
-  const right = 558;
-  let y = 738;
 
-  const text = (t: string, x: number, yy: number, size = 10, font = regular, color = ink) =>
-    page.drawText(safe(t), { x, y: yy, size, font, color });
-  const textRight = (t: string, xr: number, yy: number, size = 10, font = regular, color = ink) =>
-    page.drawText(safe(t), { x: xr - font.widthOfTextAtSize(safe(t), size), y: yy, size, font, color });
+  // y is the BASELINE of the text being drawn (PDF origin bottom-left).
+  const text = (t: string, x: number, y: number, size = 10, font: PDFFont = regular, color = INK) =>
+    page.drawText(safe(t), { x, y, size, font, color });
+  const textRight = (t: string, xr: number, y: number, size = 10, font: PDFFont = regular, color = INK) =>
+    page.drawText(safe(t), { x: xr - font.widthOfTextAtSize(safe(t), size), y, size, font, color });
+  const box = (x: number, yTop: number, w: number, h: number, fill?: ReturnType<typeof rgb>) =>
+    page.drawRectangle({ x, y: yTop - h, width: w, height: h, borderColor: RULE, borderWidth: 0.6, ...(fill ? { color: fill } : {}) });
+  const vline = (x: number, yTop: number, yBottom: number) =>
+    page.drawLine({ start: { x, y: yTop }, end: { x, y: yBottom }, thickness: 0.6, color: RULE });
   const lines = (t: string | null) => (t ? t.split("\n") : []);
   // Word-wraps text to a width (points), keeping its own line breaks.
-  const wrap = (t: string | null, width: number, size = 10, font = regular): string[] => {
+  const wrap = (t: string | null, width: number, size = 10, font: PDFFont = regular): string[] => {
     const out: string[] = [];
     for (const para of lines(t)) {
       let line = "";
@@ -97,87 +119,101 @@ export async function renderInvoicePdf(s: InvoiceRenderSnapshot): Promise<Uint8A
     return out;
   };
 
-  // Business
-  text(s.business_name, left, y, 16, bold);
-  textRight("INVOICE", right, y, 16, bold);
-  y -= 18;
+  // ---- Business (top-left) and title (centered)
+  let y = PAGE_H - 48;
+  for (const l of wrap(s.business_name, 250, 11, bold)) {
+    text(l, LEFT + 6, y, 11, bold);
+    y -= 14;
+  }
   for (const l of [...lines(s.business_address), s.business_phone ?? "", s.business_email ?? ""].filter(Boolean)) {
-    text(l, left, y, 9, regular, muted);
-    y -= 12;
+    text(l, LEFT + 6, y, 10);
+    y -= 13.5;
+  }
+  text("Invoice", 272, PAGE_H - 54, 17);
+
+  // ---- BILL TO box
+  const billTop = Math.min(y - 4, PAGE_H - 142);
+  const billX = 75;
+  const billW = 184;
+  const billH = 76;
+  const headH = 12;
+  box(billX, billTop, billW, billH);
+  box(billX, billTop, billW, headH, BAND);
+  text("BILL TO", billX + 6, billTop - 9, 8.5, regular, LABEL);
+  let by = billTop - headH - 11;
+  for (const l of [s.bill_to_name, ...lines(s.bill_to_address), s.bill_to_email ?? ""].filter(Boolean).flatMap((l) => wrap(l, billW - 12))) {
+    if (by < billTop - billH + 4) break;
+    text(l, billX + 6, by, 10);
+    by -= 12;
   }
 
-  // Bill to + invoice facts
-  y -= 16;
-  const factsTop = y;
-  text("BILL TO", left, y, 8, bold, muted);
-  y -= 13;
-  for (const l of [s.bill_to_name, ...lines(s.bill_to_address), s.bill_to_email ?? ""].filter(Boolean)) {
-    text(l, left, y, 10);
-    y -= 13;
-  }
-  let fy = factsTop;
-  for (const [label, value] of [
-    ["Invoice no.", s.invoice_number],
-    ["Terms", TERMS_LABEL[s.terms] ?? s.terms],
-    ["Invoice date", formatInvoiceDate(s.invoice_date)],
-    ["Due date", formatInvoiceDate(s.due_date)],
-  ] as const) {
-    text(label, 380, fy, 9, bold, muted);
-    textRight(value, right, fy, 10);
-    fy -= 14;
-  }
-  y = Math.min(y, fy) - 20;
+  // ---- Facts row: Invoice # | Date | Total due | Due date | Terms | Enclosed
+  const factsTop = billTop - billH - 4;
+  const fx = [LEFT, 120, 209, 313, 405, 499, RIGHT];
+  const facts: [string, string][] = [
+    ["INVOICE #", s.invoice_number],
+    ["DATE", formatInvoiceDate(s.invoice_date)],
+    ["TOTAL DUE", formatUsd(s.total_cents)],
+    ["DUE DATE", formatInvoiceDate(s.due_date)],
+    ["TERMS", TERMS_LABEL[s.terms] ?? s.terms],
+    ["ENCLOSED", ""],
+  ];
+  box(LEFT, factsTop, RIGHT - LEFT, 30);
+  box(LEFT, factsTop, RIGHT - LEFT, 15, BAND);
+  facts.forEach(([label, value], i) => {
+    if (i > 0) vline(fx[i], factsTop, factsTop - 30);
+    text(label, fx[i] + 5, factsTop - 11, 8.5, regular, LABEL);
+    if (value) text(value, fx[i] + 5, factsTop - 26, 10);
+  });
 
-  // Line
-  // Right edges for the number columns, so values never run together;
-  // product and description wrap inside their own columns.
-  const cols = { date: left, product: 124, desc: 236, descWidth: 150, qtyRight: 420, rateRight: 488, amount: right };
-  page.drawLine({ start: { x: left, y: y + 12 }, end: { x: right, y: y + 12 }, thickness: 0.7, color: muted });
-  text("Service Date", cols.date, y, 8, bold, muted);
-  text("Product/service", cols.product, y, 8, bold, muted);
-  text("Description", cols.desc, y, 8, bold, muted);
-  textRight("Qty", cols.qtyRight, y, 8, bold, muted);
-  textRight("Rate", cols.rateRight, y, 8, bold, muted);
-  textRight("Amount", cols.amount, y, 8, bold, muted);
-  y -= 16;
-  text(formatInvoiceDate(s.service_date), cols.date, y, 10);
-  textRight(formatQty(s.quantity), cols.qtyRight, y, 10);
-  textRight(formatUsd(s.rate_cents), cols.rateRight, y, 10);
-  textRight(formatUsd(s.amount_cents), cols.amount, y, 10);
-  const productLines = wrap(s.product_service, cols.desc - cols.product - 8);
-  const descLines = s.description ? wrap(s.description, cols.descWidth) : [];
-  const rowLines = Math.max(productLines.length, descLines.length, 1);
-  for (let i = 0; i < rowLines; i++) {
-    if (productLines[i]) text(productLines[i], cols.product, y, 10);
-    if (descLines[i]) text(descLines[i], cols.desc, y, 10);
-    y -= 13;
-  }
-  page.drawLine({ start: { x: left, y: y + 4 }, end: { x: right, y: y + 4 }, thickness: 0.7, color: muted });
+  // ---- Line table: Service date | Service type | Qty | Rate | Amount
+  const tableTop = factsTop - 30 - 40;
+  const tx = [LEFT, 109, 213, 283, 352, RIGHT];
+  const typeWidth = tx[2] - tx[1] - 10;
+  const typeLines = [
+    ...wrap(s.product_service, typeWidth, 10, bold).map((l) => ({ l, font: bold })),
+    ...(s.description ? wrap(s.description, typeWidth).map((l) => ({ l, font: regular })) : []),
+  ];
+  const headerH = 18;
+  const rowH = Math.max(1, typeLines.length) * 12 + 10;
+  box(LEFT, tableTop, RIGHT - LEFT, headerH + rowH);
+  box(LEFT, tableTop, RIGHT - LEFT, headerH, BAND);
+  for (let i = 1; i < tx.length - 1; i++) vline(tx[i], tableTop, tableTop - headerH - rowH);
+  const hy = tableTop - 12;
+  text("SERVICE DATE", tx[0] + 5, hy, 8.5, regular, LABEL);
+  text("SERVICE TYPE", tx[1] + 5, hy, 8.5, regular, LABEL);
+  textRight("QTY", tx[3] - 5, hy, 8.5, regular, LABEL);
+  textRight("RATE", tx[4] - 5, hy, 8.5, regular, LABEL);
+  textRight("AMOUNT", tx[5] - 3, hy, 8.5, regular, LABEL);
+  const ry = tableTop - headerH - 13;
+  text(formatInvoiceDate(s.service_date), tx[0] + 5, ry, 10);
+  typeLines.forEach(({ l, font }, i) => text(l, tx[1] + 5, ry - i * 12, 10, font));
+  textRight(formatQty(s.quantity), tx[3] - 5, ry, 10);
+  textRight(formatAmount(s.rate_cents), tx[4] - 5, ry, 10);
+  textRight(formatAmount(s.amount_cents), tx[5] - 3, ry, 10);
 
-  // Totals
-  y -= 14;
-  for (const [label, cents, isBold] of [
-    ["Subtotal", s.subtotal_cents, false],
-    ["Invoice total", s.total_cents, true],
-    ["Balance due", s.balance_due_cents, true],
-  ] as const) {
-    text(label, 400, y, 10, isBold ? bold : regular);
-    textRight(formatUsd(cents), right, y, 10, isBold ? bold : regular);
-    y -= 15;
-  }
-
-  // Payment instructions / note
-  y -= 10;
-  for (const [label, body] of [["Payment instructions", s.payment_instructions], ["Note to client", s.note_to_client]] as const) {
+  // ---- Note (bottom-left) and totals (bottom-right)
+  const belowTop = tableTop - headerH - rowH - 13;
+  let ny = belowTop;
+  for (const body of [s.note_to_client, s.payment_instructions]) {
     if (!body) continue;
-    text(label, left, y, 8, bold, muted);
-    y -= 12;
-    for (const l of wrap(body, right - left)) {
-      text(l, left, y, 10);
-      y -= 13;
+    for (const l of wrap(body, 290)) {
+      text(l, LEFT + 1, ny, 10);
+      ny -= 13;
     }
-    y -= 8;
+    ny -= 9;
   }
+  let ty = belowTop;
+  for (const [label, value] of [
+    ["SUBTOTAL", formatAmount(s.subtotal_cents)],
+    ["TOTAL", formatAmount(s.total_cents)],
+  ] as const) {
+    text(label, 320, ty, 10);
+    textRight(value, RIGHT - 2, ty, 10);
+    ty -= 15;
+  }
+  text("BALANCE DUE", 320, ty, 10);
+  textRight(formatUsd(s.balance_due_cents), RIGHT - 2, ty - 6, 17);
 
   return doc.save({ useObjectStreams: false });
 }
