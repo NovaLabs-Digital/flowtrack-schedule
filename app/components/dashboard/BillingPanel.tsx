@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { nowInBusinessTz } from "@/lib/timezone";
 import { formatCents } from "@/lib/money";
 import { formatMMDDYY } from "@/lib/dateDisplay";
+import InvoiceDialog from "@/app/components/dashboard/invoices/InvoiceDialog";
 import {
   PAYMENT_METHODS,
   BILLING_STATUS_FILTERS,
@@ -279,6 +280,10 @@ export default function BillingPanel({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  // The invoice dialog (same one as Appointment Details), opened from a
+  // row's Draft or SFT-number link; reloadToken refetches after a change.
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const [savingRows, setSavingRows] = useState<Record<string, boolean>>({});
 
   // Persists range/filter/sort/search together, so every one of them
@@ -371,7 +376,7 @@ export default function BillingPanel({
     return () => {
       cancelled = true;
     };
-  }, [rangeStart, rangeEnd]);
+  }, [rangeStart, rangeEnd, reloadToken]);
 
   // Client-name search narrows the in-range completed list BEFORE the
   // status filter and summary totals are computed from it, so the table,
@@ -496,6 +501,20 @@ export default function BillingPanel({
     // matches the width the 7-column table needs; every other Settings
     // section instead uses max-w-xl/max-w-4xl for narrower card content.
     <div className="max-w-5xl" ref={rootRef}>
+      {/* Outside the loading branch below: a save inside the dialog reloads
+          the rows, and the dialog must stay mounted through that (Void &
+          Reissue switches it to the new draft). */}
+      {openInvoiceId && (
+        <InvoiceDialog
+          invoiceId={openInvoiceId}
+          canMutate={canMutateOperationalData}
+          onClose={() => setOpenInvoiceId(null)}
+          onChanged={() => {
+            setReloadToken((t) => t + 1);
+            onBillingSaved?.();
+          }}
+        />
+      )}
       <div className="mb-3">
         <h1 className="text-lg font-semibold text-slate-900">Billing / Completed Jobs</h1>
         <p className="text-xs text-slate-500 mt-0.5">
@@ -611,6 +630,7 @@ export default function BillingPanel({
                       error={rowErrors[row.appointmentId]}
                       onSave={(patch) => saveBillingFields(row.appointmentId, patch)}
                       onDirectPayment={(confirm, method) => saveDirectPayment(row.appointmentId, confirm, method)}
+                      onOpenInvoice={setOpenInvoiceId}
                       isFocused={!!focusAppointmentId && row.appointmentId === focusAppointmentId}
                     />
                   ))
@@ -711,6 +731,7 @@ function BillingRow({
   error,
   onSave,
   onDirectPayment,
+  onOpenInvoice,
   isFocused,
 }: {
   row: CompletedJobRow;
@@ -719,6 +740,7 @@ function BillingRow({
   error?: string;
   onSave: (patch: Record<string, unknown>) => void;
   onDirectPayment: (confirm: boolean, paymentMethod: string | null) => void;
+  onOpenInvoice: (invoiceId: string) => void;
   // Needs Attention deep-link target (see BillingPanel's own focusAppointmentId
   // prop): scrolls this row into view once mounted/visible and applies a
   // brief visual highlight, so "open the corresponding job in Billing"
@@ -794,7 +816,14 @@ function BillingRow({
       <td className="px-3 py-2">
         {issuedInvoice ? (
           <div className="flex items-center gap-2 whitespace-nowrap">
-            <span className="font-medium text-slate-900" title="Invoice created in Schedule">{issuedInvoice.invoice_number}</span>
+            <button
+              type="button"
+              onClick={() => onOpenInvoice(issuedInvoice.id)}
+              className="font-medium text-slate-900 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-500"
+              title="Open invoice created in Schedule"
+            >
+              {issuedInvoice.invoice_number}
+            </button>
             <a
               href={`/api/invoices/${issuedInvoice.id}/pdf`}
               className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
@@ -804,9 +833,14 @@ function BillingRow({
             </a>
           </div>
         ) : draftInvoice ? (
-          <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600" title="Draft invoice in Schedule -- not issued yet">
+          <button
+            type="button"
+            onClick={() => onOpenInvoice(draftInvoice.id)}
+            className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200"
+            title="Open the draft invoice -- not issued yet"
+          >
             Draft
-          </span>
+          </button>
         ) : paidDirectly ? (
           <div className="whitespace-nowrap">
             <span className="text-[11px] text-slate-600">No invoice needed</span>

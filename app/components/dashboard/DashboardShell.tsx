@@ -875,6 +875,8 @@ export default function DashboardShell({
                     canMutateOperationalData={entitlement.canMutateOperationalData}
                     timezone={timezone}
                     focusMessageHistory={needsAttentionFocusSection === "failed_message"}
+                    showInvoiceCard={!isTester && !isLocalDemo && !guidedSession}
+                    onBillingChanged={handleBillingSaved}
                   />
                 ) : (
                   <ClientPanel

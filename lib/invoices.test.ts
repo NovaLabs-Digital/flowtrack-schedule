@@ -221,3 +221,13 @@ describe("renderInvoicePdf (interim layout)", () => {
     assert.equal(formatInvoiceDate("2026-11-12"), "11/12/2026");
   });
 });
+
+describe("renderInvoicePdf -- long text", () => {
+  test("a long description and product wrap instead of running into the number columns; still one page and deterministic", async () => {
+    const long = { ...SNAPSHOT, product_service: "Move-out deep cleaning, three bedrooms", description: "Kitchen including oven, fridge and cabinets inside; two bathrooms; baseboards; interior windows; garage sweep. ".repeat(3) };
+    const a = Buffer.from(await renderInvoicePdf(long));
+    const b = Buffer.from(await renderInvoicePdf(long));
+    assert.ok(a.equals(b));
+    assert.equal((await PDFDocument.load(a, { updateMetadata: false })).getPageCount(), 1);
+  });
+});

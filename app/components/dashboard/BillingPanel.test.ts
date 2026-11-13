@@ -1237,3 +1237,68 @@ describe("BillingPanel -- SFT invoices and Paid directly (migration 049)", () =>
     await screen.findByText(/can't be changed here/);
   });
 });
+
+describe("BillingPanel -- the invoice dialog (migration 049)", () => {
+  const INV = "55555555-5555-4555-8555-555555555555";
+  const NEW = "66666666-6666-4666-8666-666666666666";
+  const base = {
+    id: INV, workspace_id: "w1", appointment_id: "appt-sft", client_id: "c1", reissued_from_invoice_id: null, status: "issued", revision: 1,
+    invoice_number: "SFT-1001", business_name: "ACS", business_address: null, business_phone: null, business_email: null,
+    bill_to_name: "Sofia", bill_to_address: null, bill_to_email: null, terms: "due_on_receipt", invoice_date: "2026-11-12", due_date: "2026-11-12",
+    service_date: "2026-11-10", product_service: "Cleaning", description: null, quantity: 1, rate_cents: 16000, amount_cents: 16000, total_cents: 16000,
+    payment_instructions: null, note_to_client: null, job_price_cents: 15000, issued_at: "2026-11-12T15:00:00Z", voided_at: null, void_reason: null,
+    created_at: "x", updated_at: "x",
+  };
+  const row = (invoice: unknown, invoiceNumber: string | null) => ({
+    ...ROW_DONE, appointmentId: "appt-sft", clientName: "Sofia Issued", priceCents: 15000,
+    billing: { id: "b", workspace_id: "w1", appointment_id: "appt-sft", client_id: "c1", invoice_number: invoiceNumber, paid: false, payment_method: null, no_invoice_required: false, created_at: "x", updated_at: "x" },
+    invoice,
+  });
+
+  test("Void & Reissue from Billing lands on the new draft even though Billing reloads its rows meanwhile", async () => {
+    let reloads = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : null });
+      const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+      if (url.startsWith("/api/billing/completed-jobs?")) {
+        reloads++;
+        // A real reload takes a moment; the dialog must survive it.
+        if (reloads > 1) await new Promise((r) => setTimeout(r, 60));
+        return ok({ completed: [reloads === 1 ? row({ id: INV, status: "issued", invoice_number: "SFT-1001", total_cents: 16000, revision: 1 }, "SFT-1001") : row({ id: NEW, status: "draft", invoice_number: null, total_cents: 16000, revision: 1 }, null)], reviewNeeded: [] });
+      }
+      if (url === `/api/invoices/${INV}`) return ok({ invoice: base, billing: { paid: false } });
+      if (url === `/api/invoices/${INV}/void`) return ok({ ok: true, invoice: { ...base, status: "void", void_reason: "wrong rate" } });
+      if (url === "/api/invoices" && method === "POST") return ok({ ok: true, invoice: { ...base, id: NEW, status: "draft", invoice_number: null, issued_at: null } }, 201);
+      if (url === `/api/invoices/${NEW}`) return ok({ invoice: { ...base, id: NEW, status: "draft", invoice_number: null, issued_at: null }, billing: { paid: false } });
+      throw new Error(`unscripted ${method} ${url}`);
+    }) as typeof fetch;
+
+    renderPanel();
+    const u = userEvent.setup();
+    await u.click(await screen.findByRole("button", { name: "SFT-1001" }));
+    await u.click(await screen.findByRole("button", { name: "Void & Reissue" }));
+    await u.type(screen.getByLabelText(/Why are you voiding SFT-1001/), "wrong rate");
+    await u.click(screen.getByRole("button", { name: "Void and create new draft" }));
+    await screen.findByRole("dialog", { name: "Draft invoice" });
+    await waitFor(() => assert.ok(reloads >= 2));
+    // Let every reload finish, then the dialog must still be on the new draft.
+    await waitFor(() => assert.ok(screen.getAllByText("Sofia Issued").length > 0 && !screen.queryByText("Loading...")));
+    await new Promise((r) => setTimeout(r, 150));
+    assert.ok(screen.getByRole("dialog", { name: "Draft invoice" }), "still on the new draft after Billing reloaded");
+    assert.ok(screen.getByText(/SFT-1001 was voided and kept on record/));
+    assert.ok(calls.some((c) => c.url === `/api/invoices/${NEW}`), "the dialog loaded the new draft");
+  });
+
+  test("the Draft link opens the draft editor", async () => {
+    responses = [
+      json(200, { completed: [row({ id: NEW, status: "draft", invoice_number: null, total_cents: 15000, revision: 1 }, null)], reviewNeeded: [] }),
+      json(200, { invoice: { ...base, id: NEW, status: "draft", invoice_number: null, issued_at: null }, billing: { paid: false } }),
+    ];
+    renderPanel();
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Draft" }));
+    await screen.findByRole("dialog", { name: "Draft invoice" });
+    assert.equal(calls[1].url, `/api/invoices/${NEW}`);
+  });
+});

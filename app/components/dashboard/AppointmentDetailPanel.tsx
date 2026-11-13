@@ -9,6 +9,7 @@ import { findManualHoursEntry, formatMinutesAsDuration, isJobTrackingComplete, r
 import { sortAssignmentsStable } from "@/lib/sortAssignmentsStable";
 import { AppointmentMessageHistory } from "@/app/components/dashboard/MessageHistory";
 import { useRestrictedWording } from "@/app/components/dashboard/restrictedWording";
+import InvoiceCard from "@/app/components/dashboard/invoices/InvoiceCard";
 
 // Phase 5.5E-E1B: this panel's own restricted notice, distinct from
 // AppointmentModal's (appointment-modal-restricted-notice) -- both
@@ -77,6 +78,13 @@ type Props = {
   // everywhere else this panel is reached (a plain calendar-card click,
   // Past Services, etc.), which never scrolls anything.
   focusMessageHistory?: boolean;
+  // SFT invoices (migration 049): the Invoice card for a past, not-cancelled
+  // job. Owners only -- off for testers, the local demo and Guided Demo
+  // Sessions, which have no invoices.
+  showInvoiceCard?: boolean;
+  // Billing changed from the Invoice card (DashboardShell refreshes Needs
+  // Attention).
+  onBillingChanged?: () => void;
 };
 
 // Desktop "Appointment Details" control center — the appointment-focused
@@ -84,7 +92,7 @@ type Props = {
 // just a client) is selected. Mirrors MobileAppointmentDetail.tsx's
 // Call/Text/Cancel pattern for parity with mobile, reusing the exact same
 // /api/appointments/delete endpoint — no new backend logic.
-export default function AppointmentDetailPanel({ appointment, client, employees, services, assignments, employeeHours, onEdit, onCancelled, canMutateOperationalData, timezone, focusMessageHistory }: Props) {
+export default function AppointmentDetailPanel({ appointment, client, employees, services, assignments, employeeHours, onEdit, onCancelled, canMutateOperationalData, timezone, showInvoiceCard, onBillingChanged, focusMessageHistory }: Props) {
   const restrictedWording = useRestrictedWording(RESTRICTED_WORDING);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
@@ -421,6 +429,13 @@ export default function AppointmentDetailPanel({ appointment, client, employees,
 
       {error && (
         <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>
+      )}
+
+      {/* Invoice (migration 049): how this past job is billed -- Create
+          Invoice, Link Existing Invoice, or Paid directly, no invoice. Placed
+          with the panel's other actions, after the read-only details. */}
+      {showInvoiceCard && isHistorical && appointment.status !== "cancelled" && (
+        <InvoiceCard appointmentId={appointment.id} canMutate={canMutateOperationalData} onChanged={onBillingChanged} />
       )}
 
       {/* Shown whenever a gated action below would otherwise render for a

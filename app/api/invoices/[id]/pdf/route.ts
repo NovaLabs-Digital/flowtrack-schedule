@@ -11,7 +11,8 @@ type Params = { params: Promise<{ id: string }> };
 
 // GET /api/invoices/[id]/pdf -- downloads the PDF stored when the invoice
 // was issued, byte for byte (never re-rendered). Drafts have no PDF.
-export async function GET(_req: Request, { params }: Params) {
+// ?inline=1 shows it in the browser instead (the invoice preview).
+export async function GET(req: Request, { params }: Params) {
   try {
     const session = await getSession();
     const deny = requireOwner(session);
@@ -43,7 +44,7 @@ export async function GET(_req: Request, { params }: Params) {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${invoicePdfFileName(invoice.invoice_number)}"`,
+        "Content-Disposition": `${new URL(req.url).searchParams.get("inline") === "1" ? "inline" : "attachment"}; filename="${invoicePdfFileName(invoice.invoice_number)}"`,
         "Content-Length": String(pdf.length),
         "Cache-Control": "private, no-store",
       },

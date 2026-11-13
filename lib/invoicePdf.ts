@@ -79,6 +79,23 @@ export async function renderInvoicePdf(s: InvoiceRenderSnapshot): Promise<Uint8A
   const textRight = (t: string, xr: number, yy: number, size = 10, font = regular, color = ink) =>
     page.drawText(safe(t), { x: xr - font.widthOfTextAtSize(safe(t), size), y: yy, size, font, color });
   const lines = (t: string | null) => (t ? t.split("\n") : []);
+  // Word-wraps text to a width (points), keeping its own line breaks.
+  const wrap = (t: string | null, width: number, size = 10, font = regular): string[] => {
+    const out: string[] = [];
+    for (const para of lines(t)) {
+      let line = "";
+      for (const word of safe(para).split(/\s+/).filter(Boolean)) {
+        const next = line ? `${line} ${word}` : word;
+        if (!line || font.widthOfTextAtSize(next, size) <= width) line = next;
+        else {
+          out.push(line);
+          line = word;
+        }
+      }
+      out.push(line);
+    }
+    return out;
+  };
 
   // Business
   text(s.business_name, left, y, 16, bold);
@@ -112,23 +129,27 @@ export async function renderInvoicePdf(s: InvoiceRenderSnapshot): Promise<Uint8A
   y = Math.min(y, fy) - 20;
 
   // Line
-  const cols = { date: left, product: 128, desc: 250, qty: 410, rate: 480, amount: right };
+  // Right edges for the number columns, so values never run together;
+  // product and description wrap inside their own columns.
+  const cols = { date: left, product: 124, desc: 236, descWidth: 150, qtyRight: 420, rateRight: 488, amount: right };
   page.drawLine({ start: { x: left, y: y + 12 }, end: { x: right, y: y + 12 }, thickness: 0.7, color: muted });
   text("Service Date", cols.date, y, 8, bold, muted);
   text("Product/service", cols.product, y, 8, bold, muted);
   text("Description", cols.desc, y, 8, bold, muted);
-  textRight("Qty", cols.qty + 30, y, 8, bold, muted);
-  textRight("Rate", cols.rate + 40, y, 8, bold, muted);
+  textRight("Qty", cols.qtyRight, y, 8, bold, muted);
+  textRight("Rate", cols.rateRight, y, 8, bold, muted);
   textRight("Amount", cols.amount, y, 8, bold, muted);
   y -= 16;
   text(formatInvoiceDate(s.service_date), cols.date, y, 10);
-  text(s.product_service, cols.product, y, 10);
-  const descLines = lines(s.description).length ? lines(s.description) : [""];
-  textRight(formatQty(s.quantity), cols.qty + 30, y, 10);
-  textRight(formatUsd(s.rate_cents), cols.rate + 40, y, 10);
+  textRight(formatQty(s.quantity), cols.qtyRight, y, 10);
+  textRight(formatUsd(s.rate_cents), cols.rateRight, y, 10);
   textRight(formatUsd(s.amount_cents), cols.amount, y, 10);
-  for (const l of descLines) {
-    text(l, cols.desc, y, 10);
+  const productLines = wrap(s.product_service, cols.desc - cols.product - 8);
+  const descLines = s.description ? wrap(s.description, cols.descWidth) : [];
+  const rowLines = Math.max(productLines.length, descLines.length, 1);
+  for (let i = 0; i < rowLines; i++) {
+    if (productLines[i]) text(productLines[i], cols.product, y, 10);
+    if (descLines[i]) text(descLines[i], cols.desc, y, 10);
     y -= 13;
   }
   page.drawLine({ start: { x: left, y: y + 4 }, end: { x: right, y: y + 4 }, thickness: 0.7, color: muted });
@@ -151,7 +172,7 @@ export async function renderInvoicePdf(s: InvoiceRenderSnapshot): Promise<Uint8A
     if (!body) continue;
     text(label, left, y, 8, bold, muted);
     y -= 12;
-    for (const l of lines(body)) {
+    for (const l of wrap(body, right - left)) {
       text(l, left, y, 10);
       y -= 13;
     }

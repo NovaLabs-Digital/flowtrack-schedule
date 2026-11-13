@@ -6,11 +6,57 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireCapability } from "@/lib/entitlementServer";
 import { toDateInputValue } from "@/lib/payroll";
 import { nowInBusinessTz } from "@/lib/timezone";
-import { buildInvoicePrefill, draftFieldsOf, reissueFields, type InvoiceRpcOutcome, errorMessage } from "@/lib/invoices";
-import { UUID_RE, isBillableJob, loadCompanySettings, loadInvoiceView, loadOwnedAppointment } from "@/lib/invoiceServer";
+import { INVOICE_VIEW_COLUMNS, buildInvoicePrefill, draftFieldsOf, reissueFields, toInvoiceView, type InvoiceRpcOutcome, errorMessage } from "@/lib/invoices";
+import { UUID_RE, isBillableJob, loadBillingState, loadCompanySettings, loadInvoiceView, loadOwnedAppointment } from "@/lib/invoiceServer";
 
 function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status });
+}
+
+// GET /api/invoices?appointment_id=...
+//
+// Everything Appointment Details' Invoice card needs for one job: whether
+// it is a completed job (same rule as Billing, owner corrections count),
+// its Billing state (number, paid, method, paid directly), its live SFT
+// invoice (draft or issued) and any voided ones (kept forever).
+export async function GET(req: Request) {
+  try {
+    const session = await getSession();
+    const deny = requireOwner(session);
+    if (deny) return deny;
+    assertWorkspace(session);
+    const workspaceId = session.workspaceId;
+    const isTester = session.role === "tester";
+
+    const capability = await requireCapability(session, "canViewExistingData");
+    if (!capability.allowed) return capability.response;
+
+    const appointmentId = new URL(req.url).searchParams.get("appointment_id") ?? "";
+    const appt = await loadOwnedAppointment(workspaceId, appointmentId, isTester);
+    if (!appt) return json({ error: "Appointment not found" }, 404);
+
+    const [completed, billing, invoicesRes] = await Promise.all([
+      isBillableJob(appt, workspaceId),
+      loadBillingState(workspaceId, appt.id),
+      supabaseAdmin
+        .from("invoices")
+        .select(INVOICE_VIEW_COLUMNS)
+        .eq("workspace_id", workspaceId)
+        .eq("appointment_id", appt.id)
+        .order("created_at", { ascending: true }),
+    ]);
+    if (invoicesRes.error) throw invoicesRes.error;
+    const invoices = ((invoicesRes.data ?? []) as unknown as Record<string, unknown>[]).map(toInvoiceView);
+    return json({
+      completed,
+      billing,
+      invoice: invoices.find((i) => i.status !== "void") ?? null,
+      voided: invoices.filter((i) => i.status === "void"),
+    });
+  } catch (e: unknown) {
+    console.error("INVOICES_JOB_GET_ERROR", e);
+    return json({ error: errorMessage(e) }, 500);
+  }
 }
 
 // POST /api/invoices
