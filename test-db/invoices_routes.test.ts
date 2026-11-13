@@ -177,7 +177,7 @@ async function needsAttentionKinds(ws: Ws, appointmentId: string): Promise<strin
 // Full draft fields from an invoice view, with overrides (what the editor sends).
 function fieldsFrom(inv: any, o: Record<string, unknown> = {}) {
   const keys = ["business_name", "business_address", "business_phone", "business_email", "bill_to_name", "bill_to_address", "bill_to_email",
-    "terms", "invoice_date", "due_date", "service_date", "product_service", "description", "quantity", "rate_cents", "payment_instructions", "note_to_client"];
+    "terms", "invoice_date", "due_date", "service_date", "product_service", "description", "quantity", "rate_cents", "tax_rate", "payment_instructions", "note_to_client"];
   return { ...Object.fromEntries(keys.map((k) => [k, inv[k]])), ...o };
 }
 
@@ -423,6 +423,45 @@ describe("Billing with SFT invoices", { skip: SKIP }, () => {
     // The next new invoice in the workspace reuses the last payment instructions.
     const next = await createInvoice(ws, await completedJob(ws));
     assert.equal(next.body.invoice.payment_instructions, "Zelle to 555-0100");
+  });
+});
+
+describe("Billing with sales tax", { skip: SKIP }, () => {
+  test("a taxed invoice: Invoiced $ / Unpaid $ and the PDF use the tax-inclusive total; Completed Work $ keeps the job price", async () => {
+    const ws = await newWorkspace();
+    const job = await completedJob(ws, { priceCents: 15000 });
+    const inv = (await createInvoice(ws, job)).body.invoice;
+    assert.deepEqual([inv.tax_rate, inv.tax_cents], [null, 0], "starts with tax off");
+    const edited = await editDraft(ws, inv.id, 1, fieldsFrom(inv, { tax_rate: "6.5" }));
+    assert.deepEqual([edited.body.invoice.tax_rate, edited.body.invoice.tax_cents, edited.body.invoice.total_cents], ["6.5", 975, 15975]);
+    const issued = await issueInvoice(ws, inv.id, 2);
+    assert.equal(issued.status, 201);
+
+    const rows = await billingReport(ws);
+    const row = rows.find((r) => r.appointmentId === job)!;
+    assert.equal(row.invoice?.total_cents, 15975);
+    assert.deepEqual(computeBillingSummary(rows), { completedJobs: 1, completedWorkCents: 15000, invoicedCents: 15975, unpaidCents: 15975 });
+
+    const stored = await storedInvoice(inv.id);
+    assert.deepEqual([Number(stored.render_snapshot.tax_rate), stored.render_snapshot.tax_cents, stored.render_snapshot.total_cents], [6.5, 975, 15975]);
+    await assertStoredPdfMatches(inv.id);
+  });
+
+  test("Void & Reissue copies the tax rate into the new draft; changing the amount recalculates the tax", async () => {
+    const ws = await newWorkspace();
+    const job = await completedJob(ws, { priceCents: 15000 });
+    const inv = (await createInvoice(ws, job)).body.invoice;
+    await editDraft(ws, inv.id, 1, fieldsFrom(inv, { tax_rate: "6.875" }));
+    await issueInvoice(ws, inv.id, 2);
+    assert.equal((await voidInvoice(ws, inv.id, "wrong amount")).status, 200);
+    const re = (await createInvoice(ws, job, { reissue_from_invoice_id: inv.id })).body.invoice;
+    assert.deepEqual([re.tax_rate, re.tax_cents, re.total_cents], ["6.875", 1031, 16031], "copied rate, same amount");
+    const changed = await editDraft(ws, re.id, re.revision, fieldsFrom(re, { rate_cents: 12345 }));
+    assert.deepEqual([changed.body.invoice.tax_rate, changed.body.invoice.tax_cents, changed.body.invoice.total_cents], ["6.875", 849, 13194]);
+    const off = await editDraft(ws, re.id, changed.body.invoice.revision, fieldsFrom(changed.body.invoice, { tax_rate: null }));
+    assert.deepEqual([off.body.invoice.tax_rate, off.body.invoice.tax_cents, off.body.invoice.total_cents], [null, 0, 12345], "the owner can turn tax off");
+    const voided = (await getInvoice(ws, inv.id)).body.invoice;
+    assert.deepEqual([voided.status, voided.tax_rate, voided.tax_cents, voided.total_cents], ["void", "6.875", 1031, 16031], "the voided record keeps its tax");
   });
 });
 

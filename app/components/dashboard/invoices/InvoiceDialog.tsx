@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from "react";
 import { centsToInputValue, formatCents, parsePriceToCents } from "@/lib/money";
 import { formatMMDDYY } from "@/lib/dateDisplay";
-import { INVOICE_TERMS, dueDateFor, lineAmountCents, type InvoiceDraftFields, type InvoiceTerms, type InvoiceView } from "@/lib/invoices";
+import { INVOICE_TERMS, dueDateFor, lineAmountCents, parseTaxRate, taxCents, type InvoiceDraftFields, type InvoiceTerms, type InvoiceView } from "@/lib/invoices";
 
 type Props = {
   invoiceId: string;
@@ -29,6 +29,8 @@ type Form = {
   terms: InvoiceTerms; invoice_date: string; due_date: string;
   service_date: string; product_service: string; description: string;
   quantity: string; rate: string;
+  // Sales tax: off by default; one rate per invoice when on.
+  taxOn: boolean; taxRate: string;
   payment_instructions: string; note_to_client: string;
 };
 
@@ -40,6 +42,7 @@ function toForm(inv: InvoiceView): Form {
     terms: inv.terms, invoice_date: inv.invoice_date, due_date: inv.due_date,
     service_date: inv.service_date, product_service: inv.product_service ?? "", description: inv.description ?? "",
     quantity: String(Number(inv.quantity)), rate: centsToInputValue(inv.rate_cents),
+    taxOn: inv.tax_rate !== null, taxRate: inv.tax_rate ?? "",
     payment_instructions: inv.payment_instructions ?? "", note_to_client: inv.note_to_client ?? "",
   };
 }
@@ -49,6 +52,13 @@ function fromForm(f: Form): { ok: true; fields: InvoiceDraftFields } | { ok: fal
   if (!f.quantity.trim() || !Number.isFinite(quantity) || quantity <= 0) return { ok: false, error: "Qty must be a positive number." };
   const rate = parsePriceToCents(f.rate);
   if (rate === null) return { ok: false, error: "Rate must be a dollar amount, like 150 or 150.00." };
+  let taxRate: string | null = null;
+  if (f.taxOn) {
+    if (!f.taxRate.trim()) return { ok: false, error: "Enter the sales tax rate, or turn sales tax off." };
+    const parsed = parseTaxRate(f.taxRate);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    taxRate = parsed.rate;
+  }
   return {
     ok: true,
     fields: {
@@ -57,7 +67,7 @@ function fromForm(f: Form): { ok: true; fields: InvoiceDraftFields } | { ok: fal
       bill_to_name: f.bill_to_name, bill_to_address: f.bill_to_address || null, bill_to_email: f.bill_to_email || null,
       terms: f.terms, invoice_date: f.invoice_date, due_date: f.due_date,
       service_date: f.service_date, product_service: f.product_service, description: f.description || null,
-      quantity, rate_cents: rate,
+      quantity, rate_cents: rate, tax_rate: taxRate,
       payment_instructions: f.payment_instructions || null, note_to_client: f.note_to_client || null,
     },
   };
@@ -275,6 +285,10 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
   const parsedQty = form ? Number(form.quantity) : NaN;
   const parsedRate = form ? parsePriceToCents(form.rate) : null;
   const amount = form && Number.isFinite(parsedQty) && parsedQty > 0 && parsedRate !== null ? lineAmountCents(parsedQty, parsedRate) : null;
+  // Same integer rounding as the database (lib/invoices.ts taxCents).
+  const parsedTax = form?.taxOn ? parseTaxRate(form.taxRate) : null;
+  const tax = amount === null ? null : !form?.taxOn ? 0 : parsedTax?.ok && parsedTax.thousandths !== null ? taxCents(amount, parsedTax.thousandths) : null;
+  const total = amount !== null && tax !== null ? amount + tax : null;
   const priceDiffers = !!invoice && invoice.job_price_cents !== null && amount !== null && amount !== invoice.job_price_cents;
 
   const title = !invoice ? "Invoice" : isDraft ? "Draft invoice" : `Invoice ${invoice.invoice_number}`;
@@ -380,8 +394,22 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
                   </div>
                 </div>
                 <div className="self-end space-y-1 text-xs">
-                  <div className="flex justify-between text-slate-600"><span>Subtotal</span><span>{amount === null ? "—" : formatCents(amount)}</span></div>
-                  <div className="flex justify-between border-t border-slate-200 pt-1 text-sm font-semibold text-slate-900"><span>Invoice total</span><span data-testid="invoice-total">{amount === null ? "—" : formatCents(amount)}</span></div>
+                  <label className="flex items-center justify-end gap-2 text-slate-600">
+                    <input type="checkbox" checked={form.taxOn} disabled={disabled} onChange={(e) => set("taxOn", e.target.checked)} className="h-3.5 w-3.5 rounded border-slate-300" />
+                    Charge sales tax
+                  </label>
+                  {form.taxOn && (
+                    <div className="flex items-center justify-end gap-1.5 text-slate-600">
+                      <label htmlFor="inv-tax-rate">Tax rate</label>
+                      <input id="inv-tax-rate" inputMode="decimal" placeholder="6.5" className={`${inputCls} w-20 text-right`} value={form.taxRate} disabled={disabled} onChange={(e) => set("taxRate", e.target.value)} />
+                      <span>%</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-slate-600"><span>Subtotal</span><span data-testid="invoice-subtotal">{amount === null ? "—" : formatCents(amount)}</span></div>
+                  {form.taxOn && (
+                    <div className="flex justify-between text-slate-600"><span>Tax</span><span data-testid="invoice-tax">{tax === null ? "—" : formatCents(tax)}</span></div>
+                  )}
+                  <div className="flex justify-between border-t border-slate-200 pt-1 text-sm font-semibold text-slate-900"><span>Invoice total</span><span data-testid="invoice-total">{total === null ? "—" : formatCents(total)}</span></div>
                   {priceDiffers && <div className="text-right text-[11px] text-slate-400">Job price {formatCents(invoice.job_price_cents)}</div>}
                 </div>
               </div>
@@ -407,6 +435,7 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
               )}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
                 <span>Total <span className="font-semibold text-slate-900" data-testid="invoice-total">{formatCents(invoice.total_cents)}</span></span>
+                {invoice.tax_rate !== null && <span data-testid="invoice-tax">incl. {invoice.tax_rate}% tax {formatCents(invoice.tax_cents)}</span>}
                 <span>Dated {formatMMDDYY(invoice.invoice_date)}</span>
                 <span>{invoice.bill_to_name}</span>
               </div>

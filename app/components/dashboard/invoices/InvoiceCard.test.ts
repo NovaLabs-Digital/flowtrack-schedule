@@ -50,7 +50,7 @@ const DRAFT = {
   business_name: "ACS Cleaning", business_address: "1 Main St", business_phone: null, business_email: null,
   bill_to_name: "Client A", bill_to_address: "2 Oak Ave", bill_to_email: null,
   terms: "due_on_receipt", invoice_date: "2026-11-12", due_date: "2026-11-12", service_date: "2026-11-10",
-  product_service: "Recurring Cleaning", description: null, quantity: 1, rate_cents: 15000, amount_cents: 15000, total_cents: 15000,
+  product_service: "Recurring Cleaning", description: null, quantity: 1, rate_cents: 15000, amount_cents: 15000, tax_rate: null, tax_cents: 0, total_cents: 15000,
   payment_instructions: null, note_to_client: "Thank you for your business.", job_price_cents: 15000,
   issued_at: null, voided_at: null, void_reason: null, created_at: "x", updated_at: "x",
 };
@@ -260,5 +260,84 @@ describe("Invoice dialog", () => {
     assert.equal(calls.filter((c) => c.method === "DELETE").length, 0);
     await u.click(screen.getByRole("button", { name: "Discard" }));
     await waitFor(() => assert.ok(closed));
+  });
+});
+
+
+describe("Invoice dialog -- sales tax", () => {
+  const open = (invoice: unknown) => {
+    handlers = [on("GET", `/api/invoices/${DRAFT.id}`, () => ({ status: 200, body: { invoice, billing: { paid: false } } }))];
+    return render(React.createElement(InvoiceDialog, { invoiceId: DRAFT.id, canMutate: true, onClose: () => {}, onChanged: () => {} }));
+  };
+
+  test("tax is off by default: no rate field and no Tax line", async () => {
+    open(DRAFT);
+    const box = (await screen.findByLabelText("Charge sales tax")) as HTMLInputElement;
+    assert.equal(box.checked, false);
+    assert.equal(screen.queryByLabelText("Tax rate"), null);
+    assert.equal(screen.queryByTestId("invoice-tax"), null);
+    assert.equal(screen.getByTestId("invoice-total").textContent, "$150.00");
+  });
+
+  test("turning tax on: enter a rate, review Subtotal / Tax / Total live (same rounding as the database), saved as the rate", async () => {
+    handlers = [
+      on("GET", `/api/invoices/${DRAFT.id}`, () => ({ status: 200, body: { invoice: DRAFT, billing: { paid: false } } })),
+      on("PATCH", `/api/invoices/${DRAFT.id}`, () => ({ status: 200, body: { ok: true, invoice: { ...DRAFT, revision: 2, tax_rate: "6.875", tax_cents: 1031, total_cents: 16031 } } })),
+    ];
+    render(React.createElement(InvoiceDialog, { invoiceId: DRAFT.id, canMutate: true, onClose: () => {}, onChanged: () => {} }));
+    const u = userEvent.setup();
+    await u.click(await screen.findByLabelText("Charge sales tax"));
+    await u.type(screen.getByLabelText("Tax rate"), "6.875");
+    assert.equal(screen.getByTestId("invoice-subtotal").textContent, "$150.00");
+    assert.equal(screen.getByTestId("invoice-tax").textContent, "$10.31", "$10.3125 rounds to $10.31");
+    assert.equal(screen.getByTestId("invoice-total").textContent, "$160.31");
+    await u.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => assert.ok(calls.some((c) => c.method === "PATCH")));
+    assert.equal((calls.find((c) => c.method === "PATCH")!.body!.fields as { tax_rate: string }).tax_rate, "6.875");
+  });
+
+  test("half a cent rounds up, and a tax that rounds to $0.00 still shows its Tax line", async () => {
+    open({ ...DRAFT, rate_cents: 150, amount_cents: 150, total_cents: 150 });
+    const u = userEvent.setup();
+    await u.click(await screen.findByLabelText("Charge sales tax"));
+    await u.type(screen.getByLabelText("Tax rate"), "7");
+    assert.equal(screen.getByTestId("invoice-tax").textContent, "$0.11", "$0.105 -> $0.11");
+    const rate = screen.getByLabelText("Rate");
+    await u.clear(rate);
+    await u.type(rate, "0.05");
+    assert.equal(screen.getByTestId("invoice-tax").textContent, "$0.00");
+  });
+
+  test("tax on with no rate can't be saved; an invalid rate shows why", async () => {
+    open(DRAFT);
+    const u = userEvent.setup();
+    await u.click(await screen.findByLabelText("Charge sales tax"));
+    await u.click(screen.getByRole("button", { name: "Issue invoice" }));
+    await screen.findByText(/Enter the sales tax rate/);
+    await u.type(screen.getByLabelText("Tax rate"), "6.8755");
+    await u.click(screen.getByRole("button", { name: "Issue invoice" }));
+    await screen.findByText(/at most 3 decimals/);
+    assert.equal(calls.filter((c) => c.method !== "GET").length, 0);
+  });
+
+  test("a reissued draft arrives with the original rate on, and changing the amount recalculates the tax", async () => {
+    open({ ...DRAFT, tax_rate: "6.5", tax_cents: 975, total_cents: 15975, reissued_from_invoice_id: "x" });
+    const box = (await screen.findByLabelText("Charge sales tax")) as HTMLInputElement;
+    assert.equal(box.checked, true);
+    assert.equal((screen.getByLabelText("Tax rate") as HTMLInputElement).value, "6.5");
+    assert.equal(screen.getByTestId("invoice-tax").textContent, "$9.75");
+    const u = userEvent.setup();
+    const rate = screen.getByLabelText("Rate");
+    await u.clear(rate);
+    await u.type(rate, "160");
+    assert.equal(screen.getByTestId("invoice-tax").textContent, "$10.40");
+    assert.equal(screen.getByTestId("invoice-total").textContent, "$170.40");
+  });
+
+  test("an issued taxed invoice shows the tax-inclusive total and the tax", async () => {
+    open({ ...ISSUED, tax_rate: "6.5", tax_cents: 1040, total_cents: 17040 });
+    await screen.findByRole("dialog", { name: "Invoice SFT-1001" });
+    assert.equal(screen.getByTestId("invoice-total").textContent, "$170.40");
+    assert.match(screen.getByTestId("invoice-tax").textContent!, /6\.5% tax \$10\.40/);
   });
 });

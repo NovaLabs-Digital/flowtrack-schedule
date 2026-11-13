@@ -45,11 +45,44 @@ export function dueDateFor(invoiceDate: string, terms: InvoiceTerms): string {
   return addCalendarDays(invoiceDate, t.days);
 }
 
+// Exact integer arithmetic for money, matching PostgreSQL's round(numeric)
+// (half away from zero; every value here is non-negative, so: half up).
+// BigInt keeps even $1,000,000 x 99.999% exact -- no floating point.
+function divideRoundHalfUp(numerator: bigint, denominator: bigint): number {
+  return Number((numerator * BigInt(2) + denominator) / (denominator * BigInt(2)));
+}
+
 // Same rule as the database (invoices_amounts_valid): round(quantity * rate).
-// Quantity has at most 2 decimals and both are non-negative, so JS
-// Math.round (half up) agrees with PostgreSQL's round(numeric).
+// Quantity has at most 2 decimals (validated), so it is an exact count of
+// hundredths.
 export function lineAmountCents(quantity: number, rateCents: number): number {
-  return Math.round(Math.round(quantity * 100) * rateCents / 100);
+  const hundredths = BigInt(Math.round(quantity * 100));
+  return divideRoundHalfUp(hundredths * BigInt(rateCents), BigInt(100));
+}
+
+// Sales tax rate, as typed: a percent greater than 0 and below 100 with at
+// most 3 decimals ("6.5", "6.875"). Blank = tax off. Returns the canonical
+// text (sent to the database) and the rate in thousandths of a percent (for
+// exact arithmetic). Same rule as the database's invoice_draft_tax_rate.
+export type TaxRateParse = { ok: true; rate: string | null; thousandths: number | null } | { ok: false; error: string };
+export function parseTaxRate(input: unknown): TaxRateParse {
+  if (input === null || input === undefined) return { ok: true, rate: null, thousandths: null };
+  const text = String(input).trim();
+  if (!text) return { ok: true, rate: null, thousandths: null };
+  const m = /^(\d{1,2})(?:\.(\d{1,3}))?$/.exec(text);
+  if (!m) return { ok: false, error: "Tax rate must be a percent below 100 with at most 3 decimals, like 6.5" };
+  const thousandths = Number(m[1]) * 1000 + Number((m[2] ?? "").padEnd(3, "0"));
+  if (thousandths <= 0) return { ok: false, error: "Tax rate must be more than 0%" };
+  const whole = Math.floor(thousandths / 1000);
+  const frac = String(thousandths % 1000).padStart(3, "0").replace(/0+$/, "");
+  return { ok: true, rate: frac ? `${whole}.${frac}` : String(whole), thousandths };
+}
+
+// Same rule as the database: tax = round(amount * rate / 100), to the cent,
+// half a cent up. rateThousandths = rate x 1000 (6.875% -> 6875).
+export function taxCents(amountCents: number, rateThousandths: number | null): number {
+  if (rateThousandths === null) return 0;
+  return divideRoundHalfUp(BigInt(amountCents) * BigInt(rateThousandths), BigInt(100000));
 }
 
 // Exactly the keys create_invoice_draft / update_invoice_draft read.
@@ -69,6 +102,8 @@ export type InvoiceDraftFields = {
   description: string | null;
   quantity: number;
   rate_cents: number;
+  // Sales tax percent ("6.5"), or null = no sales tax (the default).
+  tax_rate: string | null;
   payment_instructions: string | null;
   note_to_client: string | null;
 };
@@ -121,6 +156,11 @@ export function normalizeDraftFields(input: unknown): DraftValidation {
   if (typeof rate !== "number" || !Number.isInteger(rate) || rate < 0 || rate > MAX_RATE_CENTS) {
     return { ok: false, error: "Rate must be a dollar amount" };
   }
+  if (raw.tax_rate !== undefined && raw.tax_rate !== null && typeof raw.tax_rate !== "string" && typeof raw.tax_rate !== "number") {
+    return { ok: false, error: "Invalid tax rate" };
+  }
+  const tax = parseTaxRate(raw.tax_rate);
+  if (!tax.ok) return { ok: false, error: tax.error };
 
   return {
     ok: true,
@@ -140,6 +180,7 @@ export function normalizeDraftFields(input: unknown): DraftValidation {
       description: text.description,
       quantity: Math.round(quantity * 100) / 100,
       rate_cents: rate,
+      tax_rate: tax.rate,
       payment_instructions: text.payment_instructions,
       note_to_client: text.note_to_client,
     },
@@ -188,13 +229,15 @@ export function buildInvoicePrefill(input: {
     description: null,
     quantity: 1,
     rate_cents: appointment.price_cents ?? 0,
+    tax_rate: null, // new invoices start with tax off
     payment_instructions: previous ? blankToNull(previous.payment_instructions) : null,
     note_to_client: previous ? blankToNull(previous.note_to_client) : DEFAULT_NOTE_TO_CLIENT,
   };
 }
 
-// The new draft for Void & Reissue: the voided invoice's details, dated
-// today (due date recomputed from its terms).
+// The new draft for Void & Reissue: the voided invoice's details -- its
+// sales tax rate included (the database recalculates the tax on the new
+// draft's amount) -- dated today (due date recomputed from its terms).
 export function reissueFields(voided: InvoiceDraftFields, today: string): InvoiceDraftFields {
   return { ...voided, invoice_date: today, due_date: dueDateFor(today, voided.terms) };
 }
@@ -204,7 +247,7 @@ export const INVOICE_VIEW_COLUMNS =
   "id, workspace_id, appointment_id, client_id, reissued_from_invoice_id, status, revision, invoice_number, " +
   "business_name, business_address, business_phone, business_email, bill_to_name, bill_to_address, bill_to_email, " +
   "terms, invoice_date, due_date, service_date, product_service, description, quantity, rate_cents, amount_cents, " +
-  "total_cents, payment_instructions, note_to_client, job_price_cents, issued_at, voided_at, void_reason, created_at, updated_at";
+  "tax_rate, tax_cents, total_cents, payment_instructions, note_to_client, job_price_cents, issued_at, voided_at, void_reason, created_at, updated_at";
 
 export type InvoiceView = InvoiceDraftFields & {
   id: string;
@@ -216,6 +259,7 @@ export type InvoiceView = InvoiceDraftFields & {
   revision: number;
   invoice_number: string | null;
   amount_cents: number;
+  tax_cents: number;
   total_cents: number;
   job_price_cents: number | null;
   issued_at: string | null;
@@ -225,9 +269,16 @@ export type InvoiceView = InvoiceDraftFields & {
   updated_at: string;
 };
 
-// PostgREST returns numeric as a string; the app works with a number.
+// PostgREST may return numeric as a string or a number; the app works with
+// a number for quantity and canonical text for the tax rate ("6.5").
 export function toInvoiceView(row: Record<string, unknown>): InvoiceView {
-  return { ...(row as unknown as InvoiceView), quantity: Number(row.quantity) };
+  const tax = parseTaxRate(row.tax_rate);
+  return {
+    ...(row as unknown as InvoiceView),
+    quantity: Number(row.quantity),
+    tax_rate: tax.ok ? tax.rate : null,
+    tax_cents: Number(row.tax_cents ?? 0),
+  };
 }
 
 // The draft-editable fields of an invoice row (used by Void & Reissue).
@@ -238,7 +289,7 @@ export function draftFieldsOf(inv: InvoiceView): InvoiceDraftFields {
     bill_to_name: inv.bill_to_name, bill_to_address: inv.bill_to_address, bill_to_email: inv.bill_to_email,
     terms: inv.terms, invoice_date: inv.invoice_date, due_date: inv.due_date, service_date: inv.service_date,
     product_service: inv.product_service, description: inv.description,
-    quantity: Number(inv.quantity), rate_cents: inv.rate_cents,
+    quantity: Number(inv.quantity), rate_cents: inv.rate_cents, tax_rate: inv.tax_rate,
     payment_instructions: inv.payment_instructions, note_to_client: inv.note_to_client,
   };
 }

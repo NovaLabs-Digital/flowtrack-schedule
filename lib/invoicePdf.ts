@@ -10,8 +10,10 @@
 // description, the note bottom-left, and Subtotal / Total / Balance due
 // bottom-right. Light-blue header bands with blue labels, thin gray rules.
 //
-// Not drawn (yet): the logo (no logo is stored -- the top-right stays
-// empty) and the Tax line (invoices carry no tax; total = the line amount).
+// Sales tax: the TAX line appears whenever the invoice has a tax rate --
+// even when the tax rounds to 0.00 -- and never when tax is off.
+//
+// Not drawn (yet): the logo (no logo is stored -- the top-right stays empty).
 //
 // Deterministic: the same snapshot always produces the same bytes (no
 // creation/modification dates or producer metadata are written).
@@ -38,6 +40,8 @@ export type InvoiceRenderSnapshot = {
   rate_cents: number;
   amount_cents: number;
   subtotal_cents: number;
+  tax_rate: number | string | null; // percent; null = no sales tax
+  tax_cents: number;
   total_cents: number;
   balance_due_cents: number;
   payment_instructions: string | null;
@@ -204,10 +208,10 @@ export async function renderInvoicePdf(s: InvoiceRenderSnapshot): Promise<Uint8A
     ny -= 9;
   }
   let ty = belowTop;
-  for (const [label, value] of [
-    ["SUBTOTAL", formatAmount(s.subtotal_cents)],
-    ["TOTAL", formatAmount(s.total_cents)],
-  ] as const) {
+  const totals: [string, string][] = [["SUBTOTAL", formatAmount(s.subtotal_cents)]];
+  if (s.tax_rate !== null && s.tax_rate !== undefined) totals.push(["TAX", formatAmount(s.tax_cents)]);
+  totals.push(["TOTAL", formatAmount(s.total_cents)]);
+  for (const [label, value] of totals) {
     text(label, 320, ty, 10);
     textRight(value, RIGHT - 2, ty, 10);
     ty -= 15;

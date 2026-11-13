@@ -22,6 +22,14 @@
 --    (completed_job_billing.no_invoice_required), separate from the payment
 --    method. Choosing Cash/Venmo/anything alone no longer closes a job.
 --  * Venmo is added to the payment methods.
+--  * Optional sales tax (approved 2026-11-12): one manually entered rate
+--    per invoice, OFF by default (tax_rate NULL, tax_cents 0, no tax line).
+--    With a rate, tax_cents = round(amount_cents * tax_rate / 100) -- to the
+--    cent, half a cent rounding up (PostgreSQL round(numeric)); the app's
+--    preview uses the same rule in integer arithmetic. total_cents =
+--    amount_cents + tax_cents, and that total is what Billing and the PDF
+--    use. The database computes tax and total from the rate; callers never
+--    send them. Rates: greater than 0, below 100, at most 3 decimals.
 --
 -- How the PDF gets its number
 --   1. invoice_render_input(workspace, invoice) -- read-only. Returns the
@@ -68,7 +76,7 @@
 -- Safe to re-run. Rollback (only before any invoice exists):
 --   DROP FUNCTION issue_invoice, void_invoice, create_invoice_draft,
 --     update_invoice_draft, discard_invoice_draft, invoice_render_input,
---     invoice_render_snapshot, set_no_invoice_required, invoice_guard;
+--     invoice_render_snapshot, invoice_draft_tax_rate, set_no_invoice_required, invoice_guard;
 --   DROP TABLE invoices, invoice_counters;
 --   re-run migration 033's upsert_completed_job_billing body;
 --   ALTER TABLE completed_job_billing DROP COLUMN no_invoice_required;
@@ -142,6 +150,8 @@ CREATE TABLE IF NOT EXISTS invoices (
   quantity                 NUMERIC(10,2) NOT NULL DEFAULT 1,
   rate_cents               INTEGER NOT NULL,
   amount_cents             INTEGER NOT NULL,
+  tax_rate                 NUMERIC(6,3),               -- percent, e.g. 6.500; NULL = no sales tax
+  tax_cents                INTEGER NOT NULL DEFAULT 0,
   total_cents              INTEGER NOT NULL,
   payment_instructions     TEXT,
   note_to_client           TEXT,
@@ -167,8 +177,10 @@ CREATE TABLE IF NOT EXISTS invoices (
   CONSTRAINT invoices_amounts_valid CHECK (
     quantity > 0 AND rate_cents >= 0
     AND amount_cents = round(quantity * rate_cents)
-    AND total_cents = amount_cents -- no tax/shipping lines in v1
+    AND tax_cents = CASE WHEN tax_rate IS NULL THEN 0 ELSE round(amount_cents * tax_rate / 100) END
+    AND total_cents = amount_cents + tax_cents -- no shipping/discount lines in v1
   ),
+  CONSTRAINT invoices_tax_rate_valid CHECK (tax_rate IS NULL OR (tax_rate > 0 AND tax_rate < 100)),
   CONSTRAINT invoices_revision_positive CHECK (revision >= 1),
   CONSTRAINT invoices_status_shape CHECK (
     (status = 'draft'
@@ -309,6 +321,8 @@ AS $fn$
     'rate_cents', p_inv.rate_cents,
     'amount_cents', p_inv.amount_cents,
     'subtotal_cents', p_inv.amount_cents,
+    'tax_rate', p_inv.tax_rate,
+    'tax_cents', p_inv.tax_cents,
     'total_cents', p_inv.total_cents,
     'balance_due_cents', p_inv.total_cents,
     'payment_instructions', p_inv.payment_instructions,
@@ -509,6 +523,35 @@ $fn$;
 -- 7. Drafts
 -- ---------------------------------------------------------------------------
 
+-- The draft's sales tax rate: absent / null / blank = tax off (NULL).
+-- Otherwise a percent greater than 0 and below 100 with at most 3 decimals
+-- ("6.5", "6.875"); anything else raises IV020 (the callers turn it into
+-- outcome 'invalid_input', field 'tax_rate'). Text is checked BEFORE the
+-- NUMERIC(6,3) column could silently round an over-precise rate.
+CREATE OR REPLACE FUNCTION invoice_draft_tax_rate(p_draft JSONB)
+RETURNS NUMERIC
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = public
+AS $fn$
+DECLARE
+  v_text TEXT := NULLIF(btrim(coalesce(p_draft ->> 'tax_rate', '')), '');
+  v_rate NUMERIC;
+BEGIN
+  IF v_text IS NULL THEN
+    RETURN NULL;
+  END IF;
+  IF v_text !~ '^[0-9]{1,2}(\.[0-9]{1,3})?$' THEN
+    RAISE EXCEPTION 'invoice_tax_rate_invalid' USING ERRCODE = 'IV020';
+  END IF;
+  v_rate := v_text::numeric;
+  IF v_rate <= 0 OR v_rate >= 100 THEN
+    RAISE EXCEPTION 'invoice_tax_rate_invalid' USING ERRCODE = 'IV020';
+  END IF;
+  RETURN v_rate;
+END;
+$fn$;
+
 -- Creates the draft for one completed job (the app checks completion with
 -- isCompletedForBilling before calling). Same p_request_id again = the same
 -- draft back (double-click / retry).
@@ -532,6 +575,8 @@ DECLARE
   v_qty NUMERIC(10,2);
   v_rate INTEGER;
   v_amount INTEGER;
+  v_tax_rate NUMERIC(6,3);
+  v_tax INTEGER;
   v_row invoices;
 BEGIN
   IF p_workspace_id IS NULL OR p_appointment_id IS NULL OR p_request_id IS NULL OR jsonb_typeof(p_draft) IS DISTINCT FROM 'object' THEN
@@ -588,13 +633,19 @@ BEGIN
     RETURN jsonb_build_object('outcome', 'invalid_input', 'field', 'rate_cents');
   END IF;
   v_amount := round(v_qty * v_rate);
+  BEGIN
+    v_tax_rate := invoice_draft_tax_rate(p_draft);
+  EXCEPTION WHEN SQLSTATE 'IV020' THEN
+    RETURN jsonb_build_object('outcome', 'invalid_input', 'field', 'tax_rate');
+  END;
+  v_tax := CASE WHEN v_tax_rate IS NULL THEN 0 ELSE round(v_amount * v_tax_rate / 100) END;
 
   INSERT INTO invoices (
     workspace_id, appointment_id, client_id, request_id, reissued_from_invoice_id,
     business_name, business_address, business_phone, business_email,
     bill_to_name, bill_to_address, bill_to_email,
     terms, invoice_date, due_date, service_date, product_service, description,
-    quantity, rate_cents, amount_cents, total_cents,
+    quantity, rate_cents, amount_cents, tax_rate, tax_cents, total_cents,
     payment_instructions, note_to_client, job_price_cents
   ) VALUES (
     p_workspace_id, p_appointment_id, v_appt.client_id, p_request_id, v_from_id,
@@ -603,7 +654,7 @@ BEGIN
     coalesce(p_draft ->> 'terms', 'due_on_receipt'),
     (p_draft ->> 'invoice_date')::date, (p_draft ->> 'due_date')::date, (p_draft ->> 'service_date')::date,
     coalesce(p_draft ->> 'product_service', ''), p_draft ->> 'description',
-    v_qty, v_rate, v_amount, v_amount,
+    v_qty, v_rate, v_amount, v_tax_rate, v_tax, v_amount + v_tax,
     p_draft ->> 'payment_instructions', p_draft ->> 'note_to_client', v_appt.price_cents
   )
   RETURNING * INTO v_row;
@@ -631,6 +682,8 @@ DECLARE
   v_qty NUMERIC(10,2);
   v_rate INTEGER;
   v_amount INTEGER;
+  v_tax_rate NUMERIC(6,3);
+  v_tax INTEGER;
 BEGIN
   IF jsonb_typeof(p_draft) IS DISTINCT FROM 'object' THEN
     RETURN jsonb_build_object('outcome', 'invalid_input');
@@ -655,6 +708,12 @@ BEGIN
     RETURN jsonb_build_object('outcome', 'invalid_input', 'field', 'rate_cents');
   END IF;
   v_amount := round(v_qty * v_rate);
+  BEGIN
+    v_tax_rate := invoice_draft_tax_rate(p_draft);
+  EXCEPTION WHEN SQLSTATE 'IV020' THEN
+    RETURN jsonb_build_object('outcome', 'invalid_input', 'field', 'tax_rate');
+  END;
+  v_tax := CASE WHEN v_tax_rate IS NULL THEN 0 ELSE round(v_amount * v_tax_rate / 100) END;
 
   UPDATE invoices SET
     business_name = coalesce(p_draft ->> 'business_name', ''),
@@ -673,7 +732,9 @@ BEGIN
     quantity = v_qty,
     rate_cents = v_rate,
     amount_cents = v_amount,
-    total_cents = v_amount,
+    tax_rate = v_tax_rate,
+    tax_cents = v_tax,
+    total_cents = v_amount + v_tax,
     payment_instructions = p_draft ->> 'payment_instructions',
     note_to_client = p_draft ->> 'note_to_client'
   WHERE id = p_invoice_id
@@ -858,6 +919,7 @@ $fn$;
 REVOKE ALL ON FUNCTION invoice_guard() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION invoice_render_snapshot(invoices, TEXT) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION invoice_render_input(UUID, UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION invoice_draft_tax_rate(JSONB) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION set_no_invoice_required(UUID, UUID, BOOLEAN, TEXT) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION create_invoice_draft(UUID, UUID, UUID, JSONB) FROM PUBLIC, anon, authenticated;

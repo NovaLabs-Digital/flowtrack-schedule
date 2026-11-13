@@ -10,18 +10,39 @@ import {
   isCalendarDate,
   lineAmountCents,
   normalizeDraftFields,
+  parseTaxRate,
   reissueFields,
+  taxCents,
   DEFAULT_NOTE_TO_CLIENT,
   type InvoiceDraftFields,
 } from "./invoices.ts";
 import { issueInvoiceWithRetry, type IssueDeps } from "./invoiceIssue.ts";
 import { renderInvoicePdf, formatUsd, formatInvoiceDate, type InvoiceRenderSnapshot } from "./invoicePdf.ts";
+import { inflateSync } from "node:zlib";
+import { TAX_ROUNDING_CASES, AMOUNT_ROUNDING_CASES } from "../test-db/taxRoundingCases.ts";
+
+// The words drawn on a PDF page (inflated content streams, hex strings).
+function pdfText(bytes: Uint8Array): string {
+  const s = Buffer.from(bytes).toString("latin1");
+  const out: string[] = [];
+  for (let i = 0; ; ) {
+    const a = s.indexOf("stream", i);
+    if (a < 0) break;
+    const start = s[a + 6] === "\r" ? a + 8 : a + 7;
+    const end = s.indexOf("endstream", start);
+    let body = Buffer.from(s.slice(start, end).replace(/\r?\n$/, ""), "latin1");
+    if (/FlateDecode/.test(s.slice(Math.max(0, a - 200), a))) body = inflateSync(body);
+    for (const m of body.toString("latin1").matchAll(/<([0-9A-Fa-f]+)>\s*Tj/g)) out.push(Buffer.from(m[1], "hex").toString("latin1"));
+    i = end + 9;
+  }
+  return out.join(" | ");
+}
 
 const FIELDS: InvoiceDraftFields = {
   business_name: "ACS Cleaning", business_address: "1 Main St", business_phone: null, business_email: null,
   bill_to_name: "Client A", bill_to_address: null, bill_to_email: null,
   terms: "due_on_receipt", invoice_date: "2026-11-12", due_date: "2026-11-12", service_date: "2026-11-10",
-  product_service: "Recurring Cleaning", description: null, quantity: 1, rate_cents: 15000,
+  product_service: "Recurring Cleaning", description: null, quantity: 1, rate_cents: 15000, tax_rate: null,
   payment_instructions: null, note_to_client: "Thank you for your business.",
 };
 
@@ -41,6 +62,9 @@ describe("dates and terms", () => {
 });
 
 describe("line amount", () => {
+  test("the shared Qty x Rate cases (also run against PostgreSQL in test-db/invoices_049.test.ts)", () => {
+    for (const c of AMOUNT_ROUNDING_CASES) assert.equal(lineAmountCents(c.quantity, c.rateCents), c.amountCents, JSON.stringify(c));
+  });
   test("Qty x Rate, rounded to the cent exactly like the database", () => {
     assert.equal(lineAmountCents(1, 15000), 15000);
     assert.equal(lineAmountCents(2.5, 6400), 16000);
@@ -196,7 +220,7 @@ const SNAPSHOT: InvoiceRenderSnapshot = {
   bill_to_name: "Client A", bill_to_address: "2 Oak Ave", bill_to_email: "a@example.test",
   terms: "net_15", invoice_date: "2026-11-12", due_date: "2026-11-27", service_date: "2026-11-10",
   product_service: "Recurring Cleaning", description: "Biweekly — kitchen + baths", quantity: "1.00", rate_cents: 16000,
-  amount_cents: 16000, subtotal_cents: 16000, total_cents: 16000, balance_due_cents: 16000,
+  amount_cents: 16000, subtotal_cents: 16000, tax_rate: null, tax_cents: 0, total_cents: 16000, balance_due_cents: 16000,
   payment_instructions: "Zelle", note_to_client: "Thank you for your business.",
 };
 
@@ -229,5 +253,55 @@ describe("renderInvoicePdf -- long text", () => {
     const b = Buffer.from(await renderInvoicePdf(long));
     assert.ok(a.equals(b));
     assert.equal((await PDFDocument.load(a, { updateMetadata: false })).getPageCount(), 1);
+  });
+});
+
+
+describe("sales tax (integer arithmetic matching PostgreSQL)", () => {
+  test("the shared rounding cases (also run against PostgreSQL in test-db/invoices_049.test.ts)", () => {
+    for (const c of TAX_ROUNDING_CASES) {
+      const r = parseTaxRate(c.rate);
+      assert.ok(r.ok && r.thousandths !== null, c.rate);
+      if (r.ok) assert.equal(taxCents(c.amountCents, r.thousandths), c.taxCents, c.note);
+    }
+  });
+  test("tax off is 0; rates are canonicalized; invalid rates are refused", () => {
+    assert.equal(taxCents(15000, null), 0);
+    assert.deepEqual(parseTaxRate(""), { ok: true, rate: null, thousandths: null });
+    assert.deepEqual(parseTaxRate(null), { ok: true, rate: null, thousandths: null });
+    assert.deepEqual(parseTaxRate("6.500"), { ok: true, rate: "6.5", thousandths: 6500 });
+    assert.deepEqual(parseTaxRate(" 07 "), { ok: true, rate: "7", thousandths: 7000 });
+    assert.deepEqual(parseTaxRate(6.875), { ok: true, rate: "6.875", thousandths: 6875 });
+    for (const bad of ["0", "0.000", "100", "6.8755", "-1", "6,5", "abc", "1e2", "6."]) assert.equal(parseTaxRate(bad).ok, false, bad);
+  });
+  test("a draft carries the rate (canonical) or null; new invoices start with tax off; a reissue keeps the rate", () => {
+    const on = normalizeDraftFields({ ...FIELDS, tax_rate: "6.50" });
+    assert.ok(on.ok && on.fields.tax_rate === "6.5");
+    const off = normalizeDraftFields({ ...FIELDS, tax_rate: "" });
+    assert.ok(off.ok && off.fields.tax_rate === null);
+    assert.equal(normalizeDraftFields({ ...FIELDS, tax_rate: "6.8755" }).ok, false);
+    const prefill = buildInvoicePrefill({
+      appointment: { service_type: "Cleaning", scheduled_for: "2026-11-10T15:00:00Z", price_cents: 15000 },
+      client: { name: "A", address: null, email: null }, company: null, previous: null, today: "2026-11-12", timezone: "America/New_York",
+    });
+    assert.equal(prefill.tax_rate, null);
+    assert.equal(reissueFields({ ...FIELDS, tax_rate: "6.5" }, "2026-11-20").tax_rate, "6.5");
+  });
+});
+
+describe("renderInvoicePdf -- sales tax line", () => {
+  test("tax off: no TAX line", async () => {
+    const t = pdfText(await renderInvoicePdf(SNAPSHOT));
+    assert.ok(!/\| TAX \|/.test(t), t);
+    assert.match(t, /SUBTOTAL \| 160\.00 \| TOTAL \| 160\.00 \| BALANCE DUE \| \$160\.00/);
+  });
+  test("tax on: SUBTOTAL / TAX / TOTAL / BALANCE DUE with the tax-inclusive total", async () => {
+    const t = pdfText(await renderInvoicePdf({ ...SNAPSHOT, tax_rate: 6.5, tax_cents: 1040, total_cents: 17040, balance_due_cents: 17040 }));
+    assert.match(t, /TOTAL DUE \| \$170\.40/);
+    assert.match(t, /SUBTOTAL \| 160\.00 \| TAX \| 10\.40 \| TOTAL \| 170\.40 \| BALANCE DUE \| \$170\.40/);
+  });
+  test("tax on but rounding to $0.00: the TAX line still shows 0.00", async () => {
+    const t = pdfText(await renderInvoicePdf({ ...SNAPSHOT, amount_cents: 5, subtotal_cents: 5, rate_cents: 5, tax_rate: "6.5", tax_cents: 0, total_cents: 5, balance_due_cents: 5 }));
+    assert.match(t, /SUBTOTAL \| 0\.05 \| TAX \| 0\.00 \| TOTAL \| 0\.05/);
   });
 });

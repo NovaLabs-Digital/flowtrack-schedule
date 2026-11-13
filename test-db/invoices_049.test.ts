@@ -270,7 +270,7 @@ describe("Rollout (migration 049)", { skip: SKIP }, () => {
   });
 
   test("049-postflight passes right after the rollout", () => {
-    assert.equal(postflight.length, 11);
+    assert.equal(postflight.length, 12);
     assert.deepEqual(postflight.filter((r) => !r.ok), []);
     assert.equal(postflight.find((r) => r.check_name === "backfill_complete")!.detail, "2 job(s) marked Paid directly, no invoice");
   });
@@ -965,5 +965,102 @@ describe("Workspaces and access", { skip: SKIP }, () => {
         assert.equal((await c.query("SELECT has_table_privilege($1, $2, 'SELECT') AS can", [role, `public.${t}`])).rows[0].can, false);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Optional sales tax
+// ---------------------------------------------------------------------------
+
+const { TAX_ROUNDING_CASES, AMOUNT_ROUNDING_CASES } = await import("./taxRoundingCases.ts");
+
+describe("Optional sales tax", { skip: SKIP }, () => {
+  test("new invoices start with tax off: no rate, tax 0, total = amount", async () => {
+    const ws = await newWorkspace();
+    const d = await createDraft(pool, ws, await completedJob(ws));
+    const inv = await invoiceRow(d.invoice_id);
+    assert.deepEqual([inv.tax_rate, inv.tax_cents, inv.amount_cents, inv.total_cents], [null, 0, 15000, 15000]);
+  });
+
+  test("the shared rounding cases, through the real draft functions (same table as the app's unit tests)", async () => {
+    const ws = await newWorkspace();
+    const d = await createDraft(pool, ws, await completedJob(ws));
+    let revision = 1;
+    for (const c of TAX_ROUNDING_CASES) {
+      const u = await fn(pool, "update_invoice_draft", [ws.workspaceId, d.invoice_id, revision, JSON.stringify(draftFields({ quantity: 1, rate_cents: c.amountCents, tax_rate: c.rate }))]);
+      assert.equal(u.outcome, "ok", c.note);
+      revision = u.revision;
+      const inv = await invoiceRow(d.invoice_id);
+      assert.equal(inv.tax_cents, c.taxCents, c.note);
+      assert.equal(inv.total_cents, c.amountCents + c.taxCents, c.note);
+      assert.equal(Number(inv.tax_rate), Number(c.rate), c.note);
+    }
+    for (const c of AMOUNT_ROUNDING_CASES) {
+      const u = await fn(pool, "update_invoice_draft", [ws.workspaceId, d.invoice_id, revision, JSON.stringify(draftFields({ quantity: c.quantity, rate_cents: c.rateCents, tax_rate: null }))]);
+      revision = u.revision;
+      assert.equal((await invoiceRow(d.invoice_id)).amount_cents, c.amountCents, JSON.stringify(c));
+    }
+  });
+
+  test("a rate must be > 0, < 100, with at most 3 decimals -- refused, never silently rounded; blank means off", async () => {
+    const ws = await newWorkspace();
+    const job = await completedJob(ws);
+    for (const bad of ["0", "100", "6.8755", "-1", "abc", "6,5", 6.8755]) {
+      const r = await createDraft(pool, ws, job, { fields: { tax_rate: bad } });
+      assert.deepEqual([r.outcome, r.field], ["invalid_input", "tax_rate"], String(bad));
+    }
+    const blank = await createDraft(pool, ws, job, { fields: { tax_rate: "" } });
+    assert.equal(blank.outcome, "ok");
+    assert.equal((await invoiceRow(blank.invoice_id)).tax_rate, null);
+  });
+
+  test("the database refuses a tax amount or total that doesn't match the rate", async () => {
+    const ws = await newWorkspace();
+    const d = await createDraft(pool, ws, await completedJob(ws), { fields: { tax_rate: "6.5" } });
+    await assert.rejects(c.query("UPDATE invoices SET tax_cents = tax_cents + 1, total_cents = total_cents + 1 WHERE id = $1", [d.invoice_id]), /invoices_amounts_valid/);
+    await assert.rejects(c.query("UPDATE invoices SET total_cents = amount_cents WHERE id = $1", [d.invoice_id]), /invoices_amounts_valid/);
+    await assert.rejects(c.query("UPDATE invoices SET tax_rate = 0, tax_cents = 0, total_cents = amount_cents WHERE id = $1", [d.invoice_id]), /invoices_tax_rate_valid/);
+  });
+
+  test("changing only the tax rate is a new revision: a PDF rendered before it is refused", async () => {
+    const ws = await newWorkspace();
+    const job = await completedJob(ws);
+    const d = await createDraft(pool, ws, job);
+    const r = await render(pool, ws, d.invoice_id);
+    const u = await fn(pool, "update_invoice_draft", [ws.workspaceId, d.invoice_id, 1, JSON.stringify(draftFields({ tax_rate: "6.5" }))]);
+    assert.equal(u.revision, 2);
+    assert.equal((await issue(pool, ws, d.invoice_id, r)).outcome, "stale_revision");
+    assert.equal((await renderAndIssue(pool, ws, d.invoice_id)).outcome, "issued");
+    const inv = await invoiceRow(d.invoice_id);
+    const printed = decodeStoredPdf(inv.pdf);
+    assert.deepEqual([Number(printed.tax_rate), printed.tax_cents, printed.subtotal_cents, printed.total_cents, printed.balance_due_cents], [6.5, 975, 15000, 15975, 15975]);
+    assert.equal((await billingRow(job)).invoice_number, inv.invoice_number);
+    await assertStoredPdfAgrees(d.invoice_id);
+  });
+
+  test("tax on but rounding to $0.00 keeps the rate on the issued invoice (so the TAX line shows)", async () => {
+    const ws = await newWorkspace();
+    const d = await createDraft(pool, ws, await completedJob(ws), { fields: { rate_cents: 5, tax_rate: "6.5" } });
+    await renderAndIssue(pool, ws, d.invoice_id);
+    const printed = decodeStoredPdf((await invoiceRow(d.invoice_id)).pdf);
+    assert.deepEqual([Number(printed.tax_rate), printed.tax_cents, printed.total_cents], [6.5, 0, 5]);
+  });
+
+  test("issued tax values are frozen; Void & Reissue keeps the voided invoice's tax and recalculates the new draft's", async () => {
+    const ws = await newWorkspace();
+    const job = await completedJob(ws);
+    const d = await createDraft(pool, ws, job, { fields: { tax_rate: "6.5" } });
+    await renderAndIssue(pool, ws, d.invoice_id);
+    await assert.rejects(c.query("UPDATE invoices SET tax_rate = 7 WHERE id = $1", [d.invoice_id]), (e: any) => e.code === "IV010");
+    assert.equal((await fn(pool, "void_invoice", [ws.workspaceId, d.invoice_id, "wrong amount"])).outcome, "ok");
+    const voided = await invoiceRow(d.invoice_id);
+    assert.deepEqual([Number(voided.tax_rate), voided.tax_cents, voided.total_cents, voided.status], [6.5, 975, 15975, "void"]);
+    // The reissue carries the rate (the app copies it) with a corrected amount.
+    const re = await createDraft(pool, ws, job, { fields: { reissued_from_invoice_id: d.invoice_id, tax_rate: "6.5", rate_cents: 16000 } });
+    const draft = await invoiceRow(re.invoice_id);
+    assert.deepEqual([Number(draft.tax_rate), draft.tax_cents, draft.total_cents], [6.5, 1040, 17040]);
+    await renderAndIssue(pool, ws, re.invoice_id);
+    await assertStoredPdfAgrees(re.invoice_id);
+    await assertStoredPdfAgrees(d.invoice_id);
   });
 });

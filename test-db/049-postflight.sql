@@ -10,6 +10,7 @@
 --   venmo_allowed                 payment method CHECK includes venmo
 --   direct_payment_shape          the no_invoice_required shape CHECK exists
 --   invoice_tables                invoices + invoice_counters exist with row level security on
+--   invoice_tax                   tax_rate / tax_cents columns, tax CHECKs (total = amount + tax; rate > 0 and < 100)
 --   invoice_indexes               number unique per workspace, request id unique, one live invoice per job
 --   invoice_guard_trigger         the trigger freezing issued/void invoices exists
 --   functions_present             all 049 functions exist; upsert keeps the 033 signature
@@ -47,6 +48,13 @@ WITH checks(check_name, ok, detail) AS (
            WHERE relnamespace = 'public'::regnamespace AND relname IN ('invoices', 'invoice_counters') AND relrowsecurity),
          'invoices, invoice_counters with RLS enabled'
   UNION ALL
+  SELECT 'invoice_tax',
+         (SELECT count(*) = 2 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'invoices' AND column_name IN ('tax_rate', 'tax_cents'))
+           AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'invoices_tax_rate_valid')
+           AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'invoices_amounts_valid' AND pg_get_constraintdef(oid) LIKE '%tax_cents%'),
+         'optional sales tax columns and checks'
+  UNION ALL
   SELECT 'invoice_indexes',
          (SELECT count(*) = 3 FROM pg_indexes i JOIN pg_class c ON c.relname = i.indexname
            JOIN pg_index x ON x.indexrelid = c.oid
@@ -66,7 +74,8 @@ WITH checks(check_name, ok, detail) AS (
            AND to_regprocedure('public.discard_invoice_draft(uuid,uuid)') IS NOT NULL
            AND to_regprocedure('public.invoice_render_input(uuid,uuid)') IS NOT NULL
            AND to_regprocedure('public.issue_invoice(uuid,uuid,integer,text,jsonb,text,text)') IS NOT NULL
-           AND to_regprocedure('public.void_invoice(uuid,uuid,text)') IS NOT NULL,
+           AND to_regprocedure('public.void_invoice(uuid,uuid,text)') IS NOT NULL
+           AND to_regprocedure('public.invoice_draft_tax_rate(jsonb)') IS NOT NULL,
          'all 049 functions present'
   UNION ALL
   SELECT 'no_public_access',
@@ -79,7 +88,7 @@ WITH checks(check_name, ok, detail) AS (
              WHERE p.pronamespace = 'public'::regnamespace
                AND p.proname IN ('upsert_completed_job_billing', 'set_no_invoice_required', 'create_invoice_draft',
                                  'update_invoice_draft', 'discard_invoice_draft', 'invoice_render_input',
-                                 'issue_invoice', 'void_invoice', 'invoice_render_snapshot', 'invoice_guard')
+                                 'issue_invoice', 'void_invoice', 'invoice_render_snapshot', 'invoice_guard', 'invoice_draft_tax_rate')
                AND has_function_privilege(r, p.oid, 'EXECUTE')),
          'service role only'
   UNION ALL

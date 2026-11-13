@@ -52,7 +52,7 @@ WITH checks(check_name, ok, detail) AS (
   SELECT 'no_name_conflicts',
          to_regclass('public.invoices') IS NULL AND to_regclass('public.invoice_counters') IS NULL
            AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname IN (
-                 'invoice_guard', 'invoice_render_snapshot', 'invoice_render_input', 'set_no_invoice_required',
+                 'invoice_guard', 'invoice_render_snapshot', 'invoice_render_input', 'invoice_draft_tax_rate', 'set_no_invoice_required',
                  'create_invoice_draft', 'update_invoice_draft', 'discard_invoice_draft', 'issue_invoice', 'void_invoice'))
            AND NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'invoices_guard'),
          'no existing 049 tables, functions or trigger'
