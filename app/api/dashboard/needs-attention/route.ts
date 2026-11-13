@@ -192,7 +192,7 @@ export async function GET(req: Request) {
         fetchAllPagesChunkedIn<CompletedJobBilling>(apptIds, async (chunkIds, from, to) =>
           supabaseAdmin
             .from("completed_job_billing")
-            .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
+            .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, no_invoice_required, created_at, updated_at")
             .eq("workspace_id", workspaceId)
             .in("appointment_id", chunkIds)
             .order("id", { ascending: true })

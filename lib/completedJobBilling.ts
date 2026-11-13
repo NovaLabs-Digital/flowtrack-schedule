@@ -43,11 +43,12 @@ export type BillableAppointment = Pick<
   "id" | "client_id" | "service_type" | "scheduled_for" | "scheduled_end" | "duration_minutes" | "status" | "price_cents"
 >;
 
-export type PaymentMethod = "zelle" | "check" | "cash" | "quickbooks_card" | "other";
+export type PaymentMethod = "zelle" | "venmo" | "check" | "cash" | "quickbooks_card" | "other";
 
-// Order here is the order shown in the UI's <select>.
+// Order here is the order shown in the UI's <select>. Venmo: migration 049.
 export const PAYMENT_METHODS: { value: PaymentMethod; label: string }[] = [
   { value: "zelle", label: "Zelle" },
+  { value: "venmo", label: "Venmo" },
   { value: "check", label: "Check" },
   { value: "cash", label: "Cash" },
   { value: "quickbooks_card", label: "QuickBooks / Card" },
@@ -75,8 +76,24 @@ export type CompletedJobBilling = {
   invoice_number: string | null;
   paid: boolean;
   payment_method: PaymentMethod | null;
+  // Migration 049: "Paid directly, no invoice" -- an explicit per-job
+  // decision by the owner, separate from the payment method. Only ever true
+  // while paid, with a method, and no invoice number (DB CHECK). The one
+  // thing that closes a job without an invoice; a payment method alone
+  // (Cash, Venmo, ...) never does.
+  no_invoice_required: boolean;
   created_at: string;
   updated_at: string;
+};
+
+// Migration 049: the job's live SFT invoice (a draft or an issued one), as
+// the Billing report needs it. Void invoices are never attached to a row.
+export type CompletedJobInvoice = {
+  id: string;
+  status: "draft" | "issued";
+  invoice_number: string | null; // null while a draft
+  total_cents: number;
+  revision: number;
 };
 
 // Trims a user-typed invoice number into its stored representation. A blank
@@ -184,8 +201,9 @@ export type CompletedJobRow = {
   clientId: string;
   clientName: string;
   serviceType: string;
-  priceCents: number | null;
+  priceCents: number | null; // the job's own price (never replaced by an invoice total)
   billing: CompletedJobBilling | null; // null = no billing row yet (nothing entered)
+  invoice: CompletedJobInvoice | null; // the job's live SFT invoice, if any (migration 049)
 };
 
 export type ReviewNeededRow = {
@@ -214,6 +232,7 @@ export function buildCompletedJobRows({
   clients,
   assignmentsByAppointmentId,
   billingByAppointmentId,
+  invoicesByAppointmentId = new Map(),
   employeeHours,
   rangeStart,
   rangeEnd,
@@ -223,6 +242,10 @@ export function buildCompletedJobRows({
   clients: Client[];
   assignmentsByAppointmentId: Map<string, AppointmentEmployeeAssignment[]>;
   billingByAppointmentId: Map<string, CompletedJobBilling>;
+  // Migration 049: each job's live SFT invoice (draft or issued). Optional
+  // so callers that never show invoices (Needs Attention, the local demo)
+  // need not pass it -- an absent entry simply means "no SFT invoice."
+  invoicesByAppointmentId?: Map<string, CompletedJobInvoice>;
   // Owner-approved worked-time corrections (appointment_employee_hours) --
   // see this module's own header comment for why these can resolve an
   // employee's otherwise-missing Job Tracking for billing purposes. The
@@ -252,6 +275,7 @@ export function buildCompletedJobRows({
       serviceType: appt.service_type,
       priceCents: appt.price_cents ?? null,
       billing: billingByAppointmentId.get(appt.id) ?? null,
+      invoice: invoicesByAppointmentId.get(appt.id) ?? null,
     });
   }
 
@@ -375,16 +399,30 @@ function isPaid(row: CompletedJobRow): boolean {
   return row.billing?.paid === true;
 }
 
-// Real production rule (Holly Williams, paid Cash): for a cash job, the
-// owner does not always create a QuickBooks invoice at all -- a paid,
-// Cash, blank-invoice row is a legitimate FINAL state, not an error or an
-// incomplete record (validateBillingState already allows paid=true with
-// invoice_number=null; only payment_method is required, and that is
-// unchanged by this). Once paid by cash, the job is financially closed for
-// this workflow and must not keep showing up asking for an invoice number
-// that was never going to exist.
-function isCashPaidWithoutInvoice(row: CompletedJobRow): boolean {
-  return isPaid(row) && row.billing?.payment_method === "cash" && !hasInvoiceNumber(row);
+// "Paid directly, no invoice" (migration 049): the owner explicitly
+// confirmed this job was paid directly (a Venmo or cash payment, for
+// example) and needs no invoice. That confirmation -- never the payment
+// method on its own -- is what closes a job without an invoice number.
+// (Before 049, paid + Cash + no number closed a job automatically; 049's
+// one-time backfill marked every such existing job, so they stay closed.)
+export function isPaidDirectly(row: CompletedJobRow): boolean {
+  return row.billing?.no_invoice_required === true && isPaid(row) && !hasInvoiceNumber(row);
+}
+
+// The amount a job's invoice is for. Once an SFT invoice is issued for the
+// job (and Billing carries its number), that invoice's total -- which the
+// owner may have adjusted from the job price before issuing. Otherwise the
+// job's own price (a QuickBooks-numbered job, or a job with no number yet).
+// A draft never changes anything: it is not an invoice until issued.
+export function invoicedAmountCents(row: CompletedJobRow): number {
+  if (
+    row.invoice?.status === "issued" &&
+    row.invoice.invoice_number !== null &&
+    row.billing?.invoice_number === row.invoice.invoice_number
+  ) {
+    return row.invoice.total_cents;
+  }
+  return row.priceCents ?? 0;
 }
 
 // Client-name search (client-side, applied over the already date-range-
@@ -452,10 +490,10 @@ export function applyBillingStatusFilter(rows: CompletedJobRow[], filter: Billin
     case "missing_invoice":
       // "Missing Invoice #" means an invoice still needs to be created
       // before the job is financially closed -- not merely "invoice_number
-      // is null." A paid-Cash job with no invoice is already closed (see
-      // isCashPaidWithoutInvoice above) and must be excluded here, even
-      // though its invoice_number is genuinely blank.
-      return rows.filter((r) => !hasInvoiceNumber(r) && !isCashPaidWithoutInvoice(r));
+      // is null." A job the owner confirmed as paid directly, no invoice
+      // (isPaidDirectly above) is already closed and is excluded here. A
+      // draft SFT invoice does not count as invoiced, so its job stays here.
+      return rows.filter((r) => !hasInvoiceNumber(r) && !isPaidDirectly(r));
     case "invoiced_unpaid":
       return rows.filter((r) => hasInvoiceNumber(r) && !isPaid(r));
     case "paid":
@@ -491,24 +529,22 @@ export type BillingSummary = {
 // never a guessed fallback (matches that module's own documented
 // convention exactly).
 //
-// A paid-Cash job with no invoice number (isCashPaidWithoutInvoice above)
-// deliberately needs NO special-casing here: completedWorkCents already
-// counts every completed job's price unconditionally (Holly's $120
-// belongs there regardless of invoicing), and invoicedCents/unpaidCents
-// already only add a row that HAS an invoice_number -- a blank-invoice
-// cash row was never going to contribute to either of those two, exactly
-// as intended. Only applyBillingStatusFilter's "missing_invoice" case
-// needed an explicit carve-out, because that filter's whole job is asking
-// "does this one still need an invoice," which a closed cash job does not.
+// Migration 049: Completed Work $ always uses the job's own price.
+// Invoiced $ and Unpaid $ use invoicedAmountCents -- the issued SFT
+// invoice's total when there is one (it may differ from the job price),
+// otherwise the job price. A draft never counts as invoiced. A job paid
+// directly with no invoice needs no special-casing: it has no number, so it
+// never contributes to Invoiced $ or Unpaid $, and its price still counts
+// in Completed Work $.
 export function computeBillingSummary(rows: CompletedJobRow[]): BillingSummary {
   let completedWorkCents = 0;
   let invoicedCents = 0;
   let unpaidCents = 0;
 
   for (const row of rows) {
-    const cents = row.priceCents ?? 0;
-    completedWorkCents += cents;
+    completedWorkCents += row.priceCents ?? 0;
     if (hasInvoiceNumber(row)) {
+      const cents = invoicedAmountCents(row);
       invoicedCents += cents;
       if (!isPaid(row)) unpaidCents += cents;
     }

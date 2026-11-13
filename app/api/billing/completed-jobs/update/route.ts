@@ -11,6 +11,31 @@ function json(data: any, status = 200) {
   return NextResponse.json(data, { status });
 }
 
+// Migration 049's refusals from upsert_completed_job_billing, in owner
+// wording. Paid / Payment Method stay editable on a job with an issued SFT
+// invoice -- only its number is protected.
+function billingWriteRefusal(code: string | undefined, message: string): { code: string; error: string } | null {
+  if (code === "IV002" || message.includes("completed_job_billing_invoice_number_locked")) {
+    return {
+      code: "INVOICE_NUMBER_LOCKED",
+      error: "This job's invoice was created in Schedule, so its number can't be changed here. To correct the invoice, void it and reissue.",
+    };
+  }
+  if (code === "IV003" || message.includes("completed_job_billing_invoice_draft_exists")) {
+    return {
+      code: "INVOICE_DRAFT_EXISTS",
+      error: "This job has a draft invoice in Schedule. Discard the draft before entering a QuickBooks invoice number.",
+    };
+  }
+  if (message.includes("completed_job_billing_invoice_number_reserved")) {
+    return {
+      code: "INVOICE_NUMBER_RESERVED",
+      error: "Invoice numbers starting with SFT are reserved for invoices created in Schedule.",
+    };
+  }
+  return null;
+}
+
 // PATCH /api/billing/completed-jobs/update
 // Body: { appointment_id: string, invoice_number?: string|null, paid?: boolean, payment_method?: string|null }
 //
@@ -167,6 +192,8 @@ export async function PATCH(req: Request) {
     if (error) {
       const code = (error as { code?: string }).code;
       const message = (error as { message?: string }).message || "";
+      const mapped = billingWriteRefusal(code, message);
+      if (mapped) return json({ error: mapped.error, code: mapped.code }, 409);
       if (code === "23505" && message.includes("completed_job_billing_invoice_number_different_client")) {
         return json({ error: "That invoice number is already used by a different client in this workspace." }, 409);
       }

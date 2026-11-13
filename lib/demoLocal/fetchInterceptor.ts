@@ -596,6 +596,12 @@ async function handleBillingUpdate(req: Request): Promise<Response> {
     invoice_number: merged.invoice_number,
     paid: merged.paid,
     payment_method: merged.payment_method as PaymentMethod | null,
+    // Migration 049 (same as the real function): a number, unpaid, or no
+    // method ends "paid directly".
+    no_invoice_required:
+      merged.invoice_number === null && merged.paid && merged.payment_method !== null
+        ? (existing?.no_invoice_required ?? false)
+        : false,
     created_at: existing?.created_at ?? nowIso,
     updated_at: nowIso,
   };
@@ -615,6 +621,62 @@ async function handleBillingUpdate(req: Request): Promise<Response> {
 
   setSnapshot({ ...snap, completedJobBilling: billing });
   notify();
+  return json({ ok: true, billing: row });
+}
+
+// ---------------------------------------------------------------------
+// POST /api/billing/completed-jobs/direct-payment
+// ---------------------------------------------------------------------
+// Mirrors the real route + set_no_invoice_required (migration 049):
+// "Paid directly, no invoice" is an explicit per-job choice with any
+// supported payment method; undo keeps paid / method as they are. The local
+// demo has no SFT invoices, so only the QuickBooks-number check applies.
+async function handleDirectPayment(req: Request): Promise<Response> {
+  const body = await readJsonBody(req);
+  if (!body) return json({ error: "Invalid request body" }, 400);
+  const appointment_id = String(body.appointment_id || "").trim();
+  if (!appointment_id) return json({ error: "Missing appointment_id" }, 400);
+  if (typeof body.no_invoice_required !== "boolean") return json({ error: "no_invoice_required must be true or false" }, 400);
+
+  const snap = getSnapshot();
+  const appt = snap.appointments.find((a) => a.id === appointment_id);
+  if (!appt) return json({ error: "Appointment not found" }, 404);
+  const existing = snap.completedJobBilling.find((b) => b.appointment_id === appointment_id) ?? null;
+  const nowIso = new Date().toISOString();
+
+  let row: CompletedJobBilling | null;
+  if (!body.no_invoice_required) {
+    row = existing ? { ...existing, no_invoice_required: false, updated_at: nowIso } : null;
+  } else {
+    if (!isValidPaymentMethod(body.payment_method)) return json({ error: "Choose how the client paid." }, 400);
+    const assignments = snap.assignments.filter((a) => a.appointment_id === appointment_id);
+    const employeeHours = snap.employeeHours.filter((h) => h.appointment_id === appointment_id);
+    if (!isCompletedForBilling(appointment_id, assignments, employeeHours)) {
+      return json({ error: "This appointment is not marked completed yet." }, 409);
+    }
+    if (existing?.invoice_number) {
+      return json({ error: `This job already has invoice ${existing.invoice_number}.`, code: "JOB_HAS_INVOICE_NUMBER" }, 409);
+    }
+    row = {
+      id: existing?.id ?? newId(),
+      workspace_id: existing?.workspace_id ?? DEMO_LOCAL_WORKSPACE_ID,
+      appointment_id,
+      client_id: appt.client_id,
+      invoice_number: null,
+      paid: true,
+      payment_method: body.payment_method as PaymentMethod,
+      no_invoice_required: true,
+      created_at: existing?.created_at ?? nowIso,
+      updated_at: nowIso,
+    };
+  }
+  if (row) {
+    const billing = existing
+      ? snap.completedJobBilling.map((b) => (b.appointment_id === appointment_id ? row! : b))
+      : [...snap.completedJobBilling, row];
+    setSnapshot({ ...snap, completedJobBilling: billing });
+    notify();
+  }
   return json({ ok: true, billing: row });
 }
 
@@ -1628,6 +1690,7 @@ const ROUTES: Route[] = [
   { method: "POST", path: "/api/appointments/manage-recurrence", handler: handleManageRecurrence },
   { method: "GET", path: "/api/billing/completed-jobs", handler: handleCompletedJobs },
   { method: "PATCH", path: "/api/billing/completed-jobs/update", handler: handleBillingUpdate },
+  { method: "POST", path: "/api/billing/completed-jobs/direct-payment", handler: handleDirectPayment },
   { method: "GET", path: "/api/dashboard/needs-attention", handler: handleNeedsAttention },
   { method: "POST", path: "/api/auth/logout", handler: () => json({ ok: true }) },
   { method: "POST", path: "/api/appointments/employee-hours", handler: handleSaveEmployeeHours },

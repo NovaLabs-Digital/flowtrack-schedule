@@ -19,6 +19,8 @@ import {
   BILLING_SORT_ORDERS,
   DEFAULT_BILLING_SORT_ORDER,
   DEFAULT_BILLING_STATUS_FILTER,
+  invoicedAmountCents,
+  isPaidDirectly,
   type CompletedJobBilling,
   type CompletedJobRow,
 } from "./completedJobBilling.ts";
@@ -81,6 +83,7 @@ function billing(overrides: Partial<CompletedJobBilling> = {}): CompletedJobBill
     invoice_number: null,
     paid: false,
     payment_method: null,
+    no_invoice_required: false,
     created_at: "2026-07-01T00:00:00.000Z",
     updated_at: "2026-07-01T00:00:00.000Z",
     ...overrides,
@@ -294,11 +297,11 @@ describe("normalizeInvoiceNumber", () => {
 });
 
 describe("isValidPaymentMethod", () => {
-  test("accepts exactly the five approved values", () => {
-    for (const v of ["zelle", "check", "cash", "quickbooks_card", "other"]) assert.equal(isValidPaymentMethod(v), true);
+  test("accepts exactly the six approved values (Venmo added by migration 049)", () => {
+    for (const v of ["zelle", "venmo", "check", "cash", "quickbooks_card", "other"]) assert.equal(isValidPaymentMethod(v), true);
   });
   test("rejects anything else", () => {
-    for (const v of ["Zelle", "venmo", "", null, undefined, 123]) assert.equal(isValidPaymentMethod(v), false);
+    for (const v of ["Zelle", "bitcoin", "", null, undefined, 123]) assert.equal(isValidPaymentMethod(v), false);
   });
 });
 
@@ -315,7 +318,7 @@ describe("validateBillingState", () => {
     assert.match((result as { ok: false; error: string }).error, /payment method is required/i);
   });
   test("an unrecognized payment_method is rejected regardless of paid", () => {
-    assert.equal(validateBillingState({ paid: false, payment_method: "venmo" }).ok, false);
+    assert.equal(validateBillingState({ paid: false, payment_method: "bitcoin" }).ok, false);
   });
 
   // Real production rule (Holly Williams, paid Cash): for a cash job the
@@ -449,19 +452,24 @@ describe("buildReviewNeededRows", () => {
 });
 
 describe("applyBillingStatusFilter", () => {
-  const missingInvoice = { appointmentId: "a1", serviceDate: "2026-01-01", scheduledFor: "x", clientId: "c1", clientName: "A", serviceType: "s", priceCents: 100, billing: null };
+  const missingInvoice = { invoice: null, appointmentId: "a1", serviceDate: "2026-01-01", scheduledFor: "x", clientId: "c1", clientName: "A", serviceType: "s", priceCents: 100, billing: null };
   const invoicedUnpaid = { ...missingInvoice, appointmentId: "a2", billing: billing({ appointment_id: "a2", invoice_number: "INV-2", paid: false }) };
   const paid = { ...missingInvoice, appointmentId: "a3", billing: billing({ appointment_id: "a3", invoice_number: "INV-3", paid: true, payment_method: "cash" }) };
-  // Real production rule (Holly Williams): paid by Cash, no QuickBooks
-  // invoice was ever created -- a legitimate final state, not "missing."
-  const paidCashNoInvoice = { ...missingInvoice, appointmentId: "a4", billing: billing({ appointment_id: "a4", invoice_number: null, paid: true, payment_method: "cash" }) };
+  // Migration 049: the owner confirmed "Paid directly, no invoice" -- a
+  // legitimate final state, not "missing." (Before 049 this was inferred
+  // from paid + Cash; now it is the owner's explicit choice.)
+  const paidCashNoInvoice = { ...missingInvoice, appointmentId: "a4", billing: billing({ appointment_id: "a4", invoice_number: null, paid: true, payment_method: "cash", no_invoice_required: true }) };
   const rows = [missingInvoice, invoicedUnpaid, paid, paidCashNoInvoice];
 
   test('"all" returns everything, unfiltered', () => {
     assert.equal(applyBillingStatusFilter(rows, "all").length, 4);
   });
-  test('"missing_invoice" -- no billing row, or billing row with no invoice_number -- EXCLUDING a paid-Cash job that was never going to get one', () => {
+  test('"missing_invoice" -- no billing row, or billing row with no invoice_number -- EXCLUDING a job confirmed paid directly, no invoice', () => {
     assert.deepEqual(applyBillingStatusFilter(rows, "missing_invoice").map((r) => r.appointmentId), ["a1"]);
+  });
+  test("migration 049: paid + Cash with no number and NO confirmation is still missing an invoice -- the method alone never closes a job", () => {
+    const cashOnly = { ...missingInvoice, appointmentId: "a6", billing: billing({ appointment_id: "a6", invoice_number: null, paid: true, payment_method: "cash" }) };
+    assert.deepEqual(applyBillingStatusFilter([cashOnly], "missing_invoice").map((r) => r.appointmentId), ["a6"]);
   });
   test('"invoiced_unpaid" -- has an invoice number but paid is false', () => {
     assert.deepEqual(applyBillingStatusFilter(rows, "invoiced_unpaid").map((r) => r.appointmentId), ["a2"]);
@@ -485,6 +493,7 @@ describe("applyBillingStatusFilter", () => {
 describe("sortCompletedJobRows", () => {
   function rowAt(appointmentId: string, scheduledFor: string): CompletedJobRow {
     return {
+      invoice: null,
       appointmentId,
       serviceDate: scheduledFor.slice(0, 10),
       scheduledFor,
@@ -621,8 +630,8 @@ describe("matchesClientSearch", () => {
 describe("computeBillingSummary", () => {
   test("Completed Jobs is the row count; Completed Work $ sums every row's price (missing price = $0)", () => {
     const rows = [
-      { appointmentId: "a1", serviceDate: "x", scheduledFor: "x", clientId: "c", clientName: "A", serviceType: "s", priceCents: 10000, billing: null },
-      { appointmentId: "a2", serviceDate: "x", scheduledFor: "x", clientId: "c", clientName: "A", serviceType: "s", priceCents: null, billing: null },
+      { invoice: null, appointmentId: "a1", serviceDate: "x", scheduledFor: "x", clientId: "c", clientName: "A", serviceType: "s", priceCents: 10000, billing: null },
+      { invoice: null, appointmentId: "a2", serviceDate: "x", scheduledFor: "x", clientId: "c", clientName: "A", serviceType: "s", priceCents: null, billing: null },
     ];
     const summary = computeBillingSummary(rows);
     assert.equal(summary.completedJobs, 2);
@@ -630,7 +639,7 @@ describe("computeBillingSummary", () => {
   });
 
   test("Invoiced $ sums only rows with a non-blank invoice number; Unpaid $ is the invoiced-but-not-paid subset", () => {
-    const noInvoice = { appointmentId: "a1", serviceDate: "x", scheduledFor: "x", clientId: "c", clientName: "A", serviceType: "s", priceCents: 5000, billing: null };
+    const noInvoice = { invoice: null, appointmentId: "a1", serviceDate: "x", scheduledFor: "x", clientId: "c", clientName: "A", serviceType: "s", priceCents: 5000, billing: null };
     const invoicedUnpaid = { ...noInvoice, appointmentId: "a2", priceCents: 7000, billing: billing({ appointment_id: "a2", invoice_number: "INV-2", paid: false }) };
     const invoicedPaid = { ...noInvoice, appointmentId: "a3", priceCents: 3000, billing: billing({ appointment_id: "a3", invoice_number: "INV-3", paid: true, payment_method: "zelle" }) };
 
@@ -643,8 +652,8 @@ describe("computeBillingSummary", () => {
   // Real production rule (Holly Williams, $120 paid Cash, no invoice):
   // Completed Work $ still includes her price; Invoiced $ and Unpaid $
   // both correctly ignore her, since no invoice was ever created.
-  test("a paid-Cash job with no invoice number: counted in Completed Work $, excluded from both Invoiced $ and Unpaid $", () => {
-    const holly = { appointmentId: "holly-appt", serviceDate: "2026-09-23", scheduledFor: "x", clientId: "c", clientName: "Holly Williams", serviceType: "Regular Cleaning", priceCents: 12000, billing: billing({ appointment_id: "holly-appt", invoice_number: null, paid: true, payment_method: "cash" }) };
+  test("a job paid directly with no invoice number: counted in Completed Work $, excluded from both Invoiced $ and Unpaid $", () => {
+    const holly = { invoice: null, appointmentId: "holly-appt", serviceDate: "2026-09-23", scheduledFor: "x", clientId: "c", clientName: "Holly Williams", serviceType: "Regular Cleaning", priceCents: 12000, billing: billing({ appointment_id: "holly-appt", invoice_number: null, paid: true, payment_method: "cash", no_invoice_required: true }) };
     const summary = computeBillingSummary([holly]);
     assert.equal(summary.completedJobs, 1);
     assert.equal(summary.completedWorkCents, 12000, "Holly's $120 belongs in Completed Work $");
@@ -667,7 +676,7 @@ describe("computeBillingSummary", () => {
   // correct result on its own, with no group-aware logic needed here: none
   // of a paid grouped invoice's rows leak into Unpaid $.
   test("once a shared-invoice group's rows are synced consistently (paid), none of them appear in Unpaid $ -- Invoiced $ reflects the whole group", () => {
-    const job1 = { appointmentId: "beth-1", serviceDate: "2026-06-24", scheduledFor: "x", clientId: "beth", clientName: "Beth Holcomb", serviceType: "Regular Cleaning", priceCents: 12000, billing: billing({ appointment_id: "beth-1", client_id: "beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) };
+    const job1 = { invoice: null, appointmentId: "beth-1", serviceDate: "2026-06-24", scheduledFor: "x", clientId: "beth", clientName: "Beth Holcomb", serviceType: "Regular Cleaning", priceCents: 12000, billing: billing({ appointment_id: "beth-1", client_id: "beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) };
     const job2 = { ...job1, appointmentId: "beth-2", serviceDate: "2026-07-08", priceCents: 12000, billing: billing({ appointment_id: "beth-2", client_id: "beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) };
     const job3 = { ...job1, appointmentId: "beth-3", serviceDate: "2026-07-22", priceCents: 12000, billing: billing({ appointment_id: "beth-3", client_id: "beth", invoice_number: "13422", paid: true, payment_method: "zelle" }) };
 
@@ -722,6 +731,7 @@ describe("Holly Williams -- paid Cash, no invoice (real production rule)", () =>
 describe("applyGroupedBillingUpdate", () => {
   function row(overrides: Partial<CompletedJobRow> = {}): CompletedJobRow {
     return {
+      invoice: null,
       appointmentId: "appt-1",
       serviceDate: "2026-06-24",
       scheduledFor: "2026-06-24T13:00:00.000Z",
@@ -820,5 +830,103 @@ describe("applyGroupedBillingUpdate", () => {
     const result = applyGroupedBillingUpdate(rows, updated);
 
     assert.equal(result[0].billing, null);
+  });
+});
+
+
+// ---------------------------------------------------------------------
+// Migration 049: SFT invoices and "Paid directly, no invoice"
+// ---------------------------------------------------------------------
+describe("migration 049 -- SFT invoice totals, drafts and Paid directly", () => {
+  const base = {
+    serviceDate: "2026-11-10", scheduledFor: "2026-11-10T14:00:00.000Z", clientId: "c1", clientName: "Client A",
+    serviceType: "Recurring Cleaning", priceCents: 15000,
+  };
+  const issued = (id: string, total: number, paid = false, method: "zelle" | "venmo" | null = null): CompletedJobRow => ({
+    ...base, appointmentId: id,
+    billing: billing({ appointment_id: id, invoice_number: `SFT-${id}`, paid, payment_method: method }),
+    invoice: { id: `inv-${id}`, status: "issued", invoice_number: `SFT-${id}`, total_cents: total, revision: 1 },
+  });
+
+  test("an issued invoice's total drives Invoiced $ and Unpaid $; the job price still drives Completed Work $", () => {
+    const summary = computeBillingSummary([issued("1001", 16000)]);
+    assert.deepEqual(summary, { completedJobs: 1, completedWorkCents: 15000, invoicedCents: 16000, unpaidCents: 16000 });
+  });
+
+  test("once that invoice is marked paid, Unpaid $ drops to 0 and Invoiced $ keeps the invoice total", () => {
+    const summary = computeBillingSummary([issued("1001", 16000, true, "venmo")]);
+    assert.deepEqual(summary, { completedJobs: 1, completedWorkCents: 15000, invoicedCents: 16000, unpaidCents: 0 });
+  });
+
+  test("a lower invoice total than the job price is used too (a discount)", () => {
+    assert.equal(computeBillingSummary([issued("1001", 12000)]).invoicedCents, 12000);
+  });
+
+  test("a draft never counts as invoiced: Invoiced $ 0, Unpaid $ 0, and the job stays in Missing Invoice #", () => {
+    const draft: CompletedJobRow = { ...base, appointmentId: "d1", billing: null, invoice: { id: "inv-d1", status: "draft", invoice_number: null, total_cents: 99900, revision: 3 } };
+    assert.deepEqual(computeBillingSummary([draft]), { completedJobs: 1, completedWorkCents: 15000, invoicedCents: 0, unpaidCents: 0 });
+    assert.deepEqual(applyBillingStatusFilter([draft], "missing_invoice").map((r) => r.appointmentId), ["d1"]);
+    assert.equal(invoicedAmountCents(draft), 15000, "a draft's amount is never used");
+  });
+
+  test("a QuickBooks-numbered job still uses the job price", () => {
+    const qb: CompletedJobRow = { ...base, appointmentId: "q1", billing: billing({ appointment_id: "q1", invoice_number: "13484" }), invoice: null };
+    assert.deepEqual(computeBillingSummary([qb]), { completedJobs: 1, completedWorkCents: 15000, invoicedCents: 15000, unpaidCents: 15000 });
+  });
+
+  test("defensive: an issued invoice whose number is not the one in Billing does not replace the job price", () => {
+    const odd = { ...issued("1001", 16000), billing: billing({ appointment_id: "1001", invoice_number: "13484" }) };
+    assert.equal(invoicedAmountCents(odd), 15000);
+  });
+
+  test("totals and filters across a mixed list where invoice totals differ from job prices", () => {
+    const rows: CompletedJobRow[] = [
+      issued("1001", 16000), // SFT unpaid, +$10
+      issued("1002", 14000, true, "zelle"), // SFT paid, -$10
+      { ...base, appointmentId: "q1", billing: billing({ appointment_id: "q1", invoice_number: "13484" }), invoice: null }, // QB unpaid
+      { ...base, appointmentId: "d1", billing: null, invoice: { id: "inv-d1", status: "draft", invoice_number: null, total_cents: 20000, revision: 1 } },
+      { ...base, appointmentId: "p1", billing: billing({ appointment_id: "p1", paid: true, payment_method: "venmo", no_invoice_required: true }), invoice: null },
+      { ...base, appointmentId: "n1", billing: null, invoice: null },
+    ];
+    assert.deepEqual(computeBillingSummary(rows), {
+      completedJobs: 6,
+      completedWorkCents: 6 * 15000,
+      invoicedCents: 16000 + 14000 + 15000,
+      unpaidCents: 16000 + 15000,
+    });
+    assert.deepEqual(applyBillingStatusFilter(rows, "missing_invoice").map((r) => r.appointmentId), ["d1", "n1"]);
+    assert.deepEqual(applyBillingStatusFilter(rows, "invoiced_unpaid").map((r) => r.appointmentId), ["1001", "q1"]);
+    assert.deepEqual(applyBillingStatusFilter(rows, "paid").map((r) => r.appointmentId), ["1002", "p1"]);
+  });
+
+  test("Paid directly closes a job with any supported method; undoing it (flag off) reopens it", () => {
+    for (const method of ["cash", "venmo", "zelle", "check", "quickbooks_card", "other"] as const) {
+      const confirmed: CompletedJobRow = { ...base, appointmentId: method, billing: billing({ appointment_id: method, paid: true, payment_method: method, no_invoice_required: true }), invoice: null };
+      assert.equal(isPaidDirectly(confirmed), true, method);
+      assert.deepEqual(applyBillingStatusFilter([confirmed], "missing_invoice"), [], method);
+      const undone = { ...confirmed, billing: { ...confirmed.billing!, no_invoice_required: false } };
+      assert.equal(isPaidDirectly(undone), false, method);
+      assert.deepEqual(applyBillingStatusFilter([undone], "missing_invoice").map((r) => r.appointmentId), [method], method);
+    }
+  });
+
+  test("buildCompletedJobRows attaches each job's live SFT invoice (and null when there is none)", () => {
+    const rangeDate = "2026-07-15";
+    const rows = buildCompletedJobRows({
+      appointments: [
+        appt({ id: "a1", scheduled_for: "2026-07-15T14:00:00.000Z", scheduled_end: "2026-07-15T15:00:00.000Z" }),
+        appt({ id: "a2", scheduled_for: "2026-07-15T16:00:00.000Z", scheduled_end: "2026-07-15T17:00:00.000Z" }),
+      ],
+      clients: [client()],
+      assignmentsByAppointmentId: new Map([["a1", [assignment({ appointment_id: "a1" })]], ["a2", [assignment({ appointment_id: "a2" })]]]),
+      billingByAppointmentId: new Map(),
+      invoicesByAppointmentId: new Map([["a1", { id: "inv-1", status: "draft" as const, invoice_number: null, total_cents: 100, revision: 1 }]]),
+      employeeHours: [],
+      rangeStart: rangeDate,
+      rangeEnd: rangeDate,
+      timezone: TZ,
+    });
+    assert.equal(rows.find((r) => r.appointmentId === "a1")?.invoice?.id, "inv-1");
+    assert.equal(rows.find((r) => r.appointmentId === "a2")?.invoice, null);
   });
 });

@@ -191,6 +191,37 @@ describe("installDemoFetchInterceptor", () => {
     assert.equal(conflict.status, 409);
   });
 
+  test("migration 049: the fixture's paid, never-invoiced jobs are marked Paid directly, so they raise no billing issue", () => {
+    const direct = getSnapshot().completedJobBilling.filter((b) => b.paid && b.invoice_number === null);
+    assert.ok(direct.length > 0);
+    assert.ok(direct.every((b) => b.no_invoice_required === true));
+    assert.ok(getSnapshot().completedJobBilling.filter((b) => b.invoice_number !== null).every((b) => b.no_invoice_required === false));
+  });
+
+  test("POST /api/billing/completed-jobs/direct-payment: confirm clears the billing issue, undo restores it", async () => {
+    const ids = await needsAttentionIdsByKind();
+    const apptId = ids.needs_invoicing;
+    assert.equal((await call("/api/billing/completed-jobs/direct-payment", "POST", { appointment_id: apptId, no_invoice_required: true })).status, 400, "a method is required");
+    const ok = await call("/api/billing/completed-jobs/direct-payment", "POST", { appointment_id: apptId, no_invoice_required: true, payment_method: "venmo" });
+    assert.equal(ok.status, 200);
+    assert.deepEqual([ok.data.billing.paid, ok.data.billing.payment_method, ok.data.billing.no_invoice_required], [true, "venmo", true]);
+    assert.equal((await needsAttentionIdsByKind()).needs_invoicing, undefined);
+    const undo = await call("/api/billing/completed-jobs/direct-payment", "POST", { appointment_id: apptId, no_invoice_required: false });
+    assert.deepEqual([undo.data.billing.paid, undo.data.billing.no_invoice_required], [true, false]);
+    assert.equal((await needsAttentionIdsByKind()).needs_invoicing, apptId);
+  });
+
+  test("migration 049: in the demo too, a payment method alone never closes a job, and typing a number ends Paid directly", async () => {
+    const ids = await needsAttentionIdsByKind();
+    const apptId = ids.needs_invoicing;
+    await call("/api/billing/completed-jobs/update", "PATCH", { appointment_id: apptId, paid: true, payment_method: "cash" });
+    assert.equal((await needsAttentionIdsByKind()).needs_invoicing, apptId, "Cash alone leaves it open");
+    await call("/api/billing/completed-jobs/direct-payment", "POST", { appointment_id: apptId, no_invoice_required: true, payment_method: "cash" });
+    const typed = await call("/api/billing/completed-jobs/update", "PATCH", { appointment_id: apptId, invoice_number: "13999" });
+    assert.equal(typed.status, 200);
+    assert.deepEqual([typed.data.billing.invoice_number, typed.data.billing.no_invoice_required], ["13999", false]);
+  });
+
   test("GET /api/dashboard/needs-attention returns the real route's shape with exactly 4 entries", async () => {
     const { status, data } = await call("/api/dashboard/needs-attention?limit=25&offset=0");
     assert.equal(status, 200);

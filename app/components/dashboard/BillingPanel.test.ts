@@ -1133,3 +1133,107 @@ describe("BillingPanel -- read-only mode", () => {
     assert.equal((methodSelect as HTMLSelectElement).disabled, true);
   });
 });
+
+describe("BillingPanel -- SFT invoices and Paid directly (migration 049)", () => {
+  const bill = (appointment_id: string, o: Record<string, unknown> = {}) => ({
+    id: `b-${appointment_id}`, workspace_id: "w1", appointment_id, client_id: "c1", invoice_number: null, paid: false,
+    payment_method: null, no_invoice_required: false, created_at: "x", updated_at: "x", ...o,
+  });
+  const ROW_SFT = {
+    ...ROW_DONE, appointmentId: "appt-sft", clientName: "Sofia Issued", priceCents: 15000,
+    billing: bill("appt-sft", { invoice_number: "SFT-1001" }),
+    invoice: { id: "inv-1", status: "issued", invoice_number: "SFT-1001", total_cents: 16000, revision: 2 },
+  };
+  const ROW_DRAFT = {
+    ...ROW_DONE, appointmentId: "appt-draft", clientName: "Dana Draft", priceCents: 10000, billing: null,
+    invoice: { id: "inv-2", status: "draft", invoice_number: null, total_cents: 99900, revision: 1 },
+  };
+  const ROW_DIRECT = {
+    ...ROW_DONE, appointmentId: "appt-direct", clientName: "Holly Direct", priceCents: 12000,
+    billing: bill("appt-direct", { paid: true, payment_method: "venmo", no_invoice_required: true }), invoice: null,
+  };
+  const ROW_VENMO_ONLY = {
+    ...ROW_DONE, appointmentId: "appt-venmo", clientName: "Vera Venmo", priceCents: 9000,
+    billing: bill("appt-venmo", { paid: true, payment_method: "venmo" }), invoice: null,
+  };
+  const statValue = (label: string) => screen.getByText(label).parentElement!.querySelector("div.font-semibold")!.textContent;
+  const rowOf = (name: string) => screen.getByText(name).closest("tr")!;
+
+  test("an issued SFT invoice: number read-only with a PDF link; its total (not the job price) in Amount, Invoiced $ and Unpaid $", async () => {
+    responses = [json(200, { completed: [ROW_SFT, ROW_DRAFT], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Sofia Issued");
+    const sft = rowOf("Sofia Issued");
+    assert.ok(sft.textContent!.includes("SFT-1001"));
+    assert.equal(sft.querySelector('input[type="text"]'), null, "no editable invoice number");
+    assert.equal(sft.querySelector("a")!.getAttribute("href"), "/api/invoices/inv-1/pdf");
+    assert.ok(sft.textContent!.includes("$160.00") && sft.textContent!.includes("Job price $150.00"));
+    assert.ok(!sft.querySelector('input[type="checkbox"]')!.hasAttribute("disabled"), "Paid stays editable");
+    assert.ok(!sft.querySelector("select")!.hasAttribute("disabled"), "Payment Method stays editable");
+
+    assert.equal(statValue("Completed Work $"), "$250.00"); // job prices 150 + 100
+    assert.equal(statValue("Invoiced $"), "$160.00"); // the issued invoice's total; the draft never counts
+    assert.equal(statValue("Unpaid $"), "$160.00");
+  });
+
+  test("a draft shows Draft (not invoiced) with no invoice-number box", async () => {
+    responses = [json(200, { completed: [ROW_DRAFT], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Dana Draft");
+    const draft = rowOf("Dana Draft");
+    assert.ok(draft.textContent!.includes("Draft"));
+    assert.equal(draft.querySelector('input[type="text"]'), null);
+    assert.ok(draft.textContent!.includes("$100.00"), "Amount stays the job price for a draft");
+  });
+
+  test("a paid job with no number offers No invoice needed; confirming saves it as an explicit choice and refreshes Needs Attention", async () => {
+    let saved = 0;
+    responses = [
+      json(200, { completed: [ROW_VENMO_ONLY], reviewNeeded: [] }),
+      json(200, { ok: true, billing: { ...ROW_VENMO_ONLY.billing, no_invoice_required: true } }),
+    ];
+    renderPanel(true, { onBillingSaved: () => saved++ });
+    await screen.findByText("Vera Venmo");
+    const u = userEvent.setup();
+    await u.click(screen.getByRole("button", { name: "No invoice needed" }));
+    assert.equal(calls.length, 1, "nothing is saved until the owner confirms");
+    await u.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => assert.equal(calls.length, 2));
+    assert.equal(calls[1].url, "/api/billing/completed-jobs/direct-payment");
+    assert.deepEqual(calls[1].body, { appointment_id: "appt-venmo", no_invoice_required: true, payment_method: "venmo" });
+    await screen.findByText("No invoice needed");
+    assert.equal(saved, 1);
+  });
+
+  test("Paid directly shows No invoice needed with Undo; undoing brings the invoice-number box back", async () => {
+    responses = [
+      json(200, { completed: [ROW_DIRECT], reviewNeeded: [] }),
+      json(200, { ok: true, billing: { ...ROW_DIRECT.billing, no_invoice_required: false } }),
+    ];
+    renderPanel();
+    await screen.findByText("Holly Direct");
+    assert.ok(rowOf("Holly Direct").textContent!.includes("No invoice needed"));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => assert.ok(rowOf("Holly Direct").querySelector('input[type="text"]')));
+    assert.deepEqual(calls[1].body, { appointment_id: "appt-direct", no_invoice_required: false });
+  });
+
+  test("No invoice needed is not offered for an unpaid job, a job with a number, or a read-only workspace; Venmo is a payment method", async () => {
+    responses = [json(200, { completed: [ROW_DONE, ROW_PAID, ROW_VENMO_ONLY], reviewNeeded: [] })];
+    renderPanel(false);
+    await screen.findByText("Vera Venmo");
+    assert.equal(screen.queryByRole("button", { name: "No invoice needed" }), null);
+    assert.ok([...rowOf("Vera Venmo").querySelectorAll("option")].some((o) => o.textContent === "Venmo"));
+  });
+
+  test("a refused save shows the server's message on the row", async () => {
+    responses = [
+      json(200, { completed: [ROW_SFT], reviewNeeded: [] }),
+      json(409, { error: "This job's invoice was created in Schedule, so its number can't be changed here.", code: "INVOICE_NUMBER_LOCKED" }),
+    ];
+    renderPanel();
+    await screen.findByText("Sofia Issued");
+    await userEvent.setup().click(rowOf("Sofia Issued").querySelector('input[type="checkbox"]')!);
+    await screen.findByText(/can't be changed here/);
+  });
+});

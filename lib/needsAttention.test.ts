@@ -60,6 +60,7 @@ function billing(overrides: Partial<CompletedJobBilling> = {}): CompletedJobBill
     invoice_number: null,
     paid: false,
     payment_method: null,
+    no_invoice_required: false,
     created_at: "2026-07-01T00:00:00.000Z",
     updated_at: "2026-07-01T00:00:00.000Z",
     ...overrides,
@@ -233,13 +234,40 @@ describe("buildNeedsAttentionEntries -- item 2: billing (needs invoicing / payme
     assert.equal(stage3.length, 0, "a paid job has no entry at all once no other issue applies");
   });
 
-  test("a paid-Cash job with no invoice (a legitimate closed state) is NOT flagged -- same carve-out as the Billing panel's own filter", () => {
-    const { a, asg } = completedAppt("appt-cash-closed");
-    const b = billing({ appointment_id: "appt-cash-closed", invoice_number: null, paid: true, payment_method: "cash" });
+  test("a job confirmed Paid directly, no invoice (any method) is NOT flagged -- same rule as the Billing panel's own filter", () => {
+    for (const method of ["cash", "venmo", "zelle"] as const) {
+      const { a, asg } = completedAppt("appt-direct");
+      const b = billing({ appointment_id: "appt-direct", invoice_number: null, paid: true, payment_method: method, no_invoice_required: true });
+      const entries = buildNeedsAttentionEntries(baseArgs({
+        appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
+      }));
+      assert.equal(entries.length, 0, method);
+    }
+  });
+
+  test("migration 049: paid + Cash with no number and no confirmation still needs an invoice number", () => {
+    const { a, asg } = completedAppt("appt-cash-only");
+    const b = billing({ appointment_id: "appt-cash-only", invoice_number: null, paid: true, payment_method: "cash" });
     const entries = buildNeedsAttentionEntries(baseArgs({
       appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]), billingByAppointmentId: billingMap([b]),
     }));
-    assert.equal(entries.length, 0);
+    assert.deepEqual(entries[0].issues.map((i) => i.kind), ["needs_invoicing"]);
+  });
+
+  test("marking a job paid directly clears its billing issue; undoing it restores Needs invoice number", () => {
+    const { a, asg } = completedAppt("appt-undo");
+    const args = (b: CompletedJobBilling | null) => baseArgs({
+      appointments: [a], clients: [client()], assignmentsByAppointmentId: assignmentsMap([asg]),
+      billingByAppointmentId: b ? billingMap([b]) : new Map(),
+    });
+    assert.deepEqual(buildNeedsAttentionEntries(args(null))[0].issues.map((i) => i.kind), ["needs_invoicing"], "before");
+    const confirmed = billing({ appointment_id: "appt-undo", invoice_number: null, paid: true, payment_method: "venmo", no_invoice_required: true });
+    assert.equal(buildNeedsAttentionEntries(args(confirmed)).length, 0, "paid directly: no issue");
+    // Undo keeps paid + Venmo, so the issue is "Needs invoice number" again
+    // (not "Payment outstanding": the job is still paid).
+    const undone = { ...confirmed, no_invoice_required: false };
+    const restored = buildNeedsAttentionEntries(args(undone));
+    assert.deepEqual(restored[0].issues.map((i) => i.kind), ["needs_invoicing"], "undo restores the issue");
   });
 
   test("a job not yet billing-eligible (worked time unresolved) is NOT flagged for invoicing -- it's a worked-time-review issue instead, not both", () => {

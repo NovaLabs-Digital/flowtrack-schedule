@@ -6,7 +6,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { requireCapability } from "@/lib/entitlementServer";
 import { fetchAllPages, fetchAllPagesChunkedIn } from "@/lib/paginate";
 import { effectiveTimezone, zonedDateTimeToUTC } from "@/lib/timezone";
-import { buildCompletedJobRows, buildReviewNeededRows, type CompletedJobBilling, type BillableAppointment } from "@/lib/completedJobBilling";
+import { buildCompletedJobRows, buildReviewNeededRows, type CompletedJobBilling, type CompletedJobInvoice, type BillableAppointment } from "@/lib/completedJobBilling";
 import { fetchEmployeeHoursForAppointments } from "@/lib/appointmentEmployees";
 import type { AppointmentEmployeeAssignment, Client, EmployeeHours } from "@/app/components/dashboard/types";
 
@@ -101,6 +101,7 @@ export async function GET(req: Request) {
     let assignments: AppointmentEmployeeAssignment[] = [];
     let clients: Client[] = [];
     let billingRows: CompletedJobBilling[] = [];
+    let invoiceRows: (CompletedJobInvoice & { appointment_id: string })[] = [];
     let employeeHours: EmployeeHours[] = [];
 
     if (apptIds.length > 0) {
@@ -122,7 +123,7 @@ export async function GET(req: Request) {
       // large enough to risk an oversized `.in()` filter or a truncated
       // (>1000-row) response from an unbounded query. Same fix as
       // app/api/dashboard/needs-attention/route.ts's identical correction.
-      const [assignRes, billingRes, hours] = await Promise.all([
+      const [assignRes, billingRes, hours, invoiceRes] = await Promise.all([
         fetchAllPagesChunkedIn<AppointmentEmployeeAssignment>(apptIds, async (chunkIds, from, to) =>
           supabaseAdmin
             .from("appointment_employees")
@@ -135,16 +136,31 @@ export async function GET(req: Request) {
         fetchAllPagesChunkedIn<CompletedJobBilling>(apptIds, async (chunkIds, from, to) =>
           supabaseAdmin
             .from("completed_job_billing")
-            .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, created_at, updated_at")
+            .select("id, workspace_id, appointment_id, client_id, invoice_number, paid, payment_method, no_invoice_required, created_at, updated_at")
             .eq("workspace_id", workspaceId)
             .in("appointment_id", chunkIds)
             .order("id", { ascending: true })
             .range(from, to)
         ),
         fetchEmployeeHoursForAppointments(apptIds, workspaceId),
+        // Migration 049: each job's live SFT invoice (draft or issued) -- its
+        // total drives Invoiced $ / Unpaid $ once issued. Never the stored
+        // PDF bytes; only what the report shows.
+        fetchAllPagesChunkedIn<CompletedJobInvoice & { appointment_id: string }>(apptIds, async (chunkIds, from, to) =>
+          supabaseAdmin
+            .from("invoices")
+            .select("id, appointment_id, status, invoice_number, total_cents, revision")
+            .eq("workspace_id", workspaceId)
+            .in("appointment_id", chunkIds)
+            .in("status", ["draft", "issued"])
+            .order("id", { ascending: true })
+            .range(from, to)
+        ),
       ]);
       if (assignRes.error) throw assignRes.error;
       if (billingRes.error) throw billingRes.error;
+      if (invoiceRes.error) throw invoiceRes.error;
+      invoiceRows = (invoiceRes.data ?? []) as (CompletedJobInvoice & { appointment_id: string })[];
       assignments = (assignRes.data ?? []) as AppointmentEmployeeAssignment[];
       billingRows = (billingRes.data ?? []) as CompletedJobBilling[];
       employeeHours = hours;
@@ -171,12 +187,16 @@ export async function GET(req: Request) {
       else assignmentsByAppointmentId.set(a.appointment_id, [a]);
     }
     const billingByAppointmentId = new Map(billingRows.map((b) => [b.appointment_id, b]));
+    const invoicesByAppointmentId = new Map<string, CompletedJobInvoice>(
+      invoiceRows.map(({ appointment_id, ...inv }) => [appointment_id, inv])
+    );
 
     const completed = buildCompletedJobRows({
       appointments,
       clients,
       assignmentsByAppointmentId,
       billingByAppointmentId,
+      invoicesByAppointmentId,
       employeeHours,
       rangeStart,
       rangeEnd,

@@ -13,12 +13,15 @@ import {
   applyBillingStatusFilter,
   applyGroupedBillingUpdate,
   computeBillingSummary,
+  invoicedAmountCents,
+  isPaidDirectly,
   matchesClientSearch,
   sortCompletedJobRows,
   isValidBillingSortOrder,
   isValidBillingStatusFilter,
   type BillingStatusFilter,
   type BillingSortOrder,
+  type CompletedJobBilling,
   type CompletedJobRow,
   type ReviewNeededRow,
 } from "@/lib/completedJobBilling";
@@ -449,6 +452,41 @@ export default function BillingPanel({
     }
   }
 
+  // "Paid directly, no invoice" (migration 049): an explicit per-job choice,
+  // separate from the payment method. Confirming closes the job's billing
+  // issue; undo means an invoice is needed again.
+  async function saveDirectPayment(appointmentId: string, confirm: boolean, paymentMethod: string | null) {
+    setRowErrors((prev) => ({ ...prev, [appointmentId]: "" }));
+    setSavingRows((prev) => ({ ...prev, [appointmentId]: true }));
+    try {
+      const res = await fetch("/api/billing/completed-jobs/direct-payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          confirm
+            ? { appointment_id: appointmentId, no_invoice_required: true, payment_method: paymentMethod }
+            : { appointment_id: appointmentId, no_invoice_required: false }
+        ),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRowErrors((prev) => ({ ...prev, [appointmentId]: body?.error || `Save failed (${res.status})` }));
+        return;
+      }
+      const saved = body.billing as CompletedJobBilling | null;
+      if (saved) {
+        setData((prev) =>
+          prev ? { ...prev, completed: prev.completed.map((r) => (r.appointmentId === appointmentId ? { ...r, billing: saved } : r)) } : prev
+        );
+      }
+      onBillingSaved?.();
+    } catch {
+      setRowErrors((prev) => ({ ...prev, [appointmentId]: "Could not save — please try again." }));
+    } finally {
+      setSavingRows((prev) => ({ ...prev, [appointmentId]: false }));
+    }
+  }
+
   return (
     // Settings -> Billing: rendered inside DashboardSettingsArea's own
     // scrollable content area (same as every other Settings section), which
@@ -572,6 +610,7 @@ export default function BillingPanel({
                       saving={!!savingRows[row.appointmentId]}
                       error={rowErrors[row.appointmentId]}
                       onSave={(patch) => saveBillingFields(row.appointmentId, patch)}
+                      onDirectPayment={(confirm, method) => saveDirectPayment(row.appointmentId, confirm, method)}
                       isFocused={!!focusAppointmentId && row.appointmentId === focusAppointmentId}
                     />
                   ))
@@ -671,6 +710,7 @@ function BillingRow({
   saving,
   error,
   onSave,
+  onDirectPayment,
   isFocused,
 }: {
   row: CompletedJobRow;
@@ -678,6 +718,7 @@ function BillingRow({
   saving: boolean;
   error?: string;
   onSave: (patch: Record<string, unknown>) => void;
+  onDirectPayment: (confirm: boolean, paymentMethod: string | null) => void;
   // Needs Attention deep-link target (see BillingPanel's own focusAppointmentId
   // prop): scrolls this row into view once mounted/visible and applies a
   // brief visual highlight, so "open the corresponding job in Billing"
@@ -702,6 +743,19 @@ function BillingRow({
 
   const paid = row.billing?.paid ?? false;
   const paymentMethod = row.billing?.payment_method ?? "";
+  // Migration 049: the job's SFT invoice. An issued one owns the invoice
+  // number (read-only here; Paid / Payment Method stay editable). A draft is
+  // not an invoice yet and blocks typing a QuickBooks number.
+  const issuedInvoice =
+    row.invoice?.status === "issued" && row.invoice.invoice_number && row.billing?.invoice_number === row.invoice.invoice_number
+      ? row.invoice
+      : null;
+  const draftInvoice = row.invoice?.status === "draft" ? row.invoice : null;
+  const paidDirectly = isPaidDirectly(row);
+  const amountCents = invoicedAmountCents(row);
+  const amountDiffers = !!issuedInvoice && amountCents !== (row.priceCents ?? 0);
+  const canMarkPaidDirectly = paid && !!paymentMethod && !row.billing?.invoice_number && !row.invoice && !paidDirectly;
+  const [confirmingDirect, setConfirmingDirect] = useState(false);
 
   const rowRef = useRef<HTMLTableRowElement | null>(null);
   useEffect(() => {
@@ -731,20 +785,85 @@ function BillingRow({
       <td className="px-3 py-2 whitespace-nowrap text-slate-700">{formatMMDDYY(row.serviceDate)}</td>
       <td className="px-3 py-2 text-slate-900 font-medium">{row.clientName}</td>
       <td className="px-3 py-2 text-slate-700">{row.serviceType}</td>
-      <td className="px-3 py-2 text-right text-slate-900">{formatCents(row.priceCents)}</td>
+      <td className="px-3 py-2 text-right text-slate-900">
+        {issuedInvoice ? formatCents(amountCents) : formatCents(row.priceCents)}
+        {amountDiffers && (
+          <div className="text-[10px] text-slate-400 whitespace-nowrap">Job price {formatCents(row.priceCents)}</div>
+        )}
+      </td>
       <td className="px-3 py-2">
-        <input
-          type="text"
-          value={invoiceDraft}
-          disabled={disabled}
-          placeholder="—"
-          onChange={(e) => setInvoiceDraft(e.target.value)}
-          onBlur={commitInvoiceNumber}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-          }}
-          className="w-28 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
-        />
+        {issuedInvoice ? (
+          <div className="flex items-center gap-2 whitespace-nowrap">
+            <span className="font-medium text-slate-900" title="Invoice created in Schedule">{issuedInvoice.invoice_number}</span>
+            <a
+              href={`/api/invoices/${issuedInvoice.id}/pdf`}
+              className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+              aria-label={`Download invoice ${issuedInvoice.invoice_number} PDF`}
+            >
+              PDF
+            </a>
+          </div>
+        ) : draftInvoice ? (
+          <span className="inline-block rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600" title="Draft invoice in Schedule -- not issued yet">
+            Draft
+          </span>
+        ) : paidDirectly ? (
+          <div className="whitespace-nowrap">
+            <span className="text-[11px] text-slate-600">No invoice needed</span>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => onDirectPayment(false, null)}
+              className="ml-2 text-[11px] font-medium text-blue-600 hover:text-blue-700 disabled:text-slate-400"
+            >
+              Undo
+            </button>
+          </div>
+        ) : (
+          <>
+            <input
+              type="text"
+              value={invoiceDraft}
+              disabled={disabled}
+              placeholder="—"
+              aria-label={`Invoice number for ${row.clientName}`}
+              onChange={(e) => setInvoiceDraft(e.target.value)}
+              onBlur={commitInvoiceNumber}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+              }}
+              className="w-28 rounded-lg border border-slate-300 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
+            />
+            {canMarkPaidDirectly && !disabled && (
+              confirmingDirect ? (
+                <div className="mt-1 text-[10px] text-slate-600 whitespace-nowrap">
+                  Paid directly, no invoice?{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmingDirect(false);
+                      onDirectPayment(true, paymentMethod);
+                    }}
+                    className="font-medium text-blue-600 hover:text-blue-700"
+                  >
+                    Confirm
+                  </button>{" "}
+                  <button type="button" onClick={() => setConfirmingDirect(false)} className="text-slate-500 hover:text-slate-700">
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDirect(true)}
+                  className="mt-1 block text-[10px] font-medium text-blue-600 hover:text-blue-700"
+                >
+                  No invoice needed
+                </button>
+              )
+            )}
+          </>
+        )}
       </td>
       <td className="px-3 py-2">
         <input

@@ -136,7 +136,7 @@ describe("PATCH /api/billing/completed-jobs/update -- auth/role/validation gates
   test("an invalid payment_method is rejected before any appointment lookup", async () => {
     resetFixtures(ACTIVE);
     sessionToReturn = OWNER_SESSION;
-    const res = await PATCH(req({ appointment_id: "appt-1", payment_method: "venmo" }));
+    const res = await PATCH(req({ appointment_id: "appt-1", payment_method: "bitcoin" }));
     assert.equal(res.status, 400);
     assert.equal(currentFake.calls.filter((c) => c.table === "appointments").length, 0);
   });
@@ -446,5 +446,37 @@ describe("PATCH /api/billing/completed-jobs/update -- RPC call shape", () => {
     const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "INV-1" }));
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, billing: SAVED_ROW });
+  });
+});
+
+describe("migration 049: refusals from upsert_completed_job_billing in owner wording", () => {
+  for (const [label, error, code, message] of [
+    ["an issued SFT number can't be changed", { code: "IV002", message: "completed_job_billing_invoice_number_locked" }, "INVOICE_NUMBER_LOCKED", /void it and reissue/],
+    ["a draft blocks linking a QuickBooks number", { code: "IV003", message: "completed_job_billing_invoice_draft_exists" }, "INVOICE_DRAFT_EXISTS", /Discard the draft/],
+    ["SFT numbers are reserved", { code: "23505", message: "completed_job_billing_invoice_number_reserved" }, "INVOICE_NUMBER_RESERVED", /reserved for invoices created in Schedule/],
+  ] as const) {
+    test(`${label} -> 409 ${code}`, async () => {
+      resetFixtures(
+        completeAppointmentFixtures({ completed_job_billing: [{ data: null }, NO_SIBLING] }),
+        { upsert_completed_job_billing: [{ error }] }
+      );
+      sessionToReturn = OWNER_SESSION;
+      const res = await PATCH(req({ appointment_id: "appt-1", invoice_number: "SFT-1001" }));
+      assert.equal(res.status, 409);
+      const body = await res.json();
+      assert.equal(body.code, code);
+      assert.match(body.error, message);
+    });
+  }
+
+  test("Venmo is accepted as a payment method", async () => {
+    resetFixtures(
+      completeAppointmentFixtures({ completed_job_billing: [{ data: null }] }),
+      { upsert_completed_job_billing: [{ data: { ...SAVED_ROW, invoice_number: null, paid: true, payment_method: "venmo" } }] }
+    );
+    sessionToReturn = OWNER_SESSION;
+    const res = await PATCH(req({ appointment_id: "appt-1", paid: true, payment_method: "venmo" }));
+    assert.equal(res.status, 200);
+    assert.equal(rpcArgs().p_payment_method, "venmo");
   });
 });

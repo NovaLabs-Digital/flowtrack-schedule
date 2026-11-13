@@ -110,6 +110,7 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
       appointment_employees: [{ data: [ASSIGNMENT] }],
       appointment_employee_hours: [{ data: [] }],
       completed_job_billing: [{ data: [] }],
+      invoices: [{ data: [] }],
       clients: [{ data: CLIENTS }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -140,6 +141,7 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
       appointment_employees: [{ data: [ASSIGNMENT] }],
       appointment_employee_hours: [{ data: [] }],
       completed_job_billing: [{ data: [billingRow] }],
+      invoices: [{ data: [] }],
       clients: [{ data: CLIENTS }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -205,6 +207,7 @@ describe("GET /api/billing/completed-jobs -- happy path", () => {
       appointment_employees: [{ data: [untrackedAssignment] }],
       appointment_employee_hours: [{ data: [ownerOverride] }],
       completed_job_billing: [{ data: [] }],
+      invoices: [{ data: [] }],
       clients: [{ data: [{ id: "client-holly", name: "Holly Williams", email: null, phone: null }] }],
     });
     sessionToReturn = OWNER_SESSION;
@@ -273,6 +276,8 @@ describe("GET /api/billing/completed-jobs -- bounded, chunked batches for appoin
       // rather than one unbounded one.
       appointment_employees: [{ data: assignments.slice(0, CHUNK_SIZE) }, { data: assignments.slice(CHUNK_SIZE) }],
       completed_job_billing: [{ data: billing.slice(0, CHUNK_SIZE) }, { data: billing.slice(CHUNK_SIZE) }],
+      // Migration 049: each job's live SFT invoice, chunked the same way.
+      invoices: [{ data: [] }, { data: [] }],
       // fetchEmployeeHoursForAppointments is ALSO chunked now (lib/
       // appointmentEmployees.ts) -- same 2-chunk split needs 2 responses.
       appointment_employee_hours: [{ data: [] }, { data: [] }],
@@ -290,5 +295,27 @@ describe("GET /api/billing/completed-jobs -- bounded, chunked batches for appoin
 
     const billingCalls = currentFake.calls.filter((c) => c.table === "completed_job_billing" && c.method === "in");
     assert.equal(billingCalls.length, 2);
+  });
+});
+
+describe("migration 049: SFT invoices in the Billing report", () => {
+  test("attaches the job's live invoice (draft or issued) and never selects the stored PDF", async () => {
+    resetFixtures({
+      ...ACTIVE,
+      company_settings: [{ data: { timezone: "America/New_York" } }],
+      appointments: [{ data: [COMPLETED_APPT] }],
+      appointment_employees: [{ data: [ASSIGNMENT] }],
+      appointment_employee_hours: [{ data: [] }],
+      completed_job_billing: [{ data: [] }],
+      invoices: [{ data: [{ id: "inv-1", appointment_id: COMPLETED_APPT.id, status: "draft", invoice_number: null, total_cents: 16000, revision: 2 }] }],
+      clients: [{ data: CLIENTS }],
+    });
+    sessionToReturn = OWNER_SESSION;
+    const body = await (await GET(req("start=2026-08-01&end=2026-08-31"))).json();
+    assert.deepEqual(body.completed[0].invoice, { id: "inv-1", status: "draft", invoice_number: null, total_cents: 16000, revision: 2 });
+    const select = currentFake.calls.find((c) => c.table === "invoices" && c.method === "select");
+    assert.ok(select && !String(select.args[0]).includes("pdf"), "the PDF bytes are never read for the report");
+    const statusFilter = currentFake.calls.find((c) => c.table === "invoices" && c.method === "in" && c.args[0] === "status");
+    assert.deepEqual(statusFilter?.args[1], ["draft", "issued"], "void invoices are not attached");
   });
 });

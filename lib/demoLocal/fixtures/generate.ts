@@ -178,7 +178,7 @@ const ID_KIND = { client: 1, employee: 2, service: 3, appointment: 4, assignment
 
 // Paid-state rotation for an ordinary completed job: every one ends PAID
 // (so it raises no billing issue), with a realistic mix of methods --
-// including the legitimate "paid cash, no invoice" closed state.
+// including a job the owner marked "Paid directly, no invoice" (cash).
 const PAID_PATTERNS: { invoiced: boolean; method: PaymentMethod }[] = [
   { invoiced: true, method: "zelle" },
   { invoiced: true, method: "check" },
@@ -281,6 +281,9 @@ export function generateDemoFixture(now: Date): DemoFixtureBundle {
       invoice_number: invoice,
       paid,
       payment_method: method,
+      // Migration 049: closing a job without an invoice is an explicit owner
+      // choice; the fixture's paid, never-invoiced jobs carry it.
+      no_invoice_required: paid && invoice === null && method !== null,
       created_at: stamp,
       updated_at: stamp,
     });

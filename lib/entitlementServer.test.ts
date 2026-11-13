@@ -568,6 +568,16 @@ describe("only the approved routes reference the capability gates -- every other
     // mutation route uses).
     path.join("app", "api", "billing", "completed-jobs", "route.ts"),
     path.join("app", "api", "billing", "completed-jobs", "update", "route.ts"),
+    // SFT invoices (migrations/049) -- "Paid directly, no invoice" and the
+    // invoice lifecycle: create/edit/discard/issue/void a job's invoice
+    // (canMutateOperationalData) and read it / download its stored PDF
+    // (canViewExistingData).
+    path.join("app", "api", "billing", "completed-jobs", "direct-payment", "route.ts"),
+    path.join("app", "api", "invoices", "route.ts"),
+    path.join("app", "api", "invoices", "[id]", "route.ts"),
+    path.join("app", "api", "invoices", "[id]", "issue", "route.ts"),
+    path.join("app", "api", "invoices", "[id]", "void", "route.ts"),
+    path.join("app", "api", "invoices", "[id]", "pdf", "route.ts"),
     // Message History -- read-only (canViewExistingData, same read-gate
     // precedent as clients/archived, recurring-series, and billing/
     // completed-jobs above), appointment-scoped and client-scoped
