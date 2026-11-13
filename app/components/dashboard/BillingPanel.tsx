@@ -518,7 +518,7 @@ export default function BillingPanel({
       <div className="mb-3">
         <h1 className="text-lg font-semibold text-slate-900">Billing / Completed Jobs</h1>
         <p className="text-xs text-slate-500 mt-0.5">
-          Work straight down the list: confirm the job, create its invoice in QuickBooks, type the invoice number here, then mark it paid once confirmed.
+          Create an invoice from the completed appointment or enter an existing invoice number here. Mark the job paid once you confirm payment.
         </p>
       </div>
 

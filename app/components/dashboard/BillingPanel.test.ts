@@ -87,6 +87,16 @@ describe("BillingPanel -- initial load", () => {
     assert.match(calls[0].url, /\/api\/billing\/completed-jobs\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}/);
   });
 
+  test("the instructions point to creating the invoice from the completed appointment, not QuickBooks", async () => {
+    responses = [json(200, { completed: [ROW_DONE], reviewNeeded: [] })];
+    renderPanel();
+    await screen.findByText("Petra Lindqvist");
+    assert.ok(screen.getByText(
+      "Create an invoice from the completed appointment or enter an existing invoice number here. Mark the job paid once you confirm payment."
+    ));
+    assert.equal(screen.queryByText(/invoice in QuickBooks/), null);
+  });
+
   test("shows the summary totals computed from the fetched rows", async () => {
     responses = [json(200, { completed: [ROW_DONE, ROW_PAID], reviewNeeded: [] })];
     renderPanel();
