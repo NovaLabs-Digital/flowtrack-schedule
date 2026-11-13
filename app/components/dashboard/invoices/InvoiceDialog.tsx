@@ -83,6 +83,7 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
   const [currentId, setCurrentId] = useState(invoiceId);
   const [invoice, setInvoice] = useState<InvoiceView | null>(null);
   const [paid, setPaid] = useState(false);
+  const [nextNumber, setNextNumber] = useState<string | null>(null);
   const [form, setForm] = useState<Form | null>(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<"" | "saving" | "issuing" | "discarding" | "voiding">("");
@@ -110,6 +111,7 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
         if (cancelled) return;
         adopt(body.invoice as InvoiceView);
         setPaid(!!body.billing?.paid);
+        setNextNumber(typeof body.next_available === "string" ? body.next_available : null);
       })
       .catch((e: Error) => !cancelled && setLoadError(e.message));
     return () => {
@@ -335,8 +337,9 @@ export default function InvoiceDialog({ invoiceId, canMutate, onClose, onChanged
                 </div>
                 <div className="space-y-2">
                   <div>
-                    <span className={labelCls}>Invoice no.</span>
-                    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-500">Assigned when you issue it</div>
+                    <span className={labelCls}>Next available invoice number</span>
+                    <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2 py-1.5 text-xs text-slate-700" data-testid="invoice-next-number">{nextNumber ?? "\u2014"}</div>
+                    <p className="mt-0.5 text-[11px] text-slate-400">The final number is assigned when you issue the invoice.</p>
                   </div>
                   <div>
                     <label className={labelCls} htmlFor="inv-terms">Terms</label>

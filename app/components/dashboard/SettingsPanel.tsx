@@ -20,6 +20,7 @@ export default function SettingsPanel({
   onBillingSaved,
   isLocalDemo = false,
   showSignInSecurity = false,
+  showInvoiceNumbers = false,
 }: {
   section: SettingsSection;
   // Phase 5.5E-E1E forwarded this only to ArchivedClientsPanel. Phase
@@ -67,6 +68,8 @@ export default function SettingsPanel({
   // Real signed-in owners only (never a demo, tester, or Guided Demo
   // Session): the Company section's Sign-in Security card.
   showSignInSecurity?: boolean;
+  // Real signed-in owners only: Billing's "Invoice numbers" card.
+  showInvoiceNumbers?: boolean;
 }) {
   if (section === "company") {
     return <CompanyInfoPanel canMutateOperationalData={canMutateOperationalData} isTrialing={isTrialing} showSignInSecurity={showSignInSecurity} isLocalDemo={isLocalDemo} />;
@@ -85,6 +88,7 @@ export default function SettingsPanel({
         focusAppointmentId={billingFocusAppointmentId}
         focusServiceDate={billingFocusServiceDate}
         onBillingSaved={onBillingSaved}
+        showInvoiceNumbers={showInvoiceNumbers}
       />
     );
   }

@@ -3,11 +3,25 @@
 --
 -- Approved by Alberto 2026-11-12 (revised invoice plan v2 + follow-up):
 --
---  * SFT issues its own series, SFT-1001, SFT-1002, ... per workspace. The
---    prefix "SFT" is RESERVED: a number typed in Billing ("Link Existing
---    Invoice") can never start with it, so a linked QuickBooks number can
---    never collide with a number SFT has issued, retired (voided) or will
---    issue later. Existing QuickBooks numbers are untouched.
+--  * Numbering (revised 2026-11-13). By default SFT issues its own series,
+--    SFT-1001, SFT-1002, ... per workspace. The owner may instead set a
+--    "Starting invoice number" (set_invoice_starting_number) to continue
+--    their QuickBooks numbers: start 13485 -> 13485, 13486, ... with no
+--    prefix. The start must be ABOVE the highest numeric invoice number
+--    recorded in Billing, and it can be changed (or cleared back to
+--    SFT-1001) only until the workspace's first invoice is issued -- it
+--    stays locked even if that invoice is later voided.
+--  * No collisions, ever. A number is "taken" when any SFT invoice (issued
+--    or voided) or any Billing job holds it, compared as a number for
+--    digit-only values ("013486", "#13486" and "13486" are the same).
+--    Issuing skips taken numbers automatically (a QuickBooks number linked
+--    later is simply jumped over); linking refuses a number that is an
+--    issued or voided SFT invoice. "SFT..." stays reserved for SFT's own
+--    series. Issuing, linking a new number and changing the starting number
+--    all lock the workspace's invoice_counters row, so they run one after
+--    the other -- linking while issuing can never hand out one number twice.
+--    SFT invoices are identified by their stored invoices row, never by the
+--    look of the number. Existing invoice numbers are never rewritten.
 --  * Invoice lifecycle: draft (editable, no number) -> issued (number
 --    assigned, PDF stored, every detail frozen) -> void (kept forever, number
 --    retired, never reused). Corrections = void + reissue.
@@ -33,20 +47,21 @@
 --
 -- How the PDF gets its number
 --   1. invoice_render_input(workspace, invoice) -- read-only. Returns the
---      draft's revision, the PROPOSED number (the workspace counter's
---      current value) and render_snapshot: the canonical JSON of every value
+--      draft's revision, the PROPOSED number (the next available number:
+--      the counter's value, skipping taken numbers) and render_snapshot: the canonical JSON of every value
 --      printed on the PDF, including that number and revision.
 --   2. The app renders the PDF from that JSON only.
 --   3. issue_invoice(workspace, invoice, revision, number, snapshot, pdf,
 --      sha256) locks appointment -> invoice -> counter, then refuses unless:
 --      the invoice is still a draft at exactly that revision
---      ('stale_revision'), the counter still proposes exactly that number
---      ('number_changed' -- the app re-renders with the new one), the
+--      ('stale_revision'), the next available number is still exactly that
+--      number ('number_changed' -- the app re-renders with the new one), the
 --      snapshot equals the one rebuilt from the locked row with that number
 --      ('snapshot_mismatch'), and the bytes are a PDF whose SHA-256 matches
 --      ('pdf_invalid'). Only then does it store number + PDF + snapshot,
---      advance the counter and write Billing. A refusal writes nothing and
---      consumes no number, so numbers have no gaps and nothing is "reserved".
+--      advance the counter past it and write Billing. A refusal writes
+--      nothing and consumes no number; the only gaps are numbers skipped
+--      because Billing already holds them.
 --   A trigger bumps the revision on every content change of a draft and
 --   freezes issued/void invoices, so an edit made while the PDF was being
 --   rendered is always detected.
@@ -62,13 +77,14 @@
 -- Compatibility with the currently deployed app (a593d9c): its Billing route
 -- calls upsert_completed_job_billing with the SAME six arguments, which this
 -- file replaces in place with the same signature. Ordinary Billing edits
--- keep working; typing an "SFT..." number is refused as 23505 (the deployed
+-- keep working; typing an "SFT..." number or an SFT invoice's number is
+-- refused as 23505 (the deployed
 -- app shows "That invoice number is already used by another job in this
 -- workspace."). The deployed app cannot create invoices, so the other new
 -- refusals cannot reach it.
 --
 -- Error codes raised (the new app maps them by message token):
---   23505  completed_job_billing_invoice_number_reserved   (typed "SFT...")
+--   23505  completed_job_billing_invoice_number_reserved   (typed "SFT..." or an issued/voided SFT invoice's number)
 --   IV002  completed_job_billing_invoice_number_locked     (change/clear an issued SFT number)
 --   IV003  completed_job_billing_invoice_draft_exists      (link while an SFT draft exists)
 --   IV010  invoice_locked                                   (any write to a frozen invoice)
@@ -76,8 +92,11 @@
 -- Safe to re-run. Rollback (only before any invoice exists):
 --   DROP FUNCTION issue_invoice, void_invoice, create_invoice_draft,
 --     update_invoice_draft, discard_invoice_draft, invoice_render_input,
---     invoice_render_snapshot, invoice_draft_tax_rate, set_no_invoice_required, invoice_guard;
+--     invoice_render_snapshot, invoice_draft_tax_rate, set_no_invoice_required, invoice_guard,
+--     set_invoice_starting_number, invoice_numbering_state, invoice_next_available_number,
+--     invoice_number_taken;
 --   DROP TABLE invoices, invoice_counters;
+--   DROP INDEX idx_completed_job_billing_invoice_number_key; DROP FUNCTION invoice_number_key;
 --   re-run migration 033's upsert_completed_job_billing body;
 --   ALTER TABLE completed_job_billing DROP COLUMN no_invoice_required;
 --   restore the 5-value payment_method CHECK (only if no 'venmo' row exists).
@@ -116,10 +135,16 @@ ALTER TABLE completed_job_billing ADD CONSTRAINT completed_job_billing_payment_m
 -- 2. invoices + invoice_counters
 -- ---------------------------------------------------------------------------
 
+-- One row per workspace that has used numbering. No row = the default
+-- series (SFT-1001 next).
+--   number_prefix 'SFT-' = SFT's own series (default); '' = continuing the
+--                 owner's own numbers from their starting number.
+--   next_number   the next number to try; issuing skips taken numbers.
 CREATE TABLE IF NOT EXISTS invoice_counters (
-  workspace_id UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE RESTRICT,
-  next_number  INTEGER NOT NULL DEFAULT 1001 CHECK (next_number >= 1),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  workspace_id  UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE RESTRICT,
+  number_prefix TEXT NOT NULL DEFAULT 'SFT-' CHECK (number_prefix IN ('SFT-', '')),
+  next_number   INTEGER NOT NULL DEFAULT 1001 CHECK (next_number BETWEEN 1 AND 1000000000),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS invoices (
@@ -187,7 +212,7 @@ CREATE TABLE IF NOT EXISTS invoices (
       AND invoice_number IS NULL AND issued_at IS NULL AND render_snapshot IS NULL
       AND pdf IS NULL AND pdf_sha256 IS NULL AND voided_at IS NULL AND void_reason IS NULL)
     OR (status IN ('issued', 'void')
-      AND invoice_number ~ '^SFT-[1-9][0-9]*$' AND issued_at IS NOT NULL AND render_snapshot IS NOT NULL
+      AND invoice_number ~ '^(SFT-)?[1-9][0-9]{0,8}$' AND issued_at IS NOT NULL AND render_snapshot IS NOT NULL
       AND pdf IS NOT NULL AND pdf_sha256 ~ '^[0-9a-f]{64}$'
       AND ((status = 'issued' AND voided_at IS NULL AND void_reason IS NULL)
         OR (status = 'void' AND voided_at IS NOT NULL AND btrim(coalesce(void_reason, '')) <> '')))
@@ -205,6 +230,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_workspace_request
 CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_one_active_per_appointment
   ON invoices (appointment_id) WHERE status IN ('draft', 'issued');
 CREATE INDEX IF NOT EXISTS idx_invoices_workspace_id ON invoices (workspace_id);
+
+-- The comparison key for invoice numbers: digit-only numbers (optionally
+-- with a leading "#") compare as numbers -- "013486", "#13486", " 13486 "
+-- -> "13486" -- and anything else compares trimmed and case-insensitive.
+CREATE OR REPLACE FUNCTION invoice_number_key(p_number TEXT)
+RETURNS TEXT
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $fn$
+  SELECT CASE
+    WHEN p_number IS NULL THEN NULL
+    WHEN btrim(p_number) ~ '^#?[0-9]+$'
+      THEN coalesce(nullif(ltrim(ltrim(btrim(p_number), '#'), '0'), ''), '0')
+    ELSE upper(btrim(p_number))
+  END
+$fn$;
+
+CREATE INDEX IF NOT EXISTS idx_invoices_workspace_number_key
+  ON invoices (workspace_id, invoice_number_key(invoice_number)) WHERE invoice_number IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_completed_job_billing_invoice_number_key
+  ON completed_job_billing (workspace_id, invoice_number_key(invoice_number)) WHERE invoice_number IS NOT NULL;
 
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_counters ENABLE ROW LEVEL SECURITY;
@@ -330,6 +377,135 @@ AS $fn$
   );
 $fn$;
 
+-- ---------------------------------------------------------------------------
+-- 4b. Numbering
+-- ---------------------------------------------------------------------------
+
+-- Is this number held by any SFT invoice (issued or voided) or any Billing
+-- job in the workspace?
+CREATE OR REPLACE FUNCTION invoice_number_taken(p_workspace_id UUID, p_number TEXT)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $fn$
+  SELECT EXISTS (
+           SELECT 1 FROM invoices
+           WHERE workspace_id = p_workspace_id AND invoice_number IS NOT NULL
+             AND invoice_number_key(invoice_number) = invoice_number_key(p_number))
+      OR EXISTS (
+           SELECT 1 FROM completed_job_billing
+           WHERE workspace_id = p_workspace_id AND invoice_number IS NOT NULL
+             AND invoice_number_key(invoice_number) = invoice_number_key(p_number))
+$fn$;
+
+-- The number the next issued invoice would get: the counter's value,
+-- skipping taken numbers. NULL only if numbers run past 999,999,999.
+CREATE OR REPLACE FUNCTION invoice_next_available_number(p_workspace_id UUID)
+RETURNS TEXT
+LANGUAGE plpgsql
+STABLE
+SET search_path = public
+AS $fn$
+DECLARE
+  v_prefix TEXT;
+  v_n BIGINT;
+BEGIN
+  SELECT number_prefix, next_number INTO v_prefix, v_n FROM invoice_counters WHERE workspace_id = p_workspace_id;
+  IF NOT FOUND THEN
+    v_prefix := 'SFT-';
+    v_n := 1001;
+  END IF;
+  WHILE v_n <= 999999999 AND invoice_number_taken(p_workspace_id, v_prefix || v_n) LOOP
+    v_n := v_n + 1;
+  END LOOP;
+  IF v_n > 999999999 THEN
+    RETURN NULL;
+  END IF;
+  RETURN v_prefix || v_n;
+END;
+$fn$;
+
+-- What Settings -> Billing's "Invoice numbers" shows.
+CREATE OR REPLACE FUNCTION invoice_numbering_state(p_workspace_id UUID)
+RETURNS JSONB
+LANGUAGE plpgsql
+STABLE
+SET search_path = public
+AS $fn$
+DECLARE
+  v_prefix TEXT;
+  v_next INTEGER;
+  v_locked BOOLEAN;
+  v_highest RECORD;
+BEGIN
+  SELECT number_prefix, next_number INTO v_prefix, v_next FROM invoice_counters WHERE workspace_id = p_workspace_id;
+  IF NOT FOUND THEN
+    v_prefix := 'SFT-';
+    v_next := 1001;
+  END IF;
+  -- Locked from the first issued invoice on, even if it is later voided.
+  v_locked := EXISTS (SELECT 1 FROM invoices WHERE workspace_id = p_workspace_id AND status IN ('issued', 'void'));
+  -- Highest digit-only number recorded in Billing (compared as a number).
+  SELECT b.invoice_number AS raw, invoice_number_key(b.invoice_number) AS value, c.name AS client_name
+  INTO v_highest
+  FROM completed_job_billing b
+  LEFT JOIN clients c ON c.id = b.client_id
+  WHERE b.workspace_id = p_workspace_id AND b.invoice_number IS NOT NULL
+    AND invoice_number_key(b.invoice_number) ~ '^[0-9]+$'
+  ORDER BY length(invoice_number_key(b.invoice_number)) DESC, invoice_number_key(b.invoice_number) DESC
+  LIMIT 1;
+  RETURN jsonb_build_object(
+    'series', CASE WHEN v_prefix = '' THEN 'custom' ELSE 'sft' END,
+    'starting_number', CASE WHEN v_prefix = '' AND NOT v_locked THEN v_next END,
+    'next_available', invoice_next_available_number(p_workspace_id),
+    'locked', v_locked,
+    'highest_recorded', CASE WHEN v_highest.value IS NULL THEN NULL ELSE jsonb_build_object(
+      'number', v_highest.raw, 'value', v_highest.value, 'client_name', v_highest.client_name) END
+  );
+END;
+$fn$;
+
+-- Owner's "Starting invoice number". NULL = back to the default SFT-1001
+-- series. Refused once the first invoice was issued ('locked'), and for a
+-- start at or below the highest number recorded in Billing.
+CREATE OR REPLACE FUNCTION set_invoice_starting_number(p_workspace_id UUID, p_starting_number BIGINT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SET search_path = public
+AS $fn$
+DECLARE
+  v_state JSONB;
+BEGIN
+  INSERT INTO invoice_counters (workspace_id) VALUES (p_workspace_id) ON CONFLICT (workspace_id) DO NOTHING;
+  -- Same lock as issuing and linking: a start can never change mid-issue.
+  PERFORM 1 FROM invoice_counters WHERE workspace_id = p_workspace_id FOR UPDATE;
+
+  v_state := invoice_numbering_state(p_workspace_id);
+  IF (v_state->>'locked')::boolean THEN
+    RETURN jsonb_build_object('outcome', 'locked', 'state', v_state);
+  END IF;
+
+  IF p_starting_number IS NULL THEN
+    UPDATE invoice_counters SET number_prefix = 'SFT-', next_number = 1001, updated_at = now()
+    WHERE workspace_id = p_workspace_id;
+    RETURN jsonb_build_object('outcome', 'ok', 'state', invoice_numbering_state(p_workspace_id));
+  END IF;
+
+  IF p_starting_number < 1 OR p_starting_number > 999999999 THEN
+    RETURN jsonb_build_object('outcome', 'invalid', 'state', v_state);
+  END IF;
+  IF jsonb_typeof(v_state->'highest_recorded') = 'object'
+     AND p_starting_number::numeric <= (v_state->'highest_recorded'->>'value')::numeric THEN
+    RETURN jsonb_build_object('outcome', 'at_or_below_recorded', 'state', v_state);
+  END IF;
+
+  UPDATE invoice_counters SET number_prefix = '', next_number = p_starting_number::integer, updated_at = now()
+  WHERE workspace_id = p_workspace_id;
+  RETURN jsonb_build_object('outcome', 'ok', 'state', invoice_numbering_state(p_workspace_id));
+END;
+$fn$;
+
 CREATE OR REPLACE FUNCTION invoice_render_input(p_workspace_id UUID, p_invoice_id UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -338,7 +514,6 @@ SET search_path = public
 AS $fn$
 DECLARE
   v_inv invoices;
-  v_next INTEGER;
   v_number TEXT;
 BEGIN
   SELECT * INTO v_inv FROM invoices WHERE id = p_invoice_id AND workspace_id = p_workspace_id;
@@ -348,8 +523,10 @@ BEGIN
   IF v_inv.status <> 'draft' THEN
     RETURN jsonb_build_object('outcome', 'not_draft', 'status', v_inv.status, 'invoice_number', v_inv.invoice_number);
   END IF;
-  SELECT next_number INTO v_next FROM invoice_counters WHERE workspace_id = p_workspace_id;
-  v_number := 'SFT-' || coalesce(v_next, 1001);
+  v_number := invoice_next_available_number(p_workspace_id);
+  IF v_number IS NULL THEN
+    RETURN jsonb_build_object('outcome', 'numbers_exhausted');
+  END IF;
   RETURN jsonb_build_object(
     'outcome', 'ok',
     'revision', v_inv.revision,
@@ -408,6 +585,25 @@ BEGIN
     -- Reserved for SFT's own series (issued, retired or future). A legacy
     -- row that already holds such a number keeps it (not "changing").
     RAISE EXCEPTION 'completed_job_billing_invoice_number_reserved' USING ERRCODE = 'unique_violation';
+  END IF;
+
+  IF p_invoice_number IS NOT NULL
+     AND invoice_number_key(p_invoice_number) IS DISTINCT FROM invoice_number_key(v_current_number) THEN
+    -- A NEW number: take the workspace numbering lock (same as issuing and
+    -- the starting-number setting), then refuse any number an SFT invoice
+    -- holds -- issued or voided, found by its stored record, compared as a
+    -- number. The one exception is this job's own issued invoice (issuing
+    -- writes its number to Billing through this function).
+    INSERT INTO invoice_counters (workspace_id) VALUES (p_workspace_id) ON CONFLICT (workspace_id) DO NOTHING;
+    PERFORM 1 FROM invoice_counters WHERE workspace_id = p_workspace_id FOR UPDATE;
+    IF EXISTS (
+      SELECT 1 FROM invoices
+      WHERE workspace_id = p_workspace_id AND invoice_number IS NOT NULL
+        AND invoice_number_key(invoice_number) = invoice_number_key(p_invoice_number)
+        AND NOT (appointment_id = p_appointment_id AND status = 'issued')
+    ) THEN
+      RAISE EXCEPTION 'completed_job_billing_invoice_number_reserved' USING ERRCODE = 'unique_violation';
+    END IF;
   END IF;
 
   IF p_invoice_number IS NOT NULL THEN
@@ -788,7 +984,6 @@ DECLARE
   v_appointment UUID;
   v_inv invoices;
   v_billing completed_job_billing;
-  v_next INTEGER;
   v_expected TEXT;
   v_pdf BYTEA;
 BEGIN
@@ -824,8 +1019,12 @@ BEGIN
   END IF;
 
   INSERT INTO invoice_counters (workspace_id) VALUES (p_workspace_id) ON CONFLICT (workspace_id) DO NOTHING;
-  SELECT next_number INTO v_next FROM invoice_counters WHERE workspace_id = p_workspace_id FOR UPDATE;
-  v_expected := 'SFT-' || v_next;
+  PERFORM 1 FROM invoice_counters WHERE workspace_id = p_workspace_id FOR UPDATE;
+  -- Under the lock: the next available number (taken numbers skipped).
+  v_expected := invoice_next_available_number(p_workspace_id);
+  IF v_expected IS NULL THEN
+    RETURN jsonb_build_object('outcome', 'numbers_exhausted');
+  END IF;
   IF p_invoice_number IS DISTINCT FROM v_expected THEN
     RETURN jsonb_build_object('outcome', 'number_changed', 'invoice_number', v_expected, 'revision', v_inv.revision);
   END IF;
@@ -853,7 +1052,9 @@ BEGIN
       pdf_sha256 = lower(p_pdf_sha256)
   WHERE id = p_invoice_id;
 
-  UPDATE invoice_counters SET next_number = v_next + 1, updated_at = now() WHERE workspace_id = p_workspace_id;
+  UPDATE invoice_counters
+  SET next_number = regexp_replace(v_expected, '^SFT-', '')::integer + 1, updated_at = now()
+  WHERE workspace_id = p_workspace_id;
 
   -- Billing gets the number; paid / payment method stay as they were.
   PERFORM upsert_completed_job_billing(
@@ -927,6 +1128,11 @@ REVOKE ALL ON FUNCTION update_invoice_draft(UUID, UUID, INTEGER, JSONB) FROM PUB
 REVOKE ALL ON FUNCTION discard_invoice_draft(UUID, UUID) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION issue_invoice(UUID, UUID, INTEGER, TEXT, JSONB, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION void_invoice(UUID, UUID, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION invoice_number_key(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION invoice_number_taken(UUID, TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION invoice_next_available_number(UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION invoice_numbering_state(UUID) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION set_invoice_starting_number(UUID, BIGINT) FROM PUBLIC, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION invoice_render_input(UUID, UUID) TO service_role;
 GRANT EXECUTE ON FUNCTION upsert_completed_job_billing(uuid, uuid, uuid, text, boolean, text) TO service_role;
@@ -936,6 +1142,11 @@ GRANT EXECUTE ON FUNCTION update_invoice_draft(UUID, UUID, INTEGER, JSONB) TO se
 GRANT EXECUTE ON FUNCTION discard_invoice_draft(UUID, UUID) TO service_role;
 GRANT EXECUTE ON FUNCTION issue_invoice(UUID, UUID, INTEGER, TEXT, JSONB, TEXT, TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION void_invoice(UUID, UUID, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION invoice_number_key(TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION invoice_number_taken(UUID, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION invoice_next_available_number(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION invoice_numbering_state(UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION set_invoice_starting_number(UUID, BIGINT) TO service_role;
 GRANT SELECT ON TABLE invoices TO service_role;
 GRANT SELECT ON TABLE invoice_counters TO service_role;
 

@@ -270,7 +270,7 @@ describe("Rollout (migration 049)", { skip: SKIP }, () => {
   });
 
   test("049-postflight passes right after the rollout", () => {
-    assert.equal(postflight.length, 12);
+    assert.equal(postflight.length, 13);
     assert.deepEqual(postflight.filter((r) => !r.ok), []);
     assert.equal(postflight.find((r) => r.check_name === "backfill_complete")!.detail, "2 job(s) marked Paid directly, no invoice");
   });
@@ -958,13 +958,362 @@ describe("Workspaces and access", { skip: SKIP }, () => {
       FROM pg_proc p, unnest(ARRAY['anon', 'authenticated', 'service_role']) r
       WHERE p.pronamespace = 'public'::regnamespace
         AND p.proname IN ('upsert_completed_job_billing', 'set_no_invoice_required', 'create_invoice_draft', 'update_invoice_draft',
-                          'discard_invoice_draft', 'invoice_render_input', 'issue_invoice', 'void_invoice')`);
+                          'discard_invoice_draft', 'invoice_render_input', 'issue_invoice', 'void_invoice',
+                          'invoice_number_key', 'invoice_number_taken', 'invoice_next_available_number',
+                          'invoice_numbering_state', 'set_invoice_starting_number')`);
     assert.deepEqual(rows.filter((x) => x.can !== (x.role === "service_role")), []);
     for (const role of ["anon", "authenticated"]) {
       for (const t of ["invoices", "invoice_counters"]) {
         assert.equal((await c.query("SELECT has_table_privilege($1, $2, 'SELECT') AS can", [role, `public.${t}`])).rows[0].can, false);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Starting invoice number (continue QuickBooks numbering)
+// ---------------------------------------------------------------------------
+
+describe("Starting invoice number", { skip: SKIP }, () => {
+  const setStart = (cl: pg.Client | pg.Pool, ws: Ws, n: number | null) => fn(cl, "set_invoice_starting_number", [ws.workspaceId, n]);
+  const state = (ws: Ws) => fn(pool, "invoice_numbering_state", [ws.workspaceId]);
+  const link = async (cl: pg.Client | pg.Pool, ws: Ws, job: string, n: string) => {
+    try {
+      await upsertBilling(cl, ws, job, ws.clientId, n, false, null);
+      return { ok: true as const };
+    } catch (e: any) {
+      return { ok: false as const, error: e.message as string, code: e.code as string };
+    }
+  };
+  async function linkedJob(ws: Ws, n: string) {
+    const job = await completedJob(ws);
+    await upsertBilling(pool, ws, job, ws.clientId, n, false, null);
+    return job;
+  }
+  async function issueNew(ws: Ws) {
+    const d = await createDraft(pool, ws, await completedJob(ws));
+    const out = await renderAndIssue(pool, ws, d.invoice_id);
+    assert.equal(out.outcome, "issued", JSON.stringify(out));
+    await assertStoredPdfAgrees(d.invoice_id);
+    return { id: d.invoice_id as string, number: out.invoice_number as string };
+  }
+  // No number may belong to two different jobs, whatever mix of SFT
+  // invoices (issued or void) and Billing numbers holds it.
+  async function assertNoNumberSharedAcrossJobs(ws: Ws) {
+    const { rows } = await c.query(`
+      WITH held AS (
+        SELECT invoice_number_key(invoice_number) AS k, appointment_id FROM invoices WHERE workspace_id = $1 AND invoice_number IS NOT NULL
+        UNION
+        SELECT invoice_number_key(invoice_number), appointment_id FROM completed_job_billing WHERE workspace_id = $1 AND invoice_number IS NOT NULL)
+      SELECT k, count(DISTINCT appointment_id) AS jobs FROM held GROUP BY k HAVING count(DISTINCT appointment_id) > 1`, [ws.workspaceId]);
+    assert.deepEqual(rows, []);
+  }
+
+  test("default: no setting means the SFT series; nothing recorded means no guide number", async () => {
+    const ws = await newWorkspace();
+    assert.deepEqual(await state(ws), { series: "sft", starting_number: null, next_available: "SFT-1001", locked: false, highest_recorded: null });
+    assert.equal((await issueNew(ws)).number, "SFT-1001");
+    assert.equal((await issueNew(ws)).number, "SFT-1002");
+  });
+
+  test("start 13485: issued as 13485 then 13486, no prefix -- the same plain number in Billing and on the stored PDF; other workspaces keep SFT-1001", async () => {
+    const ws = await newWorkspace();
+    const other = await newWorkspace();
+    await linkedJob(ws, "13484"); // the last QuickBooks invoice recorded in Billing
+    const st = await state(ws);
+    assert.deepEqual(st.highest_recorded, { number: "13484", value: "13484", client_name: "Izabel" });
+    const set = await setStart(pool, ws, 13485);
+    assert.equal(set.outcome, "ok");
+    assert.deepEqual([set.state.series, set.state.starting_number, set.state.next_available, set.state.locked], ["custom", 13485, "13485", false]);
+
+    const first = await issueNew(ws);
+    const second = await issueNew(ws);
+    assert.deepEqual([first.number, second.number], ["13485", "13486"]);
+    for (const inv of [first, second]) {
+      const row = await invoiceRow(inv.id);
+      assert.equal(decodeStoredPdf(row.pdf).invoice_number, inv.number, "stored PDF prints the plain number");
+      assert.equal((await billingRow(row.appointment_id)).invoice_number, inv.number, "Billing shows the same plain number");
+    }
+    assert.equal(await counter(ws), 13487);
+    assert.equal((await state(ws)).next_available, "13487");
+    assert.equal((await issueNew(other)).number, "SFT-1001", "another workspace is unaffected");
+  });
+
+  test("the start must be above the highest numeric number in Billing (compared as a number); text numbers are ignored; range 1..999,999,999", async () => {
+    const ws = await newWorkspace();
+    await linkedJob(ws, "13484");
+    await linkedJob(ws, "013490"); // leading zero: still 13490
+    await linkedJob(ws, "QB-99999"); // not a plain number: not a guide
+    await linkedJob(ws, "9999"); // shorter, lower
+    const st = await state(ws);
+    assert.deepEqual(st.highest_recorded, { number: "013490", value: "13490", client_name: "Izabel" });
+    for (const n of [13490, 13000, 1]) {
+      const out = await setStart(pool, ws, n);
+      assert.equal(out.outcome, "at_or_below_recorded", String(n));
+    }
+    assert.equal((await setStart(pool, ws, 0)).outcome, "invalid");
+    assert.equal((await setStart(pool, ws, 1_000_000_000)).outcome, "invalid");
+    assert.equal(await counter(ws), 1001, "a refused start changes nothing");
+    assert.equal((await state(ws)).series, "sft");
+    assert.equal((await setStart(pool, ws, 13491)).outcome, "ok");
+    assert.equal((await state(ws)).next_available, "13491");
+  });
+
+  test("changeable while only drafts exist (the draft's number follows), clearable back to SFT-1001; locked from the first issue on, even after it is voided", async () => {
+    const ws = await newWorkspace();
+    const d = await createDraft(pool, ws, await completedJob(ws));
+    assert.equal((await render(pool, ws, d.invoice_id)).invoice_number, "SFT-1001");
+    assert.equal((await setStart(pool, ws, 20000)).outcome, "ok");
+    assert.equal((await render(pool, ws, d.invoice_id)).invoice_number, "20000");
+    assert.equal((await setStart(pool, ws, 30000)).outcome, "ok");
+    assert.equal((await render(pool, ws, d.invoice_id)).invoice_number, "30000");
+    assert.equal((await setStart(pool, ws, null)).outcome, "ok");
+    assert.deepEqual([(await state(ws)).series, (await state(ws)).next_available], ["sft", "SFT-1001"]);
+    assert.equal((await setStart(pool, ws, 30000)).outcome, "ok");
+
+    const out = await renderAndIssue(pool, ws, d.invoice_id);
+    assert.equal(out.invoice_number, "30000");
+    const locked = await state(ws);
+    assert.deepEqual([locked.locked, locked.starting_number, locked.next_available], [true, null, "30001"]);
+    for (const n of [40000, null]) assert.equal((await setStart(pool, ws, n)).outcome, "locked");
+
+    assert.equal((await fn(pool, "void_invoice", [ws.workspaceId, d.invoice_id, "wrong client"])).outcome, "ok");
+    assert.equal((await state(ws)).locked, true, "still locked after the only issued invoice is voided");
+    assert.equal((await setStart(pool, ws, 40000)).outcome, "locked");
+    assert.equal((await setStart(pool, ws, null)).outcome, "locked");
+    assert.equal((await issueNew(ws)).number, "30001", "the voided 30000 is never reused");
+  });
+
+  test("issuing skips numbers already in Billing -- including ones linked after the start was set, with leading zeros or #", async () => {
+    const ws = await newWorkspace();
+    await linkedJob(ws, "13484");
+    assert.equal((await setStart(pool, ws, 13485)).outcome, "ok");
+    await linkedJob(ws, "13486"); // QuickBooks invoices linked later
+    await linkedJob(ws, "013487");
+    await linkedJob(ws, "#13489");
+    assert.equal((await state(ws)).next_available, "13485");
+    assert.equal((await issueNew(ws)).number, "13485");
+    const d = await createDraft(pool, ws, await completedJob(ws));
+    assert.equal((await render(pool, ws, d.invoice_id)).invoice_number, "13488", "the preview already skips 13486 and 013487");
+    assert.equal((await renderAndIssue(pool, ws, d.invoice_id)).invoice_number, "13488");
+    assert.equal((await issueNew(ws)).number, "13490", "#13489 is skipped too");
+    assert.equal(await counter(ws), 13491);
+    await assertNoNumberSharedAcrossJobs(ws);
+  });
+
+  test("linking refuses an issued or voided SFT invoice's number, however it is typed; a later number is accepted and then skipped", async () => {
+    const ws = await newWorkspace();
+    await linkedJob(ws, "13484");
+    await setStart(pool, ws, 13485);
+    const inv = await issueNew(ws); // 13485
+    const job = await completedJob(ws);
+    for (const typed of ["13485", "013485", "#13485", "#0013485"]) {
+      const out = await link(pool, ws, job, typed);
+      assert.equal(out.ok, false, typed);
+      assert.equal(out.code, "23505");
+      assert.match(out.error!, /completed_job_billing_invoice_number_reserved/);
+    }
+    assert.equal(await billingRow(job), null, "nothing saved");
+    // The issued invoice's own job can still be marked paid with its number.
+    const own = (await invoiceRow(inv.id)).appointment_id;
+    await upsertBilling(pool, ws, own, ws.clientId, "13485", true, "zelle");
+    assert.equal((await billingRow(own)).paid, true);
+    await upsertBilling(pool, ws, own, ws.clientId, "13485", false, "zelle");
+    // Voided: the number stays retired.
+    assert.equal((await fn(pool, "void_invoice", [ws.workspaceId, inv.id, "typo"])).outcome, "ok");
+    assert.equal((await link(pool, ws, job, "13485")).ok, false);
+    assert.equal((await link(pool, ws, own, "13485")).ok, false, "not even on the voided invoice's own job");
+    // SFT stays reserved in a custom-numbered workspace too.
+    assert.equal((await link(pool, ws, job, "SFT-1")).ok, false);
+    // A number SFT has not reached yet is a real QuickBooks invoice: accepted, then skipped.
+    assert.equal((await link(pool, ws, job, "13486")).ok, true);
+    assert.equal((await issueNew(ws)).number, "13487");
+    await assertNoNumberSharedAcrossJobs(ws);
+  });
+
+  test("the deployed Billing route typing an SFT invoice's plain number gets its existing friendly refusal; nothing saved", async () => {
+    const ws = await newWorkspace();
+    await setStart(pool, ws, 50000);
+    await issueNew(ws);
+    const job = await completedJob(ws);
+    for (const typed of ["50000", "050000"]) {
+      const r = await deployedSave(ws, { appointment_id: job, invoice_number: typed });
+      assert.equal(r.status, 409, JSON.stringify(r.body));
+      assert.equal(r.body.error, "That invoice number is already used by another job in this workspace.");
+    }
+    assert.equal(await billingRow(job), null);
+  });
+
+  test("linking while issuing, link first: the issue waits, then re-renders with the next free number", async () => {
+    const ws = await newWorkspace();
+    await setStart(pool, ws, 13485);
+    const d = await createDraft(pool, ws, await completedJob(ws));
+    const r = await render(pool, ws, d.invoice_id);
+    assert.equal(r.invoice_number, "13485");
+    const other = await completedJob(ws);
+    const a = await db.connect();
+    const b = await db.connect();
+    const bPid = await backendPid(b);
+    try {
+      await a.query("BEGIN");
+      await upsertBilling(a, ws, other, ws.clientId, "013485", false, null); // holds the numbering lock
+      const pending = track(issue(b, ws, d.invoice_id, r));
+      await waitUntilBlocked(c, bPid);
+      await a.query("COMMIT");
+      const out = await pending.result;
+      assert.deepEqual([out.outcome, out.invoice_number], ["number_changed", "13486"]);
+    } finally {
+      await a.end();
+      await b.end();
+    }
+    assert.equal((await invoiceRow(d.invoice_id)).status, "draft", "nothing issued with the linked number");
+    assert.equal((await renderAndIssue(pool, ws, d.invoice_id)).invoice_number, "13486");
+    await assertStoredPdfAgrees(d.invoice_id);
+    assert.equal((await billingRow(other)).invoice_number, "013485", "the QuickBooks number is kept exactly as typed");
+    await assertNoNumberSharedAcrossJobs(ws);
+  });
+
+  test("linking while issuing, issue first: the link waits, then is refused; Billing and the PDF show the issued number", async () => {
+    const ws = await newWorkspace();
+    await setStart(pool, ws, 13485);
+    const d = await createDraft(pool, ws, await completedJob(ws));
+    const r = await render(pool, ws, d.invoice_id);
+    const other = await completedJob(ws);
+    const a = await db.connect();
+    const b = await db.connect();
+    const bPid = await backendPid(b);
+    try {
+      await a.query("BEGIN");
+      assert.equal((await issue(a, ws, d.invoice_id, r)).outcome, "issued");
+      const pending = track(link(b, ws, other, "13485"));
+      await waitUntilBlocked(c, bPid);
+      await a.query("COMMIT");
+      const out = await pending.result;
+      assert.equal(out.ok, false);
+      assert.match((out as any).error, /completed_job_billing_invoice_number_reserved/);
+    } finally {
+      await a.end();
+      await b.end();
+    }
+    assert.equal(await billingRow(other), null);
+    await assertStoredPdfAgrees(d.invoice_id);
+    assert.equal((await billingRow((await invoiceRow(d.invoice_id)).appointment_id)).invoice_number, "13485");
+  });
+
+  test("40 rounds of linking the proposed number while issuing (leading zeros on odd rounds): never one number on two jobs", async (t) => {
+    const ws = await newWorkspace();
+    await setStart(pool, ws, 70000);
+    let linkWon = 0;
+    let issueWon = 0;
+    for (let round = 0; round < 40; round++) {
+      const proposed = (await state(ws)).next_available as string;
+      const typed = round % 2 ? `00${proposed}` : proposed;
+      const issueJob = await completedJob(ws);
+      const linkJob = await completedJob(ws);
+      const d = await createDraft(pool, ws, issueJob);
+      // Alternate which side starts a moment later, so both orders happen.
+      const [out, l] = await Promise.all([
+        (async () => {
+          if (round % 2 === 0) await new Promise((res) => setTimeout(res, 3));
+          return renderAndIssue(pool, ws, d.invoice_id);
+        })(),
+        (async () => {
+          if (round % 4 === 1) await new Promise((res) => setImmediate(res));
+          return link(pool, ws, linkJob, typed);
+        })(),
+      ]);
+      assert.equal(out.outcome, "issued");
+      await assertStoredPdfAgrees(d.invoice_id);
+      if (l.ok) {
+        linkWon++;
+        assert.notEqual(out.invoice_number, proposed, "the issue moved past the linked number");
+      } else {
+        issueWon++;
+        assert.equal(out.invoice_number, proposed);
+        assert.match(l.error!, /completed_job_billing_invoice_number_reserved/);
+      }
+    }
+    await assertNoNumberSharedAcrossJobs(ws);
+    t.diagnostic(`link won ${linkWon}, issue won ${issueWon}`);
+    assert.ok(linkWon > 0 && issueWon > 0, `both orders must occur (link ${linkWon}, issue ${issueWon})`);
+  });
+
+  test("changing the start while an invoice is issued: either the start applies first, or it is refused as locked -- never half of each", async () => {
+    // Setting first: the issue waits and re-renders with the new start.
+    {
+      const ws = await newWorkspace();
+      const d = await createDraft(pool, ws, await completedJob(ws));
+      const r = await render(pool, ws, d.invoice_id);
+      assert.equal(r.invoice_number, "SFT-1001");
+      const a = await db.connect();
+      const b = await db.connect();
+      const bPid = await backendPid(b);
+      try {
+        await a.query("BEGIN");
+        assert.equal((await setStart(a, ws, 13485)).outcome, "ok");
+        const pending = track(issue(b, ws, d.invoice_id, r));
+        await waitUntilBlocked(c, bPid);
+        await a.query("COMMIT");
+        assert.deepEqual([(await pending.result).outcome, (await pending.result).invoice_number], ["number_changed", "13485"]);
+      } finally {
+        await a.end();
+        await b.end();
+      }
+      assert.equal((await renderAndIssue(pool, ws, d.invoice_id)).invoice_number, "13485");
+      await assertStoredPdfAgrees(d.invoice_id);
+    }
+    // Issue first: the setting waits, then is refused as locked.
+    {
+      const ws = await newWorkspace();
+      const d = await createDraft(pool, ws, await completedJob(ws));
+      const r = await render(pool, ws, d.invoice_id);
+      const a = await db.connect();
+      const b = await db.connect();
+      const bPid = await backendPid(b);
+      try {
+        await a.query("BEGIN");
+        assert.equal((await issue(a, ws, d.invoice_id, r)).outcome, "issued");
+        const pending = track(setStart(b, ws, 13485));
+        await waitUntilBlocked(c, bPid);
+        await a.query("COMMIT");
+        assert.equal((await pending.result).outcome, "locked");
+      } finally {
+        await a.end();
+        await b.end();
+      }
+      assert.equal((await invoiceRow(d.invoice_id)).invoice_number, "SFT-1001");
+      assert.deepEqual([(await state(ws)).series, (await state(ws)).next_available], ["sft", "SFT-1002"]);
+    }
+  });
+
+  test("a start set while a higher QuickBooks number is being linked: serialized, so the start is checked against it", async () => {
+    const ws = await newWorkspace();
+    const job = await completedJob(ws);
+    const a = await db.connect();
+    const b = await db.connect();
+    const bPid = await backendPid(b);
+    try {
+      await a.query("BEGIN");
+      await upsertBilling(a, ws, job, ws.clientId, "13500", false, null);
+      const pending = track(setStart(b, ws, 13485));
+      await waitUntilBlocked(c, bPid);
+      await a.query("COMMIT");
+      assert.equal((await pending.result).outcome, "at_or_below_recorded");
+    } finally {
+      await a.end();
+      await b.end();
+    }
+    assert.equal((await state(ws)).series, "sft");
+  });
+
+  test("existing invoice numbers are never rewritten by setting a start or issuing", async () => {
+    const ws = await newWorkspace();
+    const jobs = [await linkedJob(ws, "13484"), await linkedJob(ws, "013480"), await linkedJob(ws, "QB-12")];
+    const before = (await c.query("SELECT appointment_id, invoice_number, updated_at FROM completed_job_billing WHERE appointment_id = ANY($1) ORDER BY appointment_id", [jobs])).rows;
+    await setStart(pool, ws, 13485);
+    await issueNew(ws);
+    const after = (await c.query("SELECT appointment_id, invoice_number, updated_at FROM completed_job_billing WHERE appointment_id = ANY($1) ORDER BY appointment_id", [jobs])).rows;
+    assert.deepEqual(after, before);
   });
 });
 

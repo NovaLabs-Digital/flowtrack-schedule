@@ -911,6 +911,7 @@ export default function DashboardShell({
               billingFocusServiceDate={billingFocus?.serviceDate}
               onBillingSaved={handleBillingSaved}
               showSignInSecurity={!isTester && !isLocalDemo && !guidedSession}
+              showInvoiceNumbers={!isTester && !isLocalDemo && !guidedSession}
             />
           )}
         </div>

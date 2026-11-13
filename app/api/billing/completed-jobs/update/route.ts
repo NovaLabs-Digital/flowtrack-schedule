@@ -30,7 +30,7 @@ function billingWriteRefusal(code: string | undefined, message: string): { code:
   if (message.includes("completed_job_billing_invoice_number_reserved")) {
     return {
       code: "INVOICE_NUMBER_RESERVED",
-      error: "Invoice numbers starting with SFT are reserved for invoices created in Schedule.",
+      error: "That number belongs to an invoice created in Schedule (or is reserved for one). Enter your QuickBooks invoice number.",
     };
   }
   return null;

@@ -51,6 +51,8 @@ type Props = {
   // which forwards it only to BillingPanel's own onBillingSaved prop.
   onBillingSaved?: () => void;
   showSignInSecurity?: boolean;
+  // Real signed-in owners only: Billing's "Invoice numbers" card.
+  showInvoiceNumbers?: boolean;
 };
 
 // Owner always gets the real, unrestricted Settings sidebar/panel --
@@ -79,6 +81,7 @@ export default function DashboardSettingsArea({
   workspaceId,
   userId,
   showSignInSecurity = false,
+  showInvoiceNumbers = false,
   billingFocusAppointmentId,
   billingFocusServiceDate,
   onBillingSaved,
@@ -110,6 +113,7 @@ export default function DashboardSettingsArea({
             onBillingSaved={onBillingSaved}
             isLocalDemo={isLocalDemo}
             showSignInSecurity={showSignInSecurity}
+            showInvoiceNumbers={showInvoiceNumbers}
           />
         </div>
       </div>

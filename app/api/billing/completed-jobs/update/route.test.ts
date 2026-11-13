@@ -453,7 +453,7 @@ describe("migration 049: refusals from upsert_completed_job_billing in owner wor
   for (const [label, error, code, message] of [
     ["an issued SFT number can't be changed", { code: "IV002", message: "completed_job_billing_invoice_number_locked" }, "INVOICE_NUMBER_LOCKED", /void it and reissue/],
     ["a draft blocks linking a QuickBooks number", { code: "IV003", message: "completed_job_billing_invoice_draft_exists" }, "INVOICE_DRAFT_EXISTS", /Discard the draft/],
-    ["SFT numbers are reserved", { code: "23505", message: "completed_job_billing_invoice_number_reserved" }, "INVOICE_NUMBER_RESERVED", /reserved for invoices created in Schedule/],
+    ["SFT numbers are reserved", { code: "23505", message: "completed_job_billing_invoice_number_reserved" }, "INVOICE_NUMBER_RESERVED", /belongs to an invoice created in Schedule/],
   ] as const) {
     test(`${label} -> 409 ${code}`, async () => {
       resetFixtures(

@@ -12,6 +12,8 @@
 --   invoice_tables                invoices + invoice_counters exist with row level security on
 --   invoice_tax                   tax_rate / tax_cents columns, tax CHECKs (total = amount + tax; rate > 0 and < 100)
 --   invoice_indexes               number unique per workspace, request id unique, one live invoice per job
+--   invoice_numbering             counter prefix/next number columns; number-key indexes on invoices and Billing;
+--                                 no workspace has a starting number yet (every workspace on SFT-1001)
 --   invoice_guard_trigger         the trigger freezing issued/void invoices exists
 --   functions_present             all 049 functions exist; upsert keeps the 033 signature
 --   no_public_access              anon / authenticated cannot read the tables or run the functions
@@ -62,6 +64,15 @@ WITH checks(check_name, ok, detail) AS (
              AND i.indexname IN ('idx_invoices_workspace_number', 'idx_invoices_workspace_request', 'idx_invoices_one_active_per_appointment')),
          'three unique indexes present'
   UNION ALL
+  SELECT 'invoice_numbering',
+         (SELECT count(*) = 2 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'invoice_counters' AND column_name IN ('number_prefix', 'next_number'))
+           AND (SELECT count(*) = 2 FROM pg_indexes
+                 WHERE schemaname = 'public'
+                   AND indexname IN ('idx_invoices_workspace_number_key', 'idx_completed_job_billing_invoice_number_key'))
+           AND NOT EXISTS (SELECT 1 FROM invoice_counters WHERE number_prefix = ''),
+         (SELECT count(*) FROM invoice_counters)::text || ' counter row(s); default series SFT-1001'
+  UNION ALL
   SELECT 'invoice_guard_trigger',
          EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'invoices_guard' AND NOT tgisinternal),
          'invoices_guard present'
@@ -75,7 +86,12 @@ WITH checks(check_name, ok, detail) AS (
            AND to_regprocedure('public.invoice_render_input(uuid,uuid)') IS NOT NULL
            AND to_regprocedure('public.issue_invoice(uuid,uuid,integer,text,jsonb,text,text)') IS NOT NULL
            AND to_regprocedure('public.void_invoice(uuid,uuid,text)') IS NOT NULL
-           AND to_regprocedure('public.invoice_draft_tax_rate(jsonb)') IS NOT NULL,
+           AND to_regprocedure('public.invoice_draft_tax_rate(jsonb)') IS NOT NULL
+           AND to_regprocedure('public.invoice_number_key(text)') IS NOT NULL
+           AND to_regprocedure('public.invoice_number_taken(uuid,text)') IS NOT NULL
+           AND to_regprocedure('public.invoice_next_available_number(uuid)') IS NOT NULL
+           AND to_regprocedure('public.invoice_numbering_state(uuid)') IS NOT NULL
+           AND to_regprocedure('public.set_invoice_starting_number(uuid,bigint)') IS NOT NULL,
          'all 049 functions present'
   UNION ALL
   SELECT 'no_public_access',
@@ -88,7 +104,9 @@ WITH checks(check_name, ok, detail) AS (
              WHERE p.pronamespace = 'public'::regnamespace
                AND p.proname IN ('upsert_completed_job_billing', 'set_no_invoice_required', 'create_invoice_draft',
                                  'update_invoice_draft', 'discard_invoice_draft', 'invoice_render_input',
-                                 'issue_invoice', 'void_invoice', 'invoice_render_snapshot', 'invoice_guard', 'invoice_draft_tax_rate')
+                                 'issue_invoice', 'void_invoice', 'invoice_render_snapshot', 'invoice_guard', 'invoice_draft_tax_rate',
+                                 'invoice_number_key', 'invoice_number_taken', 'invoice_next_available_number',
+                                 'invoice_numbering_state', 'set_invoice_starting_number')
                AND has_function_privilege(r, p.oid, 'EXECUTE')),
          'service role only'
   UNION ALL

@@ -7,6 +7,7 @@ import {
   dueDateFor,
   formatBusinessAddress,
   invoicePdfFileName,
+  parseStartingNumber,
   isCalendarDate,
   lineAmountCents,
   normalizeDraftFields,
@@ -139,6 +140,8 @@ describe("prefill", () => {
   });
   test("PDF file name is the invoice number", () => {
     assert.equal(invoicePdfFileName("SFT-1003"), "SFT-1003.pdf");
+    // A workspace continuing its QuickBooks numbers.
+    assert.equal(invoicePdfFileName("13485"), "Invoice-13485.pdf");
   });
 });
 
@@ -303,5 +306,19 @@ describe("renderInvoicePdf -- sales tax line", () => {
   test("tax on but rounding to $0.00: the TAX line still shows 0.00", async () => {
     const t = pdfText(await renderInvoicePdf({ ...SNAPSHOT, amount_cents: 5, subtotal_cents: 5, rate_cents: 5, tax_rate: "6.5", tax_cents: 0, total_cents: 5, balance_due_cents: 5 }));
     assert.match(t, /SUBTOTAL \| 0\.05 \| TAX \| 0\.00 \| TOTAL \| 0\.05/);
+  });
+});
+
+describe("Starting invoice number (typed in Settings -> Billing)", () => {
+  test("a whole number 1..999,999,999; blank means the default SFT series", () => {
+    assert.deepEqual(parseStartingNumber("13485"), { ok: true, value: 13485 });
+    assert.deepEqual(parseStartingNumber(" 13485 "), { ok: true, value: 13485 });
+    assert.deepEqual(parseStartingNumber(13485), { ok: true, value: 13485 });
+    assert.deepEqual(parseStartingNumber("999999999"), { ok: true, value: 999999999 });
+    assert.deepEqual(parseStartingNumber(""), { ok: true, value: null });
+    assert.deepEqual(parseStartingNumber(null), { ok: true, value: null });
+    for (const bad of ["0", "000", "1000000000", "13485.5", "-5", "SFT-1001", "#13485", "1e5", "13,485"]) {
+      assert.equal(parseStartingNumber(bad).ok, false, bad);
+    }
   });
 });

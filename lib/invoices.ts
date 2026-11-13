@@ -294,10 +294,34 @@ export function draftFieldsOf(inv: InvoiceView): InvoiceDraftFields {
   };
 }
 
-// "SFT-1003.pdf" -- the number is always SFT-<digits>, so it is already a
-// safe file name.
+// "SFT-1003.pdf" for SFT's own series; "Invoice-13485.pdf" for a workspace
+// continuing its QuickBooks numbers (a bare "13485.pdf" says nothing).
 export function invoicePdfFileName(invoiceNumber: string): string {
-  return `${invoiceNumber.replace(/[^A-Za-z0-9-]/g, "")}.pdf`;
+  const safe = invoiceNumber.replace(/[^A-Za-z0-9-]/g, "");
+  return /^[0-9]+$/.test(safe) ? `Invoice-${safe}.pdf` : `${safe}.pdf`;
+}
+
+// Settings -> Billing's "Invoice numbers" (migration 049's
+// invoice_numbering_state).
+export type InvoiceNumberingState = {
+  series: "sft" | "custom";
+  starting_number: number | null; // the owner's start, while it can still change
+  next_available: string | null;
+  locked: boolean; // true from the first issued invoice on (even if voided)
+  highest_recorded: { number: string; value: string; client_name: string | null } | null;
+};
+
+// A typed "Starting invoice number": whole number, 1..999,999,999. Blank
+// means "use the default SFT-1001 series".
+export type StartingNumberParse = { ok: true; value: number | null } | { ok: false; error: string };
+export function parseStartingNumber(input: unknown): StartingNumberParse {
+  if (input === null || input === undefined) return { ok: true, value: null };
+  const text = String(input).trim();
+  if (!text) return { ok: true, value: null };
+  if (!/^[0-9]{1,9}$/.test(text) || Number(text) < 1) {
+    return { ok: false, error: "Enter a whole number, like 13485." };
+  }
+  return { ok: true, value: Number(text) };
 }
 
 // What the 049 database functions return (jsonb), as the routes read it.

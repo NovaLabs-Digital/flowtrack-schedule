@@ -35,7 +35,18 @@ export async function GET(_req: Request, { params }: Params) {
     const invoice = await loadInvoiceView(ctx.workspaceId, id, ctx.isTester);
     if (!invoice) return json({ error: "Invoice not found" }, 404);
     const billing = await loadBillingState(ctx.workspaceId, invoice.appointment_id);
-    return json({ invoice, billing: billing ? { paid: billing.paid, payment_method: billing.payment_method } : { paid: false, payment_method: null } });
+    // A draft shows the next available number; the final one is assigned on issue.
+    let nextAvailable: string | null = null;
+    if (invoice.status === "draft") {
+      const { data, error } = await supabaseAdmin.rpc("invoice_next_available_number", { p_workspace_id: ctx.workspaceId });
+      if (error) throw error;
+      nextAvailable = (data as string | null) ?? null;
+    }
+    return json({
+      invoice,
+      billing: billing ? { paid: billing.paid, payment_method: billing.payment_method } : { paid: false, payment_method: null },
+      next_available: nextAvailable,
+    });
   } catch (e: unknown) {
     console.error("INVOICE_GET_ERROR", e);
     return json({ error: errorMessage(e) }, 500);

@@ -68,6 +68,7 @@ const invoiceRoute = await import("../app/api/invoices/[id]/route.ts");
 const issueRoute = await import("../app/api/invoices/[id]/issue/route.ts");
 const voidRoute = await import("../app/api/invoices/[id]/void/route.ts");
 const pdfRoute = await import("../app/api/invoices/[id]/pdf/route.ts");
+const numberingRoute = await import("../app/api/invoices/numbering/route.ts");
 const billingRoute = await import("../app/api/billing/completed-jobs/route.ts");
 const billingUpdateRoute = await import("../app/api/billing/completed-jobs/update/route.ts");
 const directPaymentRoute = await import("../app/api/billing/completed-jobs/direct-payment/route.ts");
@@ -555,6 +556,97 @@ describe("Access", { skip: SKIP }, () => {
 // ---------------------------------------------------------------------------
 // Rollout: cash jobs marked paid between applying 049 and deploying the app
 // ---------------------------------------------------------------------------
+
+describe("Invoice numbers (Starting invoice number)", { skip: SKIP }, () => {
+  const getNumbering = (ws: Ws) => (asOwner(ws), send(numberingRoute.GET, "GET", "/api/invoices/numbering"));
+  const putNumbering = (ws: Ws, starting_number: unknown) => (asOwner(ws), send(numberingRoute.PUT, "PUT", "/api/invoices/numbering", { starting_number }));
+
+  test("continue QuickBooks numbers: 13485 then 13486, the same plain number in Billing, on the stored PDF and in its file name", async () => {
+    const ws = await newWorkspace();
+    const qbJob = await completedJob(ws);
+    assert.equal((await saveBilling(ws, { appointment_id: qbJob, invoice_number: "13484" })).status, 200);
+
+    const st = await getNumbering(ws);
+    assert.equal(st.status, 200);
+    assert.deepEqual(st.body.numbering, {
+      series: "sft", starting_number: null, next_available: "SFT-1001", locked: false,
+      highest_recorded: { number: "13484", value: "13484", client_name: "Izabel" },
+    });
+    const low = await putNumbering(ws, "13484");
+    assert.deepEqual([low.status, low.body.code], [409, "STARTING_NUMBER_TOO_LOW"]);
+    assert.equal(low.body.error, "Choose a number above 13484 (Izabel), the highest invoice number recorded in Billing.");
+    assert.deepEqual([(await putNumbering(ws, "abc")).status, (await putNumbering(ws, "abc")).body.code], [400, "INVALID_STARTING_NUMBER"]);
+    const set = await putNumbering(ws, "13485");
+    assert.equal(set.status, 200, JSON.stringify(set.body));
+    assert.deepEqual([set.body.numbering.series, set.body.numbering.next_available], ["custom", "13485"]);
+
+    // The draft editor shows the next available number.
+    const job1 = await completedJob(ws);
+    const d1 = (await createInvoice(ws, job1)).body.invoice;
+    assert.equal((await getInvoice(ws, d1.id)).body.next_available, "13485");
+    const r1 = await issueInvoice(ws, d1.id, 1);
+    assert.deepEqual([r1.status, r1.body.invoice.invoice_number], [201, "13485"]);
+    const d2 = (await createInvoice(ws, await completedJob(ws))).body.invoice;
+    const r2 = await issueInvoice(ws, d2.id, 1);
+    assert.equal(r2.body.invoice.invoice_number, "13486");
+    assert.equal((await getInvoice(ws, d1.id)).body.next_available, null, "an issued invoice shows its own number, not a preview");
+
+    for (const [id, n] of [[d1.id, "13485"], [d2.id, "13486"]]) {
+      await assertStoredPdfMatches(id);
+      const row = (await billingReport(ws)).find((x) => x.invoice?.id === id)!;
+      assert.equal(row.billing?.invoice_number, n, "Billing shows the plain number");
+      assert.equal(row.invoice?.invoice_number, n, "Billing knows it is an SFT invoice from the stored record");
+      const pdf = await downloadPdf(ws, id);
+      assert.equal(pdf.headers.get("content-disposition"), `attachment; filename="Invoice-${n}.pdf"`);
+      assert.ok(Buffer.from(pdf.body).equals((await storedInvoice(id)).pdf));
+    }
+    // The QuickBooks-linked job is untouched and still not an SFT invoice.
+    const qbRow = (await billingReport(ws)).find((x) => x.appointmentId === qbJob)!;
+    assert.deepEqual([qbRow.billing?.invoice_number, qbRow.invoice], ["13484", null]);
+
+    // Locked from the first issue on.
+    const locked = await putNumbering(ws, "20000");
+    assert.deepEqual([locked.status, locked.body.code, locked.body.numbering.next_available], [409, "NUMBERING_LOCKED", "13487"]);
+  });
+
+  test("Billing protects SFT invoice numbers by the stored record: an issued number (or with a leading zero) can't be typed; the issued job's paid status stays editable", async () => {
+    const ws = await newWorkspace();
+    await putNumbering(ws, "50000");
+    const job = await completedJob(ws);
+    const inv = (await createInvoice(ws, job)).body.invoice;
+    assert.equal((await issueInvoice(ws, inv.id, 1)).body.invoice.invoice_number, "50000");
+    const other = await completedJob(ws);
+    for (const typed of ["50000", "050000"]) {
+      const r = await saveBilling(ws, { appointment_id: other, invoice_number: typed });
+      assert.deepEqual([r.status, r.body.code], [409, "INVOICE_NUMBER_RESERVED"]);
+      assert.match(r.body.error, /belongs to an invoice created in Schedule/);
+    }
+    const paid = await saveBilling(ws, { appointment_id: job, paid: true, payment_method: "venmo" });
+    assert.equal(paid.status, 200, JSON.stringify(paid.body));
+    const change = await saveBilling(ws, { appointment_id: job, invoice_number: "50001" });
+    assert.deepEqual([change.status, change.body.code], [409, "INVOICE_NUMBER_LOCKED"]);
+    // A later QuickBooks number is accepted and then skipped by SFT.
+    assert.equal((await saveBilling(ws, { appointment_id: other, invoice_number: "50001" })).status, 200);
+    const d2 = (await createInvoice(ws, await completedJob(ws))).body.invoice;
+    assert.equal((await issueInvoice(ws, d2.id, 1)).body.invoice.invoice_number, "50002");
+  });
+
+  test("owner only: employees and testers are refused; a restricted workspace can read but not change it", async () => {
+    const ws = await newWorkspace();
+    session = { role: "employee", workspaceId: ws.workspaceId, employeeId: ws.employeeIds[0] };
+    assert.equal((await send(numberingRoute.GET, "GET", "/api/invoices/numbering")).status, 403);
+    assert.equal((await send(numberingRoute.PUT, "PUT", "/api/invoices/numbering", { starting_number: 5000 })).status, 403);
+    session = { role: "tester", workspaceId: ws.workspaceId };
+    assert.equal((await send(numberingRoute.PUT, "PUT", "/api/invoices/numbering", { starting_number: 5000 })).status, 403);
+    capabilityAllowed = false;
+    try {
+      assert.equal((await putNumbering(ws, "5000")).status, 403);
+    } finally {
+      capabilityAllowed = true;
+    }
+    assert.equal((await getNumbering(ws)).body.numbering.series, "sft", "nothing changed");
+  });
+});
 
 describe("Rollout window check (test-db/049-window-cash-check.sql)", { skip: SKIP }, () => {
   test("counts exactly the cash jobs the OLD app marked paid after 049, without names; the new app's choices are not counted", async () => {

@@ -578,6 +578,9 @@ describe("only the approved routes reference the capability gates -- every other
     path.join("app", "api", "invoices", "[id]", "issue", "route.ts"),
     path.join("app", "api", "invoices", "[id]", "void", "route.ts"),
     path.join("app", "api", "invoices", "[id]", "pdf", "route.ts"),
+    // Invoice numbers (migration 049): read the next available number
+    // (canViewExistingData); set the starting number (canMutateOperationalData).
+    path.join("app", "api", "invoices", "numbering", "route.ts"),
     // Message History -- read-only (canViewExistingData, same read-gate
     // precedent as clients/archived, recurring-series, and billing/
     // completed-jobs above), appointment-scoped and client-scoped

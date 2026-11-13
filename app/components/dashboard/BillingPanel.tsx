@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { nowInBusinessTz } from "@/lib/timezone";
 import { formatCents } from "@/lib/money";
 import { formatMMDDYY } from "@/lib/dateDisplay";
+import InvoiceNumbersCard from "@/app/components/dashboard/invoices/InvoiceNumbersCard";
 import InvoiceDialog from "@/app/components/dashboard/invoices/InvoiceDialog";
 import {
   PAYMENT_METHODS,
@@ -194,8 +195,12 @@ export default function BillingPanel({
   focusAppointmentId,
   focusServiceDate,
   onBillingSaved,
+  showInvoiceNumbers = false,
 }: {
   timezone: string;
+  // Real signed-in owners only (never a demo, tester or Guided Demo
+  // Session): the "Invoice numbers" card at the top.
+  showInvoiceNumbers?: boolean;
   // Read-only (locked/canceled/read-only-grace workspace) disables every
   // inline edit control below, matching how every other owner-mutation
   // surface in this dashboard already gates on this exact prop.
@@ -521,6 +526,7 @@ export default function BillingPanel({
           Create an invoice from the completed appointment or enter an existing invoice number here. Mark the job paid once you confirm payment.
         </p>
       </div>
+      {showInvoiceNumbers && <InvoiceNumbersCard canMutate={canMutateOperationalData} refreshKey={reloadToken} />}
 
       {/* Date range */}
       <div className="flex flex-wrap items-center gap-2 mb-3">

@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 register("../../../../scripts/test-tsx-load-hook.mjs", import.meta.url);
 const { default: InvoiceCard } = await import("./InvoiceCard.tsx");
 const { default: InvoiceDialog } = await import("./InvoiceDialog.tsx");
+const { default: InvoiceNumbersCard } = await import("./InvoiceNumbersCard.tsx");
 
 type Call = { url: string; method: string; body: Record<string, unknown> | null };
 type Handler = (call: Call) => { status: number; body: unknown } | undefined;
@@ -107,14 +108,14 @@ describe("Invoice card", () => {
   test("a refused link shows the reason", async () => {
     handlers = [
       on("GET", STATE_URL, () => ({ status: 200, body: jobState() })),
-      on("PATCH", "/api/billing/completed-jobs/update", () => ({ status: 409, body: { error: "Invoice numbers starting with SFT are reserved for invoices created in Schedule.", code: "INVOICE_NUMBER_RESERVED" } })),
+      on("PATCH", "/api/billing/completed-jobs/update", () => ({ status: 409, body: { error: "That number belongs to an invoice created in Schedule (or is reserved for one). Enter your QuickBooks invoice number.", code: "INVOICE_NUMBER_RESERVED" } })),
     ];
     const u = userEvent.setup();
     renderCard();
     await u.click(await screen.findByRole("button", { name: "Link Existing Invoice" }));
     await u.type(screen.getByLabelText("QuickBooks invoice number"), "SFT-1");
     await u.click(screen.getByRole("button", { name: "Link" }));
-    await screen.findByText(/reserved for invoices created in Schedule/);
+    await screen.findByText(/belongs to an invoice created in Schedule/);
   });
 
   test("Paid directly, no invoice: choose the method, confirm; Undo brings the choices back", async () => {
@@ -339,5 +340,95 @@ describe("Invoice dialog -- sales tax", () => {
     await screen.findByRole("dialog", { name: "Invoice SFT-1001" });
     assert.equal(screen.getByTestId("invoice-total").textContent, "$170.40");
     assert.match(screen.getByTestId("invoice-tax").textContent!, /6\.5% tax \$10\.40/);
+  });
+});
+
+describe("Invoice numbers (top of Billing)", () => {
+  const NUMBERING = "/api/invoices/numbering";
+  const state = (o: Record<string, unknown> = {}) => ({
+    series: "sft", starting_number: null, next_available: "SFT-1001", locked: false,
+    highest_recorded: { number: "13484", value: "13484", client_name: "Robin Example" }, ...o,
+  });
+  const renderNumbers = (canMutate = true) => render(React.createElement(InvoiceNumbersCard, { canMutate }));
+
+  test("shows the next available number and that the final number is assigned on issue", async () => {
+    handlers = [on("GET", NUMBERING, () => ({ status: 200, body: { numbering: state() } }))];
+    renderNumbers();
+    const card = await screen.findByRole("region", { name: "Invoice numbers" });
+    assert.match(card.textContent ?? "", /Next available invoice number\s*SFT-1001/);
+    assert.ok(within(card).getByText("The final number is assigned when an invoice is issued."));
+  });
+
+  test("set a starting number: the QuickBooks reminder and the highest recorded number guide it; saved as a number", async () => {
+    handlers = [
+      on("GET", NUMBERING, () => ({ status: 200, body: { numbering: state() } })),
+      on("PUT", NUMBERING, () => ({ status: 200, body: { ok: true, numbering: state({ series: "custom", starting_number: 13485, next_available: "13485" }) } })),
+    ];
+    renderNumbers();
+    await userEvent.click(await screen.findByRole("button", { name: "Set starting number" }));
+    assert.ok(screen.getByText(/check QuickBooks for the last invoice number you actually issued/));
+    assert.match(screen.getByTestId("highest-recorded").textContent ?? "", /13484 \(Robin Example\)\. Your starting number must be higher\./);
+    await userEvent.type(screen.getByLabelText("Starting invoice number"), "13485");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => assert.equal(screen.getByTestId("next-available-number").textContent, "13485"));
+    const put = calls.find((c) => c.method === "PUT")!;
+    assert.deepEqual(put.body, { starting_number: 13485 });
+    assert.ok(screen.getByRole("button", { name: "Change starting number" }));
+  });
+
+  test("a start at or below the highest recorded number shows the server's reason and keeps the editor open", async () => {
+    handlers = [
+      on("GET", NUMBERING, () => ({ status: 200, body: { numbering: state() } })),
+      on("PUT", NUMBERING, () => ({ status: 409, body: { error: "Choose a number above 13484 (Robin Example), the highest invoice number recorded in Billing.", code: "STARTING_NUMBER_TOO_LOW", numbering: state() } })),
+    ];
+    renderNumbers();
+    await userEvent.click(await screen.findByRole("button", { name: "Set starting number" }));
+    await userEvent.type(screen.getByLabelText("Starting invoice number"), "13484");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    assert.match((await screen.findByRole("alert")).textContent ?? "", /Choose a number above 13484/);
+    assert.ok(screen.getByLabelText("Starting invoice number"));
+  });
+
+  test("not a whole number: refused before anything is sent", async () => {
+    handlers = [on("GET", NUMBERING, () => ({ status: 200, body: { numbering: state() } }))];
+    renderNumbers();
+    await userEvent.click(await screen.findByRole("button", { name: "Set starting number" }));
+    await userEvent.type(screen.getByLabelText("Starting invoice number"), "SFT-9");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    assert.match((await screen.findByRole("alert")).textContent ?? "", /whole number/);
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
+  });
+
+  test("a custom start can go back to SFT-1001 before the first invoice", async () => {
+    handlers = [
+      on("GET", NUMBERING, () => ({ status: 200, body: { numbering: state({ series: "custom", starting_number: 13485, next_available: "13485" }) } })),
+      on("PUT", NUMBERING, () => ({ status: 200, body: { ok: true, numbering: state() } })),
+    ];
+    renderNumbers();
+    await userEvent.click(await screen.findByRole("button", { name: "Change starting number" }));
+    assert.equal((screen.getByLabelText("Starting invoice number") as HTMLInputElement).value, "13485");
+    await userEvent.click(screen.getByRole("button", { name: "Use SFT-1001 instead" }));
+    await waitFor(() => assert.equal(screen.getByTestId("next-available-number").textContent, "SFT-1001"));
+    assert.deepEqual(calls.find((c) => c.method === "PUT")!.body, { starting_number: null });
+  });
+
+  test("locked after the first issued invoice, and read-only workspaces: no way to change it", async () => {
+    handlers = [on("GET", NUMBERING, () => ({ status: 200, body: { numbering: state({ series: "custom", next_available: "13487", locked: true }) } }))];
+    renderNumbers();
+    await screen.findByText(/Continuing your own invoice numbers\. Set when the first invoice was issued\./);
+    assert.equal(screen.queryByRole("button", { name: /starting number/ }), null);
+    cleanup();
+    handlers = [on("GET", NUMBERING, () => ({ status: 200, body: { numbering: state() } }))];
+    renderNumbers(false);
+    await screen.findByTestId("next-available-number");
+    assert.equal(screen.queryByRole("button", { name: /starting number/ }), null);
+  });
+
+  test("the draft editor shows the next available number and that the final one is assigned on issue", async () => {
+    handlers = [on("GET", `/api/invoices/${DRAFT.id}`, () => ({ status: 200, body: { invoice: DRAFT, billing: { paid: false }, next_available: "13485" } }))];
+    render(React.createElement(InvoiceDialog, { invoiceId: DRAFT.id, canMutate: true, onClose: () => {}, onChanged: () => {} }));
+    assert.equal((await screen.findByTestId("invoice-next-number")).textContent, "13485");
+    assert.ok(screen.getByText("Next available invoice number"));
+    assert.ok(screen.getByText("The final number is assigned when you issue the invoice."));
   });
 });
